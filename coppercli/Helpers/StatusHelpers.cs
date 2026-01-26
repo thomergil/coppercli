@@ -11,10 +11,6 @@ namespace coppercli.Helpers
     /// </summary>
     internal static class StatusHelpers
     {
-        private const int DefaultPollIntervalMs = 100;
-        private const int DefaultMoveTimeoutMs = 60000;  // 1 minute
-        private const int DefaultZTimeoutMs = 30000;     // 30 seconds
-
         /// <summary>
         /// Checks if the machine is in Idle state.
         /// </summary>
@@ -62,7 +58,7 @@ namespace coppercli.Helpers
         {
             if (timeoutMs <= 0)
             {
-                timeoutMs = DefaultZTimeoutMs;
+                timeoutMs = ZHeightWaitTimeoutMs;
             }
 
             var startTime = DateTime.Now;
@@ -74,7 +70,7 @@ namespace coppercli.Helpers
                 {
                     return;  // Reached target
                 }
-                Thread.Sleep(DefaultPollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
         }
 
@@ -87,7 +83,7 @@ namespace coppercli.Helpers
         {
             if (timeoutMs <= 0)
             {
-                timeoutMs = DefaultMoveTimeoutMs;
+                timeoutMs = MoveCompleteTimeoutMs;
             }
 
             var startTime = DateTime.Now;
@@ -109,7 +105,7 @@ namespace coppercli.Helpers
                     return true;  // Reached target
                 }
 
-                Thread.Sleep(DefaultPollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
 
             return true;  // Timeout, but don't treat as cancel
@@ -127,7 +123,7 @@ namespace coppercli.Helpers
                 {
                     return true;
                 }
-                Thread.Sleep(DefaultPollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
             return false;
         }
@@ -145,7 +141,7 @@ namespace coppercli.Helpers
                 {
                     return machine.Status;
                 }
-                Thread.Sleep(DefaultPollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
             return null;
         }
@@ -163,7 +159,7 @@ namespace coppercli.Helpers
                 {
                     return machine.Status;
                 }
-                Thread.Sleep(DefaultPollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
             return null;
         }

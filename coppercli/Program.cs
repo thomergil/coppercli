@@ -92,8 +92,8 @@ class Program
                 try
                 {
                     AppState.ProbePoints = ProbeGrid.Load(session.LastSavedProbeFile);
-                    AppState.ProbePointsApplied = false;
-                    AppState.WorkZeroSet = true;
+                    AppState.AreProbePointsApplied = false;
+                    AppState.IsWorkZeroSet = true;
                     var pp = AppState.ProbePoints;
                     AnsiConsole.MarkupLine($"[green]Probe data loaded: {pp.TotalPoints} points (work zero trusted)[/]");
                 }
@@ -117,7 +117,7 @@ class Program
                 }
                 if (result == true)
                 {
-                    AppState.WorkZeroSet = true;
+                    AppState.IsWorkZeroSet = true;
                     AnsiConsole.MarkupLine("[green]Work zero restored[/]");
                 }
             }
@@ -135,7 +135,7 @@ class Program
                     try
                     {
                         AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
-                        AppState.ProbePointsApplied = false;
+                        AppState.AreProbePointsApplied = false;
                         var hm = AppState.ProbePoints;
                         AnsiConsole.MarkupLine($"[green]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
                     }

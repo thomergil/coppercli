@@ -165,7 +165,7 @@ namespace coppercli.Menus
                 machine.SetFile(currentFile.GetGCode());
 
                 // Reset height map applied state for new file
-                AppState.ProbePointsApplied = false;
+                AppState.AreProbePointsApplied = false;
 
                 // Save the file path and directory for next time
                 session.LastLoadedGCodeFile = path;

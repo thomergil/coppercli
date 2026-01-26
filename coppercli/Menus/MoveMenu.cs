@@ -97,7 +97,7 @@ namespace coppercli.Menus
                 if (InputHelpers.IsKey(key, ConsoleKey.Z, 'z'))
                 {
                     machine.SendLine($"{CmdZeroWorkOffset} Z0");
-                    AppState.WorkZeroSet = true;
+                    AppState.IsWorkZeroSet = true;
                     AnsiConsole.MarkupLine("[green]Z zeroed[/]");
                     Thread.Sleep(ConfirmationDisplayMs);
                     machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
@@ -108,7 +108,7 @@ namespace coppercli.Menus
                 if (InputHelpers.IsKey(key, ConsoleKey.D0, '0'))
                 {
                     machine.SendLine($"{CmdZeroWorkOffset} X0 Y0 Z0");
-                    AppState.WorkZeroSet = true;
+                    AppState.IsWorkZeroSet = true;
 
                     // Store work zero in session
                     var session = AppState.Session;

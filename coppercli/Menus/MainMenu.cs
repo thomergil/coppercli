@@ -101,12 +101,12 @@ namespace coppercli.Menus
                 return MainAction.LoadFile;
             }
 
-            if (!AppState.WorkZeroSet)
+            if (!AppState.IsWorkZeroSet)
             {
                 return MainAction.Move;
             }
 
-            if (probePoints == null || probePoints.NotProbed.Count > 0 || !AppState.ProbePointsApplied)
+            if (probePoints == null || probePoints.NotProbed.Count > 0 || !AppState.AreProbePointsApplied)
             {
                 return MainAction.Probe;
             }

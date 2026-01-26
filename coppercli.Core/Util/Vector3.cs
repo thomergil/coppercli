@@ -1,56 +1,39 @@
-#region Imports
-
 using System;
 using System.Xml.Serialization;
-
-#endregion
 
 namespace coppercli.Core.Util
 {
     [Serializable]
     public struct Vector3 : IComparable, IComparable<Vector3>, IEquatable<Vector3>, IFormattable
     {
-        #region Class Variables
-
         private double x;
         private double y;
         private double z;
 
-        #endregion
-
-        #region Constructors
-
         public Vector3(double x, double y, double z)
         {
-            this.x = 0;
-            this.y = 0;
-            this.z = 0;
-            X = x;
-            Y = y;
-            Z = z;
+            this.x = x;
+            this.y = y;
+            this.z = z;
         }
 
         public Vector3(double[] xyz)
         {
-            x = 0;
-            y = 0;
-            z = 0;
-            Array = xyz;
+            if (xyz.Length != 3)
+            {
+                throw new ArgumentException(THREE_COMPONENTS);
+            }
+            x = xyz[0];
+            y = xyz[1];
+            z = xyz[2];
         }
 
         public Vector3(Vector3 v1)
         {
-            x = 0;
-            y = 0;
-            z = 0;
-            X = v1.X;
-            Y = v1.Y;
-            Z = v1.Z;
+            x = v1.X;
+            y = v1.Y;
+            z = v1.Z;
         }
-
-        #endregion
-
-        #region Accessors & Mutators
 
         public double X
         {
@@ -126,10 +109,6 @@ namespace coppercli.Core.Util
             }
         }
 
-        #endregion
-
-        #region Operators
-
         public static Vector3 operator +(Vector3 v1, Vector3 v2)
         {
             return new Vector3(v1.X + v2.X, v1.Y + v2.Y, v1.Z + v2.Z);
@@ -187,19 +166,15 @@ namespace coppercli.Core.Util
 
         public static bool operator ==(Vector3 v1, Vector3 v2)
         {
-            return Math.Abs(v1.X - v2.X) <= EqualityTolerence &&
-                   Math.Abs(v1.Y - v2.Y) <= EqualityTolerence &&
-                   Math.Abs(v1.Z - v2.Z) <= EqualityTolerence;
+            return Math.Abs(v1.X - v2.X) <= EqualityTolerance &&
+                   Math.Abs(v1.Y - v2.Y) <= EqualityTolerance &&
+                   Math.Abs(v1.Z - v2.Z) <= EqualityTolerance;
         }
 
         public static bool operator !=(Vector3 v1, Vector3 v2)
         {
             return !(v1 == v2);
         }
-
-        #endregion
-
-        #region Functions
 
         public static Vector3 CrossProduct(Vector3 v1, Vector3 v2)
         {
@@ -373,10 +348,6 @@ namespace coppercli.Core.Util
             return Magnitude;
         }
 
-        #endregion
-
-        #region Component Operations
-
         public static double SumComponents(Vector3 v1)
         {
             return v1.X + v1.Y + v1.Z;
@@ -435,10 +406,6 @@ namespace coppercli.Core.Util
         {
             this = SqrComponents(this);
         }
-
-        #endregion
-
-        #region Standard Functions
 
         public override string ToString()
         {
@@ -522,13 +489,9 @@ namespace coppercli.Core.Util
             );
         }
 
-        #endregion
-
-        #region Decisions
-
         public static bool IsUnitVector(Vector3 v1)
         {
-            return Math.Abs(v1.Magnitude - 1) <= EqualityTolerence;
+            return Math.Abs(v1.Magnitude - 1) <= EqualityTolerance;
         }
 
         public bool IsUnitVector()
@@ -556,18 +519,10 @@ namespace coppercli.Core.Util
             return IsPerpendicular(this, other);
         }
 
-        #endregion
-
-        #region Cartesian Vectors
-
         public static readonly Vector3 origin = new Vector3(0, 0, 0);
         public static readonly Vector3 xAxis = new Vector3(1, 0, 0);
         public static readonly Vector3 yAxis = new Vector3(0, 1, 0);
         public static readonly Vector3 zAxis = new Vector3(0, 0, 1);
-
-        #endregion
-
-        #region Messages
 
         private const string THREE_COMPONENTS = "Array must contain exactly three components, (x,y,z)";
         private const string NORMALIZE_0 = "Cannot normalize a vector when its magnitude is zero";
@@ -582,18 +537,14 @@ namespace coppercli.Core.Util
         private const string POSITIONAL_VECTOR = "Positional vector composing of ";
         private const string MAGNITUDE = " of magnitude ";
 
-        #endregion
-
-        #region Constants
-
-        public const double EqualityTolerence = double.Epsilon;
+        // Tolerance for floating-point equality comparison.
+        // Using 1e-9 (one billionth) rather than double.Epsilon (~5e-324) because
+        // double.Epsilon is too small for practical comparison - floating-point
+        // arithmetic errors routinely exceed it, making equality checks fail.
+        public const double EqualityTolerance = 1e-9;
         public static readonly Vector3 MinValue = new Vector3(double.MinValue, double.MinValue, double.MinValue);
         public static readonly Vector3 MaxValue = new Vector3(double.MaxValue, double.MaxValue, double.MaxValue);
         public static readonly Vector3 Epsilon = new Vector3(double.Epsilon, double.Epsilon, double.Epsilon);
-
-        #endregion
-
-        #region Additional Methods
 
         public Vector2 GetXY()
         {
@@ -640,7 +591,5 @@ namespace coppercli.Core.Util
                 Math.Min(v1.Z, v2.Z)
             );
         }
-
-        #endregion
     }
 }

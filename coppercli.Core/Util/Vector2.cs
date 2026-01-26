@@ -9,10 +9,8 @@ namespace coppercli.Core.Util
 
         public Vector2(double x, double y)
         {
-            this.x = 0;
-            this.y = 0;
-            X = x;
-            Y = y;
+            this.x = x;
+            this.y = y;
         }
 
         public double X
@@ -59,8 +57,8 @@ namespace coppercli.Core.Util
 
         public static bool operator ==(Vector2 v1, Vector2 v2)
         {
-            return Math.Abs(v1.X - v2.X) <= EqualityTolerence &&
-                   Math.Abs(v1.Y - v2.Y) <= EqualityTolerence;
+            return Math.Abs(v1.X - v2.X) <= EqualityTolerance &&
+                   Math.Abs(v1.Y - v2.Y) <= EqualityTolerance;
         }
 
         public static bool operator !=(Vector2 v1, Vector2 v2)
@@ -90,6 +88,10 @@ namespace coppercli.Core.Util
 
         public double Magnitude { get { return Math.Sqrt(X * X + Y * Y); } }
 
-        public const double EqualityTolerence = double.Epsilon;
+        // Tolerance for floating-point equality comparison.
+        // Using 1e-9 (one billionth) rather than double.Epsilon (~5e-324) because
+        // double.Epsilon is too small for practical comparison - floating-point
+        // arithmetic errors routinely exceed it, making equality checks fail.
+        public const double EqualityTolerance = 1e-9;
     }
 }

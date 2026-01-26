@@ -27,8 +27,8 @@ namespace coppercli
         public static ProbeGrid? ProbePoints { get; set; }
 
         // State flags
-        public static bool ProbePointsApplied { get; set; } = false;
-        public static bool WorkZeroSet { get; set; } = false;
+        public static bool AreProbePointsApplied { get; set; } = false;
+        public static bool IsWorkZeroSet { get; set; } = false;
         public static bool Probing { get; set; } = false;
         public static bool SuppressErrors { get; set; } = false;
         public static bool SingleProbing { get; set; } = false;

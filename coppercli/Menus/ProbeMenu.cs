@@ -43,11 +43,11 @@ namespace coppercli.Menus
                 if (probePoints != null)
                 {
                     AnsiConsole.WriteLine(probePoints.GetInfo());
-                    if (!AppState.ProbePointsApplied && currentFile != null)
+                    if (!AppState.AreProbePointsApplied && currentFile != null)
                     {
                         AnsiConsole.MarkupLine("[yellow]* Probe data not yet applied to G-Code[/]");
                     }
-                    else if (AppState.ProbePointsApplied)
+                    else if (AppState.AreProbePointsApplied)
                     {
                         AnsiConsole.MarkupLine("[green]Probe data applied to G-Code[/]");
                     }
@@ -66,14 +66,14 @@ namespace coppercli.Menus
                     AnsiConsole.MarkupLine("[dim]No G-Code file loaded (required for probing)[/]");
                 }
 
-                if (!AppState.WorkZeroSet)
+                if (!AppState.IsWorkZeroSet)
                 {
                     AnsiConsole.MarkupLine("[dim]Work zero not set (required for probing)[/]");
                 }
 
                 AnsiConsole.WriteLine();
 
-                bool canProbe = currentFile != null && AppState.WorkZeroSet && machine.Connected;
+                bool canProbe = currentFile != null && AppState.IsWorkZeroSet && machine.Connected;
 
                 var menu = BuildProbeMenu(hasIncomplete, hasComplete, canProbe);
                 var choice = MenuHelpers.ShowMenu("Probe options:", menu);
@@ -141,7 +141,7 @@ namespace coppercli.Menus
             var probePoints = AppState.ProbePoints;
             hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
 
-            if (hasComplete && AppState.CurrentFile != null && !AppState.ProbePointsApplied)
+            if (hasComplete && AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
             {
                 menu.Add(new MenuItem<ProbeAction>("Apply to G-Code", 'a', ProbeAction.ApplyToGCode));
             }
@@ -162,7 +162,7 @@ namespace coppercli.Menus
         private static void ClearProbeData()
         {
             AppState.ProbePoints = null;
-            AppState.ProbePointsApplied = false;
+            AppState.AreProbePointsApplied = false;
             Persistence.ClearProbeAutoSave();
             AnsiConsole.MarkupLine("[yellow]Probe data cleared[/]");
         }
@@ -178,7 +178,7 @@ namespace coppercli.Menus
             try
             {
                 AppState.ProbePoints = ProbeGrid.Load(path);
-                AppState.ProbePointsApplied = false;
+                AppState.AreProbePointsApplied = false;
                 AnsiConsole.MarkupLine($"[green]Probe data loaded[/]");
                 AnsiConsole.WriteLine(AppState.ProbePoints.GetInfo());
             }
@@ -211,7 +211,7 @@ namespace coppercli.Menus
             {
                 AppState.CurrentFile = currentFile.ApplyProbeGrid(probePoints);
                 machine.SetFile(AppState.CurrentFile.GetGCode());
-                AppState.ProbePointsApplied = true;
+                AppState.AreProbePointsApplied = true;
                 AnsiConsole.MarkupLine("[green]Probe data applied to G-Code![/]");
             }
             catch (Exception ex)
@@ -227,7 +227,7 @@ namespace coppercli.Menus
                 return;
             }
 
-            if (!AppState.WorkZeroSet)
+            if (!AppState.IsWorkZeroSet)
             {
                 MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
                 return;
@@ -250,7 +250,7 @@ namespace coppercli.Menus
                 {
                     AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
                     probePoints = AppState.ProbePoints;
-                    AppState.ProbePointsApplied = false;
+                    AppState.AreProbePointsApplied = false;
                 }
                 catch (Exception ex)
                 {
@@ -308,7 +308,7 @@ namespace coppercli.Menus
                 return;
             }
 
-            if (!AppState.WorkZeroSet)
+            if (!AppState.IsWorkZeroSet)
             {
                 MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
                 return;
@@ -383,7 +383,7 @@ namespace coppercli.Menus
             try
             {
                 AppState.ProbePoints = new ProbeGrid(gridSize, new Vector2(minX, minY), new Vector2(maxX, maxY));
-                AppState.ProbePointsApplied = false;
+                AppState.AreProbePointsApplied = false;
                 var hm = AppState.ProbePoints;
                 AnsiConsole.MarkupLine($"[green]Probe grid: {hm.SizeX}x{hm.SizeY} = {hm.TotalPoints} points[/]");
                 AnsiConsole.MarkupLine($"[dim]Bounds: X({minX:F2} to {maxX:F2}) Y({minY:F2} to {maxY:F2})[/]");
@@ -433,7 +433,7 @@ namespace coppercli.Menus
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{safeZ:F3}");
 
-            WaitForZHeight(safeZ);
+            StatusHelpers.WaitForZHeight(machine, safeZ);
 
             var corners = new[]
             {
@@ -457,7 +457,7 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine($"  Moving to {label} ({x:F1}, {y:F1})...");
                 machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traverseFeed.Value:F0}");
 
-                if (!WaitForMoveComplete(x, y))
+                if (!StatusHelpers.WaitForMoveComplete(machine, x, y, CheckEscape))
                 {
                     machine.FeedHold();
                     machine.SoftReset();
@@ -471,46 +471,8 @@ namespace coppercli.Menus
             return MenuHelpers.ConfirmOrQuit("Continue with probing?", true) ?? false;
         }
 
-        private static void WaitForZHeight(double targetZ)
-        {
-            var startTime = DateTime.Now;
-
-            while ((DateTime.Now - startTime).TotalMilliseconds < ZHeightWaitTimeoutMs)
-            {
-                double dz = Math.Abs(AppState.Machine.WorkPosition.Z - targetZ);
-                if (dz < PositionToleranceMm)
-                {
-                    return;
-                }
-                Thread.Sleep(StatusPollIntervalMs);
-            }
-        }
-
-        private static bool WaitForMoveComplete(double targetX, double targetY)
-        {
-            var startTime = DateTime.Now;
-
-            while ((DateTime.Now - startTime).TotalMilliseconds < MoveCompleteTimeoutMs)
-            {
-                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
-                {
-                    return false;
-                }
-
-                var pos = AppState.Machine.WorkPosition;
-                double dx = Math.Abs(pos.X - targetX);
-                double dy = Math.Abs(pos.Y - targetY);
-
-                if (dx < PositionToleranceMm && dy < PositionToleranceMm)
-                {
-                    return true;
-                }
-
-                Thread.Sleep(StatusPollIntervalMs);
-            }
-
-            return true;
-        }
+        private static bool CheckEscape() =>
+            Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape;
 
         private static void WaitForProbingComplete()
         {
@@ -551,8 +513,8 @@ namespace coppercli.Menus
                 unprobed.Add((p.Item1, p.Item2));
             }
 
-            int maxWidth = Math.Min((Console.WindowWidth - 5) / 2, 40);
-            int maxHeight = Math.Min(Console.WindowHeight - 10, 30);
+            int maxWidth = Math.Min((Console.WindowWidth - ProbeGridConsolePadding) / 2, ProbeGridMaxDisplayWidth);
+            int maxHeight = Math.Min(Console.WindowHeight - ProbeGridHeaderPadding, ProbeGridMaxDisplayHeight);
 
             int stepX = Math.Max(1, (probePoints.SizeX + maxWidth - 1) / maxWidth);
             int stepY = Math.Max(1, (probePoints.SizeY + maxHeight - 1) / maxHeight);
@@ -627,7 +589,7 @@ namespace coppercli.Menus
             }
             else
             {
-                defaultFilename = DateTime.Now.ToString("yyyy-MM-dd-HH-mm") + ".pgrid";
+                defaultFilename = DateTime.Now.ToString(ProbeDateFormat) + ".pgrid";
             }
 
             string defaultPath = !string.IsNullOrEmpty(session.LastBrowseDirectory)

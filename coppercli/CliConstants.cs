@@ -52,6 +52,17 @@ namespace coppercli
         public static readonly string[] ProbeGridExtensions = { ".pgrid" };
 
         // =========================================================================
+        // Unix serial port patterns for CNC devices
+        // =========================================================================
+        public static readonly string[] UnixSerialPortPatterns =
+            { "ttyUSB*", "ttyACM*", "tty.usbserial*", "cu.usbmodem*", "tty.usbmodem*" };
+
+        // =========================================================================
+        // Date/time formats
+        // =========================================================================
+        public const string ProbeDateFormat = "yyyy-MM-dd-HH-mm";
+
+        // =========================================================================
         // Probing defaults
         // =========================================================================
         public const double DefaultProbeMargin = 0.5;
@@ -99,7 +110,8 @@ namespace coppercli
         public const int MillMinLinesForEta = 10;
         public const double MillMinSecondsForEta = 1.0;
 
-        // Z threshold for marking cells as "visited"
+        // Z values below this threshold (relative to work zero) indicate the tool is cutting.
+        // Used to mark cells as "visited" in the milling progress grid display.
         public const double MillCuttingDepthThreshold = 0.1;
 
         // Minimum range for coordinate mapping
@@ -110,5 +122,12 @@ namespace coppercli
         public const string MillVisitedMarker = "░░";
         public const string MillEmptyMarker = "··";
 
+        // =========================================================================
+        // Probe matrix display sizing
+        // =========================================================================
+        public const int ProbeGridConsolePadding = 5;
+        public const int ProbeGridMaxDisplayWidth = 40;
+        public const int ProbeGridMaxDisplayHeight = 30;
+        public const int ProbeGridHeaderPadding = 10;
     }
 }

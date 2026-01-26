@@ -44,7 +44,7 @@ namespace coppercli.Menus
                 if (MenuHelpers.Confirm("Disconnect from machine?"))
                 {
                     machine.Disconnect();
-                    AppState.WorkZeroSet = false;
+                    AppState.IsWorkZeroSet = false;
                     AnsiConsole.MarkupLine("[yellow]Disconnected[/]");
                 }
             }
@@ -270,8 +270,7 @@ namespace coppercli.Menus
             {
                 if (Directory.Exists("/dev"))
                 {
-                    var patterns = new[] { "ttyUSB*", "ttyACM*", "tty.usbserial*", "cu.usbmodem*", "tty.usbmodem*" };
-                    foreach (var pattern in patterns)
+                    foreach (var pattern in UnixSerialPortPatterns)
                     {
                         try
                         {
@@ -303,7 +302,7 @@ namespace coppercli.Menus
                     return null;
                 }
                 machine.SoftReset();
-                return WaitForGrblResponse();
+                return StatusHelpers.WaitForGrblResponse(machine, GrblResponseTimeoutMs);
             });
 
             if (connectTask.Wait(timeoutMs))
@@ -343,21 +342,6 @@ namespace coppercli.Menus
                 return (ConnectionResult.Success, null);
             }
             return (ConnectionResult.PortNotOpened, null);
-        }
-
-        private static string? WaitForGrblResponse()
-        {
-            var machine = AppState.Machine;
-            var timeout = DateTime.Now.AddMilliseconds(GrblResponseTimeoutMs);
-            while (DateTime.Now < timeout)
-            {
-                if (machine.Connected && machine.Status != StatusDisconnected)
-                {
-                    return machine.Status;
-                }
-                Thread.Sleep(StatusPollIntervalMs);
-            }
-            return null;
         }
 
         private static void OfferToHome(string status)
@@ -400,7 +384,7 @@ namespace coppercli.Menus
                 AnsiConsole.Status()
                     .Start("Homing...", ctx =>
                     {
-                        WaitForIdle(HomingTimeoutMs);
+                        StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
                     });
 
                 if (machine.Status == StatusIdle)
@@ -413,21 +397,5 @@ namespace coppercli.Menus
                 }
             }
         }
-
-        private static void WaitForIdle(int timeoutMs)
-        {
-            var machine = AppState.Machine;
-            var startTime = DateTime.Now;
-
-            while ((DateTime.Now - startTime).TotalMilliseconds < timeoutMs)
-            {
-                if (machine.Status == StatusIdle)
-                {
-                    return;
-                }
-                Thread.Sleep(StatusPollIntervalMs);
-            }
-        }
-
     }
 }
