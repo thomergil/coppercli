@@ -2,9 +2,21 @@
 
 A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling via probe grids. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
-[![Download for Windows](https://img.shields.io/badge/Download-Windows%20Installer-blue?style=for-the-badge&logo=windows)](https://github.com/thomergil/coppercli/releases/latest)
-
 ![Milling in progress](doc/milling-screen.png)
+
+## Install
+
+[![Windows](https://img.shields.io/badge/Windows-Installer-blue?style=for-the-badge&logo=windows)](https://github.com/thomergil/coppercli/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-Homebrew-orange?style=for-the-badge&logo=apple)](https://github.com/thomergil/homebrew-coppercli)
+[![Linux](https://img.shields.io/badge/Linux-Download-yellow?style=for-the-badge&logo=linux)](https://github.com/thomergil/coppercli/releases/latest)
+
+| Platform | Install |
+|----------|---------|
+| **Windows** | Download and run installer from [Releases](https://github.com/thomergil/coppercli/releases/latest) |
+| **macOS** | `brew tap thomergil/coppercli && brew install coppercli` |
+| **Linux** | Download tarball from [Releases](https://github.com/thomergil/coppercli/releases/latest), extract, run `./coppercli` |
+
+Or [build from source](#build-from-source) on any platform.
 
 ## Screenshots
 
@@ -79,21 +91,10 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 - 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
 - Terminal resize detection with auto-redraw
 
-## Installation
+## Build from Source
 
-### Windows Installer (Recommended for Windows)
+Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
-Download the latest `coppercli-x.x.x-setup.exe` from the [Releases](https://github.com/thomergil/coppercli/releases) page. The installer:
-- Includes everything needed (no .NET installation required)
-- Creates Start Menu and optional Desktop shortcuts
-- Registers in Add/Remove Programs for clean uninstall
-
-### Build from Source
-
-#### Prerequisites
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-
-#### Run
 ```bash
 git clone git@github.com:thomergil/coppercli.git
 cd coppercli
@@ -101,19 +102,11 @@ cd coppercli
 # macOS/Linux
 ./run.sh
 
-# Windows (double-click run.bat or from command line)
+# Windows
 run.bat
 ```
 
-The run scripts auto-detect your dotnet installation (Homebrew, MacPorts, system packages, etc.) and provide installation instructions if dotnet is not found.
-
-#### Build Windows Installer
-
-To build the Windows installer yourself:
-
-1. Install [Inno Setup](https://jrsoftware.org/isinfo.php) (Windows only)
-2. Run `installer\build-installer.bat`
-3. Find the installer in `installer\output\`
+The run scripts auto-detect your dotnet installation and provide instructions if not found.
 
 ## Usage
 

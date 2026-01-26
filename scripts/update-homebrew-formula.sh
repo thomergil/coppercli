@@ -17,7 +17,8 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-FORMULA="$REPO_ROOT/homebrew-tap/Formula/coppercli.rb"
+HOMEBREW_TAP="$HOME/src/homebrew-coppercli"
+FORMULA="$HOMEBREW_TAP/Formula/coppercli.rb"
 
 if [[ ! -f "$FORMULA" ]]; then
     echo "ERROR: Formula not found at $FORMULA"
@@ -86,7 +87,7 @@ cat "$FORMULA"
 echo "================================"
 echo ""
 echo "Next steps:"
-echo "1. cd homebrew-tap"
+echo "1. cd ~/src/homebrew-coppercli"
 echo "2. git add Formula/coppercli.rb"
 echo "3. git commit -m 'Update to $VERSION'"
 echo "4. git push"
