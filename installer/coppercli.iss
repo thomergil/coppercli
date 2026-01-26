@@ -4,7 +4,7 @@
 #define MyAppName "coppercli"
 #define MyAppVersion "0.1.1"
 #define MyAppPublisher "coppercli"
-#define MyAppURL "https://github.com/yourusername/coppercli"
+#define MyAppURL "https://github.com/thomergil/coppercli"
 #define MyAppExeName "coppercli.exe"
 
 [Setup]
