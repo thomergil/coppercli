@@ -103,37 +103,20 @@ The run scripts auto-detect your dotnet installation (Homebrew, MacPorts, system
 run.bat         # Windows
 ```
 
-On first run, coppercli will show an experimental warning (can be silenced) and guide you through:
-
-1. **Connect** to your GRBL machine (serial or ethernet)
-2. **Load** a G-code file
-3. **Set work zero** using the Move menu (jog to your PCB corner, press 0)
-4. **Probe** the surface (creates a height map)
-5. **Apply** the probe data to the G-code
-6. **Run** the compensated G-code
-
-### Typical Workflow
-
-```
-1. Connect to machine
-2. Home if needed
-3. Load G-code file
-4. Jog to PCB corner, set work zero (0 key)
-5. Enter Probe menu
-6. Traverse outline to verify clearance
-7. Start probing
-8. Apply probe data to G-code
-9. Mill
-```
-
 ## Configuration
 
-Settings are stored in `settings.json` in the working directory:
+Two JSON files are stored in the working directory:
 
+**`settings.json`** - User preferences:
 - **Connection**: Serial port, baud rate, ethernet IP/port
 - **Jogging**: Feed rates and distances for normal/slow modes
 - **Probing**: Safe height, max depth, feed rate, grid size
 - **Outline traversal**: Height and feed rate for boundary check
+
+**`session.json`** - Session state (auto-managed):
+- Last loaded G-code file path
+- Last file browser directory
+- Interrupted probe session data for recovery
 
 ## File Formats
 
