@@ -111,3 +111,63 @@ dotnet build coppercli/coppercli.csproj
 dotnet run --project coppercli/coppercli.csproj
 dotnet build coppercli/coppercli.csproj -warnaserror  # treat warnings as errors
 ```
+
+## Releases
+
+### Creating a Release
+
+Releases are automated via GitHub Actions. When you push a tag, GitHub builds for all platforms and creates a release:
+
+```bash
+git tag v0.1.2
+git push origin v0.1.2
+```
+
+This automatically:
+- Builds Windows x64 (portable exe)
+- Builds Windows installer (via Inno Setup)
+- Builds macOS ARM64 and x64
+- Builds Linux x64
+- Creates a GitHub Release with all artifacts
+
+### Windows Installer
+
+The Windows installer is built with [Inno Setup](https://jrsoftware.org/isinfo.php). Configuration is in `installer/coppercli.iss`.
+
+To build locally on Windows:
+```bash
+installer\build-installer.bat
+```
+
+The icon (`installer/coppercli.ico`) was generated from a JPG using ImageMagick:
+```bash
+magick input.jpg -define icon:auto-resize=256,128,64,48,32,16 coppercli.ico
+```
+
+### Homebrew Tap
+
+The Homebrew tap is a separate repo: `github.com/thomergil/homebrew-coppercli` (cloned at `~/src/homebrew-coppercli`).
+
+After creating a GitHub release, update the formula:
+```bash
+./scripts/update-homebrew-formula.sh v0.1.2
+cd ~/src/homebrew-coppercli
+git add Formula/coppercli.rb
+git commit -m "Update to v0.1.2"
+git push
+```
+
+Users install with:
+```bash
+brew tap thomergil/coppercli
+brew install coppercli
+```
+
+### Version Number
+
+The version is defined in `coppercli/CliConstants.cs`:
+```csharp
+public const string AppVersion = "v0.1.1";
+```
+
+Update this before creating a new release tag.

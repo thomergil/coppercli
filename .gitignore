@@ -313,6 +313,10 @@ session.json
 # Probe grid data files
 *.pgrid
 
-# Installer build outputs
+# Installer and release build outputs
 installer/publish/
 installer/output/
+release/
+
+# Homebrew tap is a separate repo
+homebrew-tap/

@@ -1,0 +1,155 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact: coppercli-windows-x64.exe
+            installer: true
+          - os: macos-latest
+            rid: osx-arm64
+            artifact: coppercli-macos-arm64.tar.gz
+          - os: macos-13
+            rid: osx-x64
+            artifact: coppercli-macos-x64.tar.gz
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact: coppercli-linux-x64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Get version from tag
+        id: version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Publish
+        run: |
+          dotnet publish coppercli/coppercli.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -o publish
+
+      - name: Create tarball (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd publish
+          tar -czf ../coppercli-${{ steps.version.outputs.VERSION }}-${{ matrix.rid }}.tar.gz coppercli
+
+      - name: Rename executable (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mv publish/coppercli.exe coppercli-${{ steps.version.outputs.VERSION }}-windows-x64.exe
+
+      - name: Build Windows Installer
+        if: matrix.installer
+        shell: pwsh
+        run: |
+          # Download and install Inno Setup
+          $innoUrl = "https://jrsoftware.org/download.php/is.exe"
+          Invoke-WebRequest -Uri $innoUrl -OutFile is-setup.exe
+          Start-Process -Wait -FilePath .\is-setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
+
+          # Copy published files to installer directory
+          Copy-Item -Path publish\* -Destination installer\publish\ -Recurse -Force
+
+          # Build installer
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\coppercli.iss
+
+          # Rename with version
+          Move-Item installer\output\coppercli-*-setup.exe coppercli-${{ steps.version.outputs.VERSION }}-setup.exe
+
+      - name: Upload artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.rid }}
+          path: coppercli-*.tar.gz
+
+      - name: Upload artifact (Windows exe)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.rid }}
+          path: coppercli-*-windows-x64.exe
+
+      - name: Upload artifact (Windows installer)
+        if: matrix.installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: coppercli-*-setup.exe
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release files
+        run: |
+          mkdir release
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.exe" \) -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+          body: |
+            ## Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Windows Installer | `coppercli-${{ steps.version.outputs.VERSION }}-setup.exe` |
+            | Windows (portable) | `coppercli-${{ steps.version.outputs.VERSION }}-windows-x64.exe` |
+            | macOS Apple Silicon | `coppercli-${{ steps.version.outputs.VERSION }}-macos-arm64.tar.gz` |
+            | macOS Intel | `coppercli-${{ steps.version.outputs.VERSION }}-macos-x64.tar.gz` |
+            | Linux x64 | `coppercli-${{ steps.version.outputs.VERSION }}-linux-x64.tar.gz` |
+
+            ## Installation
+
+            **Windows:** Download and run the installer, or use the portable exe.
+
+            **macOS/Linux:**
+            ```bash
+            tar -xzf coppercli-${{ steps.version.outputs.VERSION }}-<platform>.tar.gz
+            ./coppercli
+            ```
+
+            Or build from source with `./run.sh` (requires .NET 8 SDK).
