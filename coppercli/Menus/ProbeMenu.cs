@@ -84,17 +84,26 @@ namespace coppercli.Menus
                 switch (choice.Option)
                 {
                     case ProbeAction.ContinueProbing:
-                        ContinueProbing();
+                        if (ContinueProbing())
+                        {
+                            return; // Milling completed, return to main menu
+                        }
                         break;
                     case ProbeAction.ClearProbeData:
                         ClearProbeData();
                         break;
                     case ProbeAction.ClearAndStartProbing:
                         ClearProbeData();
-                        StartProbing();
+                        if (StartProbing())
+                        {
+                            return; // Milling completed, return to main menu
+                        }
                         break;
                     case ProbeAction.StartProbing:
-                        StartProbing();
+                        if (StartProbing())
+                        {
+                            return; // Milling completed, return to main menu
+                        }
                         break;
                     case ProbeAction.LoadFromFile:
                         LoadProbeGrid();
@@ -216,17 +225,21 @@ namespace coppercli.Menus
             }
         }
 
-        internal static void ContinueProbing()
+        /// <summary>
+        /// Continues an interrupted probing session.
+        /// </summary>
+        /// <returns>True if milling was performed (caller should exit to main menu).</returns>
+        internal static bool ContinueProbing()
         {
             if (!MenuHelpers.RequireConnection())
             {
-                return;
+                return false;
             }
 
             if (!AppState.IsWorkZeroSet)
             {
                 MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
-                return;
+                return false;
             }
 
             var session = AppState.Session;
@@ -239,7 +252,7 @@ namespace coppercli.Menus
                 if (string.IsNullOrEmpty(session.ProbeAutoSavePath) || !File.Exists(session.ProbeAutoSavePath))
                 {
                     MenuHelpers.ShowError("No incomplete probe data found.");
-                    return;
+                    return false;
                 }
 
                 try
@@ -251,7 +264,7 @@ namespace coppercli.Menus
                 catch (Exception ex)
                 {
                     MenuHelpers.ShowError($"Error loading probe data: {ex.Message}");
-                    return;
+                    return false;
                 }
             }
 
@@ -259,7 +272,7 @@ namespace coppercli.Menus
             {
                 AnsiConsole.MarkupLine("[yellow]Probe data is already complete.[/]");
                 Console.ReadKey();
-                return;
+                return false;
             }
 
             AnsiConsole.MarkupLine($"[green]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
@@ -287,16 +300,21 @@ namespace coppercli.Menus
                 if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
                 {
                     ApplyProbeGrid();
-                    OfferToMill();
+                    return OfferToMill();
                 }
             }
+            return false;
         }
 
-        private static void StartProbing()
+        /// <summary>
+        /// Starts a new probing session.
+        /// </summary>
+        /// <returns>True if milling was performed (caller should exit to main menu).</returns>
+        private static bool StartProbing()
         {
             if (!MenuHelpers.RequireConnection())
             {
-                return;
+                return false;
             }
 
             var currentFile = AppState.CurrentFile;
@@ -304,30 +322,30 @@ namespace coppercli.Menus
             if (currentFile == null)
             {
                 MenuHelpers.ShowError("No G-Code file loaded. Load a file first.");
-                return;
+                return false;
             }
 
             if (!AppState.IsWorkZeroSet)
             {
                 MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
-                return;
+                return false;
             }
 
             var margin = MenuHelpers.AskDoubleOrQuit("Probe margin (mm)", DefaultProbeMargin);
             if (margin == null)
             {
-                return;
+                return false;
             }
 
             var gridSize = MenuHelpers.AskDoubleOrQuit("Grid size (mm)", DefaultProbeGridSize);
             if (gridSize == null)
             {
-                return;
+                return false;
             }
 
             if (!CreateProbeGrid(margin.Value, gridSize.Value))
             {
-                return;
+                return false;
             }
 
             var machine = AppState.Machine;
@@ -336,13 +354,13 @@ namespace coppercli.Menus
             var traverseChoice = MenuHelpers.ConfirmOrQuit("Traverse outline first?", true);
             if (traverseChoice == null)
             {
-                return;
+                return false;
             }
             if (traverseChoice == true)
             {
                 if (!TraverseProbeOutline())
                 {
-                    return;
+                    return false;
                 }
             }
 
@@ -369,9 +387,10 @@ namespace coppercli.Menus
                 if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
                 {
                     ApplyProbeGrid();
-                    OfferToMill();
+                    return OfferToMill();
                 }
             }
+            return false;
         }
 
         private static bool CreateProbeGrid(double margin, double gridSize)
@@ -714,7 +733,11 @@ namespace coppercli.Menus
 
         }
 
-        private static void OfferToMill()
+        /// <summary>
+        /// Offers to start milling if conditions are met.
+        /// </summary>
+        /// <returns>True if milling was performed.</returns>
+        private static bool OfferToMill()
         {
             var currentFile = AppState.CurrentFile;
             if (currentFile != null && currentFile.ContainsMotion && AppState.AreProbePointsApplied)
@@ -722,8 +745,10 @@ namespace coppercli.Menus
                 if (MenuHelpers.ConfirmOrQuit("Proceed to Milling?", true) == true)
                 {
                     MillMenu.Show();
+                    return true;
                 }
             }
+            return false;
         }
 
         private static void ProbeNextPoint()

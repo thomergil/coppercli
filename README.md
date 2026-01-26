@@ -2,7 +2,9 @@
 
 A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling via probe grids. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
-![Milling in progress](doc/milling-screen.png)
+| Probing | Milling |
+|:-------:|:-------:|
+| ![Probing](doc/probing.png) | ![Milling](doc/milling-screen.png) |
 
 ## Install
 
@@ -25,9 +27,9 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 |-----------|--------------|----------|-------------|
 | <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> |
 
-| Probing | Milling | Settings | Milled PCB |
-|---------|---------|----------|------------|
-| <img src="doc/probing-screenshot.png" width="200"> | <img src="doc/milling-screen.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
+| Probing                                 | Milling                                        | Settings                                      | Milled PCB                                 |
+| --------------------------------------- | ---------------------------------------------- | --------------------------------------------- | ------------------------------------------ |
+| <img src="doc/probing.png" width="200"> | <img src="doc/milling-screen.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
 
 ## Background
 

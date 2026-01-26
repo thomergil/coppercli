@@ -194,6 +194,8 @@ namespace coppercli.Menus
                         AppState.ProbePoints = null;
                         AppState.AreProbePointsApplied = false;
                         Persistence.ClearProbeAutoSave();
+                        AppState.Session.LastSavedProbeFile = "";
+                        Persistence.SaveSession();
                         AnsiConsole.MarkupLine("[green]Probe data cleared[/]");
                         Thread.Sleep(ConfirmationDisplayMs);
                     }
