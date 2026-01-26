@@ -79,10 +79,19 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 
 ## Installation
 
-### Prerequisites
+### Windows Installer (Recommended for Windows)
+
+Download the latest `coppercli-x.x.x-setup.exe` from the [Releases](https://github.com/thomergil/coppercli/releases) page. The installer:
+- Includes everything needed (no .NET installation required)
+- Creates Start Menu and optional Desktop shortcuts
+- Registers in Add/Remove Programs for clean uninstall
+
+### Build from Source
+
+#### Prerequisites
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-### Build and Run
+#### Run
 ```bash
 git clone git@github.com:thomergil/coppercli.git
 cd coppercli
@@ -95,6 +104,14 @@ run.bat
 ```
 
 The run scripts auto-detect your dotnet installation (Homebrew, MacPorts, system packages, etc.) and provide installation instructions if dotnet is not found.
+
+#### Build Windows Installer
+
+To build the Windows installer yourself:
+
+1. Install [Inno Setup](https://jrsoftware.org/isinfo.php) (Windows only)
+2. Run `installer\build-installer.bat`
+3. Find the installer in `installer\output\`
 
 ## Usage
 

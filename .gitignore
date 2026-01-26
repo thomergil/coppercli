@@ -312,3 +312,7 @@ session.json
 
 # Probe grid data files
 *.pgrid
+
+# Installer build outputs
+installer/publish/
+installer/output/
