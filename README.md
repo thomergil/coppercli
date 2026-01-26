@@ -16,7 +16,7 @@ A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring a
 
 ## Background
 
-This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by martin2250, which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing, height map interpolation, and GRBL communication.
+This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing, height map interpolation, and GRBL communication.
 
 However, OpenCNCPilot has some limitations:
 
@@ -151,6 +151,6 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Acknowledgments
 
-- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by martin2250 - the foundation this project is built on
+- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250) - the foundation this project is built on
 - [Spectre.Console](https://spectreconsole.net/) - beautiful console UI library
 - [Claude Code](https://claude.ai/claude-code) - AI pair programming assistant
