@@ -6,13 +6,13 @@ A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring a
 
 ## Screenshots
 
-| Main Menu | Move/Jog | Probe Menu | Milling |
-|-----------|----------|------------|---------|
-| <img src="doc/main-menu.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> | <img src="doc/milling-screen.png" width="200"> |
+| Main Menu | File Browser | Move/Jog | Probe Setup |
+|-----------|--------------|----------|-------------|
+| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> |
 
-| Probing in Progress | File Browser | Settings | Milled PCB |
-|---------------------|--------------|----------|------------|
-| <img src="doc/probing-screenshot.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
+| Probing | Milling | Settings | Milled PCB |
+|---------|---------|----------|------------|
+| <img src="doc/probing-screenshot.png" width="200"> | <img src="doc/milling-screen.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
 
 ## Background
 
@@ -140,5 +140,5 @@ MIT License - see [LICENSE](LICENSE)
 ## Acknowledgments
 
 - [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250) - the foundation this project is built on
-- [Spectre.Console](https://spectreconsole.net/) - beautiful console UI library
+- [Spectre.Console](https://spectreconsole.net/) - console UI library
 - [Claude Code](https://claude.ai/claude-code) - AI pair programming assistant
