@@ -105,7 +105,7 @@ run.bat         # Windows
 
 ## Configuration
 
-Two JSON files are stored in the working directory:
+Two JSON files are stored in the working directory (both managed by coppercli):
 
 **`settings.json`** - User preferences:
 - **Connection**: Serial port, baud rate, ethernet IP/port
