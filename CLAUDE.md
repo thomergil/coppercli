@@ -2,6 +2,9 @@
 
 ## Code Style Principles
 
+### Simplicity First
+Always pursue simplicity. If code is getting complex, twisted, or gnarly, stop and rethink the approach. Simple code is easier to understand, debug, and maintain. If you find yourself adding multiple flags, nested conditions, or complex state tracking, step back and find a cleaner solution.
+
 ### Always Use Braces
 Always use `{ }` for control statements, even for single-line bodies. This improves readability and prevents bugs when adding lines later.
 
@@ -17,24 +20,32 @@ if (condition)
 }
 ```
 
-### No Magic Numbers
-All numeric and string literals that have semantic meaning should be defined as constants. This includes:
+### No Magic Numbers or Strings - EVER
+**NEVER use literal numbers or strings that have semantic meaning.** Always define constants. No exceptions. This includes:
 - Timeout values
 - Speed/feed rates
 - UI strings and menu options
 - Buffer sizes
 - Retry counts
+- Status strings (e.g., "Idle", "Home", "Run")
+- Protocol values
+
+If a constant doesn't exist, CREATE ONE before using the value.
 
 ```csharp
-// Bad
+// BAD - NEVER do this
 Thread.Sleep(500);
 if (baud == 115200) ...
+if (status == "Home") ...
+if (status.StartsWith("Alarm")) ...
 
-// Good
+// GOOD - always use constants
 const int ConnectionDelayMs = 500;
 const int DefaultBaudRate = 115200;
 Thread.Sleep(ConnectionDelayMs);
 if (baud == DefaultBaudRate) ...
+if (status == StatusHome) ...
+if (status.StartsWith(StatusAlarm)) ...
 ```
 
 ### DRY (Don't Repeat Yourself)
@@ -86,7 +97,7 @@ static readonly (string Label, char Mnemonic, Action Handler)[] MainMenuItems = 
 
 ## Git
 
-**IMPORTANT:** Never run git commands (add, commit, push, etc.) unless the user explicitly asks. Never on your own.
+**IMPORTANT:** NEVER run git commands (add, commit, push, etc.) unless the user EXPLICITLY asks. Do not volunteer git commands. Do not stage files automatically after editing. Do not commit. Do not push. Wait for explicit instructions.
 
 ## Building
 

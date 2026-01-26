@@ -15,8 +15,9 @@ A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring a
 | **Windows** | Download and run installer from [Releases](https://github.com/thomergil/coppercli/releases/latest) |
 | **macOS** | `brew tap thomergil/coppercli && brew install coppercli` |
 | **Linux** | Download tarball from [Releases](https://github.com/thomergil/coppercli/releases/latest), extract, run `./coppercli` |
+| **From source** | Clone repo, then `./run.sh` (macOS/Linux) or `run.bat` (Windows) |
 
-Or [build from source](#build-from-source) on any platform.
+Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for running from source.
 
 ## Screenshots
 
@@ -90,23 +91,6 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 - Run with real-time progress display
 - 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
 - Terminal resize detection with auto-redraw
-
-## Build from Source
-
-Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
-
-```bash
-git clone git@github.com:thomergil/coppercli.git
-cd coppercli
-
-# macOS/Linux
-./run.sh
-
-# Windows
-run.bat
-```
-
-The run scripts auto-detect your dotnet installation and provide instructions if not found.
 
 ## Usage
 

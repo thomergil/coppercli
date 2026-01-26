@@ -34,6 +34,7 @@ namespace coppercli.Core.Util
         // =========================================================================
         public const string StatusIdle = "Idle";
         public const string StatusRun = "Run";
+        public const string StatusHome = "Home";
         public const string StatusHold = "Hold";
         public const string StatusAlarm = "Alarm";
         public const string StatusDoor = "Door";
