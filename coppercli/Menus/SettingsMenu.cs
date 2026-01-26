@@ -1,0 +1,103 @@
+// Extracted from Program.cs
+
+using Spectre.Console;
+using coppercli.Helpers;
+
+namespace coppercli.Menus
+{
+    /// <summary>
+    /// Settings menu for editing configuration values.
+    /// </summary>
+    internal static class SettingsMenu
+    {
+        private enum SettingAction
+        {
+            JogFeed, JogDistance, JogFeedSlow, JogDistanceSlow,
+            ProbeFeed, ProbeMaxDepth, ProbeSafeHeight,
+            OutlineTraverseHeight, OutlineTraverseFeed,
+            Save, Back
+        }
+
+        private static readonly MenuDef<SettingAction> SettingsMenuDef = new(
+            new MenuItem<SettingAction>("Jog Feed", 'f', SettingAction.JogFeed),
+            new MenuItem<SettingAction>("Jog Distance", 'd', SettingAction.JogDistance),
+            new MenuItem<SettingAction>("Jog Feed Slow", 'g', SettingAction.JogFeedSlow),
+            new MenuItem<SettingAction>("Jog Distance Slow", 'e', SettingAction.JogDistanceSlow),
+            new MenuItem<SettingAction>("Probe Feed", 'p', SettingAction.ProbeFeed),
+            new MenuItem<SettingAction>("Probe Max Depth", 'm', SettingAction.ProbeMaxDepth),
+            new MenuItem<SettingAction>("Probe Safe Height", 'h', SettingAction.ProbeSafeHeight),
+            new MenuItem<SettingAction>("Outline Traverse Height", 't', SettingAction.OutlineTraverseHeight),
+            new MenuItem<SettingAction>("Outline Traverse Feed", 'o', SettingAction.OutlineTraverseFeed),
+            new MenuItem<SettingAction>("Save Settings", 's', SettingAction.Save),
+            new MenuItem<SettingAction>("Back", 'q', SettingAction.Back)
+        );
+
+        public static void Show(Action saveSettings)
+        {
+            var settings = AppState.Settings;
+
+            while (true)
+            {
+                Console.Clear();
+                AnsiConsole.Write(new Rule("[bold blue]Settings[/]").RuleStyle("blue"));
+
+                var table = new Table();
+                table.AddColumn("Setting");
+                table.AddColumn("Value");
+
+                table.AddRow("Serial Port", settings.SerialPortName);
+                table.AddRow("Baud Rate", settings.SerialPortBaud.ToString());
+                table.AddRow("Jog Feed", settings.JogFeed.ToString());
+                table.AddRow("Jog Distance", settings.JogDistance.ToString());
+                table.AddRow("Probe Feed", settings.ProbeFeed.ToString());
+                table.AddRow("Probe Max Depth", settings.ProbeMaxDepth.ToString());
+                table.AddRow("Probe Safe Height", settings.ProbeSafeHeight.ToString());
+                table.AddRow("Outline Traverse Height", settings.OutlineTraverseHeight.ToString());
+                table.AddRow("Outline Traverse Feed", settings.OutlineTraverseFeed.ToString());
+
+                AnsiConsole.Write(table);
+                AnsiConsole.WriteLine();
+
+                var choice = MenuHelpers.ShowMenu("Edit setting:", SettingsMenuDef);
+
+                switch (choice.Option)
+                {
+                    case SettingAction.JogFeed:
+                        settings.JogFeed = AnsiConsole.Ask("Jog Feed:", settings.JogFeed);
+                        break;
+                    case SettingAction.JogDistance:
+                        settings.JogDistance = AnsiConsole.Ask("Jog Distance:", settings.JogDistance);
+                        break;
+                    case SettingAction.JogFeedSlow:
+                        settings.JogFeedSlow = AnsiConsole.Ask("Jog Feed (Slow):", settings.JogFeedSlow);
+                        break;
+                    case SettingAction.JogDistanceSlow:
+                        settings.JogDistanceSlow = AnsiConsole.Ask("Jog Distance (Slow):", settings.JogDistanceSlow);
+                        break;
+                    case SettingAction.ProbeFeed:
+                        settings.ProbeFeed = AnsiConsole.Ask("Probe Feed:", settings.ProbeFeed);
+                        break;
+                    case SettingAction.ProbeMaxDepth:
+                        settings.ProbeMaxDepth = AnsiConsole.Ask("Probe Max Depth:", settings.ProbeMaxDepth);
+                        break;
+                    case SettingAction.ProbeSafeHeight:
+                        settings.ProbeSafeHeight = AnsiConsole.Ask("Probe Safe Height:", settings.ProbeSafeHeight);
+                        break;
+                    case SettingAction.OutlineTraverseHeight:
+                        settings.OutlineTraverseHeight = AnsiConsole.Ask("Outline Traverse Height:", settings.OutlineTraverseHeight);
+                        break;
+                    case SettingAction.OutlineTraverseFeed:
+                        settings.OutlineTraverseFeed = AnsiConsole.Ask("Outline Traverse Feed (mm/min):", settings.OutlineTraverseFeed);
+                        break;
+                    case SettingAction.Save:
+                        saveSettings();
+                        AnsiConsole.MarkupLine("[green]Settings saved[/]");
+                        Thread.Sleep(500);
+                        break;
+                    case SettingAction.Back:
+                        return;
+                }
+            }
+        }
+    }
+}

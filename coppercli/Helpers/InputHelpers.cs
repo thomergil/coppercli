@@ -1,0 +1,86 @@
+// Extracted from Program.cs - Input helper methods
+
+using Spectre.Console;
+
+namespace coppercli.Helpers
+{
+    /// <summary>
+    /// Helper methods for user input and keyboard handling.
+    /// </summary>
+    internal static class InputHelpers
+    {
+        public const string InvalidNumberMessage = "[red]Invalid number, using default[/]";
+
+        /// <summary>
+        /// Flushes any buffered keyboard input to prevent keypresses from bleeding into subsequent prompts.
+        /// </summary>
+        public static void FlushKeyboard()
+        {
+            while (Console.KeyAvailable)
+            {
+                Console.ReadKey(true);
+            }
+        }
+
+        /// <summary>
+        /// Checks if a key press matches a given ConsoleKey or character.
+        /// Handles cross-platform compatibility where key.Key or key.KeyChar may work differently.
+        /// </summary>
+        public static bool IsKey(ConsoleKeyInfo key, ConsoleKey consoleKey, char c)
+        {
+            return key.Key == consoleKey || char.ToLower(key.KeyChar) == char.ToLower(c);
+        }
+
+        /// <summary>
+        /// Checks if a key press is Escape.
+        /// </summary>
+        public static bool IsEscapeKey(ConsoleKeyInfo key)
+        {
+            return key.Key == ConsoleKey.Escape;
+        }
+
+        /// <summary>
+        /// Checks if a key press is Enter.
+        /// </summary>
+        public static bool IsEnterKey(ConsoleKeyInfo key)
+        {
+            return key.Key == ConsoleKey.Enter;
+        }
+
+        /// <summary>
+        /// Checks if a key press is Backspace.
+        /// </summary>
+        public static bool IsBackspaceKey(ConsoleKeyInfo key)
+        {
+            return key.Key == ConsoleKey.Backspace;
+        }
+
+        /// <summary>
+        /// Checks if a key press is an exit key (Escape or Q).
+        /// </summary>
+        public static bool IsExitKey(ConsoleKeyInfo key)
+        {
+            return IsEscapeKey(key) || IsKey(key, ConsoleKey.Q, 'q');
+        }
+
+        /// <summary>
+        /// Returns the menu key character for a given index.
+        /// 0-9 use digits '1'-'9' then '0', indices 10+ use 'A', 'B', 'C'...
+        /// </summary>
+        public static char GetMenuKey(int index)
+        {
+            if (index < 9)
+            {
+                return (char)('1' + index);
+            }
+            else if (index == 9)
+            {
+                return '0';
+            }
+            else
+            {
+                return (char)('A' + index - 10);
+            }
+        }
+    }
+}

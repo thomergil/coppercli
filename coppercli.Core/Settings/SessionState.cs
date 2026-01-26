@@ -15,5 +15,11 @@ namespace coppercli.Core.Settings
 
         // Last saved complete probe file
         public string LastSavedProbeFile { get; set; } = "";
+
+        // Work zero position (stored when user sets X0 Y0 Z0)
+        public double WorkZeroX { get; set; }
+        public double WorkZeroY { get; set; }
+        public double WorkZeroZ { get; set; }
+        public bool HasStoredWorkZero { get; set; } = false;
     }
 }

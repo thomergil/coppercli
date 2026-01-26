@@ -2,6 +2,8 @@ using coppercli.Core.GCode;
 using coppercli.Core.GCode.GCodeCommands;
 using coppercli.Core.Settings;
 using coppercli.Core.Util;
+using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Core.GCode.GCodeNumbers;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -250,8 +252,8 @@ namespace coppercli.Core.Communication
 
                 bool SendMacroStatusReceived = false;
 
-                writer.Write("\n$G\n");
-                writer.Write("\n$#\n");
+                writer.Write($"\n{CmdViewGCodeState}\n");
+                writer.Write($"\n{CmdViewParameters}\n");
                 writer.Flush();
 
                 while (true)
@@ -305,7 +307,7 @@ namespace coppercli.Core.Communication
                         {
                             switch (Status)
                             {
-                                case "Idle":
+                                case StatusIdle:
                                     if (BufferState == 0 && SendMacroStatusReceived)
                                     {
                                         SendMacroStatusReceived = false;
@@ -340,8 +342,8 @@ namespace coppercli.Core.Communication
                                         }
                                     }
                                     break;
-                                case "Run":
-                                case "Hold":
+                                case StatusRun:
+                                case StatusHold:
                                     break;
                                 default:
                                     ToSendMacro.Clear();
@@ -373,7 +375,7 @@ namespace coppercli.Core.Communication
 
                         if ((Now - LastStatusPoll).TotalMilliseconds > StatusPollInterval)
                         {
-                            writer.Write('?');
+                            writer.Write(StatusQuery);
                             writer.Flush();
                             LastStatusPoll = Now;
                         }
@@ -399,7 +401,7 @@ namespace coppercli.Core.Communication
 
                     RecordLog("< " + line);
 
-                    if (line == "ok")
+                    if (line == ResponseOk)
                     {
                         if (Sent.Count != 0)
                         {
@@ -414,7 +416,7 @@ namespace coppercli.Core.Communication
                     }
                     else
                     {
-                        if (line.StartsWith("error:"))
+                        if (line.StartsWith(ResponseErrorPrefix))
                         {
                             if (Sent.Count != 0)
                             {
@@ -438,7 +440,7 @@ namespace coppercli.Core.Communication
                             RaiseEvent(ParseStatus, line);
                             SendMacroStatusReceived = true;
                         }
-                        else if (line.StartsWith("[PRB:"))
+                        else if (line.StartsWith(ResponseProbePrefix))
                         {
                             RaiseEvent(ParseProbe, line);
                             RaiseEvent(LineReceived, line);
@@ -448,14 +450,14 @@ namespace coppercli.Core.Communication
                             RaiseEvent(UpdateStatus, line);
                             RaiseEvent(LineReceived, line);
                         }
-                        else if (line.StartsWith("ALARM"))
+                        else if (line.StartsWith(ResponseAlarmPrefix))
                         {
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
                             ToSend.Clear();
                             ToSendMacro.Clear();
                         }
-                        else if (line.StartsWith("grbl"))
+                        else if (line.StartsWith(ResponseGrblPrefix))
                         {
                             RaiseEvent(LineReceived, line);
                             RaiseEvent(ParseStartup, line);
@@ -661,7 +663,7 @@ namespace coppercli.Core.Communication
             ToSendPriority.Clear();
             Sent.Clear();
             ToSendMacro.Clear();
-            ToSendPriority.Enqueue((char)0x18);
+            ToSendPriority.Enqueue(GrblProtocol.SoftReset);
 
             BufferState = 0;
 
@@ -671,8 +673,8 @@ namespace coppercli.Core.Communication
 
             OverrideChanged?.Invoke();
 
-            SendLine("$G");
-            SendLine("$#");
+            SendLine(CmdViewGCodeState);
+            SendLine(CmdViewParameters);
         }
 
         public void SendMacroLines(params string[] lines)
@@ -708,7 +710,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            ToSendPriority.Enqueue('!');
+            ToSendPriority.Enqueue(GrblProtocol.FeedHold);
         }
 
         public void CycleStart()
@@ -719,7 +721,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            ToSendPriority.Enqueue('~');
+            ToSendPriority.Enqueue(GrblProtocol.CycleStart);
         }
 
         public void JogCancel()
@@ -730,7 +732,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            ToSendPriority.Enqueue((char)0x85);
+            ToSendPriority.Enqueue(GrblProtocol.JogCancel);
         }
 
         public void Jog(char axis, double distance, double feed)
@@ -741,7 +743,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            string cmd = string.Format(Constants.DecimalOutputFormat, "$J=G91F{0:0.#}{1}{2:0.###}", feed, axis, distance);
+            string cmd = string.Format(Constants.DecimalOutputFormat, JogPrefix + "G91F{0:0.#}{1}{2:0.###}", feed, axis, distance);
             SendLine(cmd);
         }
 
@@ -767,7 +769,7 @@ namespace coppercli.Core.Communication
 
                         if (int.TryParse(m.Groups[2].Value, out code))
                         {
-                            if (code == 0 || code == 1 || code == 2 || code == 30 || code == 6)
+                            if (IsPauseMCode(code))
                                 pauselines[line] = true;
                         }
                     }
@@ -899,7 +901,7 @@ namespace coppercli.Core.Communication
             if (line.Contains("$J="))
                 return;
 
-            if (line.StartsWith("[TLO:"))
+            if (line.StartsWith(ResponseTloPrefix))
             {
                 try
                 {
@@ -922,27 +924,27 @@ namespace coppercli.Core.Communication
 
                     double code = double.Parse(m.Groups[2].Value, Constants.DecimalParseFormat);
 
-                    if (code == 17)
+                    if (code == PlaneXY)
                         Plane = ArcPlane.XY;
-                    if (code == 18)
+                    if (code == PlaneYZ)
                         Plane = ArcPlane.YZ;
-                    if (code == 19)
+                    if (code == PlaneZX)
                         Plane = ArcPlane.ZX;
 
-                    if (code == 20)
+                    if (code == UnitsInches)
                         Unit = ParseUnit.Imperial;
-                    if (code == 21)
+                    if (code == UnitsMillimeters)
                         Unit = ParseUnit.Metric;
 
-                    if (code == 90)
+                    if (code == DistanceAbsolute)
                         DistanceMode = ParseDistanceMode.Absolute;
-                    if (code == 91)
+                    if (code == DistanceIncremental)
                         DistanceMode = ParseDistanceMode.Incremental;
 
-                    if (code == 49)
+                    if (code == ToolLengthOffsetCancel)
                         CurrentTLO = 0;
 
-                    if (code == 43.1)
+                    if (code == ToolLengthOffsetDynamic)
                     {
                         if (mc.Count > (i + 1))
                         {
@@ -967,7 +969,7 @@ namespace coppercli.Core.Communication
 
             if (statusMatch.Count == 0)
             {
-                NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line));
+                ReportBadStatus(line);
                 return;
             }
 
@@ -984,7 +986,7 @@ namespace coppercli.Core.Communication
                     continue;
                 }
 
-                if (m.Groups[1].Value == "Ov")
+                if (m.Groups[1].Value == FieldOverride)
                 {
                     try
                     {
@@ -996,7 +998,7 @@ namespace coppercli.Core.Communication
                     }
                     catch { NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line)); }
                 }
-                else if (m.Groups[1].Value == "WCO")
+                else if (m.Groups[1].Value == FieldWorkCoordOffset)
                 {
                     try
                     {
@@ -1017,7 +1019,7 @@ namespace coppercli.Core.Communication
                     }
                     catch { NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line)); }
                 }
-                else if (SyncBuffer && m.Groups[1].Value == "Bf")
+                else if (SyncBuffer && m.Groups[1].Value == FieldBuffer)
                 {
                     try
                     {
@@ -1032,7 +1034,7 @@ namespace coppercli.Core.Communication
                     }
                     catch { NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line)); }
                 }
-                else if (m.Groups[1].Value == "Pn")
+                else if (m.Groups[1].Value == FieldPins)
                 {
                     resetPins = false;
 
@@ -1058,7 +1060,7 @@ namespace coppercli.Core.Communication
                         pinStateUpdate = true;
                     PinStateProbe = stateP;
                 }
-                else if (m.Groups[1].Value == "F")
+                else if (m.Groups[1].Value == FieldFeed)
                 {
                     try
                     {
@@ -1067,7 +1069,7 @@ namespace coppercli.Core.Communication
                     }
                     catch { NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line)); }
                 }
-                else if (m.Groups[1].Value == "FS")
+                else if (m.Groups[1].Value == FieldFeedSpindle)
                 {
                     try
                     {
@@ -1086,7 +1088,7 @@ namespace coppercli.Core.Communication
 
             foreach (Match m in statusMatch)
             {
-                if (m.Groups[1].Value == "MPos" || m.Groups[1].Value == "WPos")
+                if (m.Groups[1].Value == FieldMachinePos || m.Groups[1].Value == FieldWorkPos)
                 {
                     try
                     {
@@ -1104,7 +1106,7 @@ namespace coppercli.Core.Communication
 
                         NewMachinePosition = Vector3.Parse(PositionString);
 
-                        if (m.Groups[1].Value == "WPos")
+                        if (m.Groups[1].Value == FieldWorkPos)
                             NewMachinePosition += WorkOffset;
 
                         if (NewMachinePosition != MachinePosition)
@@ -1212,6 +1214,11 @@ namespace coppercli.Core.Communication
         private void ReportError(string error)
         {
             NonFatalException?.Invoke(GrblCodeTranslator.ExpandError(error, _settings.FirmwareType));
+        }
+
+        private void ReportBadStatus(string line)
+        {
+            NonFatalException?.Invoke($"Received Bad Status: '{line}'");
         }
 
         // Event helpers - direct invocation instead of WPF Dispatcher
