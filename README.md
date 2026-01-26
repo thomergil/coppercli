@@ -8,11 +8,11 @@ A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring a
 
 | Main Menu | Move/Jog | Probe Menu | Milling |
 |-----------|----------|------------|---------|
-| ![Main Menu](doc/main-menu.png) | ![Move Menu](doc/move-menu.png) | ![Probe Menu](doc/probe-menu.png) | ![Milling](doc/milling-screen.png) |
+| <img src="doc/main-menu.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> | <img src="doc/milling-screen.png" width="200"> |
 
-| Probing in Progress | Milled PCB |
-|---------------------|------------|
-| ![Probing](doc/probing-screenshot.png) | ![Milled PCB](doc/milled-pcb.jpg) |
+| Probing in Progress | File Browser | Settings | Milled PCB |
+|---------------------|--------------|----------|------------|
+| <img src="doc/probing-screenshot.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
 
 ## Background
 
@@ -36,12 +36,14 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 - Runs on Linux, macOS, and Windows
 - .NET 8 runtime (cross-platform)
 - Serial and Ethernet connections supported
+- Auto-detect serial port and baud rate (cycles through common rates to find GRBL devices)
 
 ### Keyboard-Driven Interface
 - Single-key navigation throughout
 - Arrow keys for jogging, Tab to cycle speeds
 - Number keys and mnemonics for menu selection
-- Built-in file browser for G-code and probe grid files
+- Smart menu defaults: automatically highlights the most logical next step (Connect → Load → Move → Probe → Mill)
+- Built-in file browser for G-code and probe grid files (remembers last directory)
 - No mouse required
 
 ### Probing Features
@@ -60,6 +62,7 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 
 - Real-time position display
 - Multiple jog speed presets (Tab to cycle: Fast/Normal/Slow/Creep)
+- Pause/Resume/Emergency Stop during milling (P/R/X keys) with automatic spindle shutdown and Z retraction
 - Home, unlock, and soft reset commands
 - Set work zero (all axes or Z-only)
 - Quick positioning (go to X0Y0, Z0, Z+6mm, Z+1mm)
@@ -71,6 +74,8 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 - View file bounds and estimated run time
 - Apply height map compensation
 - Run with real-time progress display
+- 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
+- Terminal resize detection with auto-redraw
 
 ## Installation
 
