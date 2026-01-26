@@ -167,6 +167,17 @@ namespace coppercli.Menus
                 // Reset height map applied state for new file
                 AppState.AreProbePointsApplied = false;
 
+                // Offer to apply existing probe data if complete
+                var probePoints = AppState.ProbePoints;
+                if (probePoints != null && probePoints.NotProbed.Count == 0)
+                {
+                    if (MenuHelpers.Confirm("Apply existing probe data to this file?", true))
+                    {
+                        AppState.ApplyProbeData();
+                        AnsiConsole.MarkupLine("[green]Probe data applied![/]");
+                    }
+                }
+
                 // Save the file path and directory for next time
                 session.LastLoadedGCodeFile = path;
                 var dir = Path.GetDirectoryName(path);

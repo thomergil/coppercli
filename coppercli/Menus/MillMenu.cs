@@ -44,6 +44,9 @@ namespace coppercli.Menus
                 return;
             }
 
+            // Clear Door/Alarm state if needed (e.g., door was opened to remove probe equipment)
+            MachineCommands.ClearDoorOrAlarm(machine);
+
             // Move Z up to safe height
             AnsiConsole.MarkupLine($"[dim]Moving to safe height Z{SafeZHeightMm:F1}...[/]");
             machine.SendLine(CmdAbsolute);

@@ -46,8 +46,7 @@ pause
 exit /b 1
 
 :found
-echo Using: %DOTNET%
-echo Starting coppercli (compiling if needed)...
+echo Starting coppercli...
 cd /d "%~dp0"
 "%DOTNET%" run --project "%PROJECT%" %*
 if %ERRORLEVEL% NEQ 0 (

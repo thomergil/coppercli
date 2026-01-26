@@ -137,6 +137,18 @@ namespace coppercli.Helpers
                 }
                 AnsiConsole.MarkupLine("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");
 
+                // Poll for key input, allowing status refresh
+                var lastStatus = AppState.Machine?.Status;
+                while (!Console.KeyAvailable)
+                {
+                    Thread.Sleep(100);
+                    var currentStatus = AppState.Machine?.Status;
+                    if (currentStatus != lastStatus)
+                    {
+                        // Status changed, signal caller to redraw by returning -1
+                        return -1;
+                    }
+                }
                 var key = Console.ReadKey(true);
 
                 char pressedKey = char.ToUpper(key.KeyChar);
@@ -208,10 +220,20 @@ namespace coppercli.Helpers
         /// Displays a menu from a MenuDef and returns the selected MenuItem.
         /// Disabled items (based on EnabledWhen) are shown dimmed and not selectable.
         /// </summary>
+        public static MenuItem<T>? ShowMenuWithRefresh<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
+        {
+            int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
+            if (index < 0)
+            {
+                return null; // Status changed, caller should redraw
+            }
+            return menu[index];
+        }
+
         public static MenuItem<T> ShowMenu<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
             int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
-            return menu[index];
+            return menu[Math.Max(0, index)];
         }
 
         /// <summary>

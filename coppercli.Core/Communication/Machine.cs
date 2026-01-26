@@ -122,6 +122,9 @@ namespace coppercli.Core.Communication
         }
 
         private string _status = "Disconnected";
+        private DateTime _lastDoorClearAttempt = DateTime.MinValue;
+        private const int DoorClearIntervalMs = 500;
+
         public string Status
         {
             get { return _status; }
@@ -1220,6 +1223,17 @@ namespace coppercli.Core.Communication
             if (Connected)
             {
                 StatusReceived?.Invoke(line);
+            }
+
+            // Auto-clear Door state by sending cycle start (only in Manual mode, rate-limited)
+            if (Status.StartsWith(StatusDoor) && Mode == OperatingMode.Manual)
+            {
+                var now = DateTime.Now;
+                if ((now - _lastDoorClearAttempt).TotalMilliseconds > DoorClearIntervalMs)
+                {
+                    _lastDoorClearAttempt = now;
+                    ToSendPriority.Enqueue(GrblProtocol.CycleStart);
+                }
             }
         }
 

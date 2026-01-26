@@ -78,8 +78,22 @@ class Program
             }
         }
 
-        // Offer to load saved probe data
-        if (!string.IsNullOrEmpty(session.LastSavedProbeFile) && File.Exists(session.LastSavedProbeFile))
+        // Offer to trust stored work zero (must be decided before probe data, which depends on it)
+        if (machine.Connected && session.HasStoredWorkZero)
+        {
+            var result = MenuHelpers.ConfirmOrQuit("Trust work zero from previous session?", true);
+            if (result == null)
+            {
+                Environment.Exit(0);
+            }
+            if (result == true)
+            {
+                AppState.IsWorkZeroSet = true;
+            }
+        }
+
+        // Offer to load saved probe data (only if work zero is trusted - probe data depends on it)
+        if (AppState.IsWorkZeroSet && !string.IsNullOrEmpty(session.LastSavedProbeFile) && File.Exists(session.LastSavedProbeFile))
         {
             var fileName = Path.GetFileName(session.LastSavedProbeFile);
             var result = MenuHelpers.ConfirmOrQuit($"Load probe data {fileName}?", true);
@@ -92,10 +106,17 @@ class Program
                 try
                 {
                     AppState.ProbePoints = ProbeGrid.Load(session.LastSavedProbeFile);
-                    AppState.AreProbePointsApplied = false;
-                    AppState.IsWorkZeroSet = true;
                     var pp = AppState.ProbePoints;
-                    AnsiConsole.MarkupLine($"[green]Probe data loaded: {pp.TotalPoints} points (work zero trusted)[/]");
+
+                    // Auto-apply probe data if G-code is loaded and probe is complete
+                    if (AppState.ApplyProbeData())
+                    {
+                        AnsiConsole.MarkupLine($"[green]Probe data loaded and applied: {pp.TotalPoints} points[/]");
+                    }
+                    else
+                    {
+                        AnsiConsole.MarkupLine($"[green]Probe data loaded: {pp.TotalPoints} points[/]");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -104,26 +125,11 @@ class Program
             }
         }
 
-        // Only offer these if connected
-        if (machine.Connected)
+        // Offer to continue incomplete probing (only if work zero trusted and no complete probe loaded)
+        if (machine.Connected && AppState.IsWorkZeroSet)
         {
-            // Offer to trust stored work zero
-            if (session.HasStoredWorkZero)
-            {
-                var result = MenuHelpers.ConfirmOrQuit("Trust work zero from previous session?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    AppState.IsWorkZeroSet = true;
-                    AnsiConsole.MarkupLine("[green]Work zero restored[/]");
-                }
-            }
-
-            // Offer to continue incomplete probing
-            if (!string.IsNullOrEmpty(session.ProbeAutoSavePath) && File.Exists(session.ProbeAutoSavePath))
+            var hasCompleteProbe = AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0;
+            if (!hasCompleteProbe && !string.IsNullOrEmpty(session.ProbeAutoSavePath) && File.Exists(session.ProbeAutoSavePath))
             {
                 var result = MenuHelpers.ConfirmOrQuit("Continue incomplete probing session?", true);
                 if (result == null)

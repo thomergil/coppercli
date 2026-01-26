@@ -171,7 +171,10 @@ namespace coppercli.Menus
                 switch (result)
                 {
                     case ConnectionResult.Success when message != null:
-                        AnsiConsole.MarkupLine($"[green]Connected! GRBL status: {message}[/]");
+                        if (message != StatusIdle)
+                        {
+                            AnsiConsole.MarkupLine($"[green]Connected! GRBL status: {message}[/]");
+                        }
                         Persistence.SaveSettings();
                         OfferToHome(message);
                         break;

@@ -101,6 +101,5 @@ DOTNET=$(find_dotnet) || {
     exit 1
 }
 
-echo "Using: $DOTNET"
-echo "Starting coppercli (compiling if needed)..."
+echo "Starting coppercli..."
 exec "$DOTNET" run --project "$PROJECT" "$@"

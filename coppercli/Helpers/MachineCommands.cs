@@ -117,5 +117,34 @@ namespace coppercli.Helpers
         {
             machine.SendLine(CmdRelative);
         }
+
+        /// <summary>
+        /// Always sends soft reset and unlocks if needed. Use to stop active operations.
+        /// </summary>
+        public static void ForceResetAndUnlock(Machine machine)
+        {
+            machine.SoftReset();
+            Thread.Sleep(CliConstants.ResetWaitMs);
+
+            if (machine.Status.StartsWith(StatusAlarm))
+            {
+                machine.SendLine(CmdUnlock);
+                Thread.Sleep(CliConstants.CommandDelayMs);
+            }
+        }
+
+        /// <summary>
+        /// Clears Door or Alarm state if present. Returns true if reset was performed.
+        /// </summary>
+        public static bool ClearDoorOrAlarm(Machine machine)
+        {
+            if (!machine.Status.StartsWith(StatusDoor) && !machine.Status.StartsWith(StatusAlarm))
+            {
+                return false;
+            }
+
+            ForceResetAndUnlock(machine);
+            return true;
+        }
     }
 }

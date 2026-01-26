@@ -102,8 +102,7 @@ namespace coppercli.Menus
                     case ProbeAction.Back:
                         if (AppState.Probing)
                         {
-                            AppState.Probing = false;
-                            machine.ProbeStop();
+                            AppState.StopProbing();
                         }
                         return;
                 }
@@ -191,17 +190,13 @@ namespace coppercli.Menus
 
         private static void ApplyProbeGrid()
         {
-            var currentFile = AppState.CurrentFile;
-            var probePoints = AppState.ProbePoints;
-            var machine = AppState.Machine;
-
-            if (currentFile == null)
+            if (AppState.CurrentFile == null)
             {
                 MenuHelpers.ShowError("No G-code file loaded");
                 return;
             }
 
-            if (probePoints == null || probePoints.NotProbed.Count > 0)
+            if (AppState.ProbePoints == null || AppState.ProbePoints.NotProbed.Count > 0)
             {
                 MenuHelpers.ShowError("Probe data not complete");
                 return;
@@ -209,9 +204,7 @@ namespace coppercli.Menus
 
             try
             {
-                AppState.CurrentFile = currentFile.ApplyProbeGrid(probePoints);
-                machine.SetFile(AppState.CurrentFile.GetGCode());
-                AppState.AreProbePointsApplied = true;
+                AppState.ApplyProbeData();
                 AnsiConsole.MarkupLine("[green]Probe data applied to G-Code![/]");
             }
             catch (Exception ex)
@@ -268,8 +261,7 @@ namespace coppercli.Menus
 
             AnsiConsole.MarkupLine($"[green]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
 
-            AppState.Probing = true;
-            machine.ProbeStart();
+            AppState.StartProbing();
 
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
@@ -279,7 +271,7 @@ namespace coppercli.Menus
             ProbeNextPoint();
             WaitForProbingComplete();
 
-            machine.ProbeStop();
+            AppState.StopProbing();
             Console.WriteLine();
 
             if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
@@ -289,6 +281,7 @@ namespace coppercli.Menus
                 if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
                 {
                     ApplyProbeGrid();
+                    OfferToMill();
                 }
             }
         }
@@ -347,8 +340,7 @@ namespace coppercli.Menus
                 }
             }
 
-            AppState.Probing = true;
-            machine.ProbeStart();
+            AppState.StartProbing();
 
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
@@ -358,7 +350,7 @@ namespace coppercli.Menus
             ProbeNextPoint();
             WaitForProbingComplete();
 
-            machine.ProbeStop();
+            AppState.StopProbing();
             Console.WriteLine();
 
             if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
@@ -368,6 +360,7 @@ namespace coppercli.Menus
                 if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
                 {
                     ApplyProbeGrid();
+                    OfferToMill();
                 }
             }
         }
@@ -483,8 +476,7 @@ namespace coppercli.Menus
             {
                 if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
                 {
-                    AppState.Probing = false;
-                    AppState.Machine.ProbeStop();
+                    AppState.StopProbing();
                     AnsiConsole.MarkupLine("\n[yellow]Probing stopped by user[/]");
                     break;
                 }
@@ -496,6 +488,13 @@ namespace coppercli.Menus
                 }
 
                 Thread.Sleep(StatusPollIntervalMs);
+            }
+
+            // Wait for machine to finish (e.g., the final Z raise) and draw completed state
+            if (probePoints != null && probePoints.NotProbed.Count == 0)
+            {
+                DrawProbeMatrix();
+                StatusHelpers.WaitForIdle(AppState.Machine, IdleWaitTimeoutMs);
             }
         }
 
@@ -636,8 +635,12 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine($"[red]Error saving: {Markup.Escape(ex.Message)}[/]");
             }
 
-            // Offer to proceed to Milling after successful probe
-            if (currentFile != null && currentFile.ContainsMotion)
+        }
+
+        private static void OfferToMill()
+        {
+            var currentFile = AppState.CurrentFile;
+            if (currentFile != null && currentFile.ContainsMotion && AppState.AreProbePointsApplied)
             {
                 if (MenuHelpers.ConfirmOrQuit("Proceed to Milling?", true) == true)
                 {

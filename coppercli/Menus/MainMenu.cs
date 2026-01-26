@@ -27,12 +27,13 @@ namespace coppercli.Menus
         private static readonly MenuDef<MainAction> MainMenuDef = new(
             new MenuItem<MainAction>("Connect/Disconnect", 'c', MainAction.Connect),
             new MenuItem<MainAction>("Load G-Code File", 'l', MainAction.LoadFile),
-            new MenuItem<MainAction>("Move", 'm', MainAction.Move,
+            new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
                 EnabledWhen: () => AppState.Machine.Connected),
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
                 EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null),
-            new MenuItem<MainAction>("Mill", 'g', MainAction.Mill,
-                EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0),
+            new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
+                EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
+                    (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -70,7 +71,13 @@ namespace coppercli.Menus
 
             // Smart default based on workflow state
             int smartDefault = MainMenuDef.IndexOf(GetSmartDefault());
-            var choice = MenuHelpers.ShowMenu("Select an option:", MainMenuDef, smartDefault);
+            var choice = MenuHelpers.ShowMenuWithRefresh("Select an option:", MainMenuDef, smartDefault);
+
+            // Null means status changed - return to redraw (loop in Program.cs will call us again)
+            if (choice == null)
+            {
+                return;
+            }
 
             switch (choice.Option)
             {

@@ -36,5 +36,40 @@ namespace coppercli
 
         // Jog state
         public static int JogPresetIndex { get; set; } = 1;  // Start at Normal
+
+        /// <summary>
+        /// Starts probing mode. Sets state and calls machine.ProbeStart().
+        /// </summary>
+        public static void StartProbing()
+        {
+            Probing = true;
+            Machine.ProbeStart();
+        }
+
+        /// <summary>
+        /// Stops probing mode. Sets state and calls machine.ProbeStop().
+        /// </summary>
+        public static void StopProbing()
+        {
+            Probing = false;
+            Machine.ProbeStop();
+        }
+
+        /// <summary>
+        /// Applies probe data to the current G-code file.
+        /// Returns true on success, false if preconditions not met.
+        /// </summary>
+        public static bool ApplyProbeData()
+        {
+            if (CurrentFile == null || ProbePoints == null || ProbePoints.NotProbed.Count > 0)
+            {
+                return false;
+            }
+
+            CurrentFile = CurrentFile.ApplyProbeGrid(ProbePoints);
+            Machine.SetFile(CurrentFile.GetGCode());
+            AreProbePointsApplied = true;
+            return true;
+        }
     }
 }
