@@ -131,6 +131,10 @@ Always:
 - Keep your hand on the emergency stop
 - Verify probe data looks reasonable before running G-code
 
+## Tutorial
+
+For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling—see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
+
 ## License
 
 MIT License - see [LICENSE](LICENSE)
