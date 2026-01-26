@@ -26,12 +26,15 @@ namespace coppercli.Menus
 
         public static void Show()
         {
+            var machine = AppState.Machine;
+
+            // Defense in depth: ensure auto-clear is disabled during milling
+            machine.EnableAutoStateClear = false;
+
             if (!MenuHelpers.RequireConnection())
             {
                 return;
             }
-
-            var machine = AppState.Machine;
 
             if (machine.File.Count == 0)
             {
@@ -39,22 +42,31 @@ namespace coppercli.Menus
                 return;
             }
 
-            if (MenuHelpers.ConfirmOrQuit("Probe equipment removed and spindle ready?", true) != true)
+            // Ask first - user might open door to check/prepare
+            if (MenuHelpers.ConfirmOrQuit("Probe clip and magnet removed, door closed, spindle ready?", true) != true)
             {
                 return;
             }
 
-            // Clear Door/Alarm state if needed (e.g., door was opened to remove probe equipment)
-            MachineCommands.ClearDoorOrAlarm(machine);
+            // === TAKE CONTROL OF MACHINE STATE ===
+            // Machine may be in unknown state: door open, still moving, etc.
+            // We must get it to a known good state before proceeding.
 
-            // Move Z up to safe height
-            AnsiConsole.MarkupLine($"[dim]Moving to safe height Z{SafeZHeightMm:F1}...[/]");
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm:F1}");
-            Thread.Sleep(CommandDelayMs);
+            AnsiConsole.MarkupLine("[dim]Preparing machine...[/]");
 
-            machine.FileGoto(0);
-            machine.FileStart();
+            // Clear Door state if present (sends CycleStart - safe while moving)
+            MachineCommands.ClearDoorState(machine);
+
+            // Wait for machine to reach Idle
+            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
+
+            // Check for Alarm - cannot proceed, user must manually resolve
+            if (StatusHelpers.IsAlarm(machine))
+            {
+                MenuHelpers.ShowError("Machine is in ALARM state. Please home the machine and try again.");
+                return;
+            }
+
             MonitorMilling();
         }
 
@@ -79,6 +91,42 @@ namespace coppercli.Menus
 
             try
             {
+                // === SETTLING PHASE ===
+                // Wait for machine to be stable in Idle state for the full settle period
+                int settleSeconds = PostIdleSettleMs / OneSecondMs;
+                int stableCount = 0;
+                while (stableCount < settleSeconds)
+                {
+                    string statusBefore = machine.Status;
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, $"Settling... {settleSeconds - stableCount}s");
+                    Thread.Sleep(OneSecondMs);
+
+                    if (machine.Status != statusBefore || !StatusHelpers.IsIdle(machine))
+                    {
+                        MachineCommands.ClearDoorState(machine);
+                        StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
+                        stableCount = 0;
+                    }
+                    else
+                    {
+                        stableCount++;
+                    }
+                }
+
+                // === MACHINE IS NOW IN KNOWN GOOD STATE ===
+
+                // Move Z up to safe height and start milling
+                DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, $"Moving to safe height Z{SafeZHeightMm:F1}...");
+                machine.SendLine(CmdAbsolute);
+                machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm:F1}");
+                StatusHelpers.WaitForIdle(machine, ZHeightWaitTimeoutMs);
+
+                // Start milling
+                machine.FileGoto(0);
+                machine.FileStart();
+                Thread.Sleep(CommandDelayMs);
+                Console.Clear();
+
                 while (true)
                 {
                     bool isRunning = machine.Mode == Machine.OperatingMode.SendFile;
@@ -169,7 +217,7 @@ namespace coppercli.Menus
             }
         }
 
-        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine)
+        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine, string? settlingMessage = null)
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
@@ -198,7 +246,14 @@ namespace coppercli.Menus
             int lineWidth = totalLines.ToString().Length;
             string lineStr = fileLine.ToString().PadLeft(lineWidth);
 
-            WriteLineTruncated($"  {Cyan}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{Reset} {pct,5:F1}%", winWidth);
+            if (settlingMessage != null)
+            {
+                WriteLineTruncated($"  {Yellow}{settlingMessage}{Reset}", winWidth);
+            }
+            else
+            {
+                WriteLineTruncated($"  {Cyan}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{Reset} {pct,5:F1}%", winWidth);
+            }
             WriteLineTruncated($"  Elapsed: {Cyan}{FormatTimeSpan(elapsed)}{Reset}   ETA: {Cyan}{etaStr}{Reset}{pausedIndicator}", winWidth);
             WriteLineTruncated($"  X:{Cyan}{pos.X,8:F2}{Reset}  Y:{Cyan}{pos.Y,8:F2}{Reset}  Z:{Cyan}{pos.Z,8:F2}{Reset}   Line {lineStr}/{totalLines}", winWidth);
             WriteLineTruncated("", winWidth);
@@ -330,7 +385,7 @@ namespace coppercli.Menus
 
             Thread.Sleep(ResetWaitMs);
 
-            if (machine.Status.StartsWith(StatusAlarm))
+            if (StatusHelpers.IsAlarm(machine))
             {
                 machine.SendLine(CmdUnlock);
                 Thread.Sleep(CommandDelayMs);

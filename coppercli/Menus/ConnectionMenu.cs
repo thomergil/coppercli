@@ -351,54 +351,40 @@ namespace coppercli.Menus
         {
             var machine = AppState.Machine;
 
-            // If in alarm state, try to unlock first
-            if (status.StartsWith(StatusAlarm))
+            // Offer to home
+            var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
+            if (result == null)
             {
-                AnsiConsole.MarkupLine("[yellow]Alarm state detected, sending unlock ($X)...[/]");
-                machine.SendLine(CmdUnlock);
-                Thread.Sleep(CommandDelayMs);
-                status = machine.Status;
-                if (!status.StartsWith(StatusAlarm))
-                {
-                    AnsiConsole.MarkupLine($"[green]Unlocked! Status: {status}[/]");
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine("[yellow]Still in alarm state. May need to home ($H).[/]");
-                }
+                Environment.Exit(0);
+            }
+            if (result != true)
+            {
+                return;
             }
 
-            // Offer to home if not in alarm
-            if (!status.StartsWith(StatusAlarm))
+            // Wait for door to be closed if open
+            while (StatusHelpers.IsDoor(machine))
             {
-                var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result != true)
-                {
-                    return;
-                }
-                machine.SoftReset();
+                AnsiConsole.MarkupLine("[yellow]Door is open. Close the door and press Enter.[/]");
+                Console.ReadLine();
+                MachineCommands.ClearDoorState(machine);
                 Thread.Sleep(CommandDelayMs);
-                machine.SendLine(CmdHome);
-
-                AnsiConsole.Status()
-                    .Start("Homing...", ctx =>
-                    {
-                        StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
-                    });
-
-                if (machine.Status == StatusIdle)
-                {
-                    AnsiConsole.MarkupLine("[green]Homing complete[/]");
-                }
-                else
-                {
-                    AnsiConsole.MarkupLine($"[yellow]Homing finished with status: {machine.Status}[/]");
-                }
             }
+
+            // Clear Alarm state if present
+            if (StatusHelpers.IsAlarm(machine))
+            {
+                MachineCommands.Unlock(machine);
+                Thread.Sleep(CommandDelayMs);
+            }
+
+            MachineCommands.Home(machine);
+
+            AnsiConsole.Status()
+                .Start("Homing...", ctx =>
+                {
+                    StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
+                });
         }
     }
 }

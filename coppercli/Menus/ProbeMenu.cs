@@ -29,6 +29,9 @@ namespace coppercli.Menus
         {
             var machine = AppState.Machine;
 
+            // Defense in depth: ensure auto-clear is disabled during probing
+            machine.EnableAutoStateClear = false;
+
             while (true)
             {
                 Console.Clear();
@@ -213,7 +216,7 @@ namespace coppercli.Menus
             }
         }
 
-        private static void ContinueProbing()
+        internal static void ContinueProbing()
         {
             if (!MenuHelpers.RequireConnection())
             {
@@ -260,6 +263,9 @@ namespace coppercli.Menus
             }
 
             AnsiConsole.MarkupLine($"[green]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
+
+            // Ensure machine is idle before starting
+            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
 
             AppState.StartProbing();
 
@@ -339,6 +345,9 @@ namespace coppercli.Menus
                     return;
                 }
             }
+
+            // Ensure machine is idle before starting
+            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
 
             AppState.StartProbing();
 
@@ -498,6 +507,45 @@ namespace coppercli.Menus
             }
         }
 
+        // ANSI escape for RGB foreground color
+        private const string AnsiReset = "\x1b[0m";
+        private const string AnsiDim = "\x1b[2m";
+
+        private static string AnsiRgb(int r, int g, int b) => $"\x1b[38;2;{r};{g};{b}m";
+
+        /// <summary>
+        /// Maps a normalized value (0-1) to a color gradient: blue -> cyan -> green -> yellow -> red
+        /// </summary>
+        private static (int R, int G, int B) HeightToColor(double t)
+        {
+            t = Math.Clamp(t, 0, 1);
+
+            if (t < 0.25)
+            {
+                // Blue to Cyan (0,0,255) -> (0,255,255)
+                double s = t / 0.25;
+                return (0, (int)(255 * s), 255);
+            }
+            else if (t < 0.5)
+            {
+                // Cyan to Green (0,255,255) -> (0,255,0)
+                double s = (t - 0.25) / 0.25;
+                return (0, 255, (int)(255 * (1 - s)));
+            }
+            else if (t < 0.75)
+            {
+                // Green to Yellow (0,255,0) -> (255,255,0)
+                double s = (t - 0.5) / 0.25;
+                return ((int)(255 * s), 255, 0);
+            }
+            else
+            {
+                // Yellow to Red (255,255,0) -> (255,0,0)
+                double s = (t - 0.75) / 0.25;
+                return (255, (int)(255 * (1 - s)), 0);
+            }
+        }
+
         private static void DrawProbeMatrix()
         {
             var probePoints = AppState.ProbePoints;
@@ -522,6 +570,12 @@ namespace coppercli.Menus
             int leftPadding = Math.Max(0, (Console.WindowWidth - matrixWidth) / 2);
             string pad = new string(' ', leftPadding);
 
+            // Get height range for color mapping
+            double minZ = probePoints.MinHeight;
+            double maxZ = probePoints.MaxHeight;
+            double rangeZ = maxZ - minZ;
+            bool hasRange = probePoints.HasValidHeights && rangeZ > 0.0001;
+
             Console.Clear();
             string zRange = probePoints.HasValidHeights
                 ? $"Z: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3}"
@@ -539,23 +593,46 @@ namespace coppercli.Menus
                 line.Append(pad);
                 for (int x = 0; x < probePoints.SizeX; x += stepX)
                 {
-                    bool cellProbed = true;
+                    // Get average height of probed points in this cell
+                    double heightSum = 0;
+                    int heightCount = 0;
+                    bool hasUnprobed = false;
+
                     for (int dy = 0; dy < stepY && y - dy >= 0; dy++)
                     {
                         for (int dx = 0; dx < stepX && x + dx < probePoints.SizeX; dx++)
                         {
-                            if (unprobed.Contains((x + dx, y - dy)))
+                            int px = x + dx;
+                            int py = y - dy;
+                            if (unprobed.Contains((px, py)))
                             {
-                                cellProbed = false;
-                                break;
+                                hasUnprobed = true;
+                            }
+                            else
+                            {
+                                var h = probePoints.Points[px, py];
+                                if (h.HasValue)
+                                {
+                                    heightSum += h.Value;
+                                    heightCount++;
+                                }
                             }
                         }
-                        if (!cellProbed)
-                        {
-                            break;
-                        }
                     }
-                    line.Append(cellProbed ? "██" : "··");
+
+                    if (hasUnprobed || heightCount == 0)
+                    {
+                        // Unprobed - dim dots
+                        line.Append(AnsiDim).Append("··").Append(AnsiReset);
+                    }
+                    else
+                    {
+                        // Probed - color based on height
+                        double avgHeight = heightSum / heightCount;
+                        double t = hasRange ? (avgHeight - minZ) / rangeZ : 0.5;
+                        var (r, g, b) = HeightToColor(t);
+                        line.Append(AnsiRgb(r, g, b)).Append("██").Append(AnsiReset);
+                    }
                 }
                 Console.WriteLine(line.ToString());
             }

@@ -126,7 +126,7 @@ namespace coppercli.Helpers
             machine.SoftReset();
             Thread.Sleep(CliConstants.ResetWaitMs);
 
-            if (machine.Status.StartsWith(StatusAlarm))
+            if (StatusHelpers.IsAlarm(machine))
             {
                 machine.SendLine(CmdUnlock);
                 Thread.Sleep(CliConstants.CommandDelayMs);
@@ -134,17 +134,21 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Clears Door or Alarm state if present. Returns true if reset was performed.
+        /// Clears Door state if present by sending CycleStart.
+        /// Returns true if Door was cleared, false if no action needed.
+        /// Does NOT handle Alarm state - caller should check for Alarm separately.
         /// </summary>
-        public static bool ClearDoorOrAlarm(Machine machine)
+        public static bool ClearDoorState(Machine machine)
         {
-            if (!machine.Status.StartsWith(StatusDoor) && !machine.Status.StartsWith(StatusAlarm))
+            if (StatusHelpers.IsDoor(machine))
             {
-                return false;
+                // Door state: send CycleStart to resume (safe while machine is moving)
+                machine.CycleStart();
+                Thread.Sleep(CliConstants.CommandDelayMs);
+                return true;
             }
-
-            ForceResetAndUnlock(machine);
-            return true;
+            return false;
         }
+
     }
 }

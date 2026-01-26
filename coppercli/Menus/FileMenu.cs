@@ -158,7 +158,7 @@ namespace coppercli.Menus
                         AnsiConsole.MarkupLine($"  [yellow]... and {currentFile.Warnings.Count - 5} more[/]");
                     }
                     AnsiConsole.MarkupLine("[yellow]Press any key to continue...[/]");
-                    Console.ReadKey(true);
+                    InputHelpers.WaitForKeyPolling();
                 }
 
                 // Load into machine
@@ -190,7 +190,7 @@ namespace coppercli.Menus
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[red]Error loading file: {Markup.Escape(ex.Message)}[/]");
-                Console.ReadKey(true);
+                InputHelpers.WaitForKeyPolling();
             }
         }
     }

@@ -19,6 +19,8 @@ namespace coppercli
         public const int ConfirmationDisplayMs = 1000;
         public const int ResetWaitMs = 500;
         public const int IdleWaitTimeoutMs = 3000;
+        public const int PostIdleSettleMs = 10000;
+        public const int OneSecondMs = 1000;
         public const int HomingTimeoutMs = 60000;
         public const int ZHeightWaitTimeoutMs = 30000;
         public const int MoveCompleteTimeoutMs = 60000;
@@ -125,9 +127,9 @@ namespace coppercli
         // =========================================================================
         // Probe matrix display sizing
         // =========================================================================
-        public const int ProbeGridConsolePadding = 5;
-        public const int ProbeGridMaxDisplayWidth = 40;
-        public const int ProbeGridMaxDisplayHeight = 30;
-        public const int ProbeGridHeaderPadding = 10;
+        public const int ProbeGridConsolePadding = 4;
+        public const int ProbeGridMaxDisplayWidth = 50;
+        public const int ProbeGridMaxDisplayHeight = 20;
+        public const int ProbeGridHeaderPadding = 8;
     }
 }

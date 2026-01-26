@@ -122,8 +122,14 @@ namespace coppercli.Core.Communication
         }
 
         private string _status = "Disconnected";
-        private DateTime _lastDoorClearAttempt = DateTime.MinValue;
-        private const int DoorClearIntervalMs = 500;
+        private DateTime _lastStateClearAttempt = DateTime.MinValue;
+        private const int StateClearIntervalMs = 500;
+
+        /// <summary>
+        /// When true, enables automatic Door/Alarm state clearing.
+        /// Enable only in menus that display status (MainMenu, JogMenu).
+        /// </summary>
+        public bool EnableAutoStateClear { get; set; } = false;
 
         public string Status
         {
@@ -1225,14 +1231,22 @@ namespace coppercli.Core.Communication
                 StatusReceived?.Invoke(line);
             }
 
-            // Auto-clear Door state by sending cycle start (only in Manual mode, rate-limited)
-            if (Status.StartsWith(StatusDoor) && Mode == OperatingMode.Manual)
+            // Auto-clear Door/Alarm state (only in Manual mode, rate-limited, when enabled)
+            if (Mode == OperatingMode.Manual && EnableAutoStateClear)
             {
                 var now = DateTime.Now;
-                if ((now - _lastDoorClearAttempt).TotalMilliseconds > DoorClearIntervalMs)
+                if ((now - _lastStateClearAttempt).TotalMilliseconds > StateClearIntervalMs)
                 {
-                    _lastDoorClearAttempt = now;
-                    ToSendPriority.Enqueue(GrblProtocol.CycleStart);
+                    if (Status.StartsWith(StatusDoor))
+                    {
+                        _lastStateClearAttempt = now;
+                        ToSendPriority.Enqueue(GrblProtocol.CycleStart);
+                    }
+                    else if (Status.StartsWith(StatusAlarm))
+                    {
+                        _lastStateClearAttempt = now;
+                        ToSend.Enqueue(CmdUnlock);
+                    }
                 }
             }
         }

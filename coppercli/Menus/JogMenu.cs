@@ -9,9 +9,9 @@ using static coppercli.Core.Util.GrblProtocol;
 namespace coppercli.Menus
 {
     /// <summary>
-    /// Move menu for jogging and zeroing the machine.
+    /// Jog menu for jogging and zeroing the machine.
     /// </summary>
-    internal static class MoveMenu
+    internal static class JogMenu
     {
         public static void Show()
         {
@@ -23,11 +23,14 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var settings = AppState.Settings;
 
+            // Enable auto-clear while in jog menu (user can see status updates)
+            machine.EnableAutoStateClear = true;
+
             while (true)
             {
                 Console.Clear();
                 AnsiConsole.Write(new Rule("[bold blue]Move[/]").RuleStyle("blue"));
-                var statusColor = (machine.Status.StartsWith(StatusAlarm) || machine.Status.StartsWith(StatusDoor)) ? "red" : "green";
+                var statusColor = StatusHelpers.IsProblematicState(machine) ? "red" : "green";
                 AnsiConsole.MarkupLine($"Status: [{statusColor}]{machine.Status}[/]");
                 AnsiConsole.MarkupLine($"Position: X:[yellow]{machine.WorkPosition.X:F3}[/] Y:[yellow]{machine.WorkPosition.Y:F3}[/] Z:[yellow]{machine.WorkPosition.Z:F3}[/]");
 
@@ -53,10 +56,16 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine("  [cyan]P[/] - Find Z (probe down until contact)");
                 AnsiConsole.WriteLine();
 
-                var key = Console.ReadKey(true);
+                var keyOrNull = InputHelpers.ReadKeyPolling();
+                if (keyOrNull == null)
+                {
+                    continue; // Status changed, redraw screen
+                }
+                var key = keyOrNull.Value;
 
                 if (InputHelpers.IsExitKey(key))
                 {
+                    machine.EnableAutoStateClear = false;
                     return;
                 }
 
@@ -79,7 +88,7 @@ namespace coppercli.Menus
                 if (InputHelpers.IsKey(key, ConsoleKey.U, 'u'))
                 {
                     machine.SendLine(CmdUnlock);
-                    if (machine.Status.StartsWith(StatusDoor) || machine.Status.StartsWith(StatusHold))
+                    if (StatusHelpers.IsDoor(machine) || StatusHelpers.IsHold(machine))
                     {
                         machine.SendLine(CycleStart.ToString());
                     }
@@ -103,6 +112,7 @@ namespace coppercli.Menus
                     machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
                     AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
                     Thread.Sleep(CommandDelayMs);
+                    machine.EnableAutoStateClear = false;
                     return;
                 }
                 if (InputHelpers.IsKey(key, ConsoleKey.D0, '0'))
@@ -124,6 +134,7 @@ namespace coppercli.Menus
                     machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
                     AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
                     Thread.Sleep(CommandDelayMs);
+                    machine.EnableAutoStateClear = false;
                     return;
                 }
                 if (InputHelpers.IsKey(key, ConsoleKey.D6, '6'))

@@ -25,8 +25,8 @@ namespace coppercli.Menus
         }
 
         private static readonly MenuDef<MainAction> MainMenuDef = new(
-            new MenuItem<MainAction>("Connect/Disconnect", 'c', MainAction.Connect),
-            new MenuItem<MainAction>("Load G-Code File", 'l', MainAction.LoadFile),
+            new MenuItem<MainAction>("Connection", 'c', MainAction.Connect),
+            new MenuItem<MainAction>("Load G-Code", 'l', MainAction.LoadFile),
             new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
                 EnabledWhen: () => AppState.Machine.Connected),
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
@@ -69,9 +69,15 @@ namespace coppercli.Menus
 
             AnsiConsole.WriteLine();
 
+            // Enable auto-clear while showing menu (user can see status updates)
+            machine.EnableAutoStateClear = true;
+
             // Smart default based on workflow state
             int smartDefault = MainMenuDef.IndexOf(GetSmartDefault());
             var choice = MenuHelpers.ShowMenuWithRefresh("Select an option:", MainMenuDef, smartDefault);
+
+            // Disable auto-clear before leaving menu
+            machine.EnableAutoStateClear = false;
 
             // Null means status changed - return to redraw (loop in Program.cs will call us again)
             if (choice == null)
@@ -79,11 +85,16 @@ namespace coppercli.Menus
                 return;
             }
 
-            switch (choice.Option)
+            ExecuteAction(choice.Option);
+        }
+
+        private static void ExecuteAction(MainAction action)
+        {
+            switch (action)
             {
                 case MainAction.Connect: ConnectionMenu.Show(); break;
                 case MainAction.LoadFile: FileMenu.LoadGCodeFile(); break;
-                case MainAction.Move: MoveMenu.Show(); break;
+                case MainAction.Move: JogMenu.Show(); break;
                 case MainAction.Probe: ProbeMenu.Show(); break;
                 case MainAction.Mill: MillMenu.Show(); break;
                 case MainAction.Settings: SettingsMenu.Show(Persistence.SaveSettings); break;

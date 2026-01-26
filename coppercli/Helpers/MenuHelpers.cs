@@ -137,19 +137,12 @@ namespace coppercli.Helpers
                 }
                 AnsiConsole.MarkupLine("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");
 
-                // Poll for key input, allowing status refresh
-                var lastStatus = AppState.Machine?.Status;
-                while (!Console.KeyAvailable)
+                var keyOrNull = InputHelpers.ReadKeyPolling();
+                if (keyOrNull == null)
                 {
-                    Thread.Sleep(100);
-                    var currentStatus = AppState.Machine?.Status;
-                    if (currentStatus != lastStatus)
-                    {
-                        // Status changed, signal caller to redraw by returning -1
-                        return -1;
-                    }
+                    return -1; // Status changed, signal caller to redraw
                 }
-                var key = Console.ReadKey(true);
+                var key = keyOrNull.Value;
 
                 char pressedKey = char.ToUpper(key.KeyChar);
 

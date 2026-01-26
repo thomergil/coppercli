@@ -41,7 +41,7 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine("Report issues: [link]https://github.com/thomergil/coppercli/issues[/]");
             AnsiConsole.WriteLine();
             AnsiConsole.MarkupLine("[dim]Press any key to return...[/]");
-            Console.ReadKey(true);
+            InputHelpers.WaitForKeyPolling();
         }
 
         /// <summary>

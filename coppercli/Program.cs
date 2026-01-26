@@ -144,6 +144,8 @@ class Program
                         AppState.AreProbePointsApplied = false;
                         var hm = AppState.ProbePoints;
                         AnsiConsole.MarkupLine($"[green]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
+                        // Start probing directly
+                        ProbeMenu.ContinueProbing();
                     }
                     catch (Exception ex)
                     {

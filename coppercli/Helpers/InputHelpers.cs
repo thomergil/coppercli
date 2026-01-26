@@ -1,6 +1,7 @@
 // Extracted from Program.cs - Input helper methods
 
 using Spectre.Console;
+using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
 {
@@ -10,6 +11,33 @@ namespace coppercli.Helpers
     internal static class InputHelpers
     {
         public const string InvalidNumberMessage = "[red]Invalid number, using default[/]";
+
+        /// <summary>
+        /// Reads a key while polling for machine status changes.
+        /// Returns the key pressed, or null if status changed (caller should redraw).
+        /// </summary>
+        public static ConsoleKeyInfo? ReadKeyPolling()
+        {
+            var lastStatus = AppState.Machine?.Status;
+            while (!Console.KeyAvailable)
+            {
+                Thread.Sleep(StatusPollIntervalMs);
+                if (AppState.Machine?.Status != lastStatus)
+                {
+                    return null; // Status changed, caller should redraw
+                }
+            }
+            return Console.ReadKey(true);
+        }
+
+        /// <summary>
+        /// Waits for any key while polling for machine status changes.
+        /// Returns true if a key was pressed, false if status changed (caller should redraw).
+        /// </summary>
+        public static bool WaitForKeyPolling()
+        {
+            return ReadKeyPolling() != null;
+        }
 
         /// <summary>
         /// Flushes any buffered keyboard input to prevent keypresses from bleeding into subsequent prompts.

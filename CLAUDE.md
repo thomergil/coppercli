@@ -79,6 +79,61 @@ static bool RequireConnection()
 if (!RequireConnection()) return;
 ```
 
+## Utility Functions
+
+**IMPORTANT:** Always check these helpers before writing new code. Do not reinvent the wheel.
+
+### StatusHelpers (`coppercli/Helpers/StatusHelpers.cs`)
+
+Status checking:
+- `IsIdle(machine)` - true if status == "Idle"
+- `IsAlarm(machine)` - true if status starts with "Alarm"
+- `IsHold(machine)` - true if status starts with "Hold"
+- `IsDoor(machine)` - true if status starts with "Door"
+- `IsProblematicState(machine)` - true if Alarm or Door
+
+Waiting:
+- `WaitForIdle(machine, timeoutMs)` - blocks until Idle
+- `WaitForZHeight(machine, targetZ, timeoutMs)` - blocks until Z reached
+- `WaitForMoveComplete(machine, targetX, targetY, checkCancel, timeoutMs)` - blocks until XY reached
+- `WaitForGrblResponse(machine, timeoutMs)` - waits for any valid status
+- `WaitForStatusChange(machine, currentStatus, timeoutMs)` - waits for status to change
+
+### MachineCommands (`coppercli/Helpers/MachineCommands.cs`)
+
+Movement:
+- `MoveToSafeHeight(machine, height)` - G90 + G0 Z
+- `RelativeMove(machine, axis, distance)` - G91 + G0 + G90
+- `RapidMoveXY(machine, x, y)` - G0 X Y
+- `RapidMoveZ(machine, z)` - G0 Z
+- `LinearMoveXY(machine, x, y, feed)` - G1 X Y F
+
+Mode:
+- `SetAbsoluteMode(machine)` - G90
+- `SetRelativeMode(machine)` - G91
+
+Commands:
+- `Home(machine)` - $H
+- `Unlock(machine)` - $X
+- `StopSpindle(machine)` - M5
+- `CycleStartCmd(machine)` - ~
+- `ZeroWorkOffset(machine, axes)` - G10 L20 P1
+- `ProbeZ(machine, maxDepth, feed)` - G38.3 Z
+
+State management:
+- `ClearDoorState(machine)` - sends CycleStart (~) for Door state, safe while moving
+- `ForceResetAndUnlock(machine)` - soft reset + unlock, **causes position loss if moving**
+
+### MenuHelpers (`coppercli/Helpers/MenuHelpers.cs`)
+
+- `RequireConnection()` - shows error if not connected, returns false
+- `ShowError(message)` - displays error and waits for keypress
+- `ShowMenu(title, options, initialSelection, enabledStates)` - arrow/key menu
+- `ShowMenuWithRefresh(title, menu, initialSelection)` - menu that returns null on status change
+- `Confirm(message, defaultYes)` - y/n prompt
+- `ConfirmOrQuit(message, defaultYes)` - y/n/q prompt, returns bool? (null = quit)
+- `AskDoubleOrQuit(prompt, defaultValue)` - numeric input with quit option
+
 ### Menu Definitions
 Menu options should be defined as structured data (arrays of structs or tuples) rather than scattered strings:
 
