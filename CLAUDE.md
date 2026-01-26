@@ -84,6 +84,10 @@ static readonly (string Label, char Mnemonic, Action Handler)[] MainMenuItems = 
 - `coppercli/` - Main application (.NET 8)
 - `coppercli.Core/` - Platform-independent core library (.NET 8)
 
+## Git
+
+**IMPORTANT:** Never run git commands (add, commit, push, etc.) unless the user explicitly asks. Never on your own.
+
 ## Building
 
 **IMPORTANT:** Do not compile unless the user explicitly asks. This project is synced via Dropbox, and compiling while the user is also working can create conflicted copies of build artifacts.

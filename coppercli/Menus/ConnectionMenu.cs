@@ -25,7 +25,7 @@ namespace coppercli.Menus
 
         // Menu option types
         private enum ConnType { Serial, Ethernet, Back }
-        private enum PortOption { AutoDetect, Port, Manual }
+        private enum PortOption { Reconnect, AutoDetect, Port, Manual }
 
         // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
@@ -75,9 +75,17 @@ namespace coppercli.Menus
                         return;
                     }
 
-                    // Build dynamic port menu: Auto-detect, then ports, then manual entry
-                    var portMenu = new MenuDef<PortOption>(
-                        new MenuItem<PortOption>("Auto-detect (scan all ports)", 'a', PortOption.AutoDetect));
+                    // Build dynamic port menu
+                    var portMenu = new MenuDef<PortOption>();
+
+                    // Add Reconnect option if we have saved settings
+                    if (!string.IsNullOrEmpty(settings.SerialPortName))
+                    {
+                        portMenu.Add(new MenuItem<PortOption>(
+                            $"Reconnect ({settings.SerialPortName} @ {settings.SerialPortBaud})", 'r', PortOption.Reconnect));
+                    }
+
+                    portMenu.Add(new MenuItem<PortOption>("Auto-detect (scan all ports)", 'a', PortOption.AutoDetect));
                     for (int i = 0; i < ports.Length; i++)
                     {
                         portMenu.Add(new MenuItem<PortOption>(ports[i], (char)('0' + ((i + 2) % 10)), PortOption.Port, i));
@@ -86,12 +94,17 @@ namespace coppercli.Menus
 
                     var selected = MenuHelpers.ShowMenu("Select serial port:", portMenu);
 
+                    if (selected.Option == PortOption.Reconnect)
+                    {
+                        ConnectWithCurrentSettings();
+                        return;
+                    }
+
                     if (selected.Option == PortOption.AutoDetect)
                     {
                         if (AutoDetectSerial(ports))
                         {
                             Persistence.SaveSettings();
-                            PostConnectionOffers();
                         }
                         else
                         {
@@ -413,96 +426,5 @@ namespace coppercli.Menus
             }
         }
 
-        private static void OfferToReloadGCodeFile()
-        {
-            var session = AppState.Session;
-            if (!string.IsNullOrEmpty(session.LastLoadedGCodeFile) && File.Exists(session.LastLoadedGCodeFile))
-            {
-                var fileName = Path.GetFileName(session.LastLoadedGCodeFile);
-                var result = MenuHelpers.ConfirmOrQuit($"Reload last G-code file ({fileName})?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    FileMenu.LoadGCodeFromPath(session.LastLoadedGCodeFile);
-                }
-            }
-        }
-
-        private static void OfferToReloadProbeFile()
-        {
-            var session = AppState.Session;
-            if (!string.IsNullOrEmpty(session.LastSavedProbeFile) && File.Exists(session.LastSavedProbeFile))
-            {
-                var fileName = Path.GetFileName(session.LastSavedProbeFile);
-                var result = MenuHelpers.ConfirmOrQuit($"Load probe data {fileName}?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    try
-                    {
-                        AppState.ProbePoints = ProbeGrid.Load(session.LastSavedProbeFile);
-                        AppState.ProbePointsApplied = false;
-                        AppState.WorkZeroSet = true;
-                        var pp = AppState.ProbePoints;
-                        AnsiConsole.MarkupLine($"[green]Probe data loaded: {pp.TotalPoints} points (work zero trusted)[/]");
-                    }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
-                    }
-                }
-            }
-        }
-
-        private static void OfferToAcceptStoredWorkZero()
-        {
-            var session = AppState.Session;
-            if (session.HasStoredWorkZero)
-            {
-                var result = MenuHelpers.ConfirmOrQuit("Trust work zero from previous session?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    AppState.WorkZeroSet = true;
-                    AnsiConsole.MarkupLine("[green]Work zero restored[/]");
-                }
-            }
-        }
-
-        private static void OfferToContinueProbing()
-        {
-            var session = AppState.Session;
-            if (!string.IsNullOrEmpty(session.ProbeAutoSavePath) && File.Exists(session.ProbeAutoSavePath))
-            {
-                var result = MenuHelpers.ConfirmOrQuit("Continue incomplete probing session?");
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    try
-                    {
-                        AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
-                        AppState.ProbePointsApplied = false;
-                        var hm = AppState.ProbePoints;
-                        AnsiConsole.MarkupLine($"[green]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
-                    }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
-                    }
-                }
-            }
-        }
     }
 }
