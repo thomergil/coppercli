@@ -1,0 +1,19 @@
+namespace coppercli.Core.Settings
+{
+    /// <summary>
+    /// Transient session state that changes during normal use.
+    /// Separate from MachineSettings which contains permanent configuration.
+    /// </summary>
+    public class SessionState
+    {
+        // File browsing
+        public string LastBrowseDirectory { get; set; } = "";
+        public string LastLoadedGCodeFile { get; set; } = "";
+
+        // Probe auto-save (for resuming interrupted probes)
+        public string ProbeAutoSavePath { get; set; } = "";
+
+        // Last saved complete probe file
+        public string LastSavedProbeFile { get; set; } = "";
+    }
+}
