@@ -4,6 +4,8 @@
 
 A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling via probe grids. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
+<br clear="both">
+
 | Probing | Milling |
 |:-------:|:-------:|
 | ![Probing](doc/probing.png) | ![Milling](doc/milling-screen.png) |
