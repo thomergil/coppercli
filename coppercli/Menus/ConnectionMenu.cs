@@ -277,7 +277,10 @@ namespace coppercli.Menus
                         {
                             ports.AddRange(Directory.GetFiles("/dev", pattern));
                         }
-                        catch { }
+                        catch
+                        {
+                            // Ignore directory access errors - continue with other patterns
+                        }
                     }
                 }
             }

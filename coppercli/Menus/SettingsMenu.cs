@@ -2,6 +2,7 @@
 
 using Spectre.Console;
 using coppercli.Helpers;
+using static coppercli.CliConstants;
 
 namespace coppercli.Menus
 {
@@ -92,7 +93,7 @@ namespace coppercli.Menus
                     case SettingAction.Save:
                         saveSettings();
                         AnsiConsole.MarkupLine("[green]Settings saved[/]");
-                        Thread.Sleep(500);
+                        Thread.Sleep(ResetWaitMs);
                         break;
                     case SettingAction.Back:
                         return;

@@ -145,8 +145,6 @@ namespace coppercli.Menus
             {
                 var currentFile = GCodeFile.Load(path);
                 AppState.CurrentFile = currentFile;
-                AnsiConsole.MarkupLine($"[green]Loaded: {currentFile.FileName}[/]");
-                AnsiConsole.WriteLine(currentFile.GetInfo());
 
                 if (currentFile.Warnings.Count > 0)
                 {

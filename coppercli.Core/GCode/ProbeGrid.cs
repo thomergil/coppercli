@@ -32,13 +32,17 @@ namespace coppercli.Core.GCode
         public ProbeGrid(double gridSize, Vector2 min, Vector2 max)
         {
             if (min.X == max.X || min.Y == max.Y)
-                throw new Exception("Height map can't be infinitely narrow");
+            {
+                throw new Exception("Probe grid can't be infinitely narrow");
+            }
 
             int pointsX = (int)Math.Ceiling((max.X - min.X) / gridSize) + 1;
             int pointsY = (int)Math.Ceiling((max.Y - min.Y) / gridSize) + 1;
 
             if (pointsX < 2 || pointsY < 2)
-                throw new Exception("Height map must have at least 4 points");
+            {
+                throw new Exception("Probe grid must have at least 4 points");
+            }
 
             Points = new double?[pointsX, pointsY];
 
@@ -72,7 +76,9 @@ namespace coppercli.Core.GCode
         public double InterpolateZ(double x, double y)
         {
             if (x > Max.X || x < Min.X || y > Max.Y || y < Min.Y)
+            {
                 return MaxHeight;
+            }
 
             x -= Min.X;
             y -= Min.Y;
@@ -114,9 +120,13 @@ namespace coppercli.Core.GCode
             Points[x, y] = height;
 
             if (height > MaxHeight)
+            {
                 MaxHeight = height;
+            }
             if (height < MinHeight)
+            {
                 MinHeight = height;
+            }
 
             MapUpdated?.Invoke();
         }
@@ -142,15 +152,20 @@ namespace coppercli.Core.GCode
                         map.Points = new double?[map.SizeX, map.SizeY];
                         break;
                     case "point":
-                        int x = int.Parse(r["X"]), y = int.Parse(r["Y"]);
+                        int x = int.Parse(r["X"]);
+                        int y = int.Parse(r["Y"]);
                         double height = double.Parse(r.ReadInnerXml(), Constants.DecimalParseFormat);
 
                         map.Points[x, y] = height;
 
                         if (height > map.MaxHeight)
+                        {
                             map.MaxHeight = height;
+                        }
                         if (height < map.MinHeight)
+                        {
                             map.MinHeight = height;
+                        }
 
                         break;
                 }
@@ -161,8 +176,12 @@ namespace coppercli.Core.GCode
             for (int x = 0; x < map.SizeX; x++)
             {
                 for (int y = 0; y < map.SizeY; y++)
+                {
                     if (!map.Points[x, y].HasValue)
+                    {
                         map.NotProbed.Add(new Tuple<int, int>(x, y));
+                    }
+                }
             }
 
             return map;
@@ -187,7 +206,9 @@ namespace coppercli.Core.GCode
                 for (int y = 0; y < SizeY; y++)
                 {
                     if (!Points[x, y].HasValue)
+                    {
                         continue;
+                    }
 
                     w.WriteStartElement("point");
                     w.WriteAttributeString("X", x.ToString());
@@ -201,15 +222,24 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Get information about the height map as a string
+        /// Check if any points have valid height data.
+        /// </summary>
+        public bool HasValidHeights => Progress > 0 && MinHeight != double.MaxValue && MaxHeight != double.MinValue;
+
+        /// <summary>
+        /// Get information about the probe grid as a string.
         /// </summary>
         public string GetInfo()
         {
-            return $"Height Map: {SizeX}x{SizeY} points\n" +
+            string zRange = HasValidHeights
+                ? $"Z range: {MinHeight:F3} to {MaxHeight:F3}"
+                : "Z range: --";
+
+            return $"Probe Grid: {SizeX}x{SizeY} points\n" +
                    $"Area: X[{Min.X:F3} to {Max.X:F3}] Y[{Min.Y:F3} to {Max.Y:F3}]\n" +
                    $"Grid: {GridX:F3} x {GridY:F3}\n" +
                    $"Progress: {Progress}/{TotalPoints} points probed\n" +
-                   $"Z range: {MinHeight:F3} to {MaxHeight:F3}";
+                   zRange;
         }
     }
 }

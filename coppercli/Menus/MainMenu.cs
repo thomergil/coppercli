@@ -27,9 +27,12 @@ namespace coppercli.Menus
         private static readonly MenuDef<MainAction> MainMenuDef = new(
             new MenuItem<MainAction>("Connect/Disconnect", 'c', MainAction.Connect),
             new MenuItem<MainAction>("Load G-Code File", 'l', MainAction.LoadFile),
-            new MenuItem<MainAction>("Move", 'm', MainAction.Move),
-            new MenuItem<MainAction>("Probe", 'p', MainAction.Probe),
-            new MenuItem<MainAction>("Mill", 'g', MainAction.Mill),
+            new MenuItem<MainAction>("Move", 'm', MainAction.Move,
+                EnabledWhen: () => AppState.Machine.Connected),
+            new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
+                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null),
+            new MenuItem<MainAction>("Mill", 'g', MainAction.Mill,
+                EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -55,7 +58,7 @@ namespace coppercli.Menus
 
             if (currentFile != null)
             {
-                AnsiConsole.MarkupLine($"File: [cyan]{currentFile.FileName}[/] ({currentFile.Toolpath.Count} commands)");
+                AnsiConsole.MarkupLine($"File: [cyan]{currentFile.FileName}[/] ({currentFile.Size.X:F1} x {currentFile.Size.Y:F1} mm)");
             }
 
             if (probePoints != null)
@@ -119,5 +122,6 @@ namespace coppercli.Menus
             }
             Environment.Exit(0);
         }
+
     }
 }

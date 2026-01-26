@@ -39,7 +39,10 @@ namespace coppercli.Core.Util
                         int number = int.Parse(m.Groups[1].Value);
                         dict[number] = m.Groups[2].Value;
                     }
-                    catch { }
+                    catch
+                    {
+                        // Skip malformed lines in error code file
+                    }
                 }
             }
             catch (Exception ex)
@@ -54,7 +57,9 @@ namespace coppercli.Core.Util
             {
                 string content = LoadEmbeddedResource(resourceName);
                 if (string.IsNullOrEmpty(content))
+                {
                     return;
+                }
 
                 Regex LineParser = new Regex(@"""([0-9]+)"",""([^\n\r""]*)"",""([^\n\r""]*)"",""([^\n\r""]*)""");
 
@@ -67,7 +72,10 @@ namespace coppercli.Core.Util
                         int number = int.Parse(m.Groups[1].Value);
                         dict[number] = new Tuple<string, string, string>(m.Groups[2].Value, m.Groups[3].Value, m.Groups[4].Value);
                     }
-                    catch { }
+                    catch
+                    {
+                        // Skip malformed lines in settings file
+                    }
                 }
             }
             catch (Exception ex)

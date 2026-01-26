@@ -13,6 +13,10 @@ namespace coppercli.Menus
     /// </summary>
     internal static class MillMenu
     {
+        // ANSI escape codes for real-time display. We use raw ANSI codes here instead of
+        // Spectre.Console markup because the milling progress display uses Console.SetCursorPosition
+        // to redraw in-place at high frequency. Spectre.Console's rendering model doesn't support
+        // this pattern well and causes visible flicker. Raw ANSI codes allow smooth updates.
         private const string Cyan = "\u001b[36m";
         private const string BoldCyan = "\u001b[1;36m";
         private const string Yellow = "\u001b[93m";
@@ -22,7 +26,7 @@ namespace coppercli.Menus
 
         public static void Show()
         {
-            if (!RequireConnection())
+            if (!MenuHelpers.RequireConnection())
             {
                 return;
             }
@@ -31,8 +35,7 @@ namespace coppercli.Menus
 
             if (machine.File.Count == 0)
             {
-                AnsiConsole.MarkupLine("[red]No file loaded[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("No file loaded");
                 return;
             }
 
@@ -50,17 +53,6 @@ namespace coppercli.Menus
             machine.FileGoto(0);
             machine.FileStart();
             MonitorMilling();
-        }
-
-        private static bool RequireConnection()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                AnsiConsole.MarkupLine("[red]Not connected![/]");
-                Console.ReadKey();
-                return false;
-            }
-            return true;
         }
 
         private static void MonitorMilling()

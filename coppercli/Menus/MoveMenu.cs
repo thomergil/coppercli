@@ -15,7 +15,7 @@ namespace coppercli.Menus
     {
         public static void Show()
         {
-            if (!RequireConnection())
+            if (!MenuHelpers.RequireConnection())
             {
                 return;
             }
@@ -210,17 +210,6 @@ namespace coppercli.Menus
                     InputHelpers.FlushKeyboard();
                 }
             }
-        }
-
-        private static bool RequireConnection()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                AnsiConsole.MarkupLine("[red]Not connected![/]");
-                Console.ReadKey();
-                return false;
-            }
-            return true;
         }
 
         /// <summary>

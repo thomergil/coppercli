@@ -52,7 +52,10 @@ namespace coppercli.Core.Util
                             variables.Add("MIN" + Axes[i], min[i]);
                         }
                     }
-                    catch { }
+                    catch
+                    {
+                        // Ignore file parsing errors - variables will use default (0,0,0) bounds
+                    }
                 }
 
                 variables.Add("TLO", machine.CurrentTLO);

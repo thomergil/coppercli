@@ -20,6 +20,8 @@ namespace coppercli
         public const int ResetWaitMs = 500;
         public const int IdleWaitTimeoutMs = 3000;
         public const int HomingTimeoutMs = 60000;
+        public const int ZHeightWaitTimeoutMs = 30000;
+        public const int MoveCompleteTimeoutMs = 60000;
 
         // =========================================================================
         // Baud rates in order of likelihood for GRBL/CNC controllers

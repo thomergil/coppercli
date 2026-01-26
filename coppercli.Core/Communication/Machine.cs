@@ -47,6 +47,14 @@ namespace coppercli.Core.Communication
         public event Action FilePositionChanged;
         public event Action OverrideChanged;
 
+        // =========================================================================
+        // Compiled regex patterns for GRBL response parsing
+        // =========================================================================
+        private static readonly Regex GCodeSplitter = new Regex(@"([GZ])\s*(\-?\d+\.?\d*)", RegexOptions.Compiled);
+        private static readonly Regex StatusEx = new Regex(@"(?<=[<|])(\w+):?([^|>]*)?(?=[|>])", RegexOptions.Compiled);
+        private static readonly Regex ProbeEx = new Regex(@"\[PRB:(?'Pos'\-?[0-9\.]*(?:,\-?[0-9\.]*)+):(?'Success'0|1)\]", RegexOptions.Compiled);
+        private static readonly Regex StartupRegex = new Regex("grbl v([0-9])\\.([0-9])([a-z])", RegexOptions.Compiled);
+
         public Vector3 MachinePosition { get; private set; } = new Vector3();
         public Vector3 WorkOffset { get; private set; } = new Vector3();
         public Vector3 WorkPosition { get { return MachinePosition - WorkOffset; } }
@@ -104,7 +112,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_mode == value)
+                {
                     return;
+                }
 
                 _mode = value;
                 RaiseEvent(OperatingModeChanged);
@@ -118,7 +128,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_status == value)
+                {
                     return;
+                }
                 _status = value;
                 RaiseEvent(StatusChanged);
             }
@@ -131,7 +143,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_distanceMode == value)
+                {
                     return;
+                }
                 _distanceMode = value;
                 RaiseEvent(DistanceModeChanged);
             }
@@ -144,7 +158,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_unit == value)
+                {
                     return;
+                }
                 _unit = value;
                 RaiseEvent(UnitChanged);
             }
@@ -157,7 +173,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_plane == value)
+                {
                     return;
+                }
                 _plane = value;
                 RaiseEvent(PlaneChanged);
             }
@@ -170,12 +188,16 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (value == _connected)
+                {
                     return;
+                }
 
                 _connected = value;
 
                 if (!Connected)
+                {
                     Mode = OperatingMode.Disconnected;
+                }
 
                 RaiseEvent(ConnectionStateChanged);
             }
@@ -188,7 +210,9 @@ namespace coppercli.Core.Communication
             private set
             {
                 if (_bufferState == value)
+                {
                     return;
+                }
 
                 _bufferState = value;
                 RaiseEvent(BufferStateChanged);
@@ -263,7 +287,9 @@ namespace coppercli.Core.Communication
                     while (!lineTask.IsCompleted)
                     {
                         if (!Connected)
+                        {
                             return;
+                        }
 
                         while (ToSendPriority.Count > 0)
                         {
@@ -275,20 +301,20 @@ namespace coppercli.Core.Communication
                         {
                             if (File.Count > FilePosition && (File[FilePosition].Length + 1) < (ControllerBufferSize - BufferState))
                             {
-                                string send_line = File[FilePosition].Replace(" ", "");
+                                string sendLine = File[FilePosition].Replace(" ", "");
 
-                                writer.Write(send_line);
+                                writer.Write(sendLine);
                                 writer.Write('\n');
                                 writer.Flush();
 
-                                RecordLog("> " + send_line);
+                                RecordLog("> " + sendLine);
 
-                                RaiseEvent(UpdateStatus, send_line);
-                                RaiseEvent(LineSent, send_line);
+                                RaiseEvent(UpdateStatus, sendLine);
+                                RaiseEvent(LineSent, sendLine);
 
-                                BufferState += send_line.Length + 1;
+                                BufferState += sendLine.Length + 1;
 
-                                Sent.Enqueue(send_line);
+                                Sent.Enqueue(sendLine);
 
                                 if (PauseLines[FilePosition] && _settings.PauseFileOnHold)
                                 {
@@ -312,33 +338,33 @@ namespace coppercli.Core.Communication
                                     {
                                         SendMacroStatusReceived = false;
 
-                                        string send_line = (string)ToSendMacro.Dequeue();
+                                        string sendLine = (string)ToSendMacro.Dequeue();
 
-                                        send_line = Calculator.Evaluate(send_line, out bool success);
+                                        sendLine = Calculator.Evaluate(sendLine, out bool success);
 
                                         if (!success)
                                         {
                                             ReportError("Error while evaluating macro!");
-                                            ReportError(send_line);
+                                            ReportError(sendLine);
 
                                             ToSendMacro.Clear();
                                         }
                                         else
                                         {
-                                            send_line = send_line.Replace(" ", "");
+                                            sendLine = sendLine.Replace(" ", "");
 
-                                            writer.Write(send_line);
+                                            writer.Write(sendLine);
                                             writer.Write('\n');
                                             writer.Flush();
 
-                                            RecordLog("> " + send_line);
+                                            RecordLog("> " + sendLine);
 
-                                            RaiseEvent(UpdateStatus, send_line);
-                                            RaiseEvent(LineSent, send_line);
+                                            RaiseEvent(UpdateStatus, sendLine);
+                                            RaiseEvent(LineSent, sendLine);
 
-                                            BufferState += send_line.Length + 1;
+                                            BufferState += sendLine.Length + 1;
 
-                                            Sent.Enqueue(send_line);
+                                            Sent.Enqueue(sendLine);
                                         }
                                     }
                                     break;
@@ -351,24 +377,26 @@ namespace coppercli.Core.Communication
                             }
 
                             if (ToSendMacro.Count == 0)
+                            {
                                 Mode = OperatingMode.Manual;
+                            }
                         }
                         else if (ToSend.Count > 0 && (((string)ToSend.Peek()).Length + 1) < (ControllerBufferSize - BufferState))
                         {
-                            string send_line = ((string)ToSend.Dequeue()).Replace(" ", "");
+                            string sendLine = ((string)ToSend.Dequeue()).Replace(" ", "");
 
-                            writer.Write(send_line);
+                            writer.Write(sendLine);
                             writer.Write('\n');
                             writer.Flush();
 
-                            RecordLog("> " + send_line);
+                            RecordLog("> " + sendLine);
 
-                            RaiseEvent(UpdateStatus, send_line);
-                            RaiseEvent(LineSent, send_line);
+                            RaiseEvent(UpdateStatus, sendLine);
+                            RaiseEvent(LineSent, sendLine);
 
-                            BufferState += send_line.Length + 1;
+                            BufferState += sendLine.Length + 1;
 
-                            Sent.Enqueue(send_line);
+                            Sent.Enqueue(sendLine);
                         }
 
                         DateTime Now = DateTime.Now;
@@ -463,7 +491,9 @@ namespace coppercli.Core.Communication
                             RaiseEvent(ParseStartup, line);
                         }
                         else if (line.Length > 0)
+                        {
                             RaiseEvent(LineReceived, line);
+                        }
                     }
                 }
             }
@@ -484,7 +514,9 @@ namespace coppercli.Core.Communication
         public void Connect()
         {
             if (Connected)
+            {
                 throw new Exception("Can't Connect: Already Connected");
+            }
 
             switch (_settings.ConnectionType)
             {
@@ -533,7 +565,9 @@ namespace coppercli.Core.Communication
             }
 
             if (!Connected)
+            {
                 return;
+            }
 
             if (_settings.LogTraffic)
             {
@@ -564,7 +598,9 @@ namespace coppercli.Core.Communication
         public void Disconnect()
         {
             if (Log != null)
+            {
                 Log.Close();
+            }
             Log = null;
 
             Connected = false;
@@ -582,7 +618,10 @@ namespace coppercli.Core.Communication
                     {
                         Connection?.Close();
                     }
-                    catch { }
+                    catch
+                    {
+                        // Ignore close errors during disconnect - we're cleaning up anyway
+                    }
                     Connection?.Dispose();
                     Connection = null;
                     break;
@@ -686,7 +725,9 @@ namespace coppercli.Core.Communication
             }
 
             foreach (string line in lines)
+            {
                 ToSendMacro.Enqueue(line.Trim());
+            }
 
             Mode = OperatingMode.SendMacro;
         }
@@ -868,7 +909,9 @@ namespace coppercli.Core.Communication
         public void FileGoto(int lineNumber)
         {
             if (Mode == OperatingMode.SendFile)
+            {
                 return;
+            }
 
             if (lineNumber >= File.Count || lineNumber < 0)
             {
@@ -891,15 +934,17 @@ namespace coppercli.Core.Communication
             ToSend.Clear();
         }
 
-        private static Regex GCodeSplitter = new Regex(@"([GZ])\s*(\-?\d+\.?\d*)", RegexOptions.Compiled);
-
         private void UpdateStatus(string line)
         {
             if (!Connected)
+            {
                 return;
+            }
 
             if (line.Contains("$J="))
+            {
                 return;
+            }
 
             if (line.StartsWith(ResponseTloPrefix))
             {
@@ -920,29 +965,47 @@ namespace coppercli.Core.Communication
                     Match m = mc[i];
 
                     if (m.Groups[1].Value != "G")
+                    {
                         continue;
+                    }
 
                     double code = double.Parse(m.Groups[2].Value, Constants.DecimalParseFormat);
 
                     if (code == PlaneXY)
+                    {
                         Plane = ArcPlane.XY;
+                    }
                     if (code == PlaneYZ)
+                    {
                         Plane = ArcPlane.YZ;
+                    }
                     if (code == PlaneZX)
+                    {
                         Plane = ArcPlane.ZX;
+                    }
 
                     if (code == UnitsInches)
+                    {
                         Unit = ParseUnit.Imperial;
+                    }
                     if (code == UnitsMillimeters)
+                    {
                         Unit = ParseUnit.Metric;
+                    }
 
                     if (code == DistanceAbsolute)
+                    {
                         DistanceMode = ParseDistanceMode.Absolute;
+                    }
                     if (code == DistanceIncremental)
+                    {
                         DistanceMode = ParseDistanceMode.Incremental;
+                    }
 
                     if (code == ToolLengthOffsetCancel)
+                    {
                         CurrentTLO = 0;
+                    }
 
                     if (code == ToolLengthOffsetDynamic)
                     {
@@ -960,8 +1023,6 @@ namespace coppercli.Core.Communication
             }
             catch { RaiseEvent(NonFatalException, "Error while Parsing Status Message"); }
         }
-
-        private static Regex StatusEx = new Regex(@"(?<=[<|])(\w+):?([^|>]*)?(?=[|>])", RegexOptions.Compiled);
 
         private void ParseStatus(string line)
         {
@@ -1027,7 +1088,9 @@ namespace coppercli.Core.Communication
                         int used = _settings.ControllerBufferSize - availableBytes;
 
                         if (used < 0)
+                        {
                             used = 0;
+                        }
 
                         BufferState = used;
                         RaiseEvent(Info, $"Buffer State Synced ({availableBytes} bytes free)");
@@ -1042,22 +1105,30 @@ namespace coppercli.Core.Communication
 
                     bool stateX = states.Contains("X");
                     if (stateX != PinStateLimitX)
+                    {
                         pinStateUpdate = true;
+                    }
                     PinStateLimitX = stateX;
 
                     bool stateY = states.Contains("Y");
                     if (stateY != PinStateLimitY)
+                    {
                         pinStateUpdate = true;
+                    }
                     PinStateLimitY = stateY;
 
                     bool stateZ = states.Contains("Z");
                     if (stateZ != PinStateLimitZ)
+                    {
                         pinStateUpdate = true;
+                    }
                     PinStateLimitZ = stateZ;
 
                     bool stateP = states.Contains("P");
                     if (stateP != PinStateProbe)
+                    {
                         pinStateUpdate = true;
+                    }
                     PinStateProbe = stateP;
                 }
                 else if (m.Groups[1].Value == FieldFeed)
@@ -1107,7 +1178,9 @@ namespace coppercli.Core.Communication
                         NewMachinePosition = Vector3.Parse(PositionString);
 
                         if (m.Groups[1].Value == FieldWorkPos)
+                        {
                             NewMachinePosition += WorkOffset;
+                        }
 
                         if (NewMachinePosition != MachinePosition)
                         {
@@ -1120,10 +1193,14 @@ namespace coppercli.Core.Communication
             }
 
             if (posUpdate && Connected)
+            {
                 PositionUpdateReceived?.Invoke();
+            }
 
             if (overrideUpdate && Connected)
+            {
                 OverrideChanged?.Invoke();
+            }
 
             if (resetPins)
             {
@@ -1136,18 +1213,22 @@ namespace coppercli.Core.Communication
             }
 
             if (pinStateUpdate && Connected)
+            {
                 PinStateChanged?.Invoke();
+            }
 
             if (Connected)
+            {
                 StatusReceived?.Invoke(line);
+            }
         }
-
-        private static Regex ProbeEx = new Regex(@"\[PRB:(?'Pos'\-?[0-9\.]*(?:,\-?[0-9\.]*)+):(?'Success'0|1)\]", RegexOptions.Compiled);
 
         private void ParseProbe(string line)
         {
             if (ProbeFinished == null)
+            {
                 return;
+            }
 
             Match probeMatch = ProbeEx.Match(line);
 
@@ -1184,8 +1265,6 @@ namespace coppercli.Core.Communication
 
             ProbeFinished.Invoke(ProbePos, ProbeSuccess);
         }
-
-        private static Regex StartupRegex = new Regex("grbl v([0-9])\\.([0-9])([a-z])");
 
         private void ParseStartup(string line)
         {

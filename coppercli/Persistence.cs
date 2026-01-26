@@ -11,31 +11,31 @@ namespace coppercli
     /// </summary>
     internal static class Persistence
     {
-        private static string GetSettingsPath()
+        /// <summary>
+        /// Gets the application data directory, creating it if it doesn't exist.
+        /// </summary>
+        private static string GetAppDataDir()
         {
             var appDataDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 AppTitle);
             Directory.CreateDirectory(appDataDir);
-            return Path.Combine(appDataDir, SettingsFileName);
+            return appDataDir;
+        }
+
+        private static string GetSettingsPath()
+        {
+            return Path.Combine(GetAppDataDir(), SettingsFileName);
         }
 
         private static string GetSessionPath()
         {
-            var appDataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                AppTitle);
-            Directory.CreateDirectory(appDataDir);
-            return Path.Combine(appDataDir, SessionFileName);
+            return Path.Combine(GetAppDataDir(), SessionFileName);
         }
 
         public static string GetProbeAutoSavePath()
         {
-            var appDataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                AppTitle);
-            Directory.CreateDirectory(appDataDir);
-            return Path.Combine(appDataDir, ProbeAutoSaveFileName);
+            return Path.Combine(GetAppDataDir(), ProbeAutoSaveFileName);
         }
 
         public static MachineSettings LoadSettings()

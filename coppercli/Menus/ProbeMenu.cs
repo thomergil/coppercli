@@ -197,15 +197,13 @@ namespace coppercli.Menus
 
             if (currentFile == null)
             {
-                AnsiConsole.MarkupLine("[red]No G-code file loaded[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("No G-code file loaded");
                 return;
             }
 
             if (probePoints == null || probePoints.NotProbed.Count > 0)
             {
-                AnsiConsole.MarkupLine("[red]Probe data not complete[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("Probe data not complete");
                 return;
             }
 
@@ -218,33 +216,20 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError($"Error: {ex.Message}");
             }
-        }
-
-        private static bool RequireConnection()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                AnsiConsole.MarkupLine("[red]Not connected![/]");
-                Console.ReadKey();
-                return false;
-            }
-            return true;
         }
 
         private static void ContinueProbing()
         {
-            if (!RequireConnection())
+            if (!MenuHelpers.RequireConnection())
             {
                 return;
             }
 
             if (!AppState.WorkZeroSet)
             {
-                AnsiConsole.MarkupLine("[red]Work zero not set. Use Move menu to zero all axes (0) first.[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
                 return;
             }
 
@@ -257,8 +242,7 @@ namespace coppercli.Menus
             {
                 if (string.IsNullOrEmpty(session.ProbeAutoSavePath) || !File.Exists(session.ProbeAutoSavePath))
                 {
-                    AnsiConsole.MarkupLine("[red]No incomplete probe data found.[/]");
-                    Console.ReadKey();
+                    MenuHelpers.ShowError("No incomplete probe data found.");
                     return;
                 }
 
@@ -270,8 +254,7 @@ namespace coppercli.Menus
                 }
                 catch (Exception ex)
                 {
-                    AnsiConsole.MarkupLine($"[red]Error loading probe data: {Markup.Escape(ex.Message)}[/]");
-                    Console.ReadKey();
+                    MenuHelpers.ShowError($"Error loading probe data: {ex.Message}");
                     return;
                 }
             }
@@ -312,7 +295,7 @@ namespace coppercli.Menus
 
         private static void StartProbing()
         {
-            if (!RequireConnection())
+            if (!MenuHelpers.RequireConnection())
             {
                 return;
             }
@@ -321,22 +304,29 @@ namespace coppercli.Menus
 
             if (currentFile == null)
             {
-                AnsiConsole.MarkupLine("[red]No G-Code file loaded. Load a file first.[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("No G-Code file loaded. Load a file first.");
                 return;
             }
 
             if (!AppState.WorkZeroSet)
             {
-                AnsiConsole.MarkupLine("[red]Work zero not set. Use Move menu to zero all axes (0) first.[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
                 return;
             }
 
-            double margin = AnsiConsole.Ask("Probe margin (mm):", DefaultProbeMargin);
-            double gridSize = AnsiConsole.Ask("Grid size (mm):", DefaultProbeGridSize);
+            var margin = MenuHelpers.AskDoubleOrQuit("Probe margin (mm)", DefaultProbeMargin);
+            if (margin == null)
+            {
+                return;
+            }
 
-            if (!CreateProbeGrid(margin, gridSize))
+            var gridSize = MenuHelpers.AskDoubleOrQuit("Grid size (mm)", DefaultProbeGridSize);
+            if (gridSize == null)
+            {
+                return;
+            }
+
+            if (!CreateProbeGrid(margin.Value, gridSize.Value))
             {
                 return;
             }
@@ -401,8 +391,7 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error creating probe grid: {Markup.Escape(ex.Message)}[/]");
-                Console.ReadKey();
+                MenuHelpers.ShowError($"Error creating probe grid: {ex.Message}");
                 return false;
             }
         }
@@ -418,10 +407,19 @@ namespace coppercli.Menus
                 return false;
             }
 
-            double traverseHeight = AnsiConsole.Ask("Traverse height (mm):", settings.OutlineTraverseHeight);
-            double traverseFeed = AnsiConsole.Ask("Traverse feed (mm/min):", settings.OutlineTraverseFeed);
+            var traverseHeight = MenuHelpers.AskDoubleOrQuit("Traverse height (mm)", settings.OutlineTraverseHeight);
+            if (traverseHeight == null)
+            {
+                return false;
+            }
 
-            AnsiConsole.MarkupLine($"[yellow]Traversing probe outline at Z={traverseHeight:F1}mm, feed={traverseFeed:F0}mm/min[/]");
+            var traverseFeed = MenuHelpers.AskDoubleOrQuit("Traverse feed (mm/min)", settings.OutlineTraverseFeed);
+            if (traverseFeed == null)
+            {
+                return false;
+            }
+
+            AnsiConsole.MarkupLine($"[yellow]Traversing probe outline at Z={traverseHeight.Value:F1}mm, feed={traverseFeed.Value:F0}mm/min[/]");
             AnsiConsole.MarkupLine("[dim]Press Escape to cancel[/]");
 
             double minX = probePoints.Min.X;
@@ -430,7 +428,7 @@ namespace coppercli.Menus
             double maxY = probePoints.Max.Y;
 
             double currentZ = machine.WorkPosition.Z;
-            double safeZ = Math.Max(currentZ, traverseHeight);
+            double safeZ = Math.Max(currentZ, traverseHeight.Value);
             AnsiConsole.MarkupLine($"[dim]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{safeZ:F3}");
@@ -457,7 +455,7 @@ namespace coppercli.Menus
                 }
 
                 AnsiConsole.MarkupLine($"  Moving to {label} ({x:F1}, {y:F1})...");
-                machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traverseFeed:F0}");
+                machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traverseFeed.Value:F0}");
 
                 if (!WaitForMoveComplete(x, y))
                 {
@@ -475,28 +473,24 @@ namespace coppercli.Menus
 
         private static void WaitForZHeight(double targetZ)
         {
-            const int PollIntervalMs = 100;
-            const int TimeoutMs = 30000;
             var startTime = DateTime.Now;
 
-            while ((DateTime.Now - startTime).TotalMilliseconds < TimeoutMs)
+            while ((DateTime.Now - startTime).TotalMilliseconds < ZHeightWaitTimeoutMs)
             {
                 double dz = Math.Abs(AppState.Machine.WorkPosition.Z - targetZ);
                 if (dz < PositionToleranceMm)
                 {
                     return;
                 }
-                Thread.Sleep(PollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
         }
 
         private static bool WaitForMoveComplete(double targetX, double targetY)
         {
-            const int PollIntervalMs = 100;
-            const int TimeoutMs = 60000;
             var startTime = DateTime.Now;
 
-            while ((DateTime.Now - startTime).TotalMilliseconds < TimeoutMs)
+            while ((DateTime.Now - startTime).TotalMilliseconds < MoveCompleteTimeoutMs)
             {
                 if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
                 {
@@ -512,7 +506,7 @@ namespace coppercli.Menus
                     return true;
                 }
 
-                Thread.Sleep(PollIntervalMs);
+                Thread.Sleep(StatusPollIntervalMs);
             }
 
             return true;
@@ -568,7 +562,7 @@ namespace coppercli.Menus
             string pad = new string(' ', leftPadding);
 
             Console.Clear();
-            string zRange = probePoints.Progress > 0
+            string zRange = probePoints.HasValidHeights
                 ? $"Z: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3}"
                 : "Z: --";
             string header = $"Probing: {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
@@ -619,8 +613,11 @@ namespace coppercli.Menus
 
             AnsiConsole.MarkupLine("[green]Probing complete![/]");
             AnsiConsole.MarkupLine($"  Points: {probePoints.TotalPoints}");
-            AnsiConsole.MarkupLine($"  Z range: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3} mm");
-            AnsiConsole.MarkupLine($"  Variance: {probePoints.MaxHeight - probePoints.MinHeight:F3} mm");
+            if (probePoints.HasValidHeights)
+            {
+                AnsiConsole.MarkupLine($"  Z range: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3} mm");
+                AnsiConsole.MarkupLine($"  Variance: {probePoints.MaxHeight - probePoints.MinHeight:F3} mm");
+            }
             AnsiConsole.WriteLine();
 
             string defaultFilename;
