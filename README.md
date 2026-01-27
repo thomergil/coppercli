@@ -88,13 +88,7 @@ When the proxy starts, it displays the IP addresses clients can use to connect. 
 
 ## Warning
 
-**This software is EXTREMELY EXPERIMENTAL and may damage your CNC machine. Use at your own risk.**
-
-Always:
-- Start with the spindle off when testing
-- Use the outline traversal feature to check clearance before probing
-- Keep your hand on the emergency stop
-- Verify probe data looks reasonable before running G-code
+**This software is EXTREMELY EXPERIMENTAL and may damage your CNC machine and drill bits. Use at your own risk. Stay nearby. Keep your hand on the emergency stop.**
 
 ## License
 
