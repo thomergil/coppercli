@@ -163,4 +163,4 @@ MIT License - see [LICENSE](LICENSE)
 
 - [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250) - the foundation this project is built on
 - [Spectre.Console](https://spectreconsole.net/) - console UI library
-- [Claude Code](https://claude.ai/claude-code) - AI pair programming assistant
+- [Claude Code](https://claude.ai/claude-code)
