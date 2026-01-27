@@ -46,7 +46,7 @@ This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPil
 However, OpenCNCPilot has some limitations:
 
 - **Windows-only**: Built with WPF, it only runs on Windows
-- **GUI-heavy workflow**: The interface requires a lot of mouse clicking and navigating through dialogs, which can be cumbersome when you're standing at a CNC machine with greasy hands
+- **GUI-heavy workflow**: The interface requires a lot of mouse clicking and navigating through dialogs, which can be cumbersome.
 - **No session persistence**: If you disconnect or the program crashes mid-probe, you lose your progress and have to start over
 
 coppercli addresses these issues by providing a keyboard-driven CLI that runs on Linux, macOS, and Windows, with robust session recovery.
