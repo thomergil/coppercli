@@ -31,6 +31,10 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 | --------------------------------------- | ---------------------------------------------- | --------------------------------------------- | ------------------------------------------ |
 | <img src="doc/probing.png" width="200"> | <img src="doc/milling-screen.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
 
+## Tutorial
+
+For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling—see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
+
 ## Background
 
 This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing, height map interpolation, and GRBL communication.
@@ -94,13 +98,6 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 - 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
 - Terminal resize detection with auto-redraw
 
-## Usage
-
-```bash
-./run.sh        # macOS/Linux
-run.bat         # Windows
-```
-
 ## Configuration
 
 Two JSON files are stored in the working directory (both managed by coppercli):
@@ -130,10 +127,6 @@ Always:
 - Use the outline traversal feature to check clearance before probing
 - Keep your hand on the emergency stop
 - Verify probe data looks reasonable before running G-code
-
-## Tutorial
-
-For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling—see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
 
 ## License
 
