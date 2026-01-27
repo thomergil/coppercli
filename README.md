@@ -99,17 +99,10 @@ coppercli addresses these issues by providing a keyboard-driven CLI that runs on
 
 ## Proxy Mode (EXPERIMENTAL)
 
-coppercli can act as a serial-to-TCP bridge, allowing remote GRBL clients to connect to your CNC machine over the network. This is useful for:
+coppercli can act as a serial-to-TCP bridge, allowing remote GRBL clients to connect to your CNC machine over the network.
 
-- Controlling a CNC machine from another computer on your network
-- Using software that only supports network connections with a serial-based machine
-- Remote monitoring of machine status
+Select "Proxy [experimental]" from the main menu, or start it from the command line:
 
-### Usage
-
-**From the menu:** Select "Proxy [experimental]" from the main menu.
-
-**From command line:**
 ```bash
 # Start proxy with interactive TUI display
 coppercli --proxy
@@ -119,22 +112,9 @@ coppercli --proxy --port 35000
 
 # Run without TUI (for services/scripts)
 coppercli --proxy --headless
-
-# Combine flags
-coppercli --proxy --port 35000 --headless --debug
 ```
 
-The proxy uses saved serial port settings. Run coppercli normally first to configure your serial connection.
-
-### Connecting
-
-When proxy starts, it displays the IP addresses clients can use to connect. Clients should connect to the displayed IP and port (default: 34000) using TCP.
-
-### Limitations
-
-- Only one client can connect at a time
-- Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds)
-- The proxy injects periodic `?` status queries during idle periods to detect stale connections
+When the proxy starts, it displays the IP addresses clients can use to connect. A client should connect to the displayed IP and port (default: 34000) using TCP. Only one client can connect at a time. Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds).
 
 ## Command-Line Arguments
 
