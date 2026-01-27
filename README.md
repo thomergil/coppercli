@@ -1,6 +1,6 @@
 # <img src="doc/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling via probe grids. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling using a probed height map. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -33,11 +33,11 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 ## Tutorial
 
-For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling—see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
+For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
 
 ## Background
 
-This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing, height map interpolation, and GRBL communication.
+This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing and height map interpolation.
 
 However, OpenCNCPilot has some limitations:
 
@@ -47,16 +47,13 @@ However, OpenCNCPilot has some limitations:
 
 coppercli addresses these issues by providing a keyboard-driven CLI that runs on Linux, macOS, and Windows, with robust session recovery.
 
-## A Note on Development
-
-C#/.NET is by no means my language of choice, but I wanted to leverage the excellent core functionality in OpenCNCPilot rather than rewrite G-code parsing and height map interpolation from scratch. I worked with [Claude Code](https://claude.ai/claude-code) to rework the codebase into this CLI version.
+**A Note on Development**: C#/.NET is not my language of choice, but I wanted to leverage the core functionality in OpenCNCPilot rather than rewrite G-code parsing and height map interpolation from scratch. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase into this CLI version.
 
 ## Features
 
 ### Platform Agnostic
 - Runs on Linux, macOS, and Windows
-- .NET 8 runtime (cross-platform)
-- Serial and Ethernet connections supported
+- .NET 8 runtime
 - Auto-detect serial port and baud rate (cycles through common rates to find GRBL devices)
 
 ### Keyboard-Driven Interface
@@ -81,19 +78,17 @@ C#/.NET is by no means my language of choice, but I wanted to leverage the excel
 
 ### Machine Control
 
-- Real-time position display
 - Multiple jog speed presets (Tab to cycle: Fast/Normal/Slow/Creep)
-- Pause/Resume/Emergency Stop during milling (P/R/X keys) with automatic spindle shutdown and Z retraction
+- Pause/Resume/Stop during milling with automatic spindle shutdown and Z retraction
 - Home, unlock, and soft reset commands
-- Set work zero (all axes or Z-only)
-- Quick positioning (go to X0Y0, Z0, Z+6mm, Z+1mm)
+- XY, Z, and XYZ homing
 - Single Z probe (find Z height at current XY position)
-- Move to center of loaded G-code file
+- Quick positioning (go to X0Y0, Z0, Z+6mm, Z+1mm)
+- Move to the center of the loaded G-code file
 
 ### G-Code Handling
-- Load and preview G-code files
-- View file bounds and estimated run time
-- Apply height map compensation
+- View file bounds
+- Apply height map/probe point compensation
 - Run with real-time progress display
 - 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
 - Terminal resize detection with auto-redraw

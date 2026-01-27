@@ -150,6 +150,10 @@ static readonly (string Label, char Mnemonic, Action Handler)[] MainMenuItems = 
 - `coppercli/` - Main application (.NET 8)
 - `coppercli.Core/` - Platform-independent core library (.NET 8)
 
+## Debugging
+
+Log file location: `coppercli/bin/Debug/net8.0/coppercli.log`
+
 ## Git
 
 **IMPORTANT:** NEVER run git commands (add, commit, push, etc.) unless the user EXPLICITLY asks. Do not volunteer git commands. Do not stage files automatically after editing. Do not commit. Do not push. Wait for explicit instructions.
@@ -237,3 +241,7 @@ public const string AppVersion = "v0.1.1";
 ```
 
 Update this before creating a new release tag.
+
+### Release Notes
+
+Track new features, bug fixes, and changes in `RELEASES.md`. Add entries under the upcoming version section as features are implemented.

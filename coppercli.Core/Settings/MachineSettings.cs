@@ -23,6 +23,7 @@ namespace coppercli.Core.Settings
         public int StatusPollInterval { get; set; } = 100;
         public int ControllerBufferSize { get; set; } = 127;
         public bool LogTraffic { get; set; } = false;
+        public bool EnableDebugLogging { get; set; } = false;
         public bool PauseFileOnHold { get; set; } = true;
         public bool IgnoreAdditionalAxes { get; set; } = true;
 

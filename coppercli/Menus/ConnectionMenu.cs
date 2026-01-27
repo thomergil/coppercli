@@ -45,7 +45,7 @@ namespace coppercli.Menus
                 {
                     machine.Disconnect();
                     AppState.IsWorkZeroSet = false;
-                    AnsiConsole.MarkupLine("[yellow]Disconnected[/]");
+                    AnsiConsole.MarkupLine($"[yellow]{StatusDisconnected}[/]");
                 }
             }
             else

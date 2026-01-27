@@ -121,7 +121,7 @@ namespace coppercli.Core.Communication
             }
         }
 
-        private string _status = "Disconnected";
+        private string _status = StatusDisconnected;
         private DateTime _lastStateClearAttempt = DateTime.MinValue;
         private const int StateClearIntervalMs = 500;
 
@@ -655,7 +655,7 @@ namespace coppercli.Core.Communication
 
             PositionUpdateReceived?.Invoke();
 
-            Status = "Disconnected";
+            Status = StatusDisconnected;
             DistanceMode = ParseDistanceMode.Absolute;
             Unit = ParseUnit.Metric;
             Plane = ArcPlane.XY;

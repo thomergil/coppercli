@@ -145,6 +145,13 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
+                // Silently ignore T (tool change) commands
+                if (Words[i].Command == 'T')
+                {
+                    Words.RemoveAt(i--);
+                    continue;
+                }
+
                 if (IgnoreAxes.Contains(Words[i].Command) && IgnoreAdditionalAxes)
                 {
                     Words.RemoveAt(i--);

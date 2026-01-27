@@ -215,10 +215,11 @@ namespace coppercli.Core.GCode
 
                     string code = a.Direction == ArcDirection.CW ? "G2" : "G3";
 
-                    if (State.Position.X != a.End.X)
-                        code += string.Format(nfi, " X{0:0.###}", a.End.X);
-                    if (State.Position.Y != a.End.Y)
-                        code += string.Format(nfi, " Y{0:0.###}", a.End.Y);
+                    // Always output X and Y for arcs. GRBL requires explicit endpoint
+                    // coordinates for full-circle arcs (where start == end in X/Y).
+                    // Without them, GRBL returns error:33 for helical full circles.
+                    code += string.Format(nfi, " X{0:0.###}", a.End.X);
+                    code += string.Format(nfi, " Y{0:0.###}", a.End.Y);
                     if (State.Position.Z != a.End.Z)
                         code += string.Format(nfi, " Z{0:0.###}", a.End.Z);
 
@@ -286,7 +287,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile);
+            return new GCodeFile(newFile) { FileName = this.FileName };
         }
 
         public GCodeFile ArcsToLines(double length)
@@ -315,7 +316,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile);
+            return new GCodeFile(newFile) { FileName = this.FileName };
         }
 
         public GCodeFile ApplyProbeGrid(ProbeGrid map)
@@ -363,7 +364,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newToolPath);
+            return new GCodeFile(newToolPath) { FileName = this.FileName };
         }
 
         public GCodeFile RotateCW()
@@ -422,7 +423,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile);
+            return new GCodeFile(newFile) { FileName = this.FileName };
         }
 
         /// <summary>

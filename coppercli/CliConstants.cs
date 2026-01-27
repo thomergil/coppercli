@@ -45,7 +45,7 @@ namespace coppercli
         // App info
         // =========================================================================
         public const string AppTitle = "coppercli";
-        public const string AppVersion = "v0.2.0";
+        public const string AppVersion = "v0.2.1";
 
         // =========================================================================
         // File extensions
@@ -123,6 +123,10 @@ namespace coppercli
         public const string MillCurrentPosMarker = "● ";
         public const string MillVisitedMarker = "░░";
         public const string MillEmptyMarker = "··";
+
+        // Overlay messages
+        public const string OverlayHoldMessage = "HOLD - Press R to resume";
+        public const string OverlayAlarmMessage = "ALARM - Press X to stop";
 
         // =========================================================================
         // Probe matrix display sizing

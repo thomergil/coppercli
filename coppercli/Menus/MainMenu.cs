@@ -64,7 +64,8 @@ namespace coppercli.Menus
 
             if (probePoints != null)
             {
-                AnsiConsole.MarkupLine($"Probe: [cyan]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points)");
+                var appliedStatus = AppState.AreProbePointsApplied ? "[green]applied[/]" : "[yellow]not applied[/]";
+                AnsiConsole.MarkupLine($"Probe: [cyan]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points, {appliedStatus})");
             }
 
             AnsiConsole.WriteLine();

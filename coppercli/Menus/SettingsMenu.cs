@@ -16,6 +16,7 @@ namespace coppercli.Menus
             JogFeed, JogDistance, JogFeedSlow, JogDistanceSlow,
             ProbeFeed, ProbeMaxDepth, ProbeSafeHeight,
             OutlineTraverseHeight, OutlineTraverseFeed,
+            ToggleDebugLogging,
             Save, Back
         }
 
@@ -29,6 +30,7 @@ namespace coppercli.Menus
             new MenuItem<SettingAction>("Probe Safe Height", 'h', SettingAction.ProbeSafeHeight),
             new MenuItem<SettingAction>("Outline Traverse Height", 't', SettingAction.OutlineTraverseHeight),
             new MenuItem<SettingAction>("Outline Traverse Feed", 'o', SettingAction.OutlineTraverseFeed),
+            new MenuItem<SettingAction>("Toggle Debug Logging", 'l', SettingAction.ToggleDebugLogging),
             new MenuItem<SettingAction>("Save Settings", 's', SettingAction.Save),
             new MenuItem<SettingAction>("Back", 'q', SettingAction.Back)
         );
@@ -55,6 +57,7 @@ namespace coppercli.Menus
                 table.AddRow("Probe Safe Height", settings.ProbeSafeHeight.ToString());
                 table.AddRow("Outline Traverse Height", settings.OutlineTraverseHeight.ToString());
                 table.AddRow("Outline Traverse Feed", settings.OutlineTraverseFeed.ToString());
+                table.AddRow("Debug Logging", settings.EnableDebugLogging ? "On" : "Off");
 
                 AnsiConsole.Write(table);
                 AnsiConsole.WriteLine();
@@ -89,6 +92,10 @@ namespace coppercli.Menus
                         break;
                     case SettingAction.OutlineTraverseFeed:
                         settings.OutlineTraverseFeed = AnsiConsole.Ask("Outline Traverse Feed (mm/min):", settings.OutlineTraverseFeed);
+                        break;
+                    case SettingAction.ToggleDebugLogging:
+                        settings.EnableDebugLogging = !settings.EnableDebugLogging;
+                        Logger.Enabled = settings.EnableDebugLogging;
                         break;
                     case SettingAction.Save:
                         saveSettings();

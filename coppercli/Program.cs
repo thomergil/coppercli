@@ -27,6 +27,14 @@ class Program
         // Show experimental warning on first run
         AboutMenu.ShowExperimentalWarning(Persistence.SaveSettings);
 
+        // Enable logging if configured
+        Logger.Enabled = AppState.Settings.EnableDebugLogging;
+        if (Logger.Enabled)
+        {
+            AnsiConsole.MarkupLine($"[dim]Log: {Logger.LogFilePath}[/]");
+            Logger.Log("=== Startup ===");
+        }
+
         // Offer to auto-reconnect if we have saved connection settings
         OfferAutoReconnect();
 

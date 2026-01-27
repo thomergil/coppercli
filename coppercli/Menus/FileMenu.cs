@@ -74,7 +74,11 @@ namespace coppercli.Menus
                         var ext = Path.GetExtension(file).ToLower();
                         if (extensions.Contains(ext))
                         {
-                            items.Add((Path.GetFileName(file), file, false));
+                            var fileName = Path.GetFileName(file);
+                            var modTime = File.GetLastWriteTime(file);
+                            var timeStr = modTime.ToString("MMM dd HH:mm");
+                            var display = $"{fileName,-30} {timeStr}";
+                            items.Add((display, file, false));
                         }
                     }
                 }
