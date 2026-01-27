@@ -27,7 +27,7 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 ## Screenshots
 
-| Main Menu | File Browser | Move/Jog | Probe Setup |
+| Main Menu | File Browser | Jog | Probe Setup |
 |-----------|--------------|----------|-------------|
 | <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> |
 
