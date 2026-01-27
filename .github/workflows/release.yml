@@ -20,7 +20,7 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
             artifact: coppercli-macos-arm64.tar.gz
-          - os: macos-13
+          - os: macos-latest
             rid: osx-x64
             artifact: coppercli-macos-x64.tar.gz
           - os: ubuntu-latest
