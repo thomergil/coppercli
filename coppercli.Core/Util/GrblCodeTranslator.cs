@@ -93,8 +93,8 @@ namespace coppercli.Core.Util
             {
                 if (stream == null)
                 {
-                    // Try loading from file path relative to assembly
-                    string basePath = Path.GetDirectoryName(assembly.Location);
+                    // Try loading from file path relative to app directory
+                    string basePath = AppContext.BaseDirectory;
                     string filePath = Path.Combine(basePath, "Resources", resourceName);
                     if (System.IO.File.Exists(filePath))
                     {

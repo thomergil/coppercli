@@ -20,7 +20,7 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
             artifact: coppercli-macos-arm64.tar.gz
-          - os: macos-13
+          - os: macos-15-large
             rid: osx-x64
             artifact: coppercli-macos-x64.tar.gz
           - os: ubuntu-latest
@@ -75,6 +75,7 @@ jobs:
           Start-Process -Wait -FilePath .\is-setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
 
           # Copy published files to installer directory
+          New-Item -ItemType Directory -Force -Path installer\publish
           Copy-Item -Path publish\* -Destination installer\publish\ -Recurse -Force
 
           # Build installer
