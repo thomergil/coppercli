@@ -250,17 +250,8 @@ brew install coppercli
 
 The version must be updated in **two places** before creating a release:
 
-1. `coppercli/CliConstants.cs`:
-```csharp
-public const string AppVersion = "v0.2.1";
-```
-
-2. `installer/coppercli.iss` (Windows installer):
-```
-#define MyAppVersion "0.2.1"
-```
-
-Note: CliConstants uses `v` prefix, the installer does not.
+1. `coppercli/CliConstants.cs` - `AppVersion` constant (with `v` prefix, e.g., `v0.2.2`)
+2. `installer/coppercli.iss` - `MyAppVersion` define (without `v` prefix, e.g., `0.2.2`)
 
 ### Release Notes
 
