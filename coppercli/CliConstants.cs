@@ -45,7 +45,7 @@ namespace coppercli
         // App info
         // =========================================================================
         public const string AppTitle = "coppercli";
-        public const string AppVersion = "v0.1.2";
+        public const string AppVersion = "v0.2.0";
 
         // =========================================================================
         // File extensions
