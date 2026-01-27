@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.2.3
+
+### Changes
+
+- Renamed "Traverse Outline" to "Trace Outline" for clarity.
+
 ## v0.2.2
 
 ### New Features

@@ -351,14 +351,14 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var settings = AppState.Settings;
 
-            var traverseChoice = MenuHelpers.ConfirmOrQuit("Traverse outline first?", true);
-            if (traverseChoice == null)
+            var traceChoice = MenuHelpers.ConfirmOrQuit("Trace outline first?", true);
+            if (traceChoice == null)
             {
                 return false;
             }
-            if (traverseChoice == true)
+            if (traceChoice == true)
             {
-                if (!TraverseProbeOutline())
+                if (!TraceProbeOutline())
                 {
                     return false;
                 }
@@ -417,7 +417,7 @@ namespace coppercli.Menus
             }
         }
 
-        private static bool TraverseProbeOutline()
+        private static bool TraceProbeOutline()
         {
             var probePoints = AppState.ProbePoints;
             var machine = AppState.Machine;
@@ -428,19 +428,19 @@ namespace coppercli.Menus
                 return false;
             }
 
-            var traverseHeight = MenuHelpers.AskDoubleOrQuit("Traverse height (mm)", settings.OutlineTraverseHeight);
-            if (traverseHeight == null)
+            var traceHeight = MenuHelpers.AskDoubleOrQuit("Trace height (mm)", settings.OutlineTraceHeight);
+            if (traceHeight == null)
             {
                 return false;
             }
 
-            var traverseFeed = MenuHelpers.AskDoubleOrQuit("Traverse feed (mm/min)", settings.OutlineTraverseFeed);
-            if (traverseFeed == null)
+            var traceFeed = MenuHelpers.AskDoubleOrQuit("Trace feed (mm/min)", settings.OutlineTraceFeed);
+            if (traceFeed == null)
             {
                 return false;
             }
 
-            AnsiConsole.MarkupLine($"[yellow]Traversing probe outline at Z={traverseHeight.Value:F1}mm, feed={traverseFeed.Value:F0}mm/min[/]");
+            AnsiConsole.MarkupLine($"[yellow]Tracing probe outline at Z={traceHeight.Value:F1}mm, feed={traceFeed.Value:F0}mm/min[/]");
             AnsiConsole.MarkupLine("[dim]Press Escape to cancel[/]");
 
             double minX = probePoints.Min.X;
@@ -449,7 +449,7 @@ namespace coppercli.Menus
             double maxY = probePoints.Max.Y;
 
             double currentZ = machine.WorkPosition.Z;
-            double safeZ = Math.Max(currentZ, traverseHeight.Value);
+            double safeZ = Math.Max(currentZ, traceHeight.Value);
             AnsiConsole.MarkupLine($"[dim]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{safeZ:F3}");
@@ -471,23 +471,23 @@ namespace coppercli.Menus
                 {
                     machine.FeedHold();
                     machine.SoftReset();
-                    AnsiConsole.MarkupLine("\n[yellow]Outline traverse cancelled - machine stopped[/]");
+                    AnsiConsole.MarkupLine("\n[yellow]Outline trace cancelled - machine stopped[/]");
                     return false;
                 }
 
                 AnsiConsole.MarkupLine($"  Moving to {label} ({x:F1}, {y:F1})...");
-                machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traverseFeed.Value:F0}");
+                machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traceFeed.Value:F0}");
 
                 if (!StatusHelpers.WaitForMoveComplete(machine, x, y, CheckEscape))
                 {
                     machine.FeedHold();
                     machine.SoftReset();
-                    AnsiConsole.MarkupLine("\n[yellow]Outline traverse cancelled - machine stopped[/]");
+                    AnsiConsole.MarkupLine("\n[yellow]Outline trace cancelled - machine stopped[/]");
                     return false;
                 }
             }
 
-            AnsiConsole.MarkupLine("[green]Outline traverse complete![/]");
+            AnsiConsole.MarkupLine("[green]Outline trace complete![/]");
 
             return MenuHelpers.ConfirmOrQuit("Continue with probing?", true) ?? false;
         }

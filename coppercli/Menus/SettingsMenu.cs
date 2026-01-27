@@ -15,7 +15,7 @@ namespace coppercli.Menus
         {
             JogFeed, JogDistance, JogFeedSlow, JogDistanceSlow,
             ProbeFeed, ProbeMaxDepth, ProbeSafeHeight,
-            OutlineTraverseHeight, OutlineTraverseFeed,
+            OutlineTraceHeight, OutlineTraceFeed,
             ToggleDebugLogging,
             Save, Back
         }
@@ -28,8 +28,8 @@ namespace coppercli.Menus
             new MenuItem<SettingAction>("Probe Feed", 'p', SettingAction.ProbeFeed),
             new MenuItem<SettingAction>("Probe Max Depth", 'm', SettingAction.ProbeMaxDepth),
             new MenuItem<SettingAction>("Probe Safe Height", 'h', SettingAction.ProbeSafeHeight),
-            new MenuItem<SettingAction>("Outline Traverse Height", 't', SettingAction.OutlineTraverseHeight),
-            new MenuItem<SettingAction>("Outline Traverse Feed", 'o', SettingAction.OutlineTraverseFeed),
+            new MenuItem<SettingAction>("Outline Trace Height", 't', SettingAction.OutlineTraceHeight),
+            new MenuItem<SettingAction>("Outline Trace Feed", 'o', SettingAction.OutlineTraceFeed),
             new MenuItem<SettingAction>("Toggle Debug Logging", 'l', SettingAction.ToggleDebugLogging),
             new MenuItem<SettingAction>("Save Settings", 's', SettingAction.Save),
             new MenuItem<SettingAction>("Back", 'q', SettingAction.Back)
@@ -55,8 +55,8 @@ namespace coppercli.Menus
                 table.AddRow("Probe Feed", settings.ProbeFeed.ToString());
                 table.AddRow("Probe Max Depth", settings.ProbeMaxDepth.ToString());
                 table.AddRow("Probe Safe Height", settings.ProbeSafeHeight.ToString());
-                table.AddRow("Outline Traverse Height", settings.OutlineTraverseHeight.ToString());
-                table.AddRow("Outline Traverse Feed", settings.OutlineTraverseFeed.ToString());
+                table.AddRow("Outline Trace Height", settings.OutlineTraceHeight.ToString());
+                table.AddRow("Outline Trace Feed", settings.OutlineTraceFeed.ToString());
                 table.AddRow("Debug Logging", settings.EnableDebugLogging ? "On" : "Off");
 
                 AnsiConsole.Write(table);
@@ -87,11 +87,11 @@ namespace coppercli.Menus
                     case SettingAction.ProbeSafeHeight:
                         settings.ProbeSafeHeight = AnsiConsole.Ask("Probe Safe Height:", settings.ProbeSafeHeight);
                         break;
-                    case SettingAction.OutlineTraverseHeight:
-                        settings.OutlineTraverseHeight = AnsiConsole.Ask("Outline Traverse Height:", settings.OutlineTraverseHeight);
+                    case SettingAction.OutlineTraceHeight:
+                        settings.OutlineTraceHeight = AnsiConsole.Ask("Outline Trace Height:", settings.OutlineTraceHeight);
                         break;
-                    case SettingAction.OutlineTraverseFeed:
-                        settings.OutlineTraverseFeed = AnsiConsole.Ask("Outline Traverse Feed (mm/min):", settings.OutlineTraverseFeed);
+                    case SettingAction.OutlineTraceFeed:
+                        settings.OutlineTraceFeed = AnsiConsole.Ask("Outline Trace Feed (mm/min):", settings.OutlineTraceFeed);
                         break;
                     case SettingAction.ToggleDebugLogging:
                         settings.EnableDebugLogging = !settings.EnableDebugLogging;

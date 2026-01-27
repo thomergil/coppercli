@@ -36,8 +36,8 @@ namespace coppercli.Core.Settings
         public double ProbeOffsetX { get; set; } = 0.0;
         public double ProbeOffsetY { get; set; } = 0.0;
         public bool AbortOnProbeFail { get; set; } = false;
-        public double OutlineTraverseHeight { get; set; } = 2.0;  // mm above Z0
-        public double OutlineTraverseFeed { get; set; } = 600.0;  // mm/min (10mm/sec)
+        public double OutlineTraceHeight { get; set; } = 2.0;  // mm above Z0
+        public double OutlineTraceFeed { get; set; } = 600.0;  // mm/min (10mm/sec)
 
         // Firmware
         public string FirmwareType { get; set; } = "Grbl";
