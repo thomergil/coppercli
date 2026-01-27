@@ -53,10 +53,18 @@ namespace coppercli.Helpers
         /// <summary>
         /// Checks if a key press matches a given ConsoleKey or character.
         /// Handles cross-platform compatibility where key.Key or key.KeyChar may work differently.
+        /// For non-QWERTY keyboards (e.g., Dvorak), the character check is prioritized since
+        /// ConsoleKey values may map to physical key positions rather than logical characters.
         /// </summary>
         public static bool IsKey(ConsoleKeyInfo key, ConsoleKey consoleKey, char c)
         {
-            return key.Key == consoleKey || char.ToLower(key.KeyChar) == char.ToLower(c);
+            // Check character first (more reliable for non-QWERTY layouts)
+            if (char.ToLower(key.KeyChar) == char.ToLower(c))
+            {
+                return true;
+            }
+            // Fall back to ConsoleKey check
+            return key.Key == consoleKey;
         }
 
         /// <summary>
@@ -92,10 +100,11 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Returns the menu key character for a given index.
-        /// 0-9 use digits '1'-'9' then '0', indices 10+ use 'A', 'B', 'C'...
+        /// Returns the menu key character for a given index, or null if beyond limit.
+        /// 0-9 use digits '1'-'9' then '0', indices 10-35 use 'A'-'Z'.
+        /// Returns null for indices >= 36.
         /// </summary>
-        public static char GetMenuKey(int index)
+        public static char? GetMenuKey(int index)
         {
             if (index < 9)
             {
@@ -105,9 +114,13 @@ namespace coppercli.Helpers
             {
                 return '0';
             }
-            else
+            else if (index < 36)
             {
                 return (char)('A' + index - 10);
+            }
+            else
+            {
+                return null; // No shortcut for items beyond 36
             }
         }
     }

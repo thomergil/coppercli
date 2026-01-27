@@ -97,7 +97,7 @@ namespace coppercli.Menus
                 {
                     if (portChoice.Option == PortOption.Manual)
                     {
-                        selectedPort = AnsiConsole.Ask<string>("Enter port name:");
+                        selectedPort = MenuHelpers.Ask<string>("Enter port name:");
                     }
                     else
                     {
@@ -112,7 +112,7 @@ namespace coppercli.Menus
             }
 
             // Select TCP port
-            int tcpPort = AnsiConsole.Ask("TCP port:", ProxyDefaultPort);
+            int tcpPort = MenuHelpers.Ask("TCP port:", ProxyDefaultPort);
 
             // Start proxy
             using var proxy = new SerialProxy();

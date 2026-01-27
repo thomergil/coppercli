@@ -67,31 +67,31 @@ namespace coppercli.Menus
                 switch (choice.Option)
                 {
                     case SettingAction.JogFeed:
-                        settings.JogFeed = AnsiConsole.Ask("Jog Feed:", settings.JogFeed);
+                        settings.JogFeed = MenuHelpers.Ask("Jog Feed:", settings.JogFeed);
                         break;
                     case SettingAction.JogDistance:
-                        settings.JogDistance = AnsiConsole.Ask("Jog Distance:", settings.JogDistance);
+                        settings.JogDistance = MenuHelpers.Ask("Jog Distance:", settings.JogDistance);
                         break;
                     case SettingAction.JogFeedSlow:
-                        settings.JogFeedSlow = AnsiConsole.Ask("Jog Feed (Slow):", settings.JogFeedSlow);
+                        settings.JogFeedSlow = MenuHelpers.Ask("Jog Feed (Slow):", settings.JogFeedSlow);
                         break;
                     case SettingAction.JogDistanceSlow:
-                        settings.JogDistanceSlow = AnsiConsole.Ask("Jog Distance (Slow):", settings.JogDistanceSlow);
+                        settings.JogDistanceSlow = MenuHelpers.Ask("Jog Distance (Slow):", settings.JogDistanceSlow);
                         break;
                     case SettingAction.ProbeFeed:
-                        settings.ProbeFeed = AnsiConsole.Ask("Probe Feed:", settings.ProbeFeed);
+                        settings.ProbeFeed = MenuHelpers.Ask("Probe Feed:", settings.ProbeFeed);
                         break;
                     case SettingAction.ProbeMaxDepth:
-                        settings.ProbeMaxDepth = AnsiConsole.Ask("Probe Max Depth:", settings.ProbeMaxDepth);
+                        settings.ProbeMaxDepth = MenuHelpers.Ask("Probe Max Depth:", settings.ProbeMaxDepth);
                         break;
                     case SettingAction.ProbeSafeHeight:
-                        settings.ProbeSafeHeight = AnsiConsole.Ask("Probe Safe Height:", settings.ProbeSafeHeight);
+                        settings.ProbeSafeHeight = MenuHelpers.Ask("Probe Safe Height:", settings.ProbeSafeHeight);
                         break;
                     case SettingAction.OutlineTraceHeight:
-                        settings.OutlineTraceHeight = AnsiConsole.Ask("Outline Trace Height:", settings.OutlineTraceHeight);
+                        settings.OutlineTraceHeight = MenuHelpers.Ask("Outline Trace Height:", settings.OutlineTraceHeight);
                         break;
                     case SettingAction.OutlineTraceFeed:
-                        settings.OutlineTraceFeed = AnsiConsole.Ask("Outline Trace Feed (mm/min):", settings.OutlineTraceFeed);
+                        settings.OutlineTraceFeed = MenuHelpers.Ask("Outline Trace Feed (mm/min):", settings.OutlineTraceFeed);
                         break;
                     case SettingAction.ToggleDebugLogging:
                         settings.EnableDebugLogging = !settings.EnableDebugLogging;

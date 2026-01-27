@@ -87,14 +87,19 @@ namespace coppercli.Menus
                     // Skip inaccessible files
                 }
 
-                // Build menu options
+                // Build menu options (shortcuts only for first 36 items)
                 var menuOptions = new List<string>();
                 for (int i = 0; i < items.Count; i++)
                 {
                     var item = items[i];
-                    menuOptions.Add($"{InputHelpers.GetMenuKey(i)}. {item.Display}");
+                    var key = InputHelpers.GetMenuKey(i);
+                    var prefix = key.HasValue ? $"{key}." : "  ";
+                    menuOptions.Add($"{prefix} {item.Display}");
                 }
-                menuOptions.Add($"{InputHelpers.GetMenuKey(items.Count)}. Cancel");
+                // Cancel always gets a shortcut if possible
+                var cancelKey = InputHelpers.GetMenuKey(items.Count);
+                var cancelPrefix = cancelKey.HasValue ? $"{cancelKey}." : "  ";
+                menuOptions.Add($"{cancelPrefix} Cancel");
 
                 // Show current directory
                 Console.Clear();

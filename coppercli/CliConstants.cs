@@ -145,5 +145,11 @@ namespace coppercli
         public const int ProxyThreadSleepMs = 1;
         public const string ProxyNoClientStatus = "No client connected";
         public const string ProxyListeningStatus = "Listening...";
+
+        // =========================================================================
+        // Network scanning (for Ethernet auto-detect)
+        // =========================================================================
+        public const int NetworkScanTimeoutMs = 200;
+        public const int NetworkScanParallelism = 100;
     }
 }

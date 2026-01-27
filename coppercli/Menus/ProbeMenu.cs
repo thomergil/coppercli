@@ -604,6 +604,23 @@ namespace coppercli.Menus
             Console.WriteLine();
             AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[bold]{header}[/]");
             AnsiConsole.MarkupLine(new string(' ', headerPad) + "[dim]Press Escape to stop[/]");
+
+            // Show color legend when we have a range
+            if (hasRange)
+            {
+                var (rLow, gLow, bLow) = HeightToColor(0.0);
+                var (rMid, gMid, bMid) = HeightToColor(0.5);
+                var (rHigh, gHigh, bHigh) = HeightToColor(1.0);
+                double midZ = (minZ + maxZ) / 2;
+                string legend = $"{AnsiRgb(rLow, gLow, bLow)}██{AnsiReset} {minZ:F3}  " +
+                                $"{AnsiRgb(rMid, gMid, bMid)}██{AnsiReset} {midZ:F3}  " +
+                                $"{AnsiRgb(rHigh, gHigh, bHigh)}██{AnsiReset} {maxZ:F3}";
+                // Approximate legend display length (3 colored blocks * 2 chars + 3 values ~7 chars each + spacing)
+                int legendDisplayLen = 2 + 7 + 2 + 2 + 7 + 2 + 2 + 7;
+                int legendPad = Math.Max(0, (Console.WindowWidth - legendDisplayLen) / 2);
+                Console.WriteLine(new string(' ', legendPad) + legend);
+            }
+
             Console.WriteLine();
 
             for (int y = probePoints.SizeY - 1; y >= 0; y -= stepY)
@@ -691,7 +708,7 @@ namespace coppercli.Menus
                 ? Path.Combine(session.LastBrowseDirectory, defaultFilename)
                 : defaultFilename;
 
-            var path = AnsiConsole.Ask("Save probe data:", defaultPath);
+            var path = MenuHelpers.Ask("Save probe data:", defaultPath);
 
             if (path.StartsWith("~"))
             {

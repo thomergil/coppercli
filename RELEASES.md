@@ -2,9 +2,30 @@
 
 ## v0.2.3
 
+### New Features
+
+- **Network auto-detect**: Network (TCP/IP) connection menu now includes auto-detect option that scans the local network for devices. Configurable port (default 34000) and subnet mask (/16 to /24, default /24).
+- **Probe color legend**: Probing display now shows a live color legend indicating Z values for the low (blue), mid (green), and high (red) colors.
+
 ### Changes
 
 - Renamed "Traverse Outline" to "Trace Outline" for clarity.
+- Renamed "Ethernet" to "Network (TCP/IP)" in connection menu.
+- **Flicker-free jog menu**: Jog menu now uses in-place redraw instead of clearing the screen, eliminating flicker especially over network connections.
+- **Simplified probe in jog menu**: The P (probe) command no longer prints verbose status messages; just watch the Z position update.
+- **Consistent confirmation prompts**: All y/n prompts now respond immediately on keypress without requiring Enter.
+- **Consistent input prompts**: All open-ended prompts now show `>` prefix via `MenuHelpers.Ask` wrapper.
+- **File browser shortcuts**: Limited to 36 items (1-9, 0, A-Z). Items beyond use arrow navigation only - no more weird characters.
+
+### Bug Fixes
+
+- **File browser crash in small terminals**: Fixed crash when file browser had more items than fit in the terminal window. Menu now scrolls gracefully with "more above/below" indicators, and supports PageUp/PageDown/Home/End for faster navigation.
+- **Auto-clear alarm on connect**: Alarm state is now silently cleared when connecting, before offering to home. Door state still prompts user to close the door.
+- **Proxy safety on disconnect**: Proxy now sends feed hold (`!`) when a client disconnects, stopping any in-progress movement.
+- **Menu auto-selection bug**: Fixed bug where status changes during menu display could auto-select the first menu option (e.g., auto-triggering probing).
+- **Door open on boot**: Fixed error messages when connecting with door open at power-on. GRBL may boot into Alarm state (not Door state) in this scenario; the homing flow now handles both states gracefully by prompting the user to close the door before attempting to unlock.
+- **Double brackets in menus**: Fixed `[[experimental]]` displaying literally instead of `[experimental]` in menu items.
+- **Connection errors suppressed**: Transient "Error while Parsing Status Message" during initial connection is now suppressed.
 
 ## v0.2.2
 

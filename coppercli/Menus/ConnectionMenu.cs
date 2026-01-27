@@ -1,5 +1,8 @@
 // Extracted from Program.cs
 
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using coppercli.Core.Communication;
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
@@ -26,11 +29,12 @@ namespace coppercli.Menus
         // Menu option types
         private enum ConnType { Serial, Ethernet, Back }
         private enum PortOption { Reconnect, AutoDetect, Port, Manual }
+        private enum EthernetOption { Reconnect, AutoDetect, Manual }
 
         // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
             new MenuItem<ConnType>("Serial", 's', ConnType.Serial),
-            new MenuItem<ConnType>("Ethernet [[experimental]]", 'e', ConnType.Ethernet),
+            new MenuItem<ConnType>("Network (TCP/IP) [experimental]", 'n', ConnType.Ethernet),
             new MenuItem<ConnType>("Back", 'q', ConnType.Back)
         );
 
@@ -116,7 +120,7 @@ namespace coppercli.Menus
                     string selectedPort;
                     if (selected.Option == PortOption.Manual)
                     {
-                        selectedPort = AnsiConsole.Ask<string>("Enter port name:", settings.SerialPortName);
+                        selectedPort = MenuHelpers.Ask<string>("Enter port name:", settings.SerialPortName);
                     }
                     else
                     {
@@ -132,8 +136,58 @@ namespace coppercli.Menus
                 else if (connChoice.Option == ConnType.Ethernet)
                 {
                     settings.ConnectionType = ConnectionType.Ethernet;
-                    settings.EthernetIP = AnsiConsole.Ask("Enter IP address:", settings.EthernetIP);
-                    settings.EthernetPort = AnsiConsole.Ask("Enter port:", settings.EthernetPort);
+
+                    // Build dynamic Ethernet menu
+                    var ethMenu = new MenuDef<EthernetOption>();
+
+                    // Add Reconnect option if we have saved settings
+                    if (!string.IsNullOrEmpty(settings.EthernetIP))
+                    {
+                        ethMenu.Add(new MenuItem<EthernetOption>(
+                            $"Reconnect ({settings.EthernetIP}:{settings.EthernetPort})", 'r', EthernetOption.Reconnect));
+                    }
+
+                    ethMenu.Add(new MenuItem<EthernetOption>("Auto-detect (scan local network)", 'a', EthernetOption.AutoDetect));
+                    ethMenu.Add(new MenuItem<EthernetOption>("Enter manually", 'm', EthernetOption.Manual));
+
+                    var selected = MenuHelpers.ShowMenu("Network connection:", ethMenu);
+
+                    if (selected.Option == EthernetOption.Reconnect)
+                    {
+                        ConnectWithCurrentSettings();
+                        return;
+                    }
+
+                    if (selected.Option == EthernetOption.AutoDetect)
+                    {
+                        // Show local IPs to help user understand the scan range
+                        var localIPs = GetLocalIPAddresses();
+                        if (localIPs.Count > 0)
+                        {
+                            var sampleIP = localIPs[0].Split('.');
+                            AnsiConsole.MarkupLine($"[dim]Your IP: {localIPs[0]}[/]");
+                            AnsiConsole.MarkupLine($"[dim]  /24 = {sampleIP[0]}.{sampleIP[1]}.{sampleIP[2]}.* (254 hosts)[/]");
+                            AnsiConsole.MarkupLine($"[dim]  /16 = {sampleIP[0]}.{sampleIP[1]}.*.* (65534 hosts)[/]");
+                        }
+
+                        int mask = MenuHelpers.Ask("Subnet mask:", 24);
+                        mask = Math.Clamp(mask, 16, 24);
+                        int scanPort = MenuHelpers.Ask("Port to scan for:", ProxyDefaultPort);
+
+                        if (AutoDetectEthernet(scanPort, mask))
+                        {
+                            Persistence.SaveSettings();
+                        }
+                        else
+                        {
+                            MenuHelpers.ShowError($"No device found on port {scanPort}.");
+                        }
+                        return;
+                    }
+
+                    // Manual entry
+                    settings.EthernetIP = MenuHelpers.Ask("IP address:", settings.EthernetIP);
+                    settings.EthernetPort = MenuHelpers.Ask("Port:", settings.EthernetPort);
                 }
 
                 ConnectWithCurrentSettings();
@@ -169,11 +223,14 @@ namespace coppercli.Menus
                 ConnectionResult result = ConnectionResult.Error;
                 string? message = null;
 
+                // Suppress errors during connection (initial status parsing may produce transient errors)
+                AppState.SuppressErrors = true;
                 AnsiConsole.Status()
                     .Start("Connecting...", ctx =>
                     {
                         (result, message) = TryConnect(ConnectionTimeoutMs + GrblResponseTimeoutMs);
                     });
+                AppState.SuppressErrors = false;
 
                 switch (result)
                 {
@@ -214,6 +271,10 @@ namespace coppercli.Menus
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[red]Connection failed: {Markup.Escape(ex.Message)}[/]");
+            }
+            finally
+            {
+                AppState.SuppressErrors = false;
             }
         }
 
@@ -268,6 +329,197 @@ namespace coppercli.Menus
                 }
             }
 
+            return false;
+        }
+
+        /// <summary>
+        /// Scans the local network for devices with the proxy port open.
+        /// </summary>
+        private static bool AutoDetectEthernet(int port, int mask)
+        {
+            var settings = AppState.Settings;
+            var localIPs = GetLocalIPAddresses();
+
+            if (localIPs.Count == 0)
+            {
+                AnsiConsole.MarkupLine("[red]Could not determine local network address.[/]");
+                return false;
+            }
+
+            int totalHosts = (1 << (32 - mask)) - 2; // Exclude network and broadcast
+            AnsiConsole.MarkupLine($"[blue]Scanning {localIPs.Count} network(s), /{mask} ({totalHosts} hosts each), port {port}...[/]");
+
+            foreach (var localIP in localIPs)
+            {
+                var parts = localIP.Split('.').Select(int.Parse).ToArray();
+                string rangeDesc = mask == 24
+                    ? $"{parts[0]}.{parts[1]}.{parts[2]}.x"
+                    : $"{parts[0]}.{parts[1]}.x.x/{mask}";
+                AnsiConsole.MarkupLine($"  Scanning [cyan]{rangeDesc}[/]...");
+
+                var found = ScanNetwork(localIP, mask, port);
+
+                if (found.Count > 0)
+                {
+                    AnsiConsole.MarkupLine($"  [green]Found {found.Count} device(s)[/]");
+
+                    // Build menu with devices and Back option
+                    var options = found.Select((ip, i) => $"{i + 1}. {ip}:{port}").ToList();
+                    options.Add($"{options.Count + 1}. Back");
+                    int choice = MenuHelpers.ShowMenu("Connect to:", options.ToArray());
+
+                    // Back selected
+                    if (choice == found.Count)
+                    {
+                        return false;
+                    }
+
+                    string selectedIp = found[choice];
+                    settings.EthernetIP = selectedIp;
+                    settings.EthernetPort = port;
+                    ConnectWithCurrentSettings();
+
+                    // Only return true if connection succeeded
+                    if (AppState.Machine.Connected)
+                    {
+                        return true;
+                    }
+
+                    // Connection failed - wait for keypress so user can see error
+                    Console.ReadKey(true);
+                    return false;
+                }
+
+                AnsiConsole.MarkupLine("  [dim]No devices found[/]");
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Gets all local IPv4 addresses.
+        /// </summary>
+        private static List<string> GetLocalIPAddresses()
+        {
+            var addresses = new List<string>();
+
+            try
+            {
+                foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (iface.OperationalStatus != OperationalStatus.Up)
+                    {
+                        continue;
+                    }
+                    if (iface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                    {
+                        continue;
+                    }
+
+                    var props = iface.GetIPProperties();
+                    foreach (var addr in props.UnicastAddresses)
+                    {
+                        if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
+                        {
+                            continue;
+                        }
+
+                        var ip = addr.Address.ToString();
+                        if (!addresses.Contains(ip))
+                        {
+                            addresses.Add(ip);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore errors enumerating interfaces
+            }
+
+            return addresses;
+        }
+
+        /// <summary>
+        /// Scans a network range for hosts with the specified port open.
+        /// </summary>
+        private static List<string> ScanNetwork(string localIP, int mask, int port)
+        {
+            var found = new List<string>();
+            var lockObj = new object();
+
+            // Convert IP to 32-bit integer
+            var parts = localIP.Split('.').Select(int.Parse).ToArray();
+            uint ipInt = ((uint)parts[0] << 24) | ((uint)parts[1] << 16) | ((uint)parts[2] << 8) | (uint)parts[3];
+
+            // Calculate network address and host count
+            uint maskBits = 0xFFFFFFFF << (32 - mask);
+            uint networkAddr = ipInt & maskBits;
+            int hostCount = (1 << (32 - mask)) - 2; // Exclude network and broadcast
+
+            Parallel.For(1, hostCount + 1, new ParallelOptions { MaxDegreeOfParallelism = NetworkScanParallelism }, i =>
+            {
+                uint hostAddr = networkAddr + (uint)i;
+                string ip = $"{(hostAddr >> 24) & 0xFF}.{(hostAddr >> 16) & 0xFF}.{(hostAddr >> 8) & 0xFF}.{hostAddr & 0xFF}";
+
+                if (IsPortOpen(ip, port, NetworkScanTimeoutMs))
+                {
+                    lock (lockObj)
+                    {
+                        found.Add(ip);
+                    }
+                }
+            });
+
+            // Sort by IP address numerically
+            found.Sort((a, b) =>
+            {
+                var aParts = a.Split('.').Select(int.Parse).ToArray();
+                var bParts = b.Split('.').Select(int.Parse).ToArray();
+                for (int i = 0; i < 4; i++)
+                {
+                    if (aParts[i] != bParts[i])
+                    {
+                        return aParts[i].CompareTo(bParts[i]);
+                    }
+                }
+                return 0;
+            });
+
+            return found;
+        }
+
+        /// <summary>
+        /// Checks if a TCP port is open on the specified host.
+        /// </summary>
+        private static bool IsPortOpen(string host, int port, int timeoutMs)
+        {
+            try
+            {
+                using var client = new TcpClient();
+                // Set send/receive timeouts
+                client.SendTimeout = timeoutMs;
+                client.ReceiveTimeout = timeoutMs;
+
+                // Use ConnectAsync with cancellation for reliable timeout
+                using var cts = new CancellationTokenSource(timeoutMs);
+                var task = client.ConnectAsync(host, port);
+                task.Wait(cts.Token);
+
+                return client.Connected;
+            }
+            catch (OperationCanceledException)
+            {
+                // Timeout
+            }
+            catch (AggregateException)
+            {
+                // Connection refused or other error
+            }
+            catch
+            {
+                // Other errors
+            }
             return false;
         }
 
@@ -361,6 +613,23 @@ namespace coppercli.Menus
         {
             var machine = AppState.Machine;
 
+            // First, clear any alarm/door state so the machine is usable
+            while (StatusHelpers.IsProblematicState(machine))
+            {
+                if (StatusHelpers.IsDoor(machine))
+                {
+                    AnsiConsole.MarkupLine("[yellow]Door is open. Close the door and press Enter.[/]");
+                    Console.ReadLine();
+                    MachineCommands.ClearDoorState(machine);
+                }
+                else if (StatusHelpers.IsAlarm(machine))
+                {
+                    // Silently clear alarm state
+                    MachineCommands.Unlock(machine);
+                }
+                Thread.Sleep(CommandDelayMs);
+            }
+
             // Offer to home
             var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
             if (result == null)
@@ -370,22 +639,6 @@ namespace coppercli.Menus
             if (result != true)
             {
                 return;
-            }
-
-            // Wait for door to be closed if open
-            while (StatusHelpers.IsDoor(machine))
-            {
-                AnsiConsole.MarkupLine("[yellow]Door is open. Close the door and press Enter.[/]");
-                Console.ReadLine();
-                MachineCommands.ClearDoorState(machine);
-                Thread.Sleep(CommandDelayMs);
-            }
-
-            // Clear Alarm state if present
-            if (StatusHelpers.IsAlarm(machine))
-            {
-                MachineCommands.Unlock(machine);
-                Thread.Sleep(CommandDelayMs);
             }
 
             MachineCommands.Home(machine);

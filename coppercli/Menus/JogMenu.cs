@@ -26,200 +26,218 @@ namespace coppercli.Menus
             // Enable auto-clear while in jog menu (user can see status updates)
             machine.EnableAutoStateClear = true;
 
-            while (true)
+            // Clear once, then use flicker-free redraws
+            Console.Clear();
+            Console.CursorVisible = false;
+
+            try
             {
-                Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Move[/]").RuleStyle("blue"));
-                var statusColor = StatusHelpers.IsProblematicState(machine) ? "red" : "green";
-                AnsiConsole.MarkupLine($"Status: [{statusColor}]{machine.Status}[/]");
-                AnsiConsole.MarkupLine($"Position: X:[yellow]{machine.WorkPosition.X:F3}[/] Y:[yellow]{machine.WorkPosition.Y:F3}[/] Z:[yellow]{machine.WorkPosition.Z:F3}[/]");
-
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[bold]Jog:[/]");
-                AnsiConsole.MarkupLine("  [cyan]Arrow keys[/] - X/Y    [cyan]W/S[/] or [cyan]PgUp/PgDn[/] - Z");
-                AnsiConsole.MarkupLine($"  [cyan]Tab[/] - Cycle speed    [green]{JogPresets[AppState.JogPresetIndex].Label}[/]");
-
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[bold]Commands:[/]");
-                AnsiConsole.MarkupLine("  [cyan]H[/] - Home    [cyan]U[/] - Unlock    [cyan]R[/] - Reset    [cyan]Esc/Q[/] - Exit");
-
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[bold]Set Work Zero:[/]");
-                AnsiConsole.MarkupLine("  [cyan]0[/] - Zero All (XYZ)    [cyan]Z[/] - Zero Z only");
-
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[bold]Go to Position:[/]");
-                AnsiConsole.MarkupLine("  [cyan]X[/] - X0 Y0    [cyan]C[/] - Center of G-code    [cyan]6[/] - Z+6mm    [cyan]1[/] - Z+1mm    [cyan]G[/] - Z0");
-
-                AnsiConsole.WriteLine();
-                AnsiConsole.MarkupLine("[bold]Probe:[/]");
-                AnsiConsole.MarkupLine("  [cyan]P[/] - Find Z (probe down until contact)");
-                AnsiConsole.WriteLine();
-
-                var keyOrNull = InputHelpers.ReadKeyPolling();
-                if (keyOrNull == null)
+                while (true)
                 {
-                    continue; // Status changed, redraw screen
-                }
-                var key = keyOrNull.Value;
+                    var (winWidth, _) = DisplayHelpers.GetSafeWindowSize();
 
-                if (InputHelpers.IsExitKey(key))
-                {
-                    machine.EnableAutoStateClear = false;
-                    return;
-                }
+                    // Reset cursor to top-left for flicker-free redraw
+                    Console.SetCursorPosition(0, 0);
 
-                // Tab cycles through jog speeds
-                if (key.Key == ConsoleKey.Tab)
-                {
-                    AppState.JogPresetIndex = (AppState.JogPresetIndex + 1) % JogPresets.Length;
-                    continue;
-                }
+                    // Draw header and status
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldBlue}Move{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
 
-                // Handle command keys
-                if (InputHelpers.IsKey(key, ConsoleKey.H, 'h'))
-                {
-                    machine.SoftReset();
-                    machine.SendLine(CmdHome);
-                    AnsiConsole.MarkupLine("[green]Home All command sent[/]");
-                    Thread.Sleep(ConfirmationDisplayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.U, 'u'))
-                {
-                    machine.SendLine(CmdUnlock);
-                    if (StatusHelpers.IsDoor(machine) || StatusHelpers.IsHold(machine))
+                    var statusColor = StatusHelpers.IsProblematicState(machine) ? DisplayHelpers.AnsiRed : DisplayHelpers.AnsiGreen;
+                    DisplayHelpers.WriteLineTruncated($"Status: {statusColor}{machine.Status}{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"Position: X:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.X:F3}{DisplayHelpers.AnsiReset} Y:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.Y:F3}{DisplayHelpers.AnsiReset} Z:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.Z:F3}{DisplayHelpers.AnsiReset}", winWidth);
+
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Jog:{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Arrow keys{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiCyan}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiCyan}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Tab{DisplayHelpers.AnsiReset} - Cycle speed    {DisplayHelpers.AnsiGreen}{JogPresets[AppState.JogPresetIndex].Label}{DisplayHelpers.AnsiReset}", winWidth);
+
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Commands:{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}H{DisplayHelpers.AnsiReset} - Home    {DisplayHelpers.AnsiCyan}U{DisplayHelpers.AnsiReset} - Unlock    {DisplayHelpers.AnsiCyan}R{DisplayHelpers.AnsiReset} - Reset    {DisplayHelpers.AnsiCyan}Esc/Q{DisplayHelpers.AnsiReset} - Exit", winWidth);
+
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Set Work Zero:{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}0{DisplayHelpers.AnsiReset} - Zero All (XYZ)    {DisplayHelpers.AnsiCyan}Z{DisplayHelpers.AnsiReset} - Zero Z only", winWidth);
+
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Go to Position:{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}X{DisplayHelpers.AnsiReset} - X0 Y0    {DisplayHelpers.AnsiCyan}C{DisplayHelpers.AnsiReset} - Center of G-code    {DisplayHelpers.AnsiCyan}6{DisplayHelpers.AnsiReset} - Z+6mm    {DisplayHelpers.AnsiCyan}1{DisplayHelpers.AnsiReset} - Z+1mm    {DisplayHelpers.AnsiCyan}G{DisplayHelpers.AnsiReset} - Z0", winWidth);
+
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Probe:{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}P{DisplayHelpers.AnsiReset} - Find Z (probe down until contact)", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+
+                    var keyOrNull = InputHelpers.ReadKeyPolling();
+                    if (keyOrNull == null)
                     {
-                        machine.SendLine(CycleStart.ToString());
+                        continue; // Status changed, redraw screen
                     }
-                    AnsiConsole.MarkupLine("[green]Unlock command sent[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.R, 'r'))
-                {
-                    machine.SoftReset();
-                    AnsiConsole.MarkupLine("[yellow]Soft reset sent[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.Z, 'z'))
-                {
-                    machine.SendLine($"{CmdZeroWorkOffset} Z0");
-                    AppState.IsWorkZeroSet = true;
-                    AnsiConsole.MarkupLine("[green]Z zeroed[/]");
-                    Thread.Sleep(ConfirmationDisplayMs);
-                    machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
-                    AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    machine.EnableAutoStateClear = false;
-                    return;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.D0, '0'))
-                {
-                    machine.SendLine($"{CmdZeroWorkOffset} X0 Y0 Z0");
-                    AppState.IsWorkZeroSet = true;
+                    var key = keyOrNull.Value;
 
-                    // Store work zero in session
-                    var session = AppState.Session;
-                    var pos = machine.WorkPosition;
-                    session.WorkZeroX = pos.X;
-                    session.WorkZeroY = pos.Y;
-                    session.WorkZeroZ = pos.Z;
-                    session.HasStoredWorkZero = true;
-                    Persistence.SaveSession();
-
-                    AnsiConsole.MarkupLine("[green]All axes zeroed (work zero set)[/]");
-                    Thread.Sleep(ConfirmationDisplayMs);
-                    machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
-                    AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    machine.EnableAutoStateClear = false;
-                    return;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.D6, '6'))
-                {
-                    machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
-                    AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.D1, '1'))
-                {
-                    machine.SendLine($"{CmdRapidMove} Z{ReferenceZHeightMm}");
-                    AnsiConsole.MarkupLine($"[green]Moving to Z+{ReferenceZHeightMm}mm[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.G, 'g'))
-                {
-                    machine.SendLine($"{CmdRapidMove} Z0");
-                    AnsiConsole.MarkupLine("[green]Moving to Z0[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
-                {
-                    machine.SendLine($"{CmdRapidMove} X0 Y0");
-                    AnsiConsole.MarkupLine("[green]Moving to X0 Y0[/]");
-                    Thread.Sleep(CommandDelayMs);
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.C, 'c'))
-                {
-                    var currentFile = AppState.CurrentFile;
-                    if (currentFile == null)
+                    if (InputHelpers.IsExitKey(key))
                     {
-                        AnsiConsole.MarkupLine("[red]No G-code file loaded[/]");
+                        machine.EnableAutoStateClear = false;
+                        return;
+                    }
+
+                    // Tab cycles through jog speeds
+                    if (key.Key == ConsoleKey.Tab)
+                    {
+                        AppState.JogPresetIndex = (AppState.JogPresetIndex + 1) % JogPresets.Length;
+                        continue;
+                    }
+
+                    // Handle command keys
+                    if (InputHelpers.IsKey(key, ConsoleKey.H, 'h'))
+                    {
+                        machine.SoftReset();
+                        machine.SendLine(CmdHome);
+                        AnsiConsole.MarkupLine("[green]Home All command sent[/]");
                         Thread.Sleep(ConfirmationDisplayMs);
+                        continue;
                     }
-                    else
+                    if (InputHelpers.IsKey(key, ConsoleKey.U, 'u'))
                     {
-                        double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
-                        double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
-                        machine.SendLine($"{CmdRapidMove} X{centerX:F3} Y{centerY:F3}");
-                        AnsiConsole.MarkupLine($"[green]Moving to center X{centerX:F3} Y{centerY:F3}[/]");
+                        machine.SendLine(CmdUnlock);
+                        if (StatusHelpers.IsDoor(machine) || StatusHelpers.IsHold(machine))
+                        {
+                            machine.SendLine(CycleStart.ToString());
+                        }
+                        AnsiConsole.MarkupLine("[green]Unlock command sent[/]");
                         Thread.Sleep(CommandDelayMs);
+                        continue;
                     }
-                    continue;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.P, 'p'))
-                {
-                    ProbeZ();
-                    Thread.Sleep(ConfirmationDisplayMs);
-                    continue;
-                }
+                    if (InputHelpers.IsKey(key, ConsoleKey.R, 'r'))
+                    {
+                        machine.SoftReset();
+                        AnsiConsole.MarkupLine("[yellow]Soft reset sent[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.Z, 'z'))
+                    {
+                        machine.SendLine($"{CmdZeroWorkOffset} Z0");
+                        AppState.IsWorkZeroSet = true;
+                        AnsiConsole.MarkupLine("[green]Z zeroed[/]");
+                        Thread.Sleep(ConfirmationDisplayMs);
+                        machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
+                        AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        machine.EnableAutoStateClear = false;
+                        return;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.D0, '0'))
+                    {
+                        machine.SendLine($"{CmdZeroWorkOffset} X0 Y0 Z0");
+                        AppState.IsWorkZeroSet = true;
 
-                // Get current jog preset
-                var (feed, distance, _) = JogPresets[AppState.JogPresetIndex];
+                        // Store work zero in session
+                        var session = AppState.Session;
+                        var pos = machine.WorkPosition;
+                        session.WorkZeroX = pos.X;
+                        session.WorkZeroY = pos.Y;
+                        session.WorkZeroZ = pos.Z;
+                        session.HasStoredWorkZero = true;
+                        Persistence.SaveSession();
 
-                bool jogged = false;
-                switch (key.Key)
-                {
-                    case ConsoleKey.UpArrow: machine.Jog('Y', distance, feed); jogged = true; break;
-                    case ConsoleKey.DownArrow: machine.Jog('Y', -distance, feed); jogged = true; break;
-                    case ConsoleKey.LeftArrow: machine.Jog('X', -distance, feed); jogged = true; break;
-                    case ConsoleKey.RightArrow: machine.Jog('X', distance, feed); jogged = true; break;
-                    case ConsoleKey.PageUp: machine.Jog('Z', distance, feed); jogged = true; break;
-                    case ConsoleKey.PageDown: machine.Jog('Z', -distance, feed); jogged = true; break;
-                }
-                // Handle W/S for Z jog
-                if (!jogged && InputHelpers.IsKey(key, ConsoleKey.W, 'w'))
-                {
-                    machine.Jog('Z', distance, feed);
-                    jogged = true;
-                }
-                if (!jogged && InputHelpers.IsKey(key, ConsoleKey.S, 's'))
-                {
-                    machine.Jog('Z', -distance, feed);
-                    jogged = true;
-                }
+                        AnsiConsole.MarkupLine("[green]All axes zeroed (work zero set)[/]");
+                        Thread.Sleep(ConfirmationDisplayMs);
+                        machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
+                        AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        machine.EnableAutoStateClear = false;
+                        return;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.D6, '6'))
+                    {
+                        machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm}");
+                        AnsiConsole.MarkupLine($"[green]Moving to Z+{SafeZHeightMm}mm[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.D1, '1'))
+                    {
+                        machine.SendLine($"{CmdRapidMove} Z{ReferenceZHeightMm}");
+                        AnsiConsole.MarkupLine($"[green]Moving to Z+{ReferenceZHeightMm}mm[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.G, 'g'))
+                    {
+                        machine.SendLine($"{CmdRapidMove} Z0");
+                        AnsiConsole.MarkupLine("[green]Moving to Z0[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
+                    {
+                        machine.SendLine($"{CmdRapidMove} X0 Y0");
+                        AnsiConsole.MarkupLine("[green]Moving to X0 Y0[/]");
+                        Thread.Sleep(CommandDelayMs);
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.C, 'c'))
+                    {
+                        var currentFile = AppState.CurrentFile;
+                        if (currentFile == null)
+                        {
+                            AnsiConsole.MarkupLine("[red]No G-code file loaded[/]");
+                            Thread.Sleep(ConfirmationDisplayMs);
+                        }
+                        else
+                        {
+                            double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
+                            double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
+                            machine.SendLine($"{CmdRapidMove} X{centerX:F3} Y{centerY:F3}");
+                            AnsiConsole.MarkupLine($"[green]Moving to center X{centerX:F3} Y{centerY:F3}[/]");
+                            Thread.Sleep(CommandDelayMs);
+                        }
+                        continue;
+                    }
+                    if (InputHelpers.IsKey(key, ConsoleKey.P, 'p'))
+                    {
+                        ProbeZ();
+                        Thread.Sleep(ConfirmationDisplayMs);
+                        continue;
+                    }
 
-                if (jogged)
-                {
-                    Thread.Sleep(JogPollIntervalMs);
-                    InputHelpers.FlushKeyboard();
+                    // Get current jog preset
+                    var (feed, distance, _) = JogPresets[AppState.JogPresetIndex];
+
+                    bool jogged = false;
+                    switch (key.Key)
+                    {
+                        case ConsoleKey.UpArrow: machine.Jog('Y', distance, feed); jogged = true; break;
+                        case ConsoleKey.DownArrow: machine.Jog('Y', -distance, feed); jogged = true; break;
+                        case ConsoleKey.LeftArrow: machine.Jog('X', -distance, feed); jogged = true; break;
+                        case ConsoleKey.RightArrow: machine.Jog('X', distance, feed); jogged = true; break;
+                        case ConsoleKey.PageUp: machine.Jog('Z', distance, feed); jogged = true; break;
+                        case ConsoleKey.PageDown: machine.Jog('Z', -distance, feed); jogged = true; break;
+                    }
+                    // Handle W/S for Z jog
+                    if (!jogged && InputHelpers.IsKey(key, ConsoleKey.W, 'w'))
+                    {
+                        machine.Jog('Z', distance, feed);
+                        jogged = true;
+                    }
+                    if (!jogged && InputHelpers.IsKey(key, ConsoleKey.S, 's'))
+                    {
+                        machine.Jog('Z', -distance, feed);
+                        jogged = true;
+                    }
+
+                    if (jogged)
+                    {
+                        Thread.Sleep(JogPollIntervalMs);
+                        InputHelpers.FlushKeyboard();
+                    }
                 }
+            }
+            finally
+            {
+                Console.CursorVisible = true;
             }
         }
 
@@ -231,17 +249,10 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var settings = AppState.Settings;
 
-            AnsiConsole.MarkupLine($"[yellow]Probing Z at current XY (max depth: {settings.ProbeMaxDepth}mm, feed: {settings.ProbeFeed}mm/min)[/]");
-            AnsiConsole.MarkupLine("[dim]Probing...[/]");
-
             bool completed = false;
-            bool success = false;
-            double foundZ = 0;
 
             AppState.SingleProbeCallback = (pos, probeSuccess) =>
             {
-                success = probeSuccess;
-                foundZ = pos.Z;
                 completed = true;
             };
 
@@ -257,19 +268,9 @@ namespace coppercli.Menus
                     AppState.SingleProbing = false;
                     machine.ProbeStop();
                     machine.FeedHold();
-                    AnsiConsole.MarkupLine("[yellow]Probe cancelled[/]");
                     return;
                 }
                 Thread.Sleep(StatusPollIntervalMs);
-            }
-
-            if (success)
-            {
-                AnsiConsole.MarkupLine($"[green]Found Z at {foundZ:F3}mm[/]");
-            }
-            else
-            {
-                AnsiConsole.MarkupLine("[red]Probe failed - no contact[/]");
             }
         }
     }

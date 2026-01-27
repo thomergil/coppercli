@@ -20,6 +20,7 @@ namespace coppercli.Core.Communication
         private const int HeartbeatIntervalMs = 10000;  // Send status query every 10s of inactivity
         private const int MaxMissedHeartbeats = 3;      // Disconnect after 3 missed heartbeats (30s)
         private const byte GrblStatusQuery = (byte)'?';
+        private const byte GrblFeedHold = (byte)'!';    // Feed hold to stop movement
 
         // =========================================================================
         // Events
@@ -447,7 +448,7 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Handles client disconnection.
+        /// Handles client disconnection. Sends feed hold to stop any in-progress movement.
         /// </summary>
         private void HandleClientDisconnect()
         {
@@ -461,6 +462,17 @@ namespace coppercli.Core.Communication
 
                 address = ClientAddress;
                 CloseClientUnlocked();
+            }
+
+            // Safety: send feed hold to stop any in-progress movement
+            try
+            {
+                _serialPort?.Write(new byte[] { GrblFeedHold }, 0, 1);
+                RaiseInfo("Feed hold sent (safety stop)");
+            }
+            catch
+            {
+                // Ignore errors - serial port may be in bad state
             }
 
             RaiseInfo($"Client disconnected: {address}");

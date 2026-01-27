@@ -271,10 +271,11 @@ class Program
     {
         var machine = AppState.Machine;
 
-        // Error and info message handlers - suppress during probing or when explicitly suppressed
+        // Error and info message handlers - suppress during probing, explicit suppression,
+        // or auto-state clearing (background errors from $X or ~ shouldn't interrupt user)
         machine.NonFatalException += msg =>
         {
-            if (!AppState.Probing && !AppState.SuppressErrors)
+            if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
                 AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(msg)}[/]");
             }
@@ -282,7 +283,7 @@ class Program
 
         machine.Info += msg =>
         {
-            if (!AppState.Probing && !AppState.SuppressErrors)
+            if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
                 AnsiConsole.MarkupLine($"[blue]Info: {Markup.Escape(msg)}[/]");
             }
