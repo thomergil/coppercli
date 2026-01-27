@@ -74,12 +74,45 @@ namespace coppercli.Helpers
         public static void ShowError(string message)
         {
             AnsiConsole.MarkupLine($"[red]{Markup.Escape(message)}[/]");
-            Console.ReadKey();
+            AnsiConsole.MarkupLine("[dim]Press any key to continue[/]");
+            Console.ReadKey(true);
+        }
+
+        /// <summary>
+        /// Prompts the user for input.
+        /// </summary>
+        public static T Ask<T>(string prompt, T defaultValue)
+        {
+            return AnsiConsole.Ask<T>(prompt, defaultValue);
+        }
+
+        /// <summary>
+        /// Prompts the user for input (no default value).
+        /// </summary>
+        public static T Ask<T>(string prompt)
+        {
+            return AnsiConsole.Ask<T>(prompt);
+        }
+
+        // Lines used by menu chrome (title + help text + scroll indicators)
+        private const int MenuChromeLines = 4; // title, help, possible top/bottom indicators
+
+        // ANSI escape sequence to clear from cursor to end of line
+        private const string AnsiClearToEol = "\u001b[K";
+
+        /// <summary>
+        /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
+        /// </summary>
+        private static void MarkupLineClear(string markup)
+        {
+            AnsiConsole.Markup(markup);
+            Console.WriteLine(AnsiClearToEol);
         }
 
         /// <summary>
         /// Displays a menu and returns the selected index. Supports arrow navigation, number keys, and mnemonic keys.
         /// Options format: "1. Label (x)" where x is the mnemonic key.
+        /// Automatically scrolls when there are more options than fit in the terminal.
         /// </summary>
         /// <param name="enabledStates">Optional array indicating which items are enabled. Disabled items shown dim and not selectable.</param>
         public static int ShowMenu(string title, string[] options, int initialSelection = 0, bool[]? enabledStates = null)
@@ -113,30 +146,96 @@ namespace coppercli.Helpers
                 }
             }
 
+            // Calculate viewport size based on terminal height
+            var (_, termHeight) = DisplayHelpers.GetSafeWindowSize();
+            int maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - Console.CursorTop);
+            bool needsScrolling = options.Length > maxVisibleItems;
+            int viewStart = 0;
+
+            // Adjust view to show initial selection
+            if (needsScrolling && selected >= maxVisibleItems)
+            {
+                viewStart = Math.Min(selected - maxVisibleItems + 1, options.Length - maxVisibleItems);
+            }
+
             while (true)
             {
+                // Recalculate in case terminal was resized
+                (_, termHeight) = DisplayHelpers.GetSafeWindowSize();
+                maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - Console.CursorTop);
+                needsScrolling = options.Length > maxVisibleItems;
+
+                // Ensure viewStart is valid after resize
+                if (!needsScrolling)
+                {
+                    viewStart = 0;
+                }
+                else
+                {
+                    viewStart = Math.Clamp(viewStart, 0, options.Length - maxVisibleItems);
+                }
+
+                // Adjust view to keep selection visible
+                if (needsScrolling)
+                {
+                    if (selected < viewStart)
+                    {
+                        viewStart = selected;
+                    }
+                    else if (selected >= viewStart + maxVisibleItems)
+                    {
+                        viewStart = selected - maxVisibleItems + 1;
+                    }
+                }
+
+                int viewEnd = needsScrolling ? Math.Min(viewStart + maxVisibleItems, options.Length) : options.Length;
+                bool hasMoreAbove = viewStart > 0;
+                bool hasMoreBelow = viewEnd < options.Length;
+
+                // Calculate actual lines we'll draw (for cursor repositioning)
+                int linesDrawn = 1; // title
+
                 // Draw menu
                 Console.SetCursorPosition(0, Console.CursorTop);
-                AnsiConsole.MarkupLine($"[bold]{title}[/]");
-                for (int i = 0; i < options.Length; i++)
+                MarkupLineClear($"[bold]{Markup.Escape(title)}[/]");
+
+                // Show "more above" indicator
+                if (hasMoreAbove)
+                {
+                    MarkupLineClear($"[dim]  ▲ {viewStart} more above[/]");
+                    linesDrawn++;
+                }
+
+                // Draw visible options
+                for (int i = viewStart; i < viewEnd; i++)
                 {
                     bool isEnabled = enabledStates?[i] ?? true;
-
                     string escapedOption = Markup.Escape(options[i]);
+
                     if (i == selected)
                     {
-                        AnsiConsole.MarkupLine($"[green]> {escapedOption}[/]");
+                        MarkupLineClear($"[green]> {escapedOption}[/]");
                     }
                     else if (!isEnabled)
                     {
-                        AnsiConsole.MarkupLine($"[dim]  {escapedOption}[/]");
+                        MarkupLineClear($"[dim]  {escapedOption}[/]");
                     }
                     else
                     {
-                        AnsiConsole.MarkupLine($"  {escapedOption}");
+                        MarkupLineClear($"  {escapedOption}");
                     }
+                    linesDrawn++;
                 }
-                AnsiConsole.MarkupLine("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");
+
+                // Show "more below" indicator
+                if (hasMoreBelow)
+                {
+                    MarkupLineClear($"[dim]  ▼ {options.Length - viewEnd} more below[/]");
+                    linesDrawn++;
+                }
+
+                MarkupLineClear("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");
+                linesDrawn++;
 
                 var keyOrNull = InputHelpers.ReadKeyPolling();
                 if (keyOrNull == null)
@@ -173,6 +272,26 @@ namespace coppercli.Helpers
                     case ConsoleKey.DownArrow:
                         selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
                         break;
+                    case ConsoleKey.PageUp:
+                        // Move up by a page
+                        for (int i = 0; i < maxVisibleItems && selected > 0; i++)
+                        {
+                            selected = FindNextEnabled(selected, -1, options.Length, enabledStates);
+                        }
+                        break;
+                    case ConsoleKey.PageDown:
+                        // Move down by a page
+                        for (int i = 0; i < maxVisibleItems && selected < options.Length - 1; i++)
+                        {
+                            selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
+                        }
+                        break;
+                    case ConsoleKey.Home:
+                        selected = FindNextEnabled(-1, 1, options.Length, enabledStates);
+                        break;
+                    case ConsoleKey.End:
+                        selected = FindNextEnabled(options.Length, -1, options.Length, enabledStates);
+                        break;
                     case ConsoleKey.Enter:
                         if (enabledStates == null || enabledStates[selected])
                         {
@@ -184,7 +303,8 @@ namespace coppercli.Helpers
                 }
 
                 // Move cursor back up to redraw
-                Console.SetCursorPosition(0, Console.CursorTop - options.Length - 2);
+                int newTop = Math.Max(0, Console.CursorTop - linesDrawn);
+                Console.SetCursorPosition(0, newTop);
             }
         }
 
@@ -226,16 +346,47 @@ namespace coppercli.Helpers
 
         public static MenuItem<T> ShowMenu<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
-            int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
-            return menu[Math.Max(0, index)];
+            while (true)
+            {
+                int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
+                if (index >= 0)
+                {
+                    return menu[index];
+                }
+                // Status changed (index == -1), redraw and try again
+            }
         }
 
         /// <summary>
         /// Displays a confirmation dialog. Returns true for yes, false for no.
+        /// Responds immediately on keypress (no Enter required).
         /// </summary>
         public static bool Confirm(string message, bool defaultYes = false)
         {
-            return AnsiConsole.Confirm(message, defaultYes);
+            string defaultHint = defaultYes ? "Y/n" : "y/N";
+            AnsiConsole.Markup($"{message} [blue][[{defaultHint}]][/] ");
+
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                char c = char.ToLower(key.KeyChar);
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    AnsiConsole.WriteLine(defaultYes ? "y" : "n");
+                    return defaultYes;
+                }
+                if (key.Key == ConsoleKey.Y || c == 'y')
+                {
+                    AnsiConsole.WriteLine("y");
+                    return true;
+                }
+                if (key.Key == ConsoleKey.N || c == 'n')
+                {
+                    AnsiConsole.WriteLine("n");
+                    return false;
+                }
+            }
         }
 
         /// <summary>
