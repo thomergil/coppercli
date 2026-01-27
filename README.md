@@ -1,10 +1,8 @@
+<img src="doc/logo.jpg" alt="coppercli logo" width="120">
+
 # coppercli
 
-<img src="doc/logo.jpg" alt="coppercli logo" width="120" align="right">
-
 A platform-agnostic CLI tool for PCB milling with GRBL CNC machines, featuring auto-leveling via probe grids. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
-
-<br clear="both">
 
 | Probing | Milling |
 |:-------:|:-------:|
