@@ -20,9 +20,6 @@ jobs:
           - os: macos-latest
             rid: osx-arm64
             artifact: coppercli-macos-arm64.tar.gz
-          - os: macos-15-large
-            rid: osx-x64
-            artifact: coppercli-macos-x64.tar.gz
           - os: ubuntu-latest
             rid: linux-x64
             artifact: coppercli-linux-x64.tar.gz
@@ -139,8 +136,7 @@ jobs:
             |----------|------|
             | Windows Installer | `coppercli-${{ steps.version.outputs.VERSION }}-setup.exe` |
             | Windows (portable) | `coppercli-${{ steps.version.outputs.VERSION }}-windows-x64.exe` |
-            | macOS Apple Silicon | `coppercli-${{ steps.version.outputs.VERSION }}-macos-arm64.tar.gz` |
-            | macOS Intel | `coppercli-${{ steps.version.outputs.VERSION }}-macos-x64.tar.gz` |
+            | macOS (Apple Silicon) | `coppercli-${{ steps.version.outputs.VERSION }}-osx-arm64.tar.gz` |
             | Linux x64 | `coppercli-${{ steps.version.outputs.VERSION }}-linux-x64.tar.gz` |
 
             ## Installation
