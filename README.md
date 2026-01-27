@@ -23,9 +23,9 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 ## Screenshots
 
-| Main Menu | File Browser | Jog |
-|-----------|--------------|-----|
-| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> |
+| Main Menu                                 | File Browser                                 | Jog                                      |
+| ----------------------------------------- | -------------------------------------------- | ---------------------------------------- |
+| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/jog-menu.png" width="200"> |
 
 | Probe Setup | Probing | Milling |
 |-------------|---------|---------|
