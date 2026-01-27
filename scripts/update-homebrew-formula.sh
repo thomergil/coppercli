@@ -37,16 +37,23 @@ ARM64_URL="$BASE_URL/coppercli-$VERSION-osx-arm64.tar.gz"
 X64_URL="$BASE_URL/coppercli-$VERSION-osx-x64.tar.gz"
 LINUX_URL="$BASE_URL/coppercli-$VERSION-linux-x64.tar.gz"
 
+# Download to temp files to avoid curl pipe checksum issues
+TMPDIR=$(mktemp -d)
+trap "rm -rf $TMPDIR" EXIT
+
 echo "  Fetching macOS ARM64..."
-ARM64_SHA=$(curl -sL "$ARM64_URL" | shasum -a 256 | cut -d' ' -f1)
+curl -sL "$ARM64_URL" -o "$TMPDIR/arm64.tar.gz"
+ARM64_SHA=$(shasum -a 256 "$TMPDIR/arm64.tar.gz" | cut -d' ' -f1)
 echo "    SHA256: $ARM64_SHA"
 
 echo "  Fetching macOS x64..."
-X64_SHA=$(curl -sL "$X64_URL" | shasum -a 256 | cut -d' ' -f1)
+curl -sL "$X64_URL" -o "$TMPDIR/x64.tar.gz"
+X64_SHA=$(shasum -a 256 "$TMPDIR/x64.tar.gz" | cut -d' ' -f1)
 echo "    SHA256: $X64_SHA"
 
 echo "  Fetching Linux x64..."
-LINUX_SHA=$(curl -sL "$LINUX_URL" | shasum -a 256 | cut -d' ' -f1)
+curl -sL "$LINUX_URL" -o "$TMPDIR/linux.tar.gz"
+LINUX_SHA=$(shasum -a 256 "$TMPDIR/linux.tar.gz" | cut -d' ' -f1)
 echo "    SHA256: $LINUX_SHA"
 
 # Update the formula
