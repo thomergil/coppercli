@@ -41,7 +41,7 @@ For a complete end-to-end guide on milling PCBs, from KiCad export through G-cod
 
 ## Background
 
-This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing and height map interpolation.
+This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing and height map interpolation.
 
 However, OpenCNCPilot has some limitations:
 
@@ -161,6 +161,6 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Acknowledgments
 
-- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [martin2250](https://github.com/martin2250) - the foundation this project is built on
+- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250) - the foundation this project is built on
 - [Spectre.Console](https://spectreconsole.net/) - console UI library
 - [Claude Code](https://claude.ai/claude-code)
