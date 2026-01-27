@@ -1,6 +1,6 @@
 # <img src="doc/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, session recovery, real-time visualization, network proxy mode, and cross-platform support. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, session recovery, real-time visualization, network proxy mode, and cross-platform support. Optimized for minimal interaction: sensible defaults guide you from G-code to milled PCB with minimum effort. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -37,7 +37,7 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 ## Tutorial
 
-For a complete end-to-end guide on milling PCBs—from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
+For a complete end-to-end guide on milling PCBs, from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
 
 ## Background
 
