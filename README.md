@@ -41,61 +41,22 @@ For a complete end-to-end guide on milling PCBs, from KiCad export through G-cod
 
 ## Background
 
-This project is based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), which is an excellent tool for CNC machine control and PCB auto-leveling. OpenCNCPilot has solid core functionality for G-code parsing and height map interpolation.
-
-However, OpenCNCPilot has some limitations:
-
-- **Windows-only**: Built with WPF, it only runs on Windows
-- **GUI-heavy workflow**: The interface requires a lot of mouse clicking and navigating through dialogs, which can be cumbersome.
-- **No session persistence**: If you disconnect or the program crashes mid-probe, you lose your progress and have to start over
-
-coppercli addresses these issues by providing a keyboard-driven CLI that runs on Linux, macOS, and Windows, with robust session recovery.
-
-**A Note on Development**: C#/.NET is not my language of choice, but I wanted to leverage the core functionality in OpenCNCPilot rather than rewrite G-code parsing and height map interpolation from scratch. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase into this CLI version.
+Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), an excellent CNC milling with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimum interaction, and recovers interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
 
 ## Features
 
-### Platform Agnostic
-- Runs on Linux, macOS, and Windows
-- .NET 8 runtime
-- Auto-detect serial port and baud rate (cycles through common rates to find GRBL devices)
-
-### Keyboard-Driven Interface
-- Single-key navigation throughout
-- Arrow keys for jogging, Tab to cycle speeds
-- Number keys and mnemonics for menu selection
-- Smart menu defaults: automatically highlights the most logical next step (Connect → Load → Move → Probe → Mill)
-- Built-in file browser for G-code and probe grid files (remembers last directory)
-- No mouse required
-
-### Probing Features
-- **Probe grid auto-leveling**: Compensates for PCB surface irregularities
-- **Outline traversal**: Before probing, traverse the outer boundary of the probe area to check for collisions or clearance issues
-- **Configurable probe parameters**: Safe height, max depth, feed rate, grid size
-- **Save/load probe grids**: Reuse probe data across sessions (.pgrid files)
-
-### Session Persistence
-
-- **Continue where you left off**: Interrupted probing sessions are auto-saved and can be resumed
-- **Remembers your last file**: Offers to reload the last G-code file on startup
-- **Trusts stored work zero**: Option to accept GRBL's stored work coordinate system from a previous session
-
-### Machine Control
-
-- Multiple jog speed presets (Tab to cycle: Fast/Normal/Slow/Creep)
-- Pause/Resume/Stop during milling with automatic spindle shutdown and Z retraction
-- Home, unlock, and soft reset commands
-- XY, Z, and XYZ homing
-- Single Z probe (find Z height at current XY position)
-- Quick positioning (go to X0Y0, Z0, Z+6mm, Z+1mm)
-- Move to the center of the loaded G-code file
-
-### G-Code Handling
-- View file bounds
-- Apply height map/probe point compensation
-- Run with real-time progress display
-- 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
-- Terminal resize detection with auto-redraw
+- Cross-platform, auto-detects serial port and baud rate
+- Keyboard-driven: single-key menu navigation, arrow keys for jogging, Tab to cycle speeds
+- Jog speed presets (Fast/Normal/Slow/Creep), pause/resume/stop with spindle shutdown
+- Menu defaults follow the Connect → Load → Move → Probe → Mill workflow
+- Probe grid auto-leveling with configurable parameters (safe height, depth, feed rate, grid size)
+- Real-time probing and milling displays with position grid visualization
+- Outline traversal to check clearance before probing
+- Save/load probe grids
+- Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
+- Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
+- Built-in minimalist file browser
+- Session recovery: interrupted probing resumes, remembers last file, restores home points
 
 ## Proxy Mode (EXPERIMENTAL)
 
@@ -124,26 +85,6 @@ When the proxy starts, it displays the IP addresses clients can use to connect. 
 | `--port <number>` | | Override TCP port for proxy mode (default: 34000) |
 | `--headless` | `-H` | Run proxy without TUI (for services/background) |
 | `--debug` | `-d` | Enable debug logging to `coppercli.log` |
-
-## Configuration
-
-Two JSON files are stored in the working directory (both managed by coppercli):
-
-**`settings.json`** - User preferences:
-- **Connection**: Serial port, baud rate, ethernet IP/port
-- **Jogging**: Feed rates and distances for normal/slow modes
-- **Probing**: Safe height, max depth, feed rate, grid size
-- **Outline traversal**: Height and feed rate for boundary check
-
-**`session.json`** - Session state (auto-managed):
-- Last loaded G-code file path
-- Last file browser directory
-- Interrupted probe session data for recovery
-
-## File Formats
-
-- **G-code**: `.nc`, `.gcode`, `.ngc`, `.gc`, `.tap`, `.cnc`
-- **Probe grids**: `.pgrid` (XML format, compatible with OpenCNCPilot's `.hmap`)
 
 ## Warning
 
