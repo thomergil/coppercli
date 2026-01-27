@@ -151,5 +151,11 @@ namespace coppercli
         // =========================================================================
         public const int NetworkScanTimeoutMs = 200;
         public const int NetworkScanParallelism = 100;
+
+        // =========================================================================
+        // Macro system
+        // =========================================================================
+        public const string MacroExtension = ".cmacro";
+        public const char MacroCommentChar = '#';
     }
 }

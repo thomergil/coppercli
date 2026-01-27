@@ -1,6 +1,7 @@
 // Extracted from Program.cs
 
 using coppercli.Helpers;
+using coppercli.Macro;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.GrblProtocol;
@@ -19,6 +20,7 @@ namespace coppercli.Menus
             Move,
             Probe,
             Mill,
+            Macro,
             Proxy,
             Settings,
             About,
@@ -35,6 +37,8 @@ namespace coppercli.Menus
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
                 EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
                     (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
+            new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
+                EnabledWhen: () => AppState.Machine.Connected),
             new MenuItem<MainAction>("Proxy [experimental]", 'x', MainAction.Proxy),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
@@ -100,6 +104,7 @@ namespace coppercli.Menus
                 case MainAction.Move: JogMenu.Show(); break;
                 case MainAction.Probe: ProbeMenu.Show(); break;
                 case MainAction.Mill: MillMenu.Show(); break;
+                case MainAction.Macro: MacroMenu.Show(); break;
                 case MainAction.Proxy: ProxyMenu.Show(); break;
                 case MainAction.Settings: SettingsMenu.Show(Persistence.SaveSettings); break;
                 case MainAction.About: AboutMenu.Show(); break;

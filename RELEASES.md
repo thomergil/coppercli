@@ -1,6 +1,11 @@
 # Release Notes
 
-## v0.2.4
+## v0.3.0
+
+### New Features
+
+- **Macros**: New macro system for automating repetitive workflows. Create `.cmacro` files with G-code, prompts, and comments. Access via main menu or run directly with `--macro` / `-m` command-line flag.
+- **File browser filter**: Press `/` to filter files by name. Type to narrow results, Backspace to edit, Esc to clear.
 
 ### Changes
 

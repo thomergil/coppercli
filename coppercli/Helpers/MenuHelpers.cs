@@ -479,5 +479,16 @@ namespace coppercli.Helpers
                 }
             }
         }
+
+        /// <summary>
+        /// Displays a message and waits for Enter to continue.
+        /// Used by macro system for user prompts.
+        /// </summary>
+        public static void PromptEnter(string message)
+        {
+            AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(message)}[/]");
+            AnsiConsole.MarkupLine("[dim]Press Enter to continue...[/]");
+            Console.ReadLine();
+        }
     }
 }

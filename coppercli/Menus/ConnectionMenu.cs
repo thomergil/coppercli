@@ -235,7 +235,8 @@ namespace coppercli.Menus
                 switch (result)
                 {
                     case ConnectionResult.Success when message != null:
-                        if (message != StatusIdle)
+                        // Don't announce Alarm state - it will be cleared silently
+                        if (message != StatusIdle && !message.StartsWith(StatusAlarm))
                         {
                             AnsiConsole.MarkupLine($"[green]Connected! GRBL status: {message}[/]");
                         }
@@ -613,7 +614,18 @@ namespace coppercli.Menus
         {
             var machine = AppState.Machine;
 
-            // First, clear any alarm/door state so the machine is usable
+            // Offer to home
+            var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
+            if (result == null)
+            {
+                Environment.Exit(0);
+            }
+            if (result != true)
+            {
+                return;
+            }
+
+            // Clear any alarm/door state before homing
             while (StatusHelpers.IsProblematicState(machine))
             {
                 if (StatusHelpers.IsDoor(machine))
@@ -628,17 +640,6 @@ namespace coppercli.Menus
                     MachineCommands.Unlock(machine);
                 }
                 Thread.Sleep(CommandDelayMs);
-            }
-
-            // Offer to home
-            var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
-            if (result == null)
-            {
-                Environment.Exit(0);
-            }
-            if (result != true)
-            {
-                return;
             }
 
             MachineCommands.Home(machine);

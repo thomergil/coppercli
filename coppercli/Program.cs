@@ -5,6 +5,7 @@ using coppercli.Core.Communication;
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
 using coppercli.Helpers;
+using coppercli.Macro;
 using coppercli.Menus;
 using Spectre.Console;
 
@@ -32,6 +33,12 @@ class Program
         if (TryParseProxyArgs(args, out int? proxyPort, out bool headless))
         {
             RunProxyMode(proxyPort, headless);
+            return;
+        }
+
+        if (TryParseMacroArg(args, out string? macroFile) && macroFile != null)
+        {
+            RunMacroMode(macroFile);
             return;
         }
 
@@ -103,6 +110,70 @@ class Program
         }
 
         return proxyMode;
+    }
+
+    /// <summary>
+    /// Parses command-line arguments for macro mode.
+    /// Returns true if --macro flag is present.
+    /// </summary>
+    private static bool TryParseMacroArg(string[] args, out string? macroFile)
+    {
+        macroFile = null;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            if ((args[i] == "--macro" || args[i] == "-m") && i + 1 < args.Length)
+            {
+                macroFile = args[i + 1];
+                return true;
+            }
+            else if (args[i].StartsWith("--macro="))
+            {
+                macroFile = args[i].Substring(8);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Runs macro mode - connects to machine and runs specified macro file.
+    /// </summary>
+    private static void RunMacroMode(string macroFile)
+    {
+        // Expand ~ for home directory
+        if (macroFile.StartsWith("~"))
+        {
+            macroFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), macroFile.Substring(2));
+        }
+
+        // Convert to absolute path
+        macroFile = Path.GetFullPath(macroFile);
+
+        if (!File.Exists(macroFile))
+        {
+            AnsiConsole.MarkupLine($"[red]Macro file not found: {Markup.Escape(macroFile)}[/]");
+            Environment.Exit(1);
+        }
+
+        // Create machine instance with loaded settings
+        AppState.Machine = new Machine(AppState.Settings);
+
+        // Wire up event handlers
+        SetupEventHandlers();
+
+        // Auto-connect if we have saved connection settings
+        OfferAutoReconnect();
+
+        // Run the macro
+        MacroMenu.RunMacroFromPath(macroFile);
+
+        // Clean up
+        if (AppState.Machine.Connected)
+        {
+            AppState.Machine.Disconnect();
+        }
     }
 
     /// <summary>

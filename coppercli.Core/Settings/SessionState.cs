@@ -12,6 +12,8 @@ namespace coppercli.Core.Settings
         // File browsing
         public string LastBrowseDirectory { get; set; } = "";
         public string LastLoadedGCodeFile { get; set; } = "";
+        public string LastMacroBrowseDirectory { get; set; } = "";
+        public string LastMacroFile { get; set; } = "";
 
         // Probe auto-save (for resuming interrupted probes)
         public string ProbeAutoSavePath { get; set; } = "";

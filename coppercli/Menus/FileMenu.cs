@@ -12,6 +12,12 @@ namespace coppercli.Menus
     /// </summary>
     internal static class FileMenu
     {
+        // Lines used by file browser chrome (title, directory, blank, help text)
+        private const int FileBrowserChromeLines = 5;
+
+        // ANSI escape sequence to clear from cursor to end of line
+        private const string AnsiClearToEol = "\u001b[K";
+
         public static void LoadGCodeFile()
         {
             var path = BrowseForFile(GCodeExtensions);
@@ -27,7 +33,8 @@ namespace coppercli.Menus
         }
 
         /// <summary>
-        /// Generic file browser. Returns selected file path or null if cancelled.
+        /// Generic file browser with filter support. Returns selected file path or null if cancelled.
+        /// Press / to start filtering, then type to filter. Backspace removes filter chars, Esc clears filter.
         /// </summary>
         public static string? BrowseForFile(string[] extensions, string? defaultFileName = null)
         {
@@ -38,15 +45,18 @@ namespace coppercli.Menus
                 ? session.LastBrowseDirectory
                 : Environment.CurrentDirectory;
 
+            string filter = "";
+            bool filterActive = false;
+
             while (true)
             {
-                var items = new List<(string Display, string FullPath, bool IsDir)>();
+                var items = new List<(string Display, string Name, string FullPath, bool IsDir)>();
 
                 // Add parent directory option first
                 var parent = Directory.GetParent(currentDir);
                 if (parent != null)
                 {
-                    items.Add(("..", parent.FullName, true));
+                    items.Add(("..", "..", parent.FullName, true));
                 }
 
                 // Add subdirectories
@@ -57,7 +67,7 @@ namespace coppercli.Menus
                         var name = Path.GetFileName(dir);
                         if (!name.StartsWith("."))
                         {
-                            items.Add((name + "/", dir, true));
+                            items.Add((name + "/", name, dir, true));
                         }
                     }
                 }
@@ -78,7 +88,7 @@ namespace coppercli.Menus
                             var modTime = File.GetLastWriteTime(file);
                             var timeStr = modTime.ToString("MMM dd HH:mm");
                             var display = $"{fileName,-30} {timeStr}";
-                            items.Add((display, file, false));
+                            items.Add((display, fileName, file, false));
                         }
                     }
                 }
@@ -87,39 +97,27 @@ namespace coppercli.Menus
                     // Skip inaccessible files
                 }
 
-                // Build menu options (shortcuts only for first 36 items)
-                var menuOptions = new List<string>();
-                for (int i = 0; i < items.Count; i++)
+                // Show file browser with filter support
+                var result = ShowFileBrowserMenu(currentDir, items, filter, filterActive);
+
+                if (result.Action == FileBrowserAction.Cancel)
                 {
-                    var item = items[i];
-                    var key = InputHelpers.GetMenuKey(i);
-                    var prefix = key.HasValue ? $"{key}." : "  ";
-                    menuOptions.Add($"{prefix} {item.Display}");
+                    return null;
                 }
-                // Cancel always gets a shortcut if possible
-                var cancelKey = InputHelpers.GetMenuKey(items.Count);
-                var cancelPrefix = cancelKey.HasValue ? $"{cancelKey}." : "  ";
-                menuOptions.Add($"{cancelPrefix} Cancel");
-
-                // Show current directory
-                Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Select File[/]").RuleStyle("blue"));
-                AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]");
-                AnsiConsole.WriteLine();
-
-                int choice = MenuHelpers.ShowMenu("Select file or directory:", menuOptions.ToArray());
-
-                if (choice == items.Count)
+                else if (result.Action == FileBrowserAction.FilterChanged)
                 {
-                    return null; // Cancel
+                    filter = result.NewFilter ?? "";
+                    filterActive = result.FilterActive;
+                    // Re-render with new filter (same directory)
                 }
-
-                if (choice >= 0 && choice < items.Count)
+                else if (result.Action == FileBrowserAction.Selected && result.SelectedItem != null)
                 {
-                    var selected = items[choice];
+                    var selected = result.SelectedItem.Value;
                     if (selected.IsDir)
                     {
                         currentDir = selected.FullPath;
+                        filter = ""; // Clear filter when changing directory
+                        filterActive = false;
                     }
                     else
                     {
@@ -130,6 +128,259 @@ namespace coppercli.Menus
                     }
                 }
             }
+        }
+
+        private enum FileBrowserAction
+        {
+            Cancel,
+            Selected,
+            FilterChanged
+        }
+
+        private struct FileBrowserResult
+        {
+            public FileBrowserAction Action;
+            public (string Display, string Name, string FullPath, bool IsDir)? SelectedItem;
+            public string? NewFilter;
+            public bool FilterActive;
+        }
+
+        /// <summary>
+        /// Shows the file browser menu with filter support.
+        /// </summary>
+        private static FileBrowserResult ShowFileBrowserMenu(
+            string currentDir,
+            List<(string Display, string Name, string FullPath, bool IsDir)> allItems,
+            string filter,
+            bool filterActive)
+        {
+            // Filter items based on current filter (case-insensitive, matches Name)
+            var filteredItems = string.IsNullOrEmpty(filter)
+                ? allItems
+                : allItems.Where(i => i.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            int selected = 0;
+
+            while (true)
+            {
+                // Calculate viewport size based on terminal height
+                var (termWidth, termHeight) = DisplayHelpers.GetSafeWindowSize();
+                int maxVisibleItems = Math.Max(3, termHeight - FileBrowserChromeLines);
+                bool needsScrolling = filteredItems.Count > maxVisibleItems;
+                int viewStart = 0;
+
+                // Adjust view to show selection
+                if (needsScrolling && selected >= maxVisibleItems)
+                {
+                    viewStart = Math.Min(selected - maxVisibleItems + 1, filteredItems.Count - maxVisibleItems);
+                }
+
+                // Render
+                Console.Clear();
+                AnsiConsole.Write(new Rule("[bold blue]Select File[/]").RuleStyle("blue"));
+
+                // Show directory and filter
+                if (filterActive)
+                {
+                    var filterDisplay = string.IsNullOrEmpty(filter) ? "_" : Markup.Escape(filter);
+                    AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]  [yellow]Filter: {filterDisplay}[/]");
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]");
+                }
+                AnsiConsole.WriteLine();
+
+                // Ensure selection is valid
+                selected = Math.Clamp(selected, 0, Math.Max(0, filteredItems.Count - 1));
+
+                // Adjust view to keep selection visible
+                if (needsScrolling)
+                {
+                    viewStart = Math.Clamp(viewStart, 0, Math.Max(0, filteredItems.Count - maxVisibleItems));
+                    if (selected < viewStart)
+                    {
+                        viewStart = selected;
+                    }
+                    else if (selected >= viewStart + maxVisibleItems)
+                    {
+                        viewStart = selected - maxVisibleItems + 1;
+                    }
+                }
+
+                int viewEnd = needsScrolling ? Math.Min(viewStart + maxVisibleItems, filteredItems.Count) : filteredItems.Count;
+                bool hasMoreAbove = viewStart > 0;
+                bool hasMoreBelow = viewEnd < filteredItems.Count;
+
+                // Show "more above" indicator
+                if (hasMoreAbove)
+                {
+                    MarkupLineClear($"[dim]  ▲ {viewStart} more above[/]");
+                }
+
+                // Draw visible options with shortcuts
+                for (int i = viewStart; i < viewEnd; i++)
+                {
+                    var item = filteredItems[i];
+                    string escapedDisplay = Markup.Escape(item.Display);
+                    var shortcut = InputHelpers.GetMenuKey(i);
+                    var prefix = shortcut.HasValue ? $"{shortcut}." : "  ";
+
+                    if (i == selected)
+                    {
+                        MarkupLineClear($"[green]> {prefix} {escapedDisplay}[/]");
+                    }
+                    else
+                    {
+                        MarkupLineClear($"  {prefix} {escapedDisplay}");
+                    }
+                }
+
+                // Show "more below" indicator
+                if (hasMoreBelow)
+                {
+                    MarkupLineClear($"[dim]  ▼ {filteredItems.Count - viewEnd} more below[/]");
+                }
+
+                // Help text
+                if (!filterActive)
+                {
+                    MarkupLineClear("[dim]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
+                }
+                else
+                {
+                    MarkupLineClear("[dim]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
+                }
+
+                // Read key
+                var keyOrNull = InputHelpers.ReadKeyPolling();
+                if (keyOrNull == null)
+                {
+                    continue; // Status changed, redraw
+                }
+                var key = keyOrNull.Value;
+
+                // Build shortcut map for current filtered items
+                var shortcuts = new Dictionary<char, int>();
+                for (int i = 0; i < filteredItems.Count && i < 36; i++)
+                {
+                    var shortcut = InputHelpers.GetMenuKey(i);
+                    if (shortcut.HasValue)
+                    {
+                        shortcuts[char.ToUpper(shortcut.Value)] = i;
+                    }
+                }
+
+                // Handle keys differently based on filter state
+                if (!filterActive)
+                {
+                    // Not filtering - shortcuts select, / starts filter, other keys navigate
+                    char pressedUpper = char.ToUpper(key.KeyChar);
+                    if (shortcuts.TryGetValue(pressedUpper, out int shortcutIdx))
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[shortcutIdx] };
+                    }
+                    else if (key.KeyChar == '/')
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = true };
+                    }
+                    else if (key.Key == ConsoleKey.Escape)
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Cancel };
+                    }
+                    else if (key.Key == ConsoleKey.Enter && filteredItems.Count > 0)
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[selected] };
+                    }
+                    else if (key.Key == ConsoleKey.UpArrow)
+                    {
+                        selected = (selected - 1 + filteredItems.Count) % Math.Max(1, filteredItems.Count);
+                    }
+                    else if (key.Key == ConsoleKey.DownArrow)
+                    {
+                        selected = (selected + 1) % Math.Max(1, filteredItems.Count);
+                    }
+                    else if (key.Key == ConsoleKey.PageUp)
+                    {
+                        selected = Math.Max(0, selected - maxVisibleItems);
+                    }
+                    else if (key.Key == ConsoleKey.PageDown)
+                    {
+                        selected = Math.Min(filteredItems.Count - 1, selected + maxVisibleItems);
+                    }
+                    else if (key.Key == ConsoleKey.Home)
+                    {
+                        selected = 0;
+                    }
+                    else if (key.Key == ConsoleKey.End)
+                    {
+                        selected = Math.Max(0, filteredItems.Count - 1);
+                    }
+                }
+                else
+                {
+                    // Currently filtering - typing adds to filter, Backspace removes, Esc clears
+                    if (key.Key == ConsoleKey.Escape)
+                    {
+                        // Clear filter and exit filter mode
+                        return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = false };
+                    }
+                    else if (key.Key == ConsoleKey.Backspace)
+                    {
+                        if (filter.Length > 0)
+                        {
+                            return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = filter[..^1], FilterActive = true };
+                        }
+                        else
+                        {
+                            // Backspace on empty filter exits filter mode
+                            return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = false };
+                        }
+                    }
+                    else if (key.Key == ConsoleKey.Enter && filteredItems.Count > 0)
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[selected] };
+                    }
+                    else if (key.Key == ConsoleKey.UpArrow)
+                    {
+                        selected = (selected - 1 + filteredItems.Count) % Math.Max(1, filteredItems.Count);
+                    }
+                    else if (key.Key == ConsoleKey.DownArrow)
+                    {
+                        selected = (selected + 1) % Math.Max(1, filteredItems.Count);
+                    }
+                    else if (key.Key == ConsoleKey.PageUp)
+                    {
+                        selected = Math.Max(0, selected - maxVisibleItems);
+                    }
+                    else if (key.Key == ConsoleKey.PageDown)
+                    {
+                        selected = Math.Min(filteredItems.Count - 1, selected + maxVisibleItems);
+                    }
+                    else if (key.Key == ConsoleKey.Home)
+                    {
+                        selected = 0;
+                    }
+                    else if (key.Key == ConsoleKey.End)
+                    {
+                        selected = Math.Max(0, filteredItems.Count - 1);
+                    }
+                    else if (!char.IsControl(key.KeyChar))
+                    {
+                        // Add character to filter
+                        return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = filter + key.KeyChar, FilterActive = true };
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
+        /// </summary>
+        private static void MarkupLineClear(string markup)
+        {
+            AnsiConsole.Markup(markup);
+            Console.WriteLine(AnsiClearToEol);
         }
 
         public static void LoadGCodeFromPath(string path)
