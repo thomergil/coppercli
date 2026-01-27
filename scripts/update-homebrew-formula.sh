@@ -33,8 +33,8 @@ BASE_URL="https://github.com/thomergil/coppercli/releases/download/$VERSION"
 # Download and compute SHA256 for each platform
 echo "Downloading and computing checksums..."
 
-ARM64_URL="$BASE_URL/coppercli-$VERSION-macos-arm64.tar.gz"
-X64_URL="$BASE_URL/coppercli-$VERSION-macos-x64.tar.gz"
+ARM64_URL="$BASE_URL/coppercli-$VERSION-osx-arm64.tar.gz"
+X64_URL="$BASE_URL/coppercli-$VERSION-osx-x64.tar.gz"
 LINUX_URL="$BASE_URL/coppercli-$VERSION-linux-x64.tar.gz"
 
 echo "  Fetching macOS ARM64..."
@@ -55,8 +55,8 @@ echo "Updating formula..."
 # Use sed to update version and URLs/checksums
 sed -i.bak \
     -e "s|version \".*\"|version \"$VERSION\"|" \
-    -e "s|/download/v[^/]*/coppercli-v[^-]*-macos-arm64|/download/$VERSION/coppercli-$VERSION-macos-arm64|" \
-    -e "s|/download/v[^/]*/coppercli-v[^-]*-macos-x64|/download/$VERSION/coppercli-$VERSION-macos-x64|" \
+    -e "s|/download/v[^/]*/coppercli-v[^-]*-osx-arm64|/download/$VERSION/coppercli-$VERSION-osx-arm64|" \
+    -e "s|/download/v[^/]*/coppercli-v[^-]*-osx-x64|/download/$VERSION/coppercli-$VERSION-osx-x64|" \
     -e "s|/download/v[^/]*/coppercli-v[^-]*-linux-x64|/download/$VERSION/coppercli-$VERSION-linux-x64|" \
     "$FORMULA"
 
@@ -72,8 +72,8 @@ awk -v arm64="$ARM64_SHA" -v x64="$X64_SHA" -v linux="$LINUX_SHA" '
     /sha256.*LINUX/ || /sha256.*PLACEHOLDER_LINUX/ || (prev_linux && /sha256/) {
         if (prev_linux) { sub(/sha256 ".*"/, "sha256 \"" linux "\""); prev_linux=0 }
     }
-    /macos-arm64\.tar\.gz/ { prev_arm64=1 }
-    /macos-x64\.tar\.gz/ { prev_x64=1 }
+    /osx-arm64\.tar\.gz/ { prev_arm64=1 }
+    /osx-x64\.tar\.gz/ { prev_x64=1 }
     /linux-x64\.tar\.gz/ { prev_linux=1 }
     { print }
 ' "$FORMULA" > "$FORMULA.tmp" && mv "$FORMULA.tmp" "$FORMULA"
