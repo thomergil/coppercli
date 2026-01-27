@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.2.4
+
+### Changes
+
+- **Clearer settling message**: During milling startup, the settling overlay now shows "Waiting for idle." when the machine is still moving, instead of a static countdown that never progresses.
+
 ## v0.2.3
 
 ### New Features

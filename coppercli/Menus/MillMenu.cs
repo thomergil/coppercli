@@ -110,7 +110,10 @@ namespace coppercli.Menus
                 while (stableCount < settleSeconds)
                 {
                     string statusBefore = machine.Status;
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, $"Settling... {settleSeconds - stableCount}s");
+                    string settleMessage = StatusHelpers.IsIdle(machine)
+                        ? $"Settling... {settleSeconds - stableCount}s"
+                        : "Waiting for idle.";
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, settleMessage);
 
                     // Check for X key to stop during settling
                     for (int ms = 0; ms < OneSecondMs; ms += StatusPollIntervalMs)
