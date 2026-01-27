@@ -30,7 +30,7 @@ namespace coppercli.Menus
         // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
             new MenuItem<ConnType>("Serial", 's', ConnType.Serial),
-            new MenuItem<ConnType>("Ethernet [[untested]]", 'e', ConnType.Ethernet),
+            new MenuItem<ConnType>("Ethernet [[experimental]]", 'e', ConnType.Ethernet),
             new MenuItem<ConnType>("Back", 'q', ConnType.Back)
         );
 
@@ -146,7 +146,14 @@ namespace coppercli.Menus
         public static void QuickConnect()
         {
             var settings = AppState.Settings;
-            AnsiConsole.MarkupLine($"[blue]Connecting to {settings.SerialPortName} @ {settings.SerialPortBaud}...[/]");
+            if (settings.ConnectionType == ConnectionType.Serial)
+            {
+                AnsiConsole.MarkupLine($"[blue]Connecting to {settings.SerialPortName} @ {settings.SerialPortBaud}...[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[blue]Connecting to {settings.EthernetIP}:{settings.EthernetPort}...[/]");
+            }
             ConnectWithCurrentSettings();
         }
 
@@ -175,7 +182,10 @@ namespace coppercli.Menus
                         {
                             AnsiConsole.MarkupLine($"[green]Connected! GRBL status: {message}[/]");
                         }
+                        // Save connection settings and remember this as the last successful connection type
+                        AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
                         Persistence.SaveSettings();
+                        Persistence.SaveSession();
                         OfferToHome(message);
                         break;
                     case ConnectionResult.Success:

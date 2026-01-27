@@ -124,6 +124,19 @@ State management:
 - `ClearDoorState(machine)` - sends CycleStart (~) for Door state, safe while moving
 - `ForceResetAndUnlock(machine)` - soft reset + unlock, **causes position loss if moving**
 
+### DisplayHelpers (`coppercli/Helpers/DisplayHelpers.cs`)
+
+Flicker-free console display (used by MillMenu, ProxyMenu):
+- `WriteLineTruncated(text, maxWidth)` - write padded line for in-place updates
+- `GetSafeWindowSize()` - returns (width, height) safely
+- `FormatTimeSpan(ts)` - formats as HH:MM:SS
+- `FormatDuration(ts)` - formats as "1h 23m 45s"
+- `CalculateDisplayLength(text)` - length excluding ANSI codes
+- `TruncateToDisplayWidth(text, maxWidth)` - truncate preserving ANSI codes
+
+ANSI color constants (for raw console output without Spectre.Console):
+- `AnsiReset`, `AnsiCyan`, `AnsiBoldCyan`, `AnsiYellow`, `AnsiGreen`, `AnsiBoldGreen`, `AnsiBoldBlue`, `AnsiRed`, `AnsiBoldRed`, `AnsiDim`
+
 ### MenuHelpers (`coppercli/Helpers/MenuHelpers.cs`)
 
 - `RequireConnection()` - shows error if not connected, returns false

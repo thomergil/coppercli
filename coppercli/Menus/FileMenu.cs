@@ -92,14 +92,14 @@ namespace coppercli.Menus
                 for (int i = 0; i < items.Count; i++)
                 {
                     var item = items[i];
-                    menuOptions.Add($"{InputHelpers.GetMenuKey(i)}. {Markup.Escape(item.Display)}");
+                    menuOptions.Add($"{InputHelpers.GetMenuKey(i)}. {item.Display}");
                 }
                 menuOptions.Add($"{InputHelpers.GetMenuKey(items.Count)}. Cancel");
 
                 // Show current directory
                 Console.Clear();
                 AnsiConsole.Write(new Rule("[bold blue]Select File[/]").RuleStyle("blue"));
-                AnsiConsole.MarkupLine($"[dim]{currentDir}[/]");
+                AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]");
                 AnsiConsole.WriteLine();
 
                 int choice = MenuHelpers.ShowMenu("Select file or directory:", menuOptions.ToArray());

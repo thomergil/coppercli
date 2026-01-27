@@ -2,7 +2,7 @@
 ; Download Inno Setup from: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "coppercli"
-#define MyAppVersion "0.2.1"
+#define MyAppVersion "0.2.2"
 #define MyAppPublisher "coppercli"
 #define MyAppURL "https://github.com/thomergil/coppercli"
 #define MyAppExeName "coppercli.exe"
@@ -43,17 +43,17 @@ Source: "publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs creat
 Source: "coppercli.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-; Start menu shortcut - runs in cmd.exe so terminal stays open
-Name: "{group}\{#MyAppName}"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{app}\coppercli.ico"; Comment: "PCB milling CLI tool"
+; Start menu shortcut - runs in cmd.exe, closes terminal on exit
+Name: "{group}\{#MyAppName}"; Filename: "{cmd}"; Parameters: "/c ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{app}\coppercli.ico"; Comment: "PCB milling CLI tool"
 ; Desktop shortcut (optional, user can choose during install)
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{app}\coppercli.ico"; Tasks: desktopicon; Comment: "PCB milling CLI tool"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{cmd}"; Parameters: "/c ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; IconFilename: "{app}\coppercli.ico"; Tasks: desktopicon; Comment: "PCB milling CLI tool"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Run]
 ; Option to run app after install
-Filename: "{cmd}"; Parameters: "/k ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+Filename: "{cmd}"; Parameters: "/c ""{app}\{#MyAppExeName}"""; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Clean up app data folder on uninstall (optional - ask user?)

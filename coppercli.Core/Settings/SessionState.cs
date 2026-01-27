@@ -6,6 +6,9 @@ namespace coppercli.Core.Settings
     /// </summary>
     public class SessionState
     {
+        // Connection - tracks last successful connection for auto-reconnect
+        public ConnectionType? LastSuccessfulConnectionType { get; set; }
+
         // File browsing
         public string LastBrowseDirectory { get; set; } = "";
         public string LastLoadedGCodeFile { get; set; } = "";

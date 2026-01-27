@@ -46,9 +46,13 @@ pause
 exit /b 1
 
 :found
-echo Starting coppercli...
 cd /d "%~dp0"
-"%DOTNET%" run --project "%PROJECT%" %*
+if "%~1"=="" (
+    echo Starting coppercli...
+) else (
+    echo Starting coppercli with args: %*
+)
+"%DOTNET%" run --project "%PROJECT%" -- %*
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo Press any key to exit...

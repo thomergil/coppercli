@@ -5,6 +5,7 @@ using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Helpers.DisplayHelpers;
 
 namespace coppercli.Menus
 {
@@ -13,16 +14,6 @@ namespace coppercli.Menus
     /// </summary>
     internal static class MillMenu
     {
-        // ANSI escape codes for real-time display. We use raw ANSI codes here instead of
-        // Spectre.Console markup because the milling progress display uses Console.SetCursorPosition
-        // to redraw in-place at high frequency. Spectre.Console's rendering model doesn't support
-        // this pattern well and causes visible flicker. Raw ANSI codes allow smooth updates.
-        private const string Cyan = "\u001b[36m";
-        private const string BoldCyan = "\u001b[1;36m";
-        private const string Yellow = "\u001b[93m";
-        private const string BoldBlue = "\u001b[1;34m";
-        private const string BoldRed = "\u001b[1;31m";
-        private const string Reset = "\u001b[0m";
 
         public static void Show()
         {
@@ -297,18 +288,6 @@ namespace coppercli.Menus
             }
         }
 
-        private static (int Width, int Height) GetSafeWindowSize()
-        {
-            try
-            {
-                return (Console.WindowWidth, Console.WindowHeight);
-            }
-            catch
-            {
-                return (80, 24);
-            }
-        }
-
         private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine, string? settlingMessage = null)
         {
             var machine = AppState.Machine;
@@ -323,7 +302,7 @@ namespace coppercli.Menus
 
             var (winWidth, winHeight) = GetSafeWindowSize();
 
-            string header = $"{BoldBlue}Milling{Reset}";
+            string header = $"{AnsiBoldBlue}Milling{AnsiReset}";
             int headerPad = Math.Max(0, (winWidth - 7) / 2);
             WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
             WriteLineTruncated("", winWidth);
@@ -339,19 +318,19 @@ namespace coppercli.Menus
             string statusDisplay;
             if (status.StartsWith(StatusHold))
             {
-                statusDisplay = $"{Yellow}{OverlayHoldMessage}{Reset}";
+                statusDisplay = $"{AnsiYellow}{OverlayHoldMessage}{AnsiReset}";
             }
             else if (paused)
             {
-                statusDisplay = $"{Yellow}PAUSED{Reset}";
+                statusDisplay = $"{AnsiYellow}PAUSED{AnsiReset}";
             }
             else if (status.StartsWith(StatusAlarm))
             {
-                statusDisplay = $"{BoldRed}{StatusAlarm}{Reset}";
+                statusDisplay = $"{AnsiBoldRed}{StatusAlarm}{AnsiReset}";
             }
             else
             {
-                statusDisplay = $"{Cyan}{status}{Reset}";
+                statusDisplay = $"{AnsiCyan}{status}{AnsiReset}";
             }
 
             int lineWidth = totalLines.ToString().Length;
@@ -359,16 +338,16 @@ namespace coppercli.Menus
 
             if (settlingMessage != null)
             {
-                WriteLineTruncated($"  {Yellow}{settlingMessage}{Reset}", winWidth);
+                WriteLineTruncated($"  {AnsiYellow}{settlingMessage}{AnsiReset}", winWidth);
             }
             else
             {
-                WriteLineTruncated($"  {Cyan}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{Reset} {pct,5:F1}%", winWidth);
+                WriteLineTruncated($"  {AnsiCyan}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{AnsiReset} {pct,5:F1}%", winWidth);
             }
-            WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {Cyan}{FormatTimeSpan(elapsed)}{Reset}   ETA: {Cyan}{etaStr}{Reset}", winWidth);
-            WriteLineTruncated($"  X:{Cyan}{pos.X,8:F2}{Reset}  Y:{Cyan}{pos.Y,8:F2}{Reset}  Z:{Cyan}{pos.Z,8:F2}{Reset}   Line {lineStr}/{totalLines}", winWidth);
+            WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {AnsiCyan}{FormatTimeSpan(elapsed)}{AnsiReset}   ETA: {AnsiCyan}{etaStr}{AnsiReset}", winWidth);
+            WriteLineTruncated($"  X:{AnsiCyan}{pos.X,8:F2}{AnsiReset}  Y:{AnsiCyan}{pos.Y,8:F2}{AnsiReset}  Z:{AnsiCyan}{pos.Z,8:F2}{AnsiReset}   Line {lineStr}/{totalLines}", winWidth);
             WriteLineTruncated("", winWidth);
-            WriteLineTruncated($"  {BoldCyan}P{Reset}=Pause  {BoldCyan}R{Reset}=Resume  {BoldRed}X{Reset}=Stop", winWidth);
+            WriteLineTruncated($"  {AnsiBoldCyan}P{AnsiReset}=Pause  {AnsiBoldCyan}R{AnsiReset}=Resume  {AnsiBoldRed}X{AnsiReset}=Stop", winWidth);
 
             double minX = currentFile.Min.X;
             double maxX = currentFile.Max.X;
@@ -403,7 +382,7 @@ namespace coppercli.Menus
 
             // Determine overlay message and color (if any)
             string? overlayMessage = null;
-            string overlayColor = Yellow;
+            string overlayColor = AnsiYellow;
 
             if (settlingMessage != null)
             {
@@ -416,72 +395,16 @@ namespace coppercli.Menus
             else if (status.StartsWith(StatusAlarm))
             {
                 overlayMessage = OverlayAlarmMessage;
-                overlayColor = BoldRed;
+                overlayColor = AnsiBoldRed;
             }
 
             DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor);
-        }
-
-        private static void WriteLineTruncated(string text, int maxWidth)
-        {
-            // Calculate display length (excluding ANSI codes)
-            int displayLen = 0;
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (text[i] == '\u001b')
-                {
-                    while (i < text.Length && text[i] != 'm') i++;
-                }
-                else
-                {
-                    displayLen++;
-                }
-            }
-
-            if (displayLen > maxWidth)
-            {
-                // Truncate to maxWidth display characters
-                var result = new System.Text.StringBuilder();
-                int displayed = 0;
-                for (int i = 0; i < text.Length && displayed < maxWidth; i++)
-                {
-                    if (text[i] == '\u001b')
-                    {
-                        // Copy entire ANSI sequence
-                        while (i < text.Length && text[i] != 'm')
-                        {
-                            result.Append(text[i]);
-                            i++;
-                        }
-                        if (i < text.Length)
-                        {
-                            result.Append(text[i]); // 'm'
-                        }
-                    }
-                    else
-                    {
-                        result.Append(text[i]);
-                        displayed++;
-                    }
-                }
-                text = result.ToString();
-            }
-            else if (displayLen < maxWidth)
-            {
-                text = text + new string(' ', maxWidth - displayLen);
-            }
-            Console.WriteLine(text);
         }
 
         private static string BuildProgressBar(double pct, int width)
         {
             int filled = (int)(pct / 100 * width);
             return new string('█', filled) + new string('░', width - filled);
-        }
-
-        private static string FormatTimeSpan(TimeSpan ts)
-        {
-            return ts.ToString(@"hh\:mm\:ss");
         }
 
         private static int MapToGrid(double value, double min, double range, int gridSize)
@@ -503,7 +426,7 @@ namespace coppercli.Menus
 
         private static void DrawPositionGrid(int width, int height, int posX, int posY,
             HashSet<(int, int)> visited, int winWidth, double minX, double maxX, double minY, double maxY,
-            string? overlayMessage = null, string overlayColor = Yellow)
+            string? overlayMessage = null, string overlayColor = AnsiYellow)
         {
             int matrixWidth = width * MillGridCharsPerCell;
             int leftPadding = Math.Max(0, (winWidth - matrixWidth - MillBorderPadding) / 2);
@@ -541,7 +464,7 @@ namespace coppercli.Menus
                 {
                     if (x == posX && y == posY)
                     {
-                        gridContent.Append(Yellow).Append(MillCurrentPosMarker).Append(Reset);
+                        gridContent.Append(AnsiYellow).Append(MillCurrentPosMarker).Append(AnsiReset);
                     }
                     else if (visited.Contains((x, y)))
                     {
@@ -563,8 +486,8 @@ namespace coppercli.Menus
                     {
                         0 => $"╔{new string('═', boxWidth - 2)}╗",
                         1 => $"║{new string(' ', boxWidth - 2)}║",
-                        2 => $"║{overlayColor}{centeredMsg}{Reset}║",
-                        3 => $"║{BoldRed}{centeredXStop}{Reset}║",
+                        2 => $"║{overlayColor}{centeredMsg}{AnsiReset}║",
+                        3 => $"║{AnsiBoldRed}{centeredXStop}{AnsiReset}║",
                         4 => $"║{new string(' ', boxWidth - 2)}║",
                         5 => $"╚{new string('═', boxWidth - 2)}╝",
                         _ => ""

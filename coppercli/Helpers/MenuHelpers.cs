@@ -122,17 +122,18 @@ namespace coppercli.Helpers
                 {
                     bool isEnabled = enabledStates?[i] ?? true;
 
+                    string escapedOption = Markup.Escape(options[i]);
                     if (i == selected)
                     {
-                        AnsiConsole.MarkupLine($"[green]> {options[i]}[/]");
+                        AnsiConsole.MarkupLine($"[green]> {escapedOption}[/]");
                     }
                     else if (!isEnabled)
                     {
-                        AnsiConsole.MarkupLine($"[dim]  {options[i]}[/]");
+                        AnsiConsole.MarkupLine($"[dim]  {escapedOption}[/]");
                     }
                     else
                     {
-                        AnsiConsole.MarkupLine($"  {options[i]}");
+                        AnsiConsole.MarkupLine($"  {escapedOption}");
                     }
                 }
                 AnsiConsole.MarkupLine("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");

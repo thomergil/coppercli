@@ -18,6 +18,23 @@ class Program
         AppState.Settings = Persistence.LoadSettings();
         AppState.Session = Persistence.LoadSession();
 
+        // Parse command-line arguments
+        bool debugMode = ParseDebugFlag(args);
+
+        // Enable logging if configured or --debug flag
+        Logger.Enabled = AppState.Settings.EnableDebugLogging || debugMode;
+        if (Logger.Enabled)
+        {
+            AnsiConsole.MarkupLine($"[dim]Log: {Logger.LogFilePath}[/]");
+            Logger.Log("=== Startup ===");
+        }
+
+        if (TryParseProxyArgs(args, out int? proxyPort, out bool headless))
+        {
+            RunProxyMode(proxyPort, headless);
+            return;
+        }
+
         // Create machine instance with loaded settings
         AppState.Machine = new Machine(AppState.Settings);
 
@@ -26,14 +43,6 @@ class Program
 
         // Show experimental warning on first run
         AboutMenu.ShowExperimentalWarning(Persistence.SaveSettings);
-
-        // Enable logging if configured
-        Logger.Enabled = AppState.Settings.EnableDebugLogging;
-        if (Logger.Enabled)
-        {
-            AnsiConsole.MarkupLine($"[dim]Log: {Logger.LogFilePath}[/]");
-            Logger.Log("=== Startup ===");
-        }
 
         // Offer to auto-reconnect if we have saved connection settings
         OfferAutoReconnect();
@@ -49,15 +58,99 @@ class Program
     }
 
     /// <summary>
+    /// Checks if --debug flag is present.
+    /// </summary>
+    private static bool ParseDebugFlag(string[] args)
+    {
+        return args.Any(a => a == "--debug" || a == "-d");
+    }
+
+    /// <summary>
+    /// Parses command-line arguments for proxy mode.
+    /// Returns true if --proxy flag is present.
+    /// </summary>
+    private static bool TryParseProxyArgs(string[] args, out int? port, out bool headless)
+    {
+        port = null;
+        headless = false;
+        bool proxyMode = false;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--proxy" || args[i] == "-p")
+            {
+                proxyMode = true;
+            }
+            else if (args[i] == "--headless" || args[i] == "-H")
+            {
+                headless = true;
+            }
+            else if (args[i] == "--port" && i + 1 < args.Length)
+            {
+                if (int.TryParse(args[i + 1], out int parsedPort))
+                {
+                    port = parsedPort;
+                }
+                i++; // Skip the port value
+            }
+            else if (args[i].StartsWith("--port="))
+            {
+                if (int.TryParse(args[i].Substring(7), out int parsedPort))
+                {
+                    port = parsedPort;
+                }
+            }
+        }
+
+        return proxyMode;
+    }
+
+    /// <summary>
+    /// Runs proxy mode with saved serial settings and specified (or default) TCP port.
+    /// </summary>
+    private static void RunProxyMode(int? tcpPort, bool headless)
+    {
+        var settings = AppState.Settings;
+
+        // Validate we have saved serial settings
+        if (string.IsNullOrEmpty(settings.SerialPortName))
+        {
+            AnsiConsole.MarkupLine("[red]No saved serial port settings. Run coppercli normally first to configure.[/]");
+            Environment.Exit(1);
+        }
+
+        int port = tcpPort ?? CliConstants.ProxyDefaultPort;
+
+        if (headless)
+        {
+            ProxyMenu.RunHeadless(settings.SerialPortName, settings.SerialPortBaud, port);
+        }
+        else
+        {
+            ProxyMenu.RunInteractive(settings.SerialPortName, settings.SerialPortBaud, port);
+        }
+    }
+
+    /// <summary>
     /// Auto-reconnects using saved settings on startup.
     /// </summary>
     private static void OfferAutoReconnect()
     {
         var settings = AppState.Settings;
+        var session = AppState.Session;
 
-        // Auto-connect if we have saved serial connection settings
-        if (settings.ConnectionType == ConnectionType.Serial &&
-            !string.IsNullOrEmpty(settings.SerialPortName))
+        // Use last successful connection type if available, otherwise fall back to saved type
+        var connectionType = session.LastSuccessfulConnectionType ?? settings.ConnectionType;
+
+        // Set the connection type so QuickConnect uses the right one
+        settings.ConnectionType = connectionType;
+
+        // Auto-connect if we have saved connection settings for this type
+        if (connectionType == ConnectionType.Serial && !string.IsNullOrEmpty(settings.SerialPortName))
+        {
+            ConnectionMenu.QuickConnect();
+        }
+        else if (connectionType == ConnectionType.Ethernet && !string.IsNullOrEmpty(settings.EthernetIP))
         {
             ConnectionMenu.QuickConnect();
         }
@@ -83,6 +176,13 @@ class Program
             if (result == true)
             {
                 FileMenu.LoadGCodeFromPath(session.LastLoadedGCodeFile);
+            }
+            else
+            {
+                // User rejected - clear the file so we don't keep asking
+                // (LastBrowseDirectory is preserved so file browser starts in the right place)
+                session.LastLoadedGCodeFile = "";
+                Persistence.SaveSession();
             }
         }
 

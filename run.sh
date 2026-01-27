@@ -101,5 +101,9 @@ DOTNET=$(find_dotnet) || {
     exit 1
 }
 
-echo "Starting coppercli..."
-exec "$DOTNET" run --project "$PROJECT" "$@"
+if [ $# -eq 0 ]; then
+    echo "Starting coppercli..."
+else
+    echo "Starting coppercli with args: $@"
+fi
+exec "$DOTNET" run --project "$PROJECT" -- "$@"

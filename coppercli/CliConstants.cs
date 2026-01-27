@@ -45,7 +45,7 @@ namespace coppercli
         // App info
         // =========================================================================
         public const string AppTitle = "coppercli";
-        public const string AppVersion = "v0.2.1";
+        public const string AppVersion = "v0.2.2";
 
         // =========================================================================
         // File extensions
@@ -135,5 +135,15 @@ namespace coppercli
         public const int ProbeGridMaxDisplayWidth = 50;
         public const int ProbeGridMaxDisplayHeight = 20;
         public const int ProbeGridHeaderPadding = 8;
+
+        // =========================================================================
+        // Proxy
+        // =========================================================================
+        public const int ProxyDefaultPort = 34000;
+        public const int ProxyStatusUpdateIntervalMs = 500;
+        public const int ProxyBufferSize = 4096;
+        public const int ProxyThreadSleepMs = 1;
+        public const string ProxyNoClientStatus = "No client connected";
+        public const string ProxyListeningStatus = "Listening...";
     }
 }

@@ -19,6 +19,7 @@ namespace coppercli.Menus
             Move,
             Probe,
             Mill,
+            Proxy,
             Settings,
             About,
             Exit
@@ -34,6 +35,7 @@ namespace coppercli.Menus
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
                 EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
                     (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
+            new MenuItem<MainAction>("Proxy [[experimental]]", 'x', MainAction.Proxy),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -98,6 +100,7 @@ namespace coppercli.Menus
                 case MainAction.Move: JogMenu.Show(); break;
                 case MainAction.Probe: ProbeMenu.Show(); break;
                 case MainAction.Mill: MillMenu.Show(); break;
+                case MainAction.Proxy: ProxyMenu.Show(); break;
                 case MainAction.Settings: SettingsMenu.Show(Persistence.SaveSettings); break;
                 case MainAction.About: AboutMenu.Show(); break;
                 case MainAction.Exit: ExitProgram(); break;

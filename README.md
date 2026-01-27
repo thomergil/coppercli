@@ -23,13 +23,17 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 ## Screenshots
 
-| Main Menu | File Browser | Jog | Probe Setup |
-|-----------|--------------|----------|-------------|
-| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> | <img src="doc/probe-menu.png" width="200"> |
+| Main Menu | File Browser | Jog |
+|-----------|--------------|-----|
+| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/move-menu.png" width="200"> |
 
-| Probing                                 | Milling                                        | Settings                                      | Milled PCB                                 |
-| --------------------------------------- | ---------------------------------------------- | --------------------------------------------- | ------------------------------------------ |
-| <img src="doc/probing.png" width="200"> | <img src="doc/milling-screen.png" width="200"> | <img src="doc/settings-menu.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
+| Probe Setup | Probing | Milling |
+|-------------|---------|---------|
+| <img src="doc/probe-menu.png" width="200"> | <img src="doc/probing.png" width="200"> | <img src="doc/milling-screen.png" width="200"> |
+
+| Settings | Proxy | Milled PCB |
+|----------|-------|------------|
+| <img src="doc/settings-menu.png" width="200"> | <img src="doc/proxy.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
 
 ## Tutorial
 
@@ -92,6 +96,54 @@ coppercli addresses these issues by providing a keyboard-driven CLI that runs on
 - Run with real-time progress display
 - 2D position grid visualization during milling (shows spindle position, visited/unvisited areas)
 - Terminal resize detection with auto-redraw
+
+## Proxy Mode (EXPERIMENTAL)
+
+coppercli can act as a serial-to-TCP bridge, allowing remote GRBL clients to connect to your CNC machine over the network. This is useful for:
+
+- Controlling a CNC machine from another computer on your network
+- Using software that only supports network connections with a serial-based machine
+- Remote monitoring of machine status
+
+### Usage
+
+**From the menu:** Select "Proxy [experimental]" from the main menu.
+
+**From command line:**
+```bash
+# Start proxy with interactive TUI display
+coppercli --proxy
+
+# Override the default TCP port (34000)
+coppercli --proxy --port 35000
+
+# Run without TUI (for services/scripts)
+coppercli --proxy --headless
+
+# Combine flags
+coppercli --proxy --port 35000 --headless --debug
+```
+
+The proxy uses saved serial port settings. Run coppercli normally first to configure your serial connection.
+
+### Connecting
+
+When proxy starts, it displays the IP addresses clients can use to connect. Clients should connect to the displayed IP and port (default: 34000) using TCP.
+
+### Limitations
+
+- Only one client can connect at a time
+- Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds)
+- The proxy injects periodic `?` status queries during idle periods to detect stale connections
+
+## Command-Line Arguments
+
+| Argument | Short | Description |
+|----------|-------|-------------|
+| `--proxy` | `-p` | Start directly in proxy mode using saved serial settings |
+| `--port <number>` | | Override TCP port for proxy mode (default: 34000) |
+| `--headless` | `-H` | Run proxy without TUI (for services/background) |
+| `--debug` | `-d` | Enable debug logging to `coppercli.log` |
 
 ## Configuration
 

@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.2.2
+
+### New Features
+
+- **Proxy [experimental]**: New menu option to act as a serial-to-TCP bridge, allowing remote GRBL clients to connect over the network. Displays local IP addresses for easy client connection.
+- **Command-line arguments**:
+  - `--proxy` or `-p`: Start directly in proxy mode using saved serial settings
+  - `--port <number>`: Override the default TCP port (34000) for proxy mode
+  - `--headless` or `-H`: Run proxy without TUI (for services/scripts)
+  - `--debug` or `-d`: Enable debug logging
+- **Auto-reconnect remembers connection type**: Last successful connection type (Serial or Ethernet) is now remembered and used for auto-reconnect on startup.
+
+### Bug Fixes
+
+- **File browser crash with special characters**: Fixed crash when browsing directories/files containing `[` or `]` characters (Spectre.Console markup escape issue).
+- **Windows installer terminal behavior**: Terminal window now closes when exiting the program instead of leaving a cmd prompt open.
+- **Session restore respects rejection**: When declining to reload a G-code file on startup, it's now cleared from session so it doesn't keep asking. Last browse directory is preserved.
+
 ## v0.2.1
 
 ### New Features
