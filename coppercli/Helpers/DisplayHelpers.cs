@@ -160,6 +160,11 @@ namespace coppercli.Helpers
             string line1Text, string line1Color,
             string line2Text, string line2Color)
         {
+            // Guard against invalid box width
+            if (boxWidth < 4)
+            {
+                return "";
+            }
             string inner = new string(' ', boxWidth - 2);
             return lineIndex switch
             {

@@ -65,7 +65,9 @@ namespace coppercli.Core.GCode
                 {
                     Line l = (Line)c;
                     if (!l.StartValid || l.PositionValid.Any(isValid => !isValid))
+                    {
                         continue;
+                    }
                 }
 
                 if (c is Motion)
@@ -234,6 +236,18 @@ namespace coppercli.Core.GCode
 
                     GCode.Add(code);
                     State.Position = a.End;
+                    continue;
+                }
+
+                if (c is TCode)
+                {
+                    TCode t = (TCode)c;
+                    string tcode = $"T{t.ToolNumber}";
+                    if (!string.IsNullOrEmpty(t.Comment))
+                    {
+                        tcode += $" ({t.Comment})";
+                    }
+                    GCode.Add(tcode);
                     continue;
                 }
 

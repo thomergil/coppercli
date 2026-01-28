@@ -47,5 +47,10 @@ namespace coppercli.Core.Settings
         public double JogDistance { get; set; } = 10.0;
         public double JogFeedSlow { get; set; } = 100.0;
         public double JogDistanceSlow { get; set; } = 1.0;
+
+        // Tool Change
+        public string MachineProfile { get; set; } = "";  // e.g., "nomad3"
+        public double ToolSetterX { get; set; } = 0;      // Machine coords, 0 = not configured
+        public double ToolSetterY { get; set; } = 0;
     }
 }

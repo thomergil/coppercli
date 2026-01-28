@@ -95,6 +95,10 @@ namespace coppercli.Core.GCode
             foreach (string linei in file)
             {
                 i++;
+
+                // Extract T code before cleanup strips comments
+                ExtractTCode(linei, i);
+
                 string line = CleanupLine(linei, i);
 
                 if (string.IsNullOrWhiteSpace(line))
@@ -102,6 +106,29 @@ namespace coppercli.Core.GCode
 
                 Parse(line.ToUpper(), i);
             }
+        }
+
+        private static readonly Regex TCodePattern = new Regex(@"T(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex CommentPattern = new Regex(@"\(([^)]+)\)", RegexOptions.Compiled);
+
+        static void ExtractTCode(string line, int lineNumber)
+        {
+            var tMatch = TCodePattern.Match(line);
+            if (!tMatch.Success)
+            {
+                return;
+            }
+
+            int toolNumber = int.Parse(tMatch.Groups[1].Value);
+            string comment = "";
+
+            var commentMatch = CommentPattern.Match(line);
+            if (commentMatch.Success)
+            {
+                comment = commentMatch.Groups[1].Value.Trim();
+            }
+
+            Commands.Add(new TCode { ToolNumber = toolNumber, Comment = string.IsNullOrEmpty(comment) ? null : comment, LineNumber = lineNumber });
         }
 
         static string CleanupLine(string line, int lineNumber)
@@ -145,7 +172,7 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
-                // Silently ignore T (tool change) commands
+                // T codes are handled in ExtractTCode before cleanup
                 if (Words[i].Command == 'T')
                 {
                     Words.RemoveAt(i--);
@@ -284,6 +311,19 @@ namespace coppercli.Core.GCode
                             i--;
                             continue;
                         }
+                    }
+                    // G53 = machine coordinates (non-modal, applies to next move only)
+                    // G10 = set work offset
+                    // G28/G30 = go to predefined position
+                    // G38.x = probing
+                    // G43.1 = tool length offset
+                    // These are valid GRBL commands - pass through without warning
+                    if (param == 53 || param == 10 || param == 28 || param == 30 ||
+                        (param >= 38 && param < 39) || param == 43.1)
+                    {
+                        Words.RemoveAt(i);
+                        i--;
+                        continue;
                     }
 
                     Warnings.Add($"ignoring unknown command G{param}. (line {lineNumber})");

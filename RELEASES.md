@@ -4,13 +4,30 @@
 
 ### New Features
 
+- **Tool change support (M6)**: Automatic tool change handling during milling. When the G-code contains M6, coppercli pauses, guides you through the tool change, and automatically compensates for the new tool length.
+  - **With tool setter**: If your machine has a tool setter (probe button), coppercli measures both tools and calculates the Z offset automatically. No need to re-zero.
+  - **Without tool setter**: Prompts you to probe the PCB surface with the new tool to re-establish Z zero.
+- **Machine profiles**: Select your CNC machine in Settings to auto-configure tool setter position. Built-in profiles for Nomad 3, Shapeoko, X-Carve. Add custom machines in `machine-profiles.yaml`.
+- **Tool setter setup**: Settings menu includes interactive jog-based setup to configure or override tool setter position.
 - **Macros**: New macro system for automating repetitive workflows. Create `.cmacro` files with G-code, prompts, and comments. Access via main menu or run directly with `--macro` / `-m` command-line flag.
 - **Macro placeholders**: Use `[name:file]` syntax for files that vary between runs. Prompts file browser at runtime, or pass via CLI with `--name path`.
 - **File browser filter**: Press `/` to filter files by name. Type to narrow results, Backspace to edit, Esc to clear.
 
 ### Changes
 
+- **Vim-style jog multiplier**: Press a digit (1-5 in Fast mode, 1-9 in other modes) before a jog direction to multiply the distance. For example, in Normal mode (1mm), pressing `3→` jogs 3mm right.
+- **Jog menu shows machine position**: Now displays both work and machine coordinates.
+- **Jog menu key changes**: Some keys changed to support vim-style multipliers and HJKL navigation:
+  - `H` → `M` for Home (H is now vim-style left)
+  - `1` → `B` for go to Z+1mm
+  - `6` → `T` for go to Z+6mm (retract height)
+  - `X` → `N` for go to X0 Y0 (origin)
+  - Added `HJKL` for vim-style X/Y jogging
 - **Clearer settling message**: During milling startup, the settling overlay now shows "Waiting for idle." when the machine is still moving, instead of a static countdown that never progresses.
+- **Faster settling**: Reduced post-idle settle time from 10s to 5s.
+- **Proxy auto-recovery**: Serial proxy now auto-recovers after system suspend/resume by detecting unhealthy state and attempting to reconnect.
+- **Connection handling**: "Port opened but no GRBL response" now auto-disconnects instead of prompting.
+- **G-code compatibility**: G53, G10, G28, G30, G38.x, G43.1 no longer produce parser warnings.
 
 ## v0.2.3
 

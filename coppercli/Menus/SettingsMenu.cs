@@ -13,6 +13,8 @@ namespace coppercli.Menus
     {
         private enum SettingAction
         {
+            SelectMachine,
+            SetupToolSetter,
             JogFeed, JogDistance, JogFeedSlow, JogDistanceSlow,
             ProbeFeed, ProbeMaxDepth, ProbeSafeHeight,
             OutlineTraceHeight, OutlineTraceFeed,
@@ -21,6 +23,8 @@ namespace coppercli.Menus
         }
 
         private static readonly MenuDef<SettingAction> SettingsMenuDef = new(
+            new MenuItem<SettingAction>("Select Machine", 'm', SettingAction.SelectMachine),
+            new MenuItem<SettingAction>("Setup Tool Setter (override)", 't', SettingAction.SetupToolSetter),
             new MenuItem<SettingAction>("Jog Feed", 'f', SettingAction.JogFeed),
             new MenuItem<SettingAction>("Jog Distance", 'd', SettingAction.JogDistance),
             new MenuItem<SettingAction>("Jog Feed Slow", 'g', SettingAction.JogFeedSlow),
@@ -28,8 +32,8 @@ namespace coppercli.Menus
             new MenuItem<SettingAction>("Probe Feed", 'p', SettingAction.ProbeFeed),
             new MenuItem<SettingAction>("Probe Max Depth", 'm', SettingAction.ProbeMaxDepth),
             new MenuItem<SettingAction>("Probe Safe Height", 'h', SettingAction.ProbeSafeHeight),
-            new MenuItem<SettingAction>("Outline Trace Height", 't', SettingAction.OutlineTraceHeight),
-            new MenuItem<SettingAction>("Outline Trace Feed", 'o', SettingAction.OutlineTraceFeed),
+            new MenuItem<SettingAction>("Outline Trace Height", 'o', SettingAction.OutlineTraceHeight),
+            new MenuItem<SettingAction>("Outline Trace Feed", 'r', SettingAction.OutlineTraceFeed),
             new MenuItem<SettingAction>("Toggle Debug Logging", 'l', SettingAction.ToggleDebugLogging),
             new MenuItem<SettingAction>("Save Settings", 's', SettingAction.Save),
             new MenuItem<SettingAction>("Back", 'q', SettingAction.Back)
@@ -48,6 +52,11 @@ namespace coppercli.Menus
                 table.AddColumn("Setting");
                 table.AddColumn("Value");
 
+                // Machine profile
+                var profile = MachineProfiles.GetProfile(settings.MachineProfile);
+                string machineDisplay = profile != null ? profile.Name ?? settings.MachineProfile : "[dim]Not selected[/]";
+                table.AddRow("Machine", machineDisplay);
+
                 table.AddRow("Serial Port", settings.SerialPortName);
                 table.AddRow("Baud Rate", settings.SerialPortBaud.ToString());
                 table.AddRow("Jog Feed", settings.JogFeed.ToString());
@@ -59,6 +68,16 @@ namespace coppercli.Menus
                 table.AddRow("Outline Trace Feed", settings.OutlineTraceFeed.ToString());
                 table.AddRow("Debug Logging", settings.EnableDebugLogging ? "On" : "Off");
 
+                // Tool setter position
+                if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
+                {
+                    table.AddRow("Tool Setter Position", $"X{settings.ToolSetterX:F1} Y{settings.ToolSetterY:F1}");
+                }
+                else
+                {
+                    table.AddRow("Tool Setter Position", "[dim]Not configured[/]");
+                }
+
                 AnsiConsole.Write(table);
                 AnsiConsole.WriteLine();
 
@@ -66,6 +85,12 @@ namespace coppercli.Menus
 
                 switch (choice.Option)
                 {
+                    case SettingAction.SelectMachine:
+                        SelectMachine(saveSettings);
+                        break;
+                    case SettingAction.SetupToolSetter:
+                        SetupToolSetter(saveSettings);
+                        break;
                     case SettingAction.JogFeed:
                         settings.JogFeed = MenuHelpers.Ask("Jog Feed:", settings.JogFeed);
                         break;
@@ -105,6 +130,185 @@ namespace coppercli.Menus
                     case SettingAction.Back:
                         return;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Select machine profile from available options.
+        /// </summary>
+        private static void SelectMachine(Action saveSettings)
+        {
+            var settings = AppState.Settings;
+            var profileIds = MachineProfiles.GetProfileIds();
+
+            if (profileIds.Count == 0)
+            {
+                MenuHelpers.ShowError("No machine profiles found");
+                return;
+            }
+
+            Console.Clear();
+            AnsiConsole.Write(new Rule("[bold blue]Select Machine[/]").RuleStyle("blue"));
+            AnsiConsole.WriteLine();
+
+            // Build menu options from profiles
+            var options = new List<string>();
+            foreach (var id in profileIds)
+            {
+                var profile = MachineProfiles.GetProfile(id);
+                string name = profile?.Name ?? id;
+                string desc = profile?.Description ?? "";
+                string toolSetter = profile?.ToolSetter != null ? "[green](has tool setter)[/]" : "[dim](no tool setter)[/]";
+                options.Add($"{name} {toolSetter}");
+            }
+            options.Add("Clear selection");
+
+            // Find current selection index
+            int currentIndex = profileIds.IndexOf(settings.MachineProfile);
+            if (currentIndex < 0)
+            {
+                currentIndex = 0;
+            }
+
+            AnsiConsole.MarkupLine("[dim]Select your CNC machine to load tool setter configuration.[/]");
+            AnsiConsole.WriteLine();
+
+            var selection = AnsiConsole.Prompt(
+                new SelectionPrompt<string>()
+                    .Title("Select machine:")
+                    .PageSize(10)
+                    .AddChoices(options));
+
+            int selectedIndex = options.IndexOf(selection);
+            if (selectedIndex >= 0 && selectedIndex < profileIds.Count)
+            {
+                settings.MachineProfile = profileIds[selectedIndex];
+                var profile = MachineProfiles.GetProfile(settings.MachineProfile);
+                saveSettings();
+                AnsiConsole.MarkupLine($"[green]Selected: {profile?.Name ?? settings.MachineProfile}[/]");
+
+                if (profile?.ToolSetter != null)
+                {
+                    AnsiConsole.MarkupLine($"Tool setter at X{profile.ToolSetter.X:F1} Y{profile.ToolSetter.Y:F1}");
+                    AnsiConsole.MarkupLine("[yellow]Use 'Setup Tool Setter' to verify/override if needed.[/]");
+                }
+                else
+                {
+                    AnsiConsole.MarkupLine("[yellow]This machine has no tool setter configured.[/]");
+                    AnsiConsole.MarkupLine("[dim]Tool changes will require re-probing the PCB surface.[/]");
+                }
+            }
+            else
+            {
+                settings.MachineProfile = "";
+                saveSettings();
+                AnsiConsole.MarkupLine("[yellow]Machine selection cleared[/]");
+            }
+
+            AnsiConsole.MarkupLine("[dim]Press any key to continue[/]");
+            Console.ReadKey(true);
+        }
+
+        /// <summary>
+        /// Interactive setup for tool setter position.
+        /// User jogs to the tool setter and presses S to save.
+        /// </summary>
+        private static void SetupToolSetter(Action saveSettings)
+        {
+            var machine = AppState.Machine;
+            var settings = AppState.Settings;
+
+            if (!machine.Connected)
+            {
+                MenuHelpers.ShowError("Connect to machine first");
+                return;
+            }
+
+            Console.Clear();
+            Console.CursorVisible = false;
+
+            try
+            {
+                while (true)
+                {
+                    var (winWidth, _) = DisplayHelpers.GetSafeWindowSize();
+
+                    Console.SetCursorPosition(0, 0);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldBlue}Setup Tool Setter{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated("Jog the spindle directly above your tool setter probe.", winWidth);
+                    DisplayHelpers.WriteLineTruncated("The tool tip should be centered over the probe button/plate.", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+
+                    var mpos = machine.MachinePosition;
+                    DisplayHelpers.WriteLineTruncated($"Machine Position: X:{DisplayHelpers.AnsiYellow}{mpos.X,8:F3}{DisplayHelpers.AnsiReset}  Y:{DisplayHelpers.AnsiYellow}{mpos.Y,8:F3}{DisplayHelpers.AnsiReset}  Z:{DisplayHelpers.AnsiYellow}{mpos.Z,8:F3}{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+
+                    if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
+                    {
+                        DisplayHelpers.WriteLineTruncated($"Current saved: X{settings.ToolSetterX:F1} Y{settings.ToolSetterY:F1}", winWidth);
+                    }
+                    else
+                    {
+                        DisplayHelpers.WriteLineTruncated("[dim]No tool setter position saved[/]", winWidth);
+                    }
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+
+                    var mode = JogModes[AppState.JogPresetIndex];
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Jog:{DisplayHelpers.AnsiReset} {DisplayHelpers.AnsiGreen}{mode.Name}{DisplayHelpers.AnsiReset} {mode.Feed}mm/min {mode.BaseDistance}mm", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Arrows{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiCyan}HJKL{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiCyan}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiCyan}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Tab{DisplayHelpers.AnsiReset} - Cycle speed", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiBoldGreen}Enter{DisplayHelpers.AnsiReset} - Save this position    {DisplayHelpers.AnsiCyan}C{DisplayHelpers.AnsiReset} - Clear saved    {DisplayHelpers.AnsiCyan}Esc/Q{DisplayHelpers.AnsiReset} - Cancel", winWidth);
+                    DisplayHelpers.WriteLineTruncated("", winWidth);
+
+                    var keyOrNull = InputHelpers.ReadKeyPolling();
+                    if (keyOrNull == null)
+                    {
+                        continue;
+                    }
+                    var key = keyOrNull.Value;
+
+                    if (InputHelpers.IsExitKey(key))
+                    {
+                        return;
+                    }
+
+                    if (key.Key == ConsoleKey.Enter)
+                    {
+                        // Save current machine position as tool setter
+                        settings.ToolSetterX = mpos.X;
+                        settings.ToolSetterY = mpos.Y;
+                        saveSettings();
+                        AnsiConsole.MarkupLine($"[green]Tool setter position saved: X{mpos.X:F1} Y{mpos.Y:F1}[/]");
+                        Thread.Sleep(ConfirmationDisplayMs);
+                        return;
+                    }
+
+                    if (InputHelpers.IsKey(key, ConsoleKey.C, 'c'))
+                    {
+                        // Clear tool setter position
+                        settings.ToolSetterX = 0;
+                        settings.ToolSetterY = 0;
+                        saveSettings();
+                        AnsiConsole.MarkupLine("[yellow]Tool setter position cleared[/]");
+                        Thread.Sleep(ConfirmationDisplayMs);
+                        continue;
+                    }
+
+                    if (key.Key == ConsoleKey.Tab)
+                    {
+                        AppState.JogPresetIndex = (AppState.JogPresetIndex + 1) % JogModes.Length;
+                        continue;
+                    }
+
+                    // Handle jog keys
+                    JogHelpers.HandleJogKey(key, machine, mode.Feed, mode.BaseDistance);
+                }
+            }
+            finally
+            {
+                Console.CursorVisible = true;
             }
         }
     }

@@ -26,5 +26,12 @@ namespace coppercli.Core.Settings
         public double WorkZeroY { get; set; }
         public double WorkZeroZ { get; set; }
         public bool HasStoredWorkZero { get; set; } = false;
+
+        // Tool change - reference tool length for offset calculation
+        public double ReferenceToolLength { get; set; } = 0;
+        public bool HasReferenceToolLength { get; set; } = false;
+
+        // Tool setter Z position (machine coords) - for fast approach on subsequent probes
+        public double LastToolSetterZ { get; set; } = 0;
     }
 }

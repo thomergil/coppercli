@@ -50,6 +50,15 @@ namespace coppercli.Core.Util
         public const char StatusQuery = '?';
 
         // =========================================================================
+        // Feedrate override (real-time commands)
+        // =========================================================================
+        public const char FeedOverrideReset = (char)0x90;      // Reset to 100%
+        public const char FeedOverrideIncrease10 = (char)0x91; // Increase 10%
+        public const char FeedOverrideDecrease10 = (char)0x92; // Decrease 10%
+        public const char FeedOverrideIncrease1 = (char)0x93;  // Increase 1%
+        public const char FeedOverrideDecrease1 = (char)0x94;  // Decrease 1%
+
+        // =========================================================================
         // System commands
         // =========================================================================
         public const string CmdHome = "$H";
@@ -75,6 +84,15 @@ namespace coppercli.Core.Util
         // Work coordinate system commands
         // =========================================================================
         public const string CmdZeroWorkOffset = "G10 L20 P0";  // Zero work offset (add axis letters after)
+        public const string CmdSetWorkOffset = "G10 L2 P1";    // Set G54 work offset directly (add axis=value after)
+        public const string CmdMachineCoords = "G53";          // Use machine coordinates for next move
+        public const string CmdToolLengthOffset = "G43.1";     // Apply tool length offset (volatile, lost on reset)
+
+        // =========================================================================
+        // M-code and T-code patterns (for detection)
+        // =========================================================================
+        public const string M6Pattern = @"\bM0*6\b";           // M6 or M06 tool change command
+        public const string TCodePattern = @"\bT(\d+)";        // T1, T01, T12 etc. - captures tool number
 
         // =========================================================================
         // Pin state characters (in Pn: field)

@@ -147,15 +147,7 @@ namespace coppercli.Menus
 
                 // === MACHINE IS NOW IN KNOWN GOOD STATE ===
 
-                // Move Z up to safe height and start milling
-                Logger.Log("Moving to safe height Z{0}", SafeZHeightMm);
-                DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, $"Moving to safe height Z{SafeZHeightMm:F1}...");
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm:F1}");
-                StatusHelpers.WaitForIdle(machine, ZHeightWaitTimeoutMs);
-                Logger.Log("At safe height, status={0}", machine.Status);
-
-                // Start milling
+                // Start milling - let the G-code file handle its own positioning
                 Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
                 machine.FileGoto(0);
                 Logger.Log("After FileGoto: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
@@ -168,9 +160,16 @@ namespace coppercli.Menus
                 }
                 Thread.Sleep(CommandDelayMs);
                 Logger.Log("After delay: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
+
+                // Mark that file has run - even if Mode changed back to Manual before we enter the loop,
+                // the file DID run (we called FileStart and lines were sent)
+                hasEverRun = true;
+
                 Console.Clear();
 
                 int loopCount = 0;
+                int stableIdleCount = 0;
+
                 while (true)
                 {
                     loopCount++;
@@ -180,6 +179,58 @@ namespace coppercli.Menus
                     {
                         Logger.Log("Loop {0}: hasEverRun set to true", loopCount);
                         hasEverRun = true;
+                    }
+
+                    // Detect M6-triggered pause: Mode is Manual (file paused), not user-initiated
+                    // Note: Don't require hasEverRun - file may have run so fast we never saw SendFile mode
+                    if (!isRunning && !paused)
+                    {
+                        // Check if previous line was M6
+                        int prevLine = machine.FilePosition - 1;
+                        if (prevLine >= 0 && prevLine < machine.File.Count)
+                        {
+                            if (ToolChangeHelpers.IsM6Line(machine.File[prevLine]))
+                            {
+                                // Tool change commences immediately without prompting.
+                                // The user expects M6 to mean "do tool change now" - no extra confirmation needed.
+                                // HandleToolChange() will guide them through the process.
+                                Logger.Log("M6 tool change detected at line {0}, initiating automatically", prevLine);
+                                Logger.Log("M6 detection: Status={0}, Mode={1}, BufferState={2}",
+                                    machine.Status, machine.Mode, machine.BufferState);
+                                Logger.Log("M6 detection: WorkPos=({0:F3}, {1:F3}, {2:F3})",
+                                    machine.WorkPosition.X, machine.WorkPosition.Y, machine.WorkPosition.Z);
+                                pauseStartTime = DateTime.Now;
+
+                                // Set up refresh callback so tool change can update the overlay
+                                ToolChangeHelpers.RefreshDisplay = () =>
+                                {
+                                    var currentPausedTime = DateTime.Now - pauseStartTime;
+                                    var elapsed = DateTime.Now - startTime - totalPausedTime - currentPausedTime;
+                                    DrawMillProgress(false, visitedCells, elapsed, startLine);
+                                };
+
+                                bool success = ToolChangeHelpers.HandleToolChange();
+
+                                ToolChangeHelpers.RefreshDisplay = null;
+
+                                if (success)
+                                {
+                                    Logger.Log("Tool change completed successfully, resuming");
+                                    totalPausedTime += DateTime.Now - pauseStartTime;
+
+                                    // Resume file sending
+                                    machine.FileStart();
+                                    Logger.Log("After tool change resume: Mode={0}, Status={1}", machine.Mode, machine.Status);
+                                    stableIdleCount = 0;  // Reset stable count after tool change
+                                }
+                                else
+                                {
+                                    Logger.Log("Tool change aborted by user");
+                                    StopAndRaiseZ();
+                                    return;
+                                }
+                            }
+                        }
                     }
 
                     bool reachedEnd = machine.FilePosition >= machine.File.Count;
@@ -193,10 +244,18 @@ namespace coppercli.Menus
                             machine.FilePosition, machine.File.Count, machine.Status);
                     }
 
-                    if (hasEverRun && !isRunning && !paused && reachedEnd && machineIdle)
+                    // Check for stable idle completion - must be idle for settle period
+                    if (hasEverRun && !isRunning && !paused && reachedEnd)
                     {
-                        Logger.Log("Exit condition met - milling complete");
-                        break;
+                        if (StatusHelpers.WaitForStableIdleAsync(machine, ref stableIdleCount))
+                        {
+                            Logger.Log("Exit condition met - milling complete (stable idle for {0}ms)", IdleSettleMs);
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        stableIdleCount = 0;
                     }
 
                     if (Console.KeyAvailable)
@@ -257,9 +316,6 @@ namespace coppercli.Menus
 
                 var finalElapsed = DateTime.Now - startTime - totalPausedTime;
                 DrawMillProgress(false, visitedCells, finalElapsed, startLine);
-                Console.WriteLine();
-                AnsiConsole.MarkupLine("[green]Mill complete[/]");
-                Thread.Sleep(ConfirmationDisplayMs);
 
                 // Offer to clear probe data after successful mill
                 if (AppState.ProbePoints != null)
@@ -296,8 +352,14 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
 
-            if (currentFile == null || !currentFile.ContainsMotion)
+            if (currentFile == null)
             {
+                Logger.Log("DrawMillProgress: currentFile is null, returning early");
+                return;
+            }
+            if (!currentFile.ContainsMotion)
+            {
+                Logger.Log("DrawMillProgress: ContainsMotion is false, returning early");
                 return;
             }
 
@@ -349,7 +411,17 @@ namespace coppercli.Menus
             }
             WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {AnsiCyan}{FormatTimeSpan(elapsed)}{AnsiReset}   ETA: {AnsiCyan}{etaStr}{AnsiReset}", winWidth);
             WriteLineTruncated($"  X:{AnsiCyan}{pos.X,8:F2}{AnsiReset}  Y:{AnsiCyan}{pos.Y,8:F2}{AnsiReset}  Z:{AnsiCyan}{pos.Z,8:F2}{AnsiReset}   Line {lineStr}/{totalLines}", winWidth);
-            WriteLineTruncated("", winWidth);
+
+            // Tool change action line (always output to keep layout stable)
+            if (ToolChangeHelpers.StatusAction != null)
+            {
+                WriteLineTruncated($"  {AnsiDim}[{ToolChangeLabel}]{AnsiReset} {AnsiCyan}{ToolChangeHelpers.StatusAction}{AnsiReset}", winWidth);
+            }
+            else
+            {
+                WriteLineTruncated("", winWidth);
+            }
+
             WriteLineTruncated($"  {AnsiBoldCyan}P{AnsiReset}=Pause  {AnsiBoldCyan}R{AnsiReset}=Resume  {AnsiBoldRed}X{AnsiReset}=Stop", winWidth);
 
             double minX = currentFile.Min.X;
@@ -385,9 +457,15 @@ namespace coppercli.Menus
 
             // Determine overlay message and color (if any)
             string? overlayMessage = null;
+            string? overlaySubMessage = null;
             string overlayColor = AnsiYellow;
 
-            if (settlingMessage != null)
+            if (ToolChangeHelpers.OverlayMessage != null)
+            {
+                overlayMessage = ToolChangeHelpers.OverlayMessage;
+                overlaySubMessage = ToolChangeHelpers.OverlaySubMessage;
+            }
+            else if (settlingMessage != null)
             {
                 overlayMessage = settlingMessage;
             }
@@ -401,7 +479,7 @@ namespace coppercli.Menus
                 overlayColor = AnsiBoldRed;
             }
 
-            DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor);
+            DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor, overlaySubMessage);
         }
 
         private static string BuildProgressBar(double pct, int width)
@@ -429,7 +507,7 @@ namespace coppercli.Menus
 
         private static void DrawPositionGrid(int width, int height, int posX, int posY,
             HashSet<(int, int)> visited, int winWidth, double minX, double maxX, double minY, double maxY,
-            string? overlayMessage = null, string overlayColor = AnsiYellow)
+            string? overlayMessage = null, string overlayColor = AnsiYellow, string? overlaySubMessage = null)
         {
             int matrixWidth = width * MillGridCharsPerCell;
             int leftPadding = Math.Max(0, (winWidth - matrixWidth - MillBorderPadding) / 2);
@@ -445,6 +523,9 @@ namespace coppercli.Menus
             int boxBottomRow = boxTopRow - OverlayBoxHeight + 1;
 
             WriteLineTruncated($"{pad}┌{new string('─', matrixWidth)}┐", winWidth);
+
+            // Use provided sub-message or default to "X=Stop"
+            string subMsg = overlaySubMessage ?? "X=Stop";
 
             for (int y = height - 1; y >= 0; y--)
             {
@@ -473,7 +554,7 @@ namespace coppercli.Menus
                 {
                     int boxLineIndex = boxTopRow - y;
                     string boxLine = GetOverlayBoxLine(boxLineIndex, boxWidth,
-                        overlayMessage, overlayColor, "X=Stop", AnsiBoldRed);
+                        overlayMessage, overlayColor, subMsg, AnsiCyan);
 
                     // Overlay the box onto the row (margin lines are empty - show background)
                     if (!string.IsNullOrEmpty(boxLine))
@@ -611,7 +692,7 @@ namespace coppercli.Menus
 
             machine.SendLine(CmdSpindleOff);
             machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm:F1}");
+            machine.SendLine($"{CmdRapidMove} Z{RetractZMm:F1}");
             Thread.Sleep(CommandDelayMs);
         }
     }

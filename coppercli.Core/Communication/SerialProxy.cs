@@ -19,6 +19,8 @@ namespace coppercli.Core.Communication
         private const int ThreadSleepMs = 1;
         private const int HeartbeatIntervalMs = 10000;  // Send status query every 10s of inactivity
         private const int MaxMissedHeartbeats = 3;      // Disconnect after 3 missed heartbeats (30s)
+        private const int HealthCheckIntervalMs = 5000; // Check health every 5 seconds
+        private const int RecoveryDelayMs = 1000;       // Wait before attempting recovery
         private const byte GrblStatusQuery = (byte)'?';
         private const byte GrblFeedHold = (byte)'!';    // Feed hold to stop movement
 
@@ -39,6 +41,35 @@ namespace coppercli.Core.Communication
         public int TcpPort { get; private set; }
         public string SerialPortName { get; private set; } = string.Empty;
         public int BaudRate { get; private set; }
+
+        /// <summary>
+        /// Returns true if the proxy appears healthy (listener bound, serial port open).
+        /// Useful for checking state after system suspend/resume.
+        /// </summary>
+        public bool IsHealthy
+        {
+            get
+            {
+                if (!IsRunning)
+                {
+                    return false;
+                }
+
+                // Check if serial port is still open
+                if (_serialPort == null || !_serialPort.IsOpen)
+                {
+                    return false;
+                }
+
+                // Check if TCP listener is still bound
+                if (_listener == null || !_listener.Server.IsBound)
+                {
+                    return false;
+                }
+
+                return true;
+            }
+        }
 
         // =========================================================================
         // Statistics
@@ -172,14 +203,106 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
+        /// Checks if resources are healthy and attempts recovery if not.
+        /// Called periodically from AcceptLoop to handle suspend/resume.
+        /// Returns true if healthy or recovery succeeded, false if unrecoverable.
+        /// </summary>
+        private bool TryRecoverIfNeeded()
+        {
+            bool serialOk = _serialPort != null && _serialPort.IsOpen;
+            bool listenerOk = _listener != null && _listener.Server.IsBound;
+
+            if (serialOk && listenerOk)
+            {
+                return true;
+            }
+
+            // Something is wrong - attempt recovery
+            RaiseInfo("Proxy unhealthy, attempting recovery...");
+            Thread.Sleep(RecoveryDelayMs);
+
+            // Try to recover serial port
+            if (!serialOk && _serialPort != null)
+            {
+                try
+                {
+                    _serialPort.Close();
+                    _serialPort.Dispose();
+                }
+                catch
+                {
+                    // Ignore cleanup errors
+                }
+
+                try
+                {
+                    _serialPort = new SerialPort(SerialPortName, BaudRate)
+                    {
+                        ReadTimeout = 100,
+                        WriteTimeout = 1000
+                    };
+                    _serialPort.Open();
+                    RaiseInfo($"Serial port recovered: {SerialPortName}");
+                    serialOk = true;
+                }
+                catch (Exception ex)
+                {
+                    RaiseError($"Serial port recovery failed: {ex.Message}");
+                    return false;
+                }
+            }
+
+            // Try to recover TCP listener
+            if (!listenerOk)
+            {
+                try
+                {
+                    _listener?.Stop();
+                }
+                catch
+                {
+                    // Ignore cleanup errors
+                }
+
+                try
+                {
+                    _listener = new TcpListener(IPAddress.Any, TcpPort);
+                    _listener.Start();
+                    RaiseInfo($"TCP listener recovered on port {TcpPort}");
+                    listenerOk = true;
+                }
+                catch (Exception ex)
+                {
+                    RaiseError($"TCP listener recovery failed: {ex.Message}");
+                    return false;
+                }
+            }
+
+            return serialOk && listenerOk;
+        }
+
+        /// <summary>
         /// Thread that accepts incoming TCP connections.
         /// </summary>
         private void AcceptLoop()
         {
+            var lastHealthCheck = DateTime.Now;
+
             while (_cts != null && !_cts.IsCancellationRequested)
             {
                 try
                 {
+                    // Periodic health check and recovery (e.g., after system suspend/resume)
+                    if ((DateTime.Now - lastHealthCheck).TotalMilliseconds >= HealthCheckIntervalMs)
+                    {
+                        lastHealthCheck = DateTime.Now;
+                        if (!TryRecoverIfNeeded())
+                        {
+                            // Recovery failed, exit loop
+                            break;
+                        }
+                    }
+
                     if (_listener == null)
                     {
                         break;

@@ -1,0 +1,35 @@
+# Machine Profiles for coppercli
+# Define tool setter positions for different CNC machines
+# Users can add their own machines or override in Settings > Setup Tool Setter
+#
+# Tool setter coordinates are in machine coordinates (G53).
+# Probe sequence: fast probe, retract, slow probe for accuracy.
+
+machines:
+  nomad3:
+    name: "Carbide 3D Nomad 3"
+    description: "Desktop CNC with built-in tool length probe (back-right corner)"
+    tool_setter:
+      # Machine coordinates for tool setter probe (verified by jogging)
+      x: -5.0
+      y: -3.0
+      # Probe parameters
+      probe_depth: 105.0      # Max probe distance (mm)
+      fast_feed: 800.0        # Fast probe feed (mm/min)
+      slow_feed: 200.0        # Slow probe feed (mm/min)
+      retract: 10.0           # Retract distance between probes (mm)
+
+  shapeoko:
+    name: "Carbide 3D Shapeoko"
+    description: "Hobbyist CNC router - use BitSetter accessory if available"
+    tool_setter: null
+
+  x-carve:
+    name: "Inventables X-Carve"
+    description: "Hobbyist CNC router - no built-in tool setter"
+    tool_setter: null
+
+  custom:
+    name: "Custom / Other"
+    description: "Configure tool setter position in Settings > Setup Tool Setter"
+    tool_setter: null

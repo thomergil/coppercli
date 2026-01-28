@@ -246,12 +246,10 @@ namespace coppercli.Menus
                         Persistence.SaveSession();
                         break;
                     case ConnectionResult.Success:
+                        // Port opened but no GRBL response - not a usable connection
                         AnsiConsole.MarkupLine("[yellow]Warning: Port opened but no GRBL response received.[/]");
                         AnsiConsole.MarkupLine("[yellow]Check that the correct port is selected and GRBL is running.[/]");
-                        if (MenuHelpers.Confirm("Disconnect?"))
-                        {
-                            machine.Disconnect();
-                        }
+                        machine.Disconnect();
                         break;
                     case ConnectionResult.Timeout:
                         AnsiConsole.MarkupLine("[red]Connection timed out.[/]");

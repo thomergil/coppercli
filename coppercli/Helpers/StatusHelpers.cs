@@ -129,6 +129,49 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Number of consecutive idle checks required for stable idle.
+        /// </summary>
+        public static int StableIdleRequiredCount => IdleSettleMs / StatusPollIntervalMs;
+
+        /// <summary>
+        /// Async (non-blocking) check for stable idle state. Call repeatedly in a loop.
+        /// Returns true when machine has been idle for the required settle period.
+        /// Caller must maintain stableCount between calls; reset to 0 to restart.
+        /// For blocking behavior, use WaitForStableIdleBlocking instead.
+        /// </summary>
+        public static bool WaitForStableIdleAsync(Machine machine, ref int stableCount)
+        {
+            if (machine.Status == StatusIdle)
+            {
+                stableCount++;
+                return stableCount >= StableIdleRequiredCount;
+            }
+            stableCount = 0;
+            return false;
+        }
+
+        /// <summary>
+        /// Blocking wait for stable idle. Waits for the machine to reach Idle state
+        /// AND stay Idle for the settling period. Handles buffered commands that may
+        /// start executing immediately after Idle is first seen.
+        /// For non-blocking behavior, use WaitForStableIdleAsync instead.
+        /// </summary>
+        public static bool WaitForStableIdleBlocking(Machine machine, int timeoutMs)
+        {
+            var start = DateTime.Now;
+            int stableCount = 0;
+            while ((DateTime.Now - start).TotalMilliseconds < timeoutMs)
+            {
+                if (WaitForStableIdleAsync(machine, ref stableCount))
+                {
+                    return true;
+                }
+                Thread.Sleep(StatusPollIntervalMs);
+            }
+            return false;
+        }
+
+        /// <summary>
         /// Waits for GRBL to respond with a valid status (not "Disconnected").
         /// Returns the status string if successful, null if timeout.
         /// </summary>

@@ -19,7 +19,8 @@ namespace coppercli
         public const int ConfirmationDisplayMs = 1000;
         public const int ResetWaitMs = 500;
         public const int IdleWaitTimeoutMs = 3000;
-        public const int PostIdleSettleMs = 10000;
+        public const int PostIdleSettleMs = 5000;
+        public const int IdleSettleMs = 1000;         // Settle time for stable idle checks
         public const int OneSecondMs = 1000;
         public const int HomingTimeoutMs = 60000;
         public const int ZHeightWaitTimeoutMs = 30000;
@@ -45,7 +46,7 @@ namespace coppercli
         // App info
         // =========================================================================
         public const string AppTitle = "coppercli";
-        public const string AppVersion = "v0.2.4";
+        public const string AppVersion = "v0.3.0";
 
         // =========================================================================
         // File extensions
@@ -74,18 +75,32 @@ namespace coppercli
         // Position and movement
         // =========================================================================
         public const double PositionToleranceMm = 0.1;
-        public const double SafeZHeightMm = 6.0;
+        public const double RetractZMm = 6.0;  // Clearance height to lift tool away from workpiece
         public const double ReferenceZHeightMm = 1.0;
 
         // =========================================================================
-        // Jog presets: (feed mm/min, distance mm, label)
+        // Jog modes: vi-style with digit prefix for multiplier
+        // In Fast mode: 1-5 multiplier (10-50mm)
+        // In other modes: 1-9 multiplier
         // =========================================================================
-        public static readonly (double Feed, double Distance, string Label)[] JogPresets =
+        public record JogMode(
+            string Name,
+            double Feed,         // mm/min
+            double BaseDistance, // mm per unit
+            int MaxMultiplier    // 5 for Fast, 9 for others
+        )
         {
-            (5000, 10.0,  "Fast   5000mm/min  10mm"),
-            (500,  1.0,   "Normal  500mm/min   1mm"),
-            (50,   0.1,   "Slow     50mm/min 0.1mm"),
-            (5,    0.01,  "Creep     5mm/min 0.01mm"),
+            public string FormatDistance(int multiplier) =>
+                BaseDistance >= 1 ? $"{BaseDistance * multiplier:F0}mm"
+                                  : $"{BaseDistance * multiplier:G}mm";
+        }
+
+        public static readonly JogMode[] JogModes =
+        {
+            new("Fast",   5000, 10.0,  5),  // 1-5: 10, 20, 30, 40, 50mm
+            new("Normal",  500,  1.0,  9),  // 1-9: 1, 2, 3... 9mm
+            new("Slow",     50,  0.1,  9),  // 1-9: 0.1, 0.2... 0.9mm
+            new("Creep",     5,  0.01, 9),  // 1-9: 0.01, 0.02... 0.09mm
         };
 
         // =========================================================================
@@ -157,5 +172,28 @@ namespace coppercli
         // =========================================================================
         public const string MacroExtension = ".cmacro";
         public const char MacroCommentChar = '#';
+
+        // =========================================================================
+        // Tool change
+        // =========================================================================
+        public const string ToolChangeLabel = "TOOL CHANGE";
+        public const string ToolChangeStatusRaisingZ = "Raising Z...";
+        public const string ToolChangeStatusMovingToSetter = "Moving to tool setter...";
+        public const string ToolChangeStatusMeasuringRef = "Measuring reference tool...";
+        public const string ToolChangeStatusMeasuringNew = "Measuring new tool...";
+        public const string ToolChangeStatusAdjustingZ = "Adjusting Z origin...";
+        public const string ToolChangeStatusReturning = "Returning to work position...";
+        public const string ToolChangeStatusComplete = "Tool change complete";
+        public const string ToolChangeStatusMovingToWork = "Moving to work area...";
+        public const string ToolChangeStatusProbingZ = "Probing Z...";
+        public const string ToolChangeStatusZeroing = "Z zeroed, raising...";
+        public const string ToolChangePromptWithSetter = "Change to new tool, then press P.";
+        public const string ToolChangePromptWithoutSetter = "Change tool. Attach probe clip. Press P to probe.";
+        public const double ToolSetterProbeDepth = 50.0;    // Max depth to probe tool setter (mm)
+        public const double ToolSetterSeekFeed = 500.0;   // Fast seek feed rate (mm/min)
+        public const double ToolSetterProbeFeed = 50.0;   // Slow precise probe feed rate (mm/min)
+        public const double ToolSetterRetract = 10.0;     // Retract distance between probes (mm)
+        public const double ToolSetterApproachClearance = 20.0;  // Clearance above last known position for rapid approach (mm)
+        public const double ToolChangeClearanceZ = -5.0;  // Machine Z for tool change (-5mm from top to avoid limit switch)
     }
 }

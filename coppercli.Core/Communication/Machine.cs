@@ -312,21 +312,35 @@ namespace coppercli.Core.Communication
                             {
                                 string sendLine = File[FilePosition].Replace(" ", "");
 
-                                writer.Write(sendLine);
-                                writer.Write('\n');
-                                writer.Flush();
+                                // Check if this is an M6 tool change line - don't send to GRBL
+                                // (GRBL doesn't support M6, we handle it in coppercli)
+                                bool isM6Line = Regex.IsMatch(sendLine, M6Pattern, RegexOptions.IgnoreCase);
 
-                                RecordLog("> " + sendLine);
+                                if (!isM6Line)
+                                {
+                                    writer.Write(sendLine);
+                                    writer.Write('\n');
+                                    writer.Flush();
 
-                                RaiseEvent(UpdateStatus, sendLine);
-                                RaiseEvent(LineSent, sendLine);
+                                    RecordLog("> " + sendLine);
 
-                                BufferState += sendLine.Length + 1;
+                                    RaiseEvent(UpdateStatus, sendLine);
+                                    RaiseEvent(LineSent, sendLine);
 
-                                Sent.Enqueue(sendLine);
+                                    BufferState += sendLine.Length + 1;
+
+                                    Sent.Enqueue(sendLine);
+                                }
+                                else
+                                {
+                                    RecordLog($"> [M6 intercepted at FilePosition={FilePosition}, not sent to GRBL]");
+                                    RecordLog($"> [M6] BufferState={BufferState}, Sent.Count={Sent.Count}, Status={Status}");
+                                    RecordLog($"> [M6] WorkPos=({WorkPosition.X:F3}, {WorkPosition.Y:F3}, {WorkPosition.Z:F3})");
+                                }
 
                                 if (PauseLines[FilePosition] && _settings.PauseFileOnHold)
                                 {
+                                    RecordLog($"> [PAUSE triggered at FilePosition={FilePosition}, PauseLines[{FilePosition}]=true]");
                                     Mode = OperatingMode.Manual;
                                 }
 

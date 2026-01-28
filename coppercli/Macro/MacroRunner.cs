@@ -254,7 +254,7 @@ namespace coppercli.Macro
                     return ExecuteHome();
 
                 case MacroCommandType.Safe:
-                    MachineCommands.MoveToSafeHeight(machine, SafeZHeightMm);
+                    MachineCommands.MoveToSafeHeight(machine, RetractZMm);
                     return WaitForIdle();
 
                 case MacroCommandType.Zero:
@@ -399,7 +399,7 @@ namespace coppercli.Macro
             if (zeroingZ)
             {
                 Thread.Sleep(CommandDelayMs);
-                MachineCommands.MoveToSafeHeight(machine, SafeZHeightMm);
+                MachineCommands.MoveToSafeHeight(machine, RetractZMm);
                 return WaitForIdle();
             }
 
