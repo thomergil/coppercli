@@ -82,6 +82,17 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine($"Probe: [{ColorInfo}]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points, {appliedStatus})");
             }
 
+            // Show machine profile
+            var profile = MachineProfiles.GetProfile(settings.MachineProfile);
+            if (profile != null)
+            {
+                AnsiConsole.MarkupLine($"Machine: [{ColorInfo}]{profile.Name ?? settings.MachineProfile}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"Machine: [{ColorError}]{NoMachineProfileWarning}[/]");
+            }
+
             AnsiConsole.WriteLine();
 
             // Enable auto-clear while showing menu (user can see status updates)

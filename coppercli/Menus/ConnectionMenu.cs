@@ -217,6 +217,7 @@ namespace coppercli.Menus
         private static void ConnectWithCurrentSettings()
         {
             var machine = AppState.Machine;
+            var settings = AppState.Settings;
 
             try
             {
@@ -259,7 +260,14 @@ namespace coppercli.Menus
                         }
                         break;
                     case ConnectionResult.PortNotOpened:
-                        AnsiConsole.MarkupLine($"[{ColorError}]Could not open serial port. Is the machine powered on?[/]");
+                        if (settings.ConnectionType == ConnectionType.Serial)
+                        {
+                            AnsiConsole.MarkupLine($"[{ColorError}]Could not open serial port. Is the machine powered on?[/]");
+                        }
+                        else
+                        {
+                            AnsiConsole.MarkupLine($"[{ColorError}]Could not connect. Is the machine powered on and network available?[/]");
+                        }
                         break;
                     case ConnectionResult.Error:
                         AnsiConsole.MarkupLine($"[{ColorError}]Connection failed: {Markup.Escape(message ?? "Unknown error")}[/]");
@@ -653,6 +661,12 @@ namespace coppercli.Menus
                 {
                     StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
                 });
+
+            // Mark as homed after successful homing
+            if (StatusHelpers.IsIdle(machine))
+            {
+                AppState.IsHomed = true;
+            }
         }
     }
 }

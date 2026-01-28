@@ -57,12 +57,6 @@ namespace coppercli.Menus
                 }
             }
 
-            // Ask first - user might open door to check/prepare
-            if (MenuHelpers.ConfirmOrQuit("Probe clip and magnet removed, door closed, spindle ready?", true) != true)
-            {
-                return;
-            }
-
             // === TAKE CONTROL OF MACHINE STATE ===
             // Machine may be in unknown state: door open, still moving, etc.
             // We must get it to a known good state before proceeding.
@@ -119,6 +113,61 @@ namespace coppercli.Menus
 
             try
             {
+                // === MACHINE PROFILE WARNING ===
+                // Warn if no machine profile is selected (tool setter won't work)
+                var profile = MachineProfiles.GetProfile(AppState.Settings.MachineProfile);
+                if (profile == null)
+                {
+                    Logger.Log("No machine profile selected - showing warning");
+                    while (true)
+                    {
+                        DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, NoMachineProfileWarning, NoMachineProfileSubMessage);
+
+                        if (Console.KeyAvailable)
+                        {
+                            var key = Console.ReadKey(true);
+                            if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                            {
+                                Logger.Log("No profile warning acknowledged (Y pressed)");
+                                break;
+                            }
+                            if (InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                                InputHelpers.IsExitKey(key))
+                            {
+                                Logger.Log("Milling aborted due to no machine profile");
+                                return;
+                            }
+                        }
+                        Thread.Sleep(StatusPollIntervalMs);
+                    }
+                }
+
+                // === SAFETY CONFIRMATION ===
+                // Show checklist as overlay - this is critically important
+                Logger.Log("Safety confirmation phase");
+                while (true)
+                {
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, SafetyChecklistMessage, SafetyChecklistSubMessage);
+
+                    if (Console.KeyAvailable)
+                    {
+                        var key = Console.ReadKey(true);
+                        if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                        {
+                            Logger.Log("Safety confirmed (Y pressed)");
+                            break;
+                        }
+                        if (InputHelpers.IsKey(key, ConsoleKey.N, 'n') ||
+                            InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                            InputHelpers.IsExitKey(key))
+                        {
+                            Logger.Log("Safety confirmation aborted");
+                            return;
+                        }
+                    }
+                    Thread.Sleep(StatusPollIntervalMs);
+                }
+
                 // === SETTLING PHASE ===
                 // Wait for machine to be stable in Idle state for the full settle period
                 int settleSeconds = PostIdleSettleMs / OneSecondMs;
@@ -161,6 +210,34 @@ namespace coppercli.Menus
                 }
                 Logger.Log("Settling complete");
 
+                // === HOMING (if not already homed) ===
+                // Machine coordinates are undefined until homed. G53 moves would be dangerous.
+                // Homing also moves Z to top, which is safe for subsequent operations.
+                if (!AppState.IsHomed)
+                {
+                    Logger.Log("Machine not homed - homing now");
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, "Homing...");
+                    MachineCommands.Home(machine);
+                    StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
+                    if (StatusHelpers.IsIdle(machine))
+                    {
+                        AppState.IsHomed = true;
+                        Logger.Log("Homing complete");
+                    }
+                    else
+                    {
+                        Logger.Log("Homing failed");
+                        MenuHelpers.ShowError("Homing failed. Cannot mill without homing.");
+                        return;
+                    }
+                }
+
+                // === SAFETY RETRACT ===
+                // Raise Z to safe height. If we just homed, Z is already at top (near no-op).
+                // If we homed earlier then jogged down, this is essential.
+                Logger.Log("Safety retract to Z={0} (machine coords)", MillStartSafetyZ);
+                MachineCommands.SafetyRetractZ(machine, MillStartSafetyZ);
+
                 // === ESTABLISH KNOWN MACHINE STATE ===
                 // Defense in depth: ensure absolute mode and XY plane before milling
                 // Note: We do NOT send G21 (mm) here - the file should specify its own units
@@ -169,7 +246,7 @@ namespace coppercli.Menus
                 machine.SendLine("G17");        // XY plane (standard for PCB milling)
                 Logger.Log("Sent state initialization: G90 G17");
 
-                // Start milling - let the G-code file handle its own positioning
+                // Start milling - G-code file handles positioning from safe height
                 Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
                 machine.FileGoto(0);
                 Logger.Log("After FileGoto: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
@@ -385,7 +462,7 @@ namespace coppercli.Menus
             }
         }
 
-        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine, string? settlingMessage = null)
+        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine, string? statusMessage = null, string? statusSubMessage = null)
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
@@ -393,11 +470,6 @@ namespace coppercli.Menus
             if (currentFile == null)
             {
                 Logger.Log("DrawMillProgress: currentFile is null, returning early");
-                return;
-            }
-            if (!currentFile.ContainsMotion)
-            {
-                Logger.Log("DrawMillProgress: ContainsMotion is false, returning early");
                 return;
             }
 
@@ -439,9 +511,9 @@ namespace coppercli.Menus
             int lineWidth = totalLines.ToString().Length;
             string lineStr = fileLine.ToString().PadLeft(lineWidth);
 
-            if (settlingMessage != null)
+            if (statusMessage != null)
             {
-                WriteLineTruncated($"  {AnsiWarning}{settlingMessage}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  {AnsiWarning}{statusMessage}{AnsiReset}", winWidth);
             }
             else
             {
@@ -503,9 +575,10 @@ namespace coppercli.Menus
                 overlayMessage = ToolChangeHelpers.OverlayMessage;
                 overlaySubMessage = ToolChangeHelpers.OverlaySubMessage;
             }
-            else if (settlingMessage != null)
+            else if (statusMessage != null)
             {
-                overlayMessage = settlingMessage;
+                overlayMessage = statusMessage;
+                overlaySubMessage = statusSubMessage;
             }
             else if (status.StartsWith(StatusHold))
             {
@@ -551,8 +624,14 @@ namespace coppercli.Menus
             int leftPadding = Math.Max(0, (winWidth - matrixWidth - MillBorderPadding) / 2);
             string pad = new string(' ', leftPadding);
 
-            // Calculate overlay box position (if overlay is shown)
-            int boxWidth = Math.Min(40, matrixWidth - 4);
+            // Calculate overlay box width based on content (if overlay is shown)
+            int contentWidth = overlayMessage?.Length ?? 0;
+            if (overlaySubMessage != null && overlaySubMessage.Length > contentWidth)
+            {
+                contentWidth = overlaySubMessage.Length;
+            }
+            int boxWidth = Math.Min(contentWidth + OverlayBoxPadding, matrixWidth - OverlayBoxMargin);
+            boxWidth = Math.Max(boxWidth, OverlayBoxMinWidth);
             int boxStartChar = (matrixWidth - boxWidth) / 2;
 
             // Center vertically in the grid (grid rows go from height-1 down to 0)

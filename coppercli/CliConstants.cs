@@ -165,10 +165,29 @@ namespace coppercli
         public const double MillCompleteZ = -1.0;
 
         /// <summary>
+        /// Z position to retract to before starting mill (mm, machine coordinates).
+        /// Prevents dragging across workpiece if Z was left low from previous operation.
+        /// </summary>
+        public const double MillStartSafetyZ = -1.0;
+
+        /// <summary>
         /// Z clearance height for tool changes (mm, machine coordinates).
         /// -1mm from top provides clearance while avoiding limit switch.
         /// </summary>
         public const double ToolChangeClearanceZ = -1.0;
+
+        // =========================================================================
+        // Menu shortcuts: 0-9 then A-Z for 36 items
+        // =========================================================================
+
+        /// <summary>Maximum number of menu items with keyboard shortcuts (0-9 + A-Z).</summary>
+        public const int MaxMenuShortcuts = 36;
+
+        /// <summary>Index where numeric shortcuts end and alphabetic begin (0-9 = indices 0-9).</summary>
+        public const int MenuShortcutAlphaStart = 10;
+
+        /// <summary>Index of the '0' key shortcut (comes after 1-9).</summary>
+        public const int MenuShortcutZeroIndex = 9;
 
         // =========================================================================
         // Jog modes: vi-style with digit prefix for distance multiplier
@@ -237,6 +256,12 @@ namespace coppercli
         // Mill progress display: Terminal layout
         // =========================================================================
 
+        /// <summary>Fallback terminal width when Console.WindowWidth fails.</summary>
+        public const int FallbackTerminalWidth = 80;
+
+        /// <summary>Fallback terminal height when Console.WindowHeight fails.</summary>
+        public const int FallbackTerminalHeight = 24;
+
         /// <summary>Vertical padding for header and borders (lines).</summary>
         public const int MillTermHeightPadding = 12;
 
@@ -285,8 +310,20 @@ namespace coppercli
         /// <summary>Overlay message when machine is in feed hold.</summary>
         public const string OverlayHoldMessage = "HOLD - Press R to resume";
 
+        /// <summary>Safety checklist message shown before milling starts.</summary>
+        public const string SafetyChecklistMessage = "Probe clip removed? Door closed?";
+
+        /// <summary>Safety checklist sub-message with key instructions.</summary>
+        public const string SafetyChecklistSubMessage = "Y=Start  N=Cancel";
+
         /// <summary>Overlay message when machine is in alarm state.</summary>
         public const string OverlayAlarmMessage = "ALARM - Press X to stop";
+
+        /// <summary>Warning message when no machine profile is selected.</summary>
+        public const string NoMachineProfileWarning = "No machine profile selected";
+
+        /// <summary>Sub-message for no machine profile warning.</summary>
+        public const string NoMachineProfileSubMessage = "Y=Continue  X=Cancel";
 
         // =========================================================================
         // Probe grid display sizing
