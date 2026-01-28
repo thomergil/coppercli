@@ -36,9 +36,9 @@ class Program
             return;
         }
 
-        if (TryParseMacroArg(args, out string? macroFile) && macroFile != null)
+        if (TryParseMacroArg(args, out string? macroFile, out var macroArgs) && macroFile != null)
         {
-            RunMacroMode(macroFile);
+            RunMacroMode(macroFile, macroArgs);
             return;
         }
 
@@ -53,6 +53,9 @@ class Program
 
         // Offer to auto-reconnect if we have saved connection settings
         OfferAutoReconnect();
+
+        // Offer to home if connected
+        ConnectionMenu.OfferToHome();
 
         // Offer to reload files and restore state from previous session
         OfferSessionRestore();
@@ -115,32 +118,71 @@ class Program
     /// <summary>
     /// Parses command-line arguments for macro mode.
     /// Returns true if --macro flag is present.
+    /// Also extracts any --name value pairs for placeholder substitution.
     /// </summary>
-    private static bool TryParseMacroArg(string[] args, out string? macroFile)
+    private static bool TryParseMacroArg(string[] args, out string? macroFile, out Dictionary<string, string> macroArgs)
     {
         macroFile = null;
+        macroArgs = new Dictionary<string, string>();
+        int macroArgIndex = -1;
 
         for (int i = 0; i < args.Length; i++)
         {
             if ((args[i] == "--macro" || args[i] == "-m") && i + 1 < args.Length)
             {
                 macroFile = args[i + 1];
-                return true;
+                macroArgIndex = i + 2;
+                break;
             }
             else if (args[i].StartsWith("--macro="))
             {
                 macroFile = args[i].Substring(8);
-                return true;
+                macroArgIndex = i + 1;
+                break;
             }
         }
 
-        return false;
+        if (macroFile == null)
+        {
+            return false;
+        }
+
+        // Parse remaining args as --name value or --name=value pairs
+        for (int i = macroArgIndex; i < args.Length; i++)
+        {
+            var arg = args[i];
+
+            // Skip known global flags
+            if (arg == "--debug" || arg == "-d")
+            {
+                continue;
+            }
+
+            if (arg.StartsWith("--") && arg.Contains('='))
+            {
+                // --name=value format
+                var eqIndex = arg.IndexOf('=');
+                var name = arg.Substring(2, eqIndex - 2);
+                var value = arg.Substring(eqIndex + 1);
+                macroArgs[name] = value;
+            }
+            else if (arg.StartsWith("--") && i + 1 < args.Length && !args[i + 1].StartsWith("--"))
+            {
+                // --name value format
+                var name = arg.Substring(2);
+                var value = args[i + 1];
+                macroArgs[name] = value;
+                i++; // Skip value
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
     /// Runs macro mode - connects to machine and runs specified macro file.
     /// </summary>
-    private static void RunMacroMode(string macroFile)
+    private static void RunMacroMode(string macroFile, Dictionary<string, string> macroArgs)
     {
         // Expand ~ for home directory
         if (macroFile.StartsWith("~"))
@@ -157,6 +199,21 @@ class Program
             Environment.Exit(1);
         }
 
+        // Expand ~ in macro args that look like file paths
+        foreach (var key in macroArgs.Keys.ToList())
+        {
+            var value = macroArgs[key];
+            if (value.StartsWith("~"))
+            {
+                macroArgs[key] = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    value.Substring(2));
+            }
+        }
+
+        // Set macro mode flag (suppresses homing prompt on connect)
+        AppState.MacroMode = true;
+
         // Create machine instance with loaded settings
         AppState.Machine = new Machine(AppState.Settings);
 
@@ -166,8 +223,8 @@ class Program
         // Auto-connect if we have saved connection settings
         OfferAutoReconnect();
 
-        // Run the macro
-        MacroMenu.RunMacroFromPath(macroFile);
+        // Run the macro with provided args
+        MacroMenu.RunMacroFromPath(macroFile, macroArgs);
 
         // Clean up
         if (AppState.Machine.Connected)

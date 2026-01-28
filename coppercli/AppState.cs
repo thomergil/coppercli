@@ -32,6 +32,7 @@ namespace coppercli
         public static bool Probing { get; set; } = false;
         public static bool SuppressErrors { get; set; } = false;
         public static bool SingleProbing { get; set; } = false;
+        public static bool MacroMode { get; set; } = false;
         public static Action<Vector3, bool>? SingleProbeCallback { get; set; }
 
         // Jog state

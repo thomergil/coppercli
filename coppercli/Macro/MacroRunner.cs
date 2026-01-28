@@ -60,7 +60,10 @@ namespace coppercli.Macro
                             AnsiConsole.MarkupLine($"\n[red]Macro failed at step {_currentStep + 1}: {command.DisplayText}[/]");
                         }
                         Console.CursorVisible = true;
-                        MenuHelpers.PromptEnter("Macro stopped.");
+                        if (!AppState.MacroMode)
+                        {
+                            MenuHelpers.PromptEnter("Macro stopped.");
+                        }
                         return false;
                     }
 
@@ -71,7 +74,10 @@ namespace coppercli.Macro
                 DrawProgress();
                 Console.CursorVisible = true;
                 AnsiConsole.MarkupLine("\n[green]Macro completed successfully![/]");
-                MenuHelpers.PromptEnter("");
+                if (!AppState.MacroMode)
+                {
+                    MenuHelpers.PromptEnter("");
+                }
                 return true;
             }
             finally
@@ -129,16 +135,14 @@ namespace coppercli.Macro
             int boxLeftPad = 0;
             if (overlayMessage != null)
             {
-                // Box: 5 lines tall (border, message, subtext, empty, border)
-                int boxHeight = 5;
-                boxWidth = Math.Min(winWidth - 4, Math.Max(40, overlayMessage.Length + 4));
+                boxWidth = Math.Min(winWidth - 4, Math.Max(40, overlayMessage.Length + 6));
                 boxLeftPad = Math.Max(0, (winWidth - boxWidth) / 2);
 
                 // Center vertically in the step list area
                 int stepAreaStart = headerLines + (viewStart > 0 ? 1 : 0);
                 int stepAreaHeight = viewEnd - viewStart;
-                boxStartRow = stepAreaStart + Math.Max(0, (stepAreaHeight - boxHeight) / 2);
-                boxEndRow = boxStartRow + boxHeight - 1;
+                boxStartRow = stepAreaStart + Math.Max(0, (stepAreaHeight - DisplayHelpers.OverlayBoxHeight) / 2);
+                boxEndRow = boxStartRow + DisplayHelpers.OverlayBoxHeight - 1;
             }
 
             int currentRow = headerLines;
@@ -180,9 +184,11 @@ namespace coppercli.Macro
                 if (overlayMessage != null && currentRow >= boxStartRow && currentRow <= boxEndRow)
                 {
                     int boxLine = currentRow - boxStartRow;
-                    string boxContent = GetOverlayBoxLine(boxLine, boxWidth, overlayMessage, overlaySubtext);
-                    string paddedBox = new string(' ', boxLeftPad) + boxContent;
-                    DisplayHelpers.WriteLineTruncated(paddedBox, winWidth);
+                    string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
+                        overlayMessage, DisplayHelpers.AnsiYellow,
+                        overlaySubtext ?? "", DisplayHelpers.AnsiDim);
+                    string composited = DisplayHelpers.CompositeOverlay(line, boxContent, boxLeftPad, winWidth);
+                    DisplayHelpers.WriteLineTruncated(composited, winWidth);
                 }
                 else
                 {
@@ -197,9 +203,12 @@ namespace coppercli.Macro
                 while (currentRow <= boxEndRow)
                 {
                     int boxLine = currentRow - boxStartRow;
-                    string boxContent = GetOverlayBoxLine(boxLine, boxWidth, overlayMessage, overlaySubtext);
-                    string paddedBox = new string(' ', boxLeftPad) + boxContent;
-                    DisplayHelpers.WriteLineTruncated(paddedBox, winWidth);
+                    string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
+                        overlayMessage, DisplayHelpers.AnsiYellow,
+                        overlaySubtext ?? "", DisplayHelpers.AnsiDim);
+                    // CompositeOverlay handles empty margin lines (returns background)
+                    string composited = DisplayHelpers.CompositeOverlay("", boxContent, boxLeftPad, winWidth);
+                    DisplayHelpers.WriteLineTruncated(composited, winWidth);
                     currentRow++;
                 }
             }
@@ -217,36 +226,6 @@ namespace coppercli.Macro
             {
                 DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiDim}Press Escape to abort macro{DisplayHelpers.AnsiReset}", winWidth);
             }
-        }
-
-        /// <summary>
-        /// Gets a single line of the overlay box.
-        /// </summary>
-        private static string GetOverlayBoxLine(int lineIndex, int boxWidth, string message, string? subtext)
-        {
-            string inner = new string(' ', boxWidth - 2);
-            return lineIndex switch
-            {
-                0 => $"╔{new string('═', boxWidth - 2)}╗",
-                1 => $"║{DisplayHelpers.AnsiYellow}{CenterText(message, boxWidth - 2)}{DisplayHelpers.AnsiReset}║",
-                2 => $"║{DisplayHelpers.AnsiDim}{CenterText(subtext ?? "", boxWidth - 2)}{DisplayHelpers.AnsiReset}║",
-                3 => $"║{inner}║",
-                4 => $"╚{new string('═', boxWidth - 2)}╝",
-                _ => ""
-            };
-        }
-
-        /// <summary>
-        /// Centers text within a given width.
-        /// </summary>
-        private static string CenterText(string text, int width)
-        {
-            if (text.Length >= width)
-            {
-                return text.Substring(0, width);
-            }
-            int pad = (width - text.Length) / 2;
-            return text.PadLeft(pad + text.Length).PadRight(width);
         }
 
         /// <summary>

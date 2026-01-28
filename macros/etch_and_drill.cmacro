@@ -1,0 +1,20 @@
+# Test macro
+home
+load ~/save/cnc/sharkbyte_00_back.ngc
+prompt "Jog to lower-left corner of PCB"
+jog
+prompt "Attach probe clip"
+probe z
+zero xyz
+probe grid
+prompt "Remove probe clip, close door"
+mill
+
+prompt "Change drill bit"
+load ~/save/cnc/sharkbyte_01_drill.ngc
+prompt "Attach probe clip"
+probe z
+zero z
+prompt "Remove probe clip, close door"
+probe apply
+mill

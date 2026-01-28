@@ -1,9 +1,15 @@
 // Macro file parser
 
+using System.Text.RegularExpressions;
 using static coppercli.CliConstants;
 
 namespace coppercli.Macro
 {
+    /// <summary>
+    /// Represents a placeholder in a macro file.
+    /// </summary>
+    public record MacroPlaceholder(string Name, int Index);
+
     /// <summary>
     /// Parses .cmacro files into a list of MacroCommands.
     /// </summary>
@@ -49,6 +55,61 @@ namespace coppercli.Macro
             }
 
             return commands;
+        }
+
+        private static readonly Regex PlaceholderRegex = new(@"\[(\w+):file\]", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Extracts all unique [name:file] placeholders from commands, in order of first appearance.
+        /// </summary>
+        public static List<MacroPlaceholder> ExtractPlaceholders(List<MacroCommand> commands)
+        {
+            var seen = new HashSet<string>();
+            var placeholders = new List<MacroPlaceholder>();
+            int index = 0;
+
+            foreach (var cmd in commands)
+            {
+                foreach (var arg in cmd.Args)
+                {
+                    foreach (Match match in PlaceholderRegex.Matches(arg))
+                    {
+                        var name = match.Groups[1].Value;
+                        if (seen.Add(name))
+                        {
+                            placeholders.Add(new MacroPlaceholder(name, index++));
+                        }
+                    }
+                }
+            }
+
+            return placeholders;
+        }
+
+        /// <summary>
+        /// Returns a new command list with placeholders replaced by values.
+        /// </summary>
+        public static List<MacroCommand> SubstitutePlaceholders(
+            List<MacroCommand> commands,
+            Dictionary<string, string> values)
+        {
+            var result = new List<MacroCommand>();
+
+            foreach (var cmd in commands)
+            {
+                var newArgs = new string[cmd.Args.Length];
+                for (int i = 0; i < cmd.Args.Length; i++)
+                {
+                    newArgs[i] = PlaceholderRegex.Replace(cmd.Args[i], match =>
+                    {
+                        var name = match.Groups[1].Value;
+                        return values.TryGetValue(name, out var value) ? value : match.Value;
+                    });
+                }
+                result.Add(new MacroCommand(cmd.Type, newArgs, cmd.LineNumber, cmd.OriginalLine));
+            }
+
+            return result;
         }
 
         /// <summary>

@@ -244,7 +244,6 @@ namespace coppercli.Menus
                         AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
                         Persistence.SaveSettings();
                         Persistence.SaveSession();
-                        OfferToHome(message);
                         break;
                     case ConnectionResult.Success:
                         AnsiConsole.MarkupLine("[yellow]Warning: Port opened but no GRBL response received.[/]");
@@ -610,9 +609,16 @@ namespace coppercli.Menus
             return (ConnectionResult.PortNotOpened, null);
         }
 
-        private static void OfferToHome(string status)
+        /// <summary>
+        /// Offers to home the machine after connecting. Called from Program.cs.
+        /// </summary>
+        public static void OfferToHome()
         {
             var machine = AppState.Machine;
+            if (!machine.Connected)
+            {
+                return;
+            }
 
             // Offer to home
             var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);

@@ -94,9 +94,18 @@ namespace coppercli.Macro
         }
 
         /// <summary>
-        /// Run a macro from a file path.
+        /// Run a macro from a file path, prompting for any placeholders.
         /// </summary>
         public static void RunMacroFromPath(string path)
+        {
+            RunMacroFromPath(path, new Dictionary<string, string>());
+        }
+
+        /// <summary>
+        /// Run a macro from a file path with pre-provided placeholder values.
+        /// Missing placeholders will be prompted interactively.
+        /// </summary>
+        public static void RunMacroFromPath(string path, Dictionary<string, string> providedArgs)
         {
             try
             {
@@ -104,6 +113,37 @@ namespace coppercli.Macro
 
                 var commands = MacroParser.Parse(path);
                 var macroName = Path.GetFileName(path);
+
+                // Extract placeholders and prompt for missing values
+                var placeholders = MacroParser.ExtractPlaceholders(commands);
+                if (placeholders.Count > 0)
+                {
+                    var values = new Dictionary<string, string>(providedArgs);
+
+                    foreach (var ph in placeholders)
+                    {
+                        if (values.ContainsKey(ph.Name))
+                        {
+                            continue;
+                        }
+
+                        // Prompt for this placeholder
+                        var displayName = ph.Name.Replace('_', ' ');
+                        displayName = char.ToUpper(displayName[0]) + displayName[1..];
+                        AnsiConsole.MarkupLine($"[yellow]Select {Markup.Escape(displayName)}:[/]");
+
+                        var filePath = FileMenu.BrowseForFile(GCodeExtensions);
+                        if (filePath == null)
+                        {
+                            AnsiConsole.MarkupLine("[yellow]Macro cancelled.[/]");
+                            return;
+                        }
+
+                        values[ph.Name] = filePath;
+                    }
+
+                    commands = MacroParser.SubstitutePlaceholders(commands, values);
+                }
 
                 // Save as last macro file
                 var session = AppState.Session;

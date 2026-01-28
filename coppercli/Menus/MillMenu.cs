@@ -436,26 +436,13 @@ namespace coppercli.Menus
             string pad = new string(' ', leftPadding);
 
             // Calculate overlay box position (if overlay is shown)
-            // Box is 6 lines tall: top border, empty, message, X=Stop, empty, bottom border
-            int boxHeight = 6;
             int boxWidth = Math.Min(40, matrixWidth - 4);
             int boxStartChar = (matrixWidth - boxWidth) / 2;
 
             // Center vertically in the grid (grid rows go from height-1 down to 0)
             int boxCenterRow = height / 2;
-            int boxTopRow = boxCenterRow + boxHeight / 2;
-            int boxBottomRow = boxTopRow - boxHeight + 1;
-
-            // Pre-build the box content lines
-            int msgPad = overlayMessage != null ? Math.Max(0, (boxWidth - 2 - overlayMessage.Length) / 2) : 0;
-            string centeredMsg = overlayMessage != null
-                ? overlayMessage.PadLeft(msgPad + overlayMessage.Length).PadRight(boxWidth - 2)
-                : "";
-
-            // X=Stop line (centered, with color formatting)
-            string xStopText = "X=Stop";
-            int xStopPad = Math.Max(0, (boxWidth - 2 - xStopText.Length) / 2);
-            string centeredXStop = xStopText.PadLeft(xStopPad + xStopText.Length).PadRight(boxWidth - 2);
+            int boxTopRow = boxCenterRow + OverlayBoxHeight / 2;
+            int boxBottomRow = boxTopRow - OverlayBoxHeight + 1;
 
             WriteLineTruncated($"{pad}┌{new string('─', matrixWidth)}┐", winWidth);
 
@@ -485,20 +472,14 @@ namespace coppercli.Menus
                 if (overlayMessage != null && y <= boxTopRow && y >= boxBottomRow)
                 {
                     int boxLineIndex = boxTopRow - y;
-                    string boxLine = boxLineIndex switch
-                    {
-                        0 => $"╔{new string('═', boxWidth - 2)}╗",
-                        1 => $"║{new string(' ', boxWidth - 2)}║",
-                        2 => $"║{overlayColor}{centeredMsg}{AnsiReset}║",
-                        3 => $"║{AnsiBoldRed}{centeredXStop}{AnsiReset}║",
-                        4 => $"║{new string(' ', boxWidth - 2)}║",
-                        5 => $"╚{new string('═', boxWidth - 2)}╝",
-                        _ => ""
-                    };
+                    string boxLine = GetOverlayBoxLine(boxLineIndex, boxWidth,
+                        overlayMessage, overlayColor, "X=Stop", AnsiBoldRed);
 
-                    // Overlay the box onto the row
-                    // We need to work with display positions, not string positions (ANSI codes don't take space)
-                    rowContent = OverlayOnRow(rowContent, boxLine, boxStartChar, matrixWidth);
+                    // Overlay the box onto the row (margin lines are empty - show background)
+                    if (!string.IsNullOrEmpty(boxLine))
+                    {
+                        rowContent = OverlayOnRow(rowContent, boxLine, boxStartChar, matrixWidth);
+                    }
                 }
 
                 WriteLineTruncated($"{pad}│{rowContent}│", winWidth);

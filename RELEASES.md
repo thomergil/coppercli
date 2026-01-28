@@ -5,6 +5,7 @@
 ### New Features
 
 - **Macros**: New macro system for automating repetitive workflows. Create `.cmacro` files with G-code, prompts, and comments. Access via main menu or run directly with `--macro` / `-m` command-line flag.
+- **Macro placeholders**: Use `[name:file]` syntax for files that vary between runs. Prompts file browser at runtime, or pass via CLI with `--name path`.
 - **File browser filter**: Press `/` to filter files by name. Type to narrow results, Backspace to edit, Esc to clear.
 
 ### Changes

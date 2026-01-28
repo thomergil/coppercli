@@ -1,6 +1,6 @@
 # <img src="doc/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, session recovery, real-time visualization, network proxy mode, and cross-platform support. Default menu selections minimize keypresses from G-code to milled PCB. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, macros for repeatable workflows, session recovery, real-time visualization, and cross-platform support. Default menu selections minimize keypresses from G-code to milled PCB. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -53,10 +53,37 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Real-time probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
 - Save/load probe grids
+- Macros for multi-step workflows with file placeholders
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
 - Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
 - Built-in minimalist file browser
 - Session recovery: interrupted probing resumes, remembers last file, restores home points
+
+## Macros
+
+Automate multi-step workflows with `.cmacro` files:
+
+```
+# pcb-job.cmacro
+home
+load [back_file:file]
+prompt "Jog to PCB origin"
+jog
+prompt "Attach probe clip"
+probe z
+zero xyz
+probe grid
+prompt "Remove probe clip, close door"
+mill
+```
+
+Run from menu (Main Menu → Macro) or command line:
+
+```bash
+coppercli --macro pcb-job.cmacro --back_file ~/boards/back.ngc
+```
+
+Placeholders like `[back_file:file]` prompt a file browser at runtime, or accept values via `--name path` on the command line. See [docs/macros.md](docs/macros.md) for the full command reference.
 
 ## Proxy Mode (EXPERIMENTAL)
 
@@ -81,6 +108,7 @@ When the proxy starts, it displays the IP addresses clients can use to connect. 
 
 | Argument | Short | Description |
 |----------|-------|-------------|
+| `--macro <file>` | `-m` | Run a macro file, auto-connect, and exit |
 | `--proxy` | `-p` | Start directly in proxy mode using saved serial settings |
 | `--port <number>` | | Override TCP port for proxy mode (default: 34000) |
 | `--headless` | `-H` | Run proxy without TUI (for services/background) |
