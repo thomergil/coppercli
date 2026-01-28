@@ -48,6 +48,11 @@ namespace coppercli.Core.Util
         public const char CycleStart = '~';
         public const char StatusQuery = '?';
 
+        // Feed override (real-time commands)
+        public const char FeedOverrideReset = (char)0x90;      // Set 100% of programmed feed rate
+        public const char FeedOverrideIncrease10 = (char)0x91; // Increase 10%
+        public const char FeedOverrideDecrease10 = (char)0x92; // Decrease 10%
+
         // =========================================================================
         // System commands
         // =========================================================================

@@ -29,6 +29,7 @@
 ### Changes
 
 - **Tool setter Y coordinate now optional**: For machines with moving beds (like Nomad 3), only the X coordinate is needed to reach the tool setter. Y can be omitted in `machine-profiles.yaml` to avoid unnecessary bed movement.
+- **Feed override during milling**: Press `+` to increase feed rate 10%, `-` to decrease 10%, `0` to reset to 100%. Shows current override in status line when not 100%.
 - **Vim-style jog multiplier**: Press a digit (1-5 in Fast mode, 1-9 in other modes) before a jog direction to multiply the distance. For example, in Normal mode (1mm), pressing `3→` jogs 3mm right.
 - **Jog menu shows machine position**: Now displays both work and machine coordinates.
 - **Jog menu key changes**: Some keys changed to support vim-style multipliers and HJKL navigation:
@@ -44,6 +45,7 @@
 - **G-code compatibility**: G53, G10, G28, G30, G38.x, G43.1, G94 no longer produce parser warnings. G93 (inverse time feed rate) produces a warning since height map and time estimates assume G94.
 - **Proxy no longer experimental**: Proxy mode has been tested and the [experimental] tag removed from the menu.
 - **T codes parsed with comments**: Tool change commands now extract tool name from comments (e.g., `T2 (1/8" End Mill)`) for display during tool changes.
+- **Tool change uses Y to confirm**: Changed from P to Y for consistency with other confirmation prompts.
 
 ### Bug Fixes
 

@@ -439,6 +439,21 @@ namespace coppercli.Menus
                             StopAndRaiseZ();
                             return;
                         }
+                        else if (key.KeyChar == '+' || key.KeyChar == '=')
+                        {
+                            Logger.Log("Feed override increase (+)");
+                            machine.FeedOverrideIncrease();
+                        }
+                        else if (key.KeyChar == '-' || key.KeyChar == '_')
+                        {
+                            Logger.Log("Feed override decrease (-)");
+                            machine.FeedOverrideDecrease();
+                        }
+                        else if (key.KeyChar == '0')
+                        {
+                            Logger.Log("Feed override reset (0)");
+                            machine.FeedOverrideReset();
+                        }
                     }
 
                     var currentPausedTime = paused ? (DateTime.Now - pauseStartTime) : TimeSpan.Zero;
@@ -565,7 +580,10 @@ namespace coppercli.Menus
                 WriteLineTruncated("", winWidth);
             }
 
-            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiBoldRed}X{AnsiReset}=Stop", winWidth);
+            // Show feed override if not 100%
+            int feedOvr = machine.FeedOverride;
+            string feedOvrStr = feedOvr != 100 ? $"  Feed: {AnsiWarning}{feedOvr}%{AnsiReset}" : "";
+            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiBoldRed}X{AnsiReset}=Stop{feedOvrStr}", winWidth);
 
             double minX = currentFile.Min.X;
             double maxX = currentFile.Max.X;

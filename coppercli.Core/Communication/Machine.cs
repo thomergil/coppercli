@@ -799,6 +799,36 @@ namespace coppercli.Core.Communication
             ToSendPriority.Enqueue(GrblProtocol.JogCancel);
         }
 
+        public void FeedOverrideReset()
+        {
+            if (!Connected)
+            {
+                return;
+            }
+
+            ToSendPriority.Enqueue(GrblProtocol.FeedOverrideReset);
+        }
+
+        public void FeedOverrideIncrease()
+        {
+            if (!Connected)
+            {
+                return;
+            }
+
+            ToSendPriority.Enqueue(GrblProtocol.FeedOverrideIncrease10);
+        }
+
+        public void FeedOverrideDecrease()
+        {
+            if (!Connected)
+            {
+                return;
+            }
+
+            ToSendPriority.Enqueue(GrblProtocol.FeedOverrideDecrease10);
+        }
+
         public void Jog(char axis, double distance, double feed)
         {
             if (!Connected)

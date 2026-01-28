@@ -1,6 +1,6 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, macros for repeatable workflows, session recovery, real-time visualization, and cross-platform support. Default menu selections minimize keypresses from G-code to milled PCB. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A terminal-based tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, session recovery, real-time visualization. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -48,9 +48,13 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 ## Features
 
 - Cross-platform, auto-detects serial port and baud rate
-- Keyboard-driven: single-key menu navigation, arrow keys for jogging, Tab to cycle speeds
-- Jog speed presets (Fast/Normal/Slow/Creep), pause/resume/stop with spindle shutdown
-- Menu defaults follow the Connect → Load → Move → Probe → Mill workflow
+- Keyboard-driven: single-key menu navigation, arrow/HJKL for jogging, Tab to cycle speeds
+- Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3L` = 3× right)
+- Feed override during milling (`+`/`-`/`0` for ±10%/reset)
+- Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
+- Machine profiles: built-in configs for Nomad 3, Shapeoko, LongMill, X-Carve, 3018, etc.
+- Dangerous G-code warnings: flags G28/G30 (crash risk) and G20 (imperial units) before milling
+- Sleep prevention during milling/probing (Windows/macOS/Linux)
 - Probe grid auto-leveling with configurable parameters (safe height, depth, feed rate, grid size)
 - Real-time probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
@@ -58,7 +62,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Macros for multi-step workflows with file placeholders
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
 - Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
-- Built-in minimalist file browser
+- Built-in file browser with `/` filter
 - Session recovery: interrupted probing resumes, remembers last file, restores home points
 
 ## Macros
@@ -113,6 +117,7 @@ When the proxy starts, it displays the IP addresses clients can use to connect. 
 | Argument | Short | Description |
 |----------|-------|-------------|
 | `--macro <file>` | `-m` | Run a macro file, auto-connect, and exit |
+| `--<name> <path>` | | Provide value for macro placeholder (e.g., `--back_file ~/back.ngc`) |
 | `--proxy` | `-p` | Start directly in proxy mode using saved serial settings |
 | `--port <number>` | | Override TCP port for proxy mode (default: 34000) |
 | `--headless` | `-H` | Run proxy without TUI (for services/background) |
