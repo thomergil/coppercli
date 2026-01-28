@@ -49,7 +49,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 
 - Cross-platform, auto-detects serial port and baud rate
 - Keyboard-driven: single-key menu navigation, arrow/HJKL for jogging, Tab to cycle speeds
-- Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3L` = 3× right)
+- Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3k` = 3× up)
 - Feed override during milling (`+`/`-`/`0` for ±10%/reset)
 - Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
 - Built-in machine profiles
