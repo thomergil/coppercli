@@ -15,9 +15,6 @@ namespace coppercli.Menus
         // Lines used by file browser chrome (title, directory, blank, help text)
         private const int FileBrowserChromeLines = 5;
 
-        // ANSI escape sequence to clear from cursor to end of line
-        private const string AnsiClearToEol = "\u001b[K";
-
         public static void LoadGCodeFile()
         {
             var path = BrowseForFile(GCodeExtensions);
@@ -217,7 +214,7 @@ namespace coppercli.Menus
                 // Show "more above" indicator
                 if (hasMoreAbove)
                 {
-                    MarkupLineClear($"[{ColorDim}]  ▲ {viewStart} more above[/]");
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]  ▲ {viewStart} more above[/]");
                 }
 
                 // Draw visible options with shortcuts
@@ -230,28 +227,28 @@ namespace coppercli.Menus
 
                     if (i == selected)
                     {
-                        MarkupLineClear($"[{ColorSuccess}]> {prefix} {escapedDisplay}[/]");
+                        MenuHelpers.MarkupLineClear($"[{ColorSuccess}]> {prefix} {escapedDisplay}[/]");
                     }
                     else
                     {
-                        MarkupLineClear($"  {prefix} {escapedDisplay}");
+                        MenuHelpers.MarkupLineClear($"  {prefix} {escapedDisplay}");
                     }
                 }
 
                 // Show "more below" indicator
                 if (hasMoreBelow)
                 {
-                    MarkupLineClear($"[{ColorDim}]  ▼ {filteredItems.Count - viewEnd} more below[/]");
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]  ▼ {filteredItems.Count - viewEnd} more below[/]");
                 }
 
                 // Help text
                 if (!filterActive)
                 {
-                    MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
                 }
                 else
                 {
-                    MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
                 }
 
                 // Read key
@@ -374,15 +371,6 @@ namespace coppercli.Menus
                     }
                 }
             }
-        }
-
-        /// <summary>
-        /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
-        /// </summary>
-        private static void MarkupLineClear(string markup)
-        {
-            AnsiConsole.Markup(markup);
-            Console.WriteLine(AnsiClearToEol);
         }
 
         public static void LoadGCodeFromPath(string path)

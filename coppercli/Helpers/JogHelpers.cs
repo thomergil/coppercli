@@ -28,34 +28,34 @@ namespace coppercli.Helpers
             }
 
             // W/S for Z jog
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.W, 'w'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.W))
             {
                 machine.Jog('Z', distance, feed);
                 jogged = true;
             }
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.S, 's'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.S))
             {
                 machine.Jog('Z', -distance, feed);
                 jogged = true;
             }
 
             // Vi-style HJKL for X/Y jog
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.H, 'h'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.H))
             {
                 machine.Jog('X', -distance, feed);
                 jogged = true;
             }
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.L, 'l'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.L))
             {
                 machine.Jog('X', distance, feed);
                 jogged = true;
             }
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.J, 'j'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.J))
             {
                 machine.Jog('Y', -distance, feed);
                 jogged = true;
             }
-            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.K, 'k'))
+            if (!jogged && InputHelpers.IsKey(key, ConsoleKey.K))
             {
                 machine.Jog('Y', distance, feed);
                 jogged = true;

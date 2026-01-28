@@ -203,12 +203,12 @@ namespace coppercli.Helpers
                 {
                     var key = Console.ReadKey(true);
                     Logger.Log("WaitForContinueOrAbort: Key pressed: {0} (char: {1})", key.Key, key.KeyChar);
-                    if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                    if (InputHelpers.IsKey(key, ConsoleKey.Y))
                     {
                         Logger.Log("WaitForContinueOrAbort: Y pressed, proceeding");
                         return true;
                     }
-                    if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
+                    if (InputHelpers.IsKey(key, ConsoleKey.X))
                     {
                         Logger.Log("WaitForContinueOrAbort: X pressed, aborting");
                         SetOverlay("Tool change aborted");
@@ -515,7 +515,7 @@ namespace coppercli.Helpers
                     if (Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
-                        if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
+                        if (InputHelpers.IsKey(key, ConsoleKey.X))
                         {
                             // SoftReset clears buffer to prevent queued commands from executing
                             Logger.Log("ExecuteProbeToWorkZ: Aborting - sending SoftReset");

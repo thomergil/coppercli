@@ -161,7 +161,7 @@ namespace coppercli.Menus
                     if (selected.Option == EthernetOption.AutoDetect)
                     {
                         // Show local IPs to help user understand the scan range
-                        var localIPs = GetLocalIPAddresses();
+                        var localIPs = NetworkHelpers.GetLocalIPAddresses();
                         if (localIPs.Count > 0)
                         {
                             var sampleIP = localIPs[0].Split('.');
@@ -344,7 +344,7 @@ namespace coppercli.Menus
         private static bool AutoDetectEthernet(int port, int mask)
         {
             var settings = AppState.Settings;
-            var localIPs = GetLocalIPAddresses();
+            var localIPs = NetworkHelpers.GetLocalIPAddresses();
 
             if (localIPs.Count == 0)
             {
@@ -400,50 +400,6 @@ namespace coppercli.Menus
             }
 
             return false;
-        }
-
-        /// <summary>
-        /// Gets all local IPv4 addresses.
-        /// </summary>
-        private static List<string> GetLocalIPAddresses()
-        {
-            var addresses = new List<string>();
-
-            try
-            {
-                foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    if (iface.OperationalStatus != OperationalStatus.Up)
-                    {
-                        continue;
-                    }
-                    if (iface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-                    {
-                        continue;
-                    }
-
-                    var props = iface.GetIPProperties();
-                    foreach (var addr in props.UnicastAddresses)
-                    {
-                        if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
-                        {
-                            continue;
-                        }
-
-                        var ip = addr.Address.ToString();
-                        if (!addresses.Contains(ip))
-                        {
-                            addresses.Add(ip);
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Ignore errors enumerating interfaces
-            }
-
-            return addresses;
         }
 
         /// <summary>

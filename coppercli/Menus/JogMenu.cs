@@ -314,13 +314,13 @@ namespace coppercli.Menus
             }
 
             // Handle command keys
-            if (InputHelpers.IsKey(key, ConsoleKey.M, 'm'))
+            if (InputHelpers.IsKey(key, ConsoleKey.M))
             {
                 machine.SoftReset();
                 machine.SendLine(CmdHome);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.U, 'u'))
+            if (InputHelpers.IsKey(key, ConsoleKey.U))
             {
                 machine.SendLine(CmdUnlock);
                 if (StatusHelpers.IsDoor(machine) || StatusHelpers.IsHold(machine))
@@ -331,28 +331,27 @@ namespace coppercli.Menus
                 Thread.Sleep(ConfirmationDisplayMs);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.R, 'r'))
+            if (InputHelpers.IsKey(key, ConsoleKey.R))
             {
                 machine.SoftReset();
                 AnsiConsole.MarkupLine($"[{ColorWarning}]Reset[/]");
                 Thread.Sleep(ConfirmationDisplayMs);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.Z, 'z'))
+            if (InputHelpers.IsKey(key, ConsoleKey.Z))
             {
-                machine.SendLine($"{CmdZeroWorkOffset} Z0");
+                MachineCommands.ZeroWorkOffset(machine, "Z0");
                 AppState.IsWorkZeroSet = true;
                 // Discard probe data - it's now invalid with new work zero
                 AppState.DiscardProbeData();
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Z zeroed[/]");
                 Thread.Sleep(ConfirmationDisplayMs);
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{RetractZMm}");
+                MachineCommands.MoveToSafeHeight(machine, RetractZMm);
                 return false; // Exit after zeroing
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.D0, '0'))
+            if (InputHelpers.IsKey(key, ConsoleKey.D0))
             {
-                machine.SendLine($"{CmdZeroWorkOffset} X0 Y0 Z0");
+                MachineCommands.ZeroWorkOffset(machine, "X0 Y0 Z0");
                 AppState.IsWorkZeroSet = true;
                 // Discard probe data - it's now invalid with new work zero
                 AppState.DiscardProbeData();
@@ -368,47 +367,43 @@ namespace coppercli.Menus
 
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]All axes zeroed[/]");
                 Thread.Sleep(ConfirmationDisplayMs);
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{RetractZMm}");
+                MachineCommands.MoveToSafeHeight(machine, RetractZMm);
                 return false; // Exit after zeroing
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.T, 't'))
+            if (InputHelpers.IsKey(key, ConsoleKey.T))
             {
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{RetractZMm}");
+                MachineCommands.MoveToSafeHeight(machine, RetractZMm);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.B, 'b'))
+            if (InputHelpers.IsKey(key, ConsoleKey.B))
             {
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{ReferenceZHeightMm}");
+                MachineCommands.MoveToSafeHeight(machine, ReferenceZHeightMm);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.G, 'g'))
+            if (InputHelpers.IsKey(key, ConsoleKey.G))
             {
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z0");
+                MachineCommands.MoveToSafeHeight(machine, 0);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.N, 'n'))
+            if (InputHelpers.IsKey(key, ConsoleKey.N))
             {
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} X0 Y0");
+                MachineCommands.SetAbsoluteMode(machine);
+                MachineCommands.RapidMoveXY(machine, 0, 0);
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.C, 'c'))
+            if (InputHelpers.IsKey(key, ConsoleKey.C))
             {
                 var currentFile = AppState.CurrentFile;
                 if (currentFile != null)
                 {
                     double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
                     double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
-                    machine.SendLine(CmdAbsolute);
-                    machine.SendLine($"{CmdRapidMove} X{centerX:F3} Y{centerY:F3}");
+                    MachineCommands.SetAbsoluteMode(machine);
+                    MachineCommands.RapidMoveXY(machine, centerX, centerY);
                 }
                 return true;
             }
-            if (InputHelpers.IsKey(key, ConsoleKey.P, 'p'))
+            if (InputHelpers.IsKey(key, ConsoleKey.P))
             {
                 ProbeZ();
                 return true;

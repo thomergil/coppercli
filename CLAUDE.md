@@ -82,6 +82,8 @@ static readonly (string Label, char Mnemonic, Action Handler)[] MainMenuItems = 
 
 Log file location: `coppercli/bin/Debug/net8.0/coppercli.log`
 
+**When debugging a problem:** Aggressively add logging using `Logger.Log()`. The user will run with `--debug` to enable logging. Do NOT remove debug logging until the user explicitly says the problem is fixed. Console output is often overwritten by UI redraws, so always use the log file.
+
 **NEVER suggest the user forgot to compile.** If something isn't working as expected, assume the code is wrong and investigate further.
 
 ## Git

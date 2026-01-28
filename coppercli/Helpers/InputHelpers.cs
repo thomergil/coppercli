@@ -11,6 +11,26 @@ namespace coppercli.Helpers
     internal static class InputHelpers
     {
         /// <summary>
+        /// Maps ConsoleKey values to their expected character equivalents.
+        /// Used for non-QWERTY keyboard compatibility.
+        /// </summary>
+        private static readonly Dictionary<ConsoleKey, char> KeyToChar = new()
+        {
+            { ConsoleKey.A, 'a' }, { ConsoleKey.B, 'b' }, { ConsoleKey.C, 'c' },
+            { ConsoleKey.D, 'd' }, { ConsoleKey.E, 'e' }, { ConsoleKey.F, 'f' },
+            { ConsoleKey.G, 'g' }, { ConsoleKey.H, 'h' }, { ConsoleKey.I, 'i' },
+            { ConsoleKey.J, 'j' }, { ConsoleKey.K, 'k' }, { ConsoleKey.L, 'l' },
+            { ConsoleKey.M, 'm' }, { ConsoleKey.N, 'n' }, { ConsoleKey.O, 'o' },
+            { ConsoleKey.P, 'p' }, { ConsoleKey.Q, 'q' }, { ConsoleKey.R, 'r' },
+            { ConsoleKey.S, 's' }, { ConsoleKey.T, 't' }, { ConsoleKey.U, 'u' },
+            { ConsoleKey.V, 'v' }, { ConsoleKey.W, 'w' }, { ConsoleKey.X, 'x' },
+            { ConsoleKey.Y, 'y' }, { ConsoleKey.Z, 'z' },
+            { ConsoleKey.D0, '0' }, { ConsoleKey.D1, '1' }, { ConsoleKey.D2, '2' },
+            { ConsoleKey.D3, '3' }, { ConsoleKey.D4, '4' }, { ConsoleKey.D5, '5' },
+            { ConsoleKey.D6, '6' }, { ConsoleKey.D7, '7' }, { ConsoleKey.D8, '8' },
+            { ConsoleKey.D9, '9' },
+        };
+        /// <summary>
         /// Reads a key while polling for machine status changes and terminal resize.
         /// Returns the key pressed, or null if status/size changed (caller should redraw).
         /// </summary>
@@ -55,17 +75,20 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Checks if a key press matches a given ConsoleKey or character.
+        /// Checks if a key press matches a given ConsoleKey.
         /// Handles cross-platform compatibility where key.Key or key.KeyChar may work differently.
         /// For non-QWERTY keyboards (e.g., Dvorak), the character check is prioritized since
         /// ConsoleKey values may map to physical key positions rather than logical characters.
         /// </summary>
-        public static bool IsKey(ConsoleKeyInfo key, ConsoleKey consoleKey, char c)
+        public static bool IsKey(ConsoleKeyInfo key, ConsoleKey consoleKey)
         {
             // Check character first (more reliable for non-QWERTY layouts)
-            if (char.ToLower(key.KeyChar) == char.ToLower(c))
+            if (KeyToChar.TryGetValue(consoleKey, out char c))
             {
-                return true;
+                if (char.ToLower(key.KeyChar) == c)
+                {
+                    return true;
+                }
             }
             // Fall back to ConsoleKey check
             return key.Key == consoleKey;
@@ -100,7 +123,7 @@ namespace coppercli.Helpers
         /// </summary>
         public static bool IsExitKey(ConsoleKeyInfo key)
         {
-            return IsEscapeKey(key) || IsKey(key, ConsoleKey.Q, 'q');
+            return IsEscapeKey(key) || IsKey(key, ConsoleKey.Q);
         }
 
         /// <summary>

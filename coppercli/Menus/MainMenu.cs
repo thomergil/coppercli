@@ -28,20 +28,66 @@ namespace coppercli.Menus
             Exit
         }
 
+        private static string? GetJogDisabledReason() =>
+            !AppState.Machine.Connected ? "connect first" : null;
+
+        private static string? GetProbeDisabledReason()
+        {
+            if (!AppState.Machine.Connected)
+            {
+                return "connect first";
+            }
+            if (AppState.CurrentFile == null)
+            {
+                return "load G-Code first";
+            }
+            return null;
+        }
+
+        private static string? GetMillDisabledReason()
+        {
+            if (!AppState.Machine.Connected)
+            {
+                return "connect first";
+            }
+            if (AppState.Machine.File.Count == 0)
+            {
+                return "load G-Code first";
+            }
+            if (AppState.ProbePoints != null && !AppState.AreProbePointsApplied)
+            {
+                return "apply probe data first";
+            }
+            return null;
+        }
+
+        private static string? GetMacroDisabledReason() =>
+            !AppState.Machine.Connected ? "connect first" : null;
+
+        private static string? GetProxyDisabledReason() =>
+            AppState.Machine.Connected && AppState.Settings.ConnectionType == ConnectionType.Ethernet
+                ? "disconnect first"
+                : null;
+
         private static readonly MenuDef<MainAction> MainMenuDef = new(
             new MenuItem<MainAction>("Connection", 'c', MainAction.Connect),
             new MenuItem<MainAction>("Load G-Code", 'l', MainAction.LoadFile),
             new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
-                EnabledWhen: () => AppState.Machine.Connected),
+                EnabledWhen: () => AppState.Machine.Connected,
+                DisabledReason: GetJogDisabledReason),
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
-                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null),
+                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null,
+                DisabledReason: GetProbeDisabledReason),
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
                 EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
-                    (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
+                    (AppState.ProbePoints == null || AppState.AreProbePointsApplied),
+                DisabledReason: GetMillDisabledReason),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
-                EnabledWhen: () => AppState.Machine.Connected),
+                EnabledWhen: () => AppState.Machine.Connected,
+                DisabledReason: GetMacroDisabledReason),
             new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy,
-                EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet),
+                EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet,
+                DisabledReason: GetProxyDisabledReason),
             new MenuItem<MainAction>("Settings", 's', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)

@@ -126,12 +126,12 @@ namespace coppercli.Menus
                         if (Console.KeyAvailable)
                         {
                             var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                            if (InputHelpers.IsKey(key, ConsoleKey.Y))
                             {
                                 Logger.Log("No profile warning acknowledged (Y pressed)");
                                 break;
                             }
-                            if (InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                            if (InputHelpers.IsKey(key, ConsoleKey.X) ||
                                 InputHelpers.IsExitKey(key))
                             {
                                 Logger.Log("Milling aborted due to no machine profile");
@@ -152,13 +152,13 @@ namespace coppercli.Menus
                     if (Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
-                        if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                        if (InputHelpers.IsKey(key, ConsoleKey.Y))
                         {
                             Logger.Log("Safety confirmed (Y pressed)");
                             break;
                         }
-                        if (InputHelpers.IsKey(key, ConsoleKey.N, 'n') ||
-                            InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                        if (InputHelpers.IsKey(key, ConsoleKey.N) ||
+                            InputHelpers.IsKey(key, ConsoleKey.X) ||
                             InputHelpers.IsExitKey(key))
                         {
                             Logger.Log("Safety confirmation aborted");
@@ -180,12 +180,12 @@ namespace coppercli.Menus
                         if (Console.KeyAvailable)
                         {
                             var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                            if (InputHelpers.IsKey(key, ConsoleKey.Y))
                             {
                                 Logger.Log("Sleep prevention warning acknowledged");
                                 break;
                             }
-                            if (InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                            if (InputHelpers.IsKey(key, ConsoleKey.X) ||
                                 InputHelpers.IsExitKey(key))
                             {
                                 Logger.Log("Milling aborted due to sleep prevention warning");
@@ -218,7 +218,7 @@ namespace coppercli.Menus
                         if (Console.KeyAvailable)
                         {
                             var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
+                            if (InputHelpers.IsKey(key, ConsoleKey.X))
                             {
                                 Logger.Log("Stopping during settling (X pressed)");
                                 StopAndRaiseZ();
@@ -404,14 +404,14 @@ namespace coppercli.Menus
                     {
                         var key = Console.ReadKey(true);
                         Logger.Log("Key pressed: {0}", key.Key);
-                        if (InputHelpers.IsKey(key, ConsoleKey.P, 'p'))
+                        if (InputHelpers.IsKey(key, ConsoleKey.P))
                         {
                             Logger.Log("Pausing (FeedHold)");
                             machine.FeedHold();
                             paused = true;
                             pauseStartTime = DateTime.Now;
                         }
-                        else if (InputHelpers.IsKey(key, ConsoleKey.R, 'r'))
+                        else if (InputHelpers.IsKey(key, ConsoleKey.R))
                         {
                             Logger.Log("Resuming: Mode={0}, Status={1}", machine.Mode, machine.Status);
 
@@ -433,7 +433,7 @@ namespace coppercli.Menus
                             totalPausedTime += DateTime.Now - pauseStartTime;
                             Logger.Log("After resume: Mode={0}, Status={1}", machine.Mode, machine.Status);
                         }
-                        else if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
+                        else if (InputHelpers.IsKey(key, ConsoleKey.X))
                         {
                             Logger.Log("Stopping (X pressed)");
                             StopAndRaiseZ();

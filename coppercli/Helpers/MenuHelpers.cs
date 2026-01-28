@@ -9,12 +9,17 @@ namespace coppercli.Helpers
     /// <summary>
     /// A menu item with a label, mnemonic key, option type, and optional enabled condition.
     /// </summary>
-    public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<bool>? EnabledWhen = null)
+    public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<bool>? EnabledWhen = null, Func<string?>? DisabledReason = null)
     {
         /// <summary>
         /// Returns true if this item is currently enabled (selectable).
         /// </summary>
         public bool IsEnabled => EnabledWhen?.Invoke() ?? true;
+
+        /// <summary>
+        /// Gets the disabled reason string, or null if enabled or no reason provided.
+        /// </summary>
+        public string? CurrentDisabledReason => IsEnabled ? null : DisabledReason?.Invoke();
     }
 
     /// <summary>
@@ -34,15 +39,27 @@ namespace coppercli.Helpers
         public int Count => _items.Count;
 
         /// <summary>
-        /// Gets labels for all items. Disabled items are not visually marked here;
-        /// use GetEnabledStates() in conjunction for rendering.
+        /// Gets labels for all items, including disabled reasons where applicable.
+        /// Format: "1. Label [m] (reason)" where reason only appears for disabled items.
+        /// Use GetEnabledStates() in conjunction for rendering disabled items dimmed.
         /// </summary>
-        public string[] Labels => _items.Select((item, i) => $"{i + 1}. {item.Label} ({item.Mnemonic})").ToArray();
+        public string[] Labels => _items.Select((item, i) =>
+        {
+            var reason = item.CurrentDisabledReason;
+            return reason == null
+                ? $"{i + 1}. {item.Label} [{item.Mnemonic}]"
+                : $"{i + 1}. {item.Label} [{item.Mnemonic}] ({reason})";
+        }).ToArray();
 
         /// <summary>
         /// Gets the enabled state for each item at the current moment.
         /// </summary>
         public bool[] GetEnabledStates() => _items.Select(item => item.IsEnabled).ToArray();
+
+        /// <summary>
+        /// Gets the mnemonic keys for all items.
+        /// </summary>
+        public char[] Mnemonics => _items.Select(item => item.Mnemonic).ToArray();
 
         public int IndexOf(T option) => _items.FindIndex(item => EqualityComparer<T>.Default.Equals(item.Option, option));
 
@@ -103,7 +120,7 @@ namespace coppercli.Helpers
         /// <summary>
         /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
         /// </summary>
-        private static void MarkupLineClear(string markup)
+        internal static void MarkupLineClear(string markup)
         {
             AnsiConsole.Markup(markup);
             Console.WriteLine(AnsiClearToEol);
@@ -111,11 +128,11 @@ namespace coppercli.Helpers
 
         /// <summary>
         /// Displays a menu and returns the selected index. Supports arrow navigation, number keys, and mnemonic keys.
-        /// Options format: "1. Label (x)" where x is the mnemonic key.
         /// Automatically scrolls when there are more options than fit in the terminal.
         /// </summary>
         /// <param name="enabledStates">Optional array indicating which items are enabled. Disabled items shown dim and not selectable.</param>
-        public static int ShowMenu(string title, string[] options, int initialSelection = 0, bool[]? enabledStates = null)
+        /// <param name="mnemonicKeys">Optional array of mnemonic characters for each option. If null, extracts from option text.</param>
+        public static int ShowMenu(string title, string[] options, int initialSelection = 0, bool[]? enabledStates = null, char[]? mnemonicKeys = null)
         {
             int selected = Math.Clamp(initialSelection, 0, options.Length - 1);
 
@@ -125,17 +142,24 @@ namespace coppercli.Helpers
                 selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
             }
 
-            // Extract mnemonic keys from options (look for (x) at end)
-            // Also extract leading number/letter keys (e.g., "0. Back" or "A. Option")
+            // Build mnemonic dictionary - use provided keys or extract from text
             var mnemonics = new Dictionary<char, int>();
             var leadingKeys = new Dictionary<char, int>();
             for (int i = 0; i < options.Length; i++)
             {
-                // Check for mnemonic in parentheses at end
-                var match = Regex.Match(options[i], @"\((\w)\)$");
-                if (match.Success)
+                // Use provided mnemonic if available
+                if (mnemonicKeys != null && i < mnemonicKeys.Length && mnemonicKeys[i] != '\0')
                 {
-                    mnemonics[char.ToLower(match.Groups[1].Value[0])] = i;
+                    mnemonics[char.ToLower(mnemonicKeys[i])] = i;
+                }
+                else
+                {
+                    // Fall back to extracting from brackets (e.g., "[c]")
+                    var match = Regex.Match(options[i], @"\[(\w)\]");
+                    if (match.Success)
+                    {
+                        mnemonics[char.ToLower(match.Groups[1].Value[0])] = i;
+                    }
                 }
 
                 // Check for leading number/letter (e.g., "0. " or "A. " or "10. ")
@@ -370,7 +394,7 @@ namespace coppercli.Helpers
         /// </summary>
         public static MenuItem<T>? ShowMenuWithRefresh<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
-            int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
+            int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates(), menu.Mnemonics);
             if (index < 0)
             {
                 return null; // Status changed, caller should redraw
@@ -382,7 +406,7 @@ namespace coppercli.Helpers
         {
             while (true)
             {
-                int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates());
+                int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates(), menu.Mnemonics);
                 if (index >= 0)
                 {
                     return menu[index];
@@ -495,6 +519,50 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Prompts for a string value with quit option.
+        /// Returns the value, or null if user pressed Escape.
+        /// </summary>
+        public static string? AskString(string prompt, string defaultValue)
+        {
+            AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{Markup.Escape(defaultValue)}]][/]: ");
+
+            var input = new System.Text.StringBuilder();
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine();
+                    return input.Length == 0 ? defaultValue : input.ToString();
+                }
+
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    Console.WriteLine();
+                    return null;
+                }
+
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (input.Length > 0)
+                    {
+                        input.Remove(input.Length - 1, 1);
+                        Console.Write("\b \b");
+                    }
+                    continue;
+                }
+
+                // Accept printable characters
+                if (!char.IsControl(key.KeyChar))
+                {
+                    input.Append(key.KeyChar);
+                    Console.Write(key.KeyChar);
+                }
+            }
+        }
+
+        /// <summary>
         /// Displays a message and waits for Enter to continue.
         /// Used by macro system for user prompts.
         /// </summary>
@@ -505,13 +573,20 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Waits for Enter key to be pressed.
+        /// Waits for Enter, Escape, or Q key to be pressed.
         /// </summary>
         /// <param name="message">Optional custom message. Default: "Press Enter to continue"</param>
         public static void WaitEnter(string? message = null)
         {
             AnsiConsole.MarkupLine($"[{ColorDim}]{message ?? CliConstants.PromptEnter}[/]");
-            Console.ReadLine();
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                if (InputHelpers.IsEnterKey(key) || InputHelpers.IsExitKey(key))
+                {
+                    return;
+                }
+            }
         }
     }
 }

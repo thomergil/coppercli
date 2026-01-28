@@ -35,7 +35,8 @@ namespace coppercli.Macro
                 var menu = new MenuDef<MacroAction>(
                     new MenuItem<MacroAction>("Load Macro...", 'l', MacroAction.Load),
                     new MenuItem<MacroAction>($"Run {macroFileName}", 'r', MacroAction.Run,
-                        EnabledWhen: () => hasLoadedMacro),
+                        EnabledWhen: () => hasLoadedMacro,
+                        DisabledReason: () => hasLoadedMacro ? null : "load macro first"),
                     new MenuItem<MacroAction>("Back", 'q', MacroAction.Back)
                 );
 

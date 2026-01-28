@@ -289,7 +289,7 @@ namespace coppercli.Menus
                         return;
                     }
 
-                    if (InputHelpers.IsKey(key, ConsoleKey.C, 'c'))
+                    if (InputHelpers.IsKey(key, ConsoleKey.C))
                     {
                         // Clear tool setter position
                         settings.ToolSetterX = 0;

@@ -255,7 +255,7 @@ namespace coppercli.Menus
             WriteLineTruncated($"  Baud Rate:      {AnsiInfo}{proxy.BaudRate}{AnsiReset}", winWidth);
 
             // Show local IP addresses for easy client connection
-            var localIps = GetLocalIPAddresses();
+            var localIps = NetworkHelpers.GetLocalIPAddresses();
             if (localIps.Count > 0)
             {
                 var ipList = string.Join(", ", localIps.Select(ip => $"{AnsiBoldGreen}{ip}:{proxy.TcpPort}{AnsiReset}"));
@@ -336,7 +336,7 @@ namespace coppercli.Menus
             }
 
             // Show connection info
-            var localIps = GetLocalIPAddresses();
+            var localIps = NetworkHelpers.GetLocalIPAddresses();
             if (localIps.Count > 0)
             {
                 Console.WriteLine($"Connect to: {string.Join(" or ", localIps.Select(ip => $"{ip}:{tcpPort}"))}");
@@ -358,77 +358,6 @@ namespace coppercli.Menus
             Console.WriteLine();
             Console.WriteLine("Stopping proxy...");
             proxy.Stop();
-        }
-
-        /// <summary>
-        /// Gets the local IPv4 addresses for display to the user.
-        /// Filters out loopback and link-local addresses.
-        /// </summary>
-        private static List<string> GetLocalIPAddresses()
-        {
-            var addresses = new List<string>();
-
-            try
-            {
-                foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    // Skip loopback, down interfaces, and virtual adapters
-                    if (iface.OperationalStatus != OperationalStatus.Up)
-                    {
-                        continue;
-                    }
-                    if (iface.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-                    {
-                        continue;
-                    }
-
-                    var props = iface.GetIPProperties();
-                    foreach (var addr in props.UnicastAddresses)
-                    {
-                        // Only IPv4 addresses
-                        if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
-                        {
-                            continue;
-                        }
-
-                        var ip = addr.Address.ToString();
-
-                        // Skip loopback and link-local
-                        if (ip.StartsWith("127.") || ip.StartsWith("169.254."))
-                        {
-                            continue;
-                        }
-
-                        addresses.Add(ip);
-                    }
-                }
-            }
-            catch
-            {
-                // If we can't enumerate interfaces, try the simpler approach
-                try
-                {
-                    var hostName = System.Net.Dns.GetHostName();
-                    var hostEntry = System.Net.Dns.GetHostEntry(hostName);
-                    foreach (var addr in hostEntry.AddressList)
-                    {
-                        if (addr.AddressFamily == AddressFamily.InterNetwork)
-                        {
-                            var ip = addr.ToString();
-                            if (!ip.StartsWith("127.") && !ip.StartsWith("169.254."))
-                            {
-                                addresses.Add(ip);
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                    // Give up - will show just the port
-                }
-            }
-
-            return addresses;
         }
     }
 }

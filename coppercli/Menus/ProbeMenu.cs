@@ -6,6 +6,7 @@ using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Helpers.DisplayHelpers;
 
 namespace coppercli.Menus
 {
@@ -21,6 +22,7 @@ namespace coppercli.Menus
             ClearAndStartProbing,
             StartProbing,
             LoadFromFile,
+            SaveToFile,
             ApplyToGCode,
             Back
         }
@@ -108,6 +110,9 @@ namespace coppercli.Menus
                     case ProbeAction.LoadFromFile:
                         LoadProbeGrid();
                         break;
+                    case ProbeAction.SaveToFile:
+                        PromptSaveProbeData();
+                        break;
                     case ProbeAction.ApplyToGCode:
                         ApplyProbeGrid();
                         break;
@@ -121,29 +126,39 @@ namespace coppercli.Menus
             }
         }
 
+        private static string? GetProbeDisabledReason()
+        {
+            if (!AppState.Machine.Connected)
+            {
+                return "connect first";
+            }
+            if (AppState.CurrentFile == null)
+            {
+                return "load G-Code first";
+            }
+            if (!AppState.IsWorkZeroSet)
+            {
+                return "set work zero first";
+            }
+            return null;
+        }
+
         private static MenuDef<ProbeAction> BuildProbeMenu(bool hasIncomplete, bool hasComplete, bool canProbe)
         {
             var menu = new MenuDef<ProbeAction>();
 
             if (hasIncomplete)
             {
-                string continueLabel = canProbe
-                    ? "Continue Probing"
-                    : $"Continue Probing [{ColorDim}](connect & set work zero first)[/]";
-                menu.Add(new MenuItem<ProbeAction>(continueLabel, 'c', ProbeAction.ContinueProbing));
+                menu.Add(new MenuItem<ProbeAction>("Continue Probing", 'c', ProbeAction.ContinueProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
                 menu.Add(new MenuItem<ProbeAction>("Clear Probe Data", 'x', ProbeAction.ClearProbeData));
-
-                string startLabel = canProbe
-                    ? "Clear and Start Probing"
-                    : $"Clear and Start Probing [{ColorDim}](load G-Code & set work zero first)[/]";
-                menu.Add(new MenuItem<ProbeAction>(startLabel, 'p', ProbeAction.ClearAndStartProbing));
+                menu.Add(new MenuItem<ProbeAction>("Clear and Start Probing", 'p', ProbeAction.ClearAndStartProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
             }
             else
             {
-                string startLabel = canProbe
-                    ? "Start Probing"
-                    : $"Start Probing [{ColorDim}](load G-Code & set work zero first)[/]";
-                menu.Add(new MenuItem<ProbeAction>(startLabel, 'p', ProbeAction.StartProbing));
+                menu.Add(new MenuItem<ProbeAction>("Start Probing", 'p', ProbeAction.StartProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
             }
 
             menu.Add(new MenuItem<ProbeAction>("Load from File", 'l', ProbeAction.LoadFromFile));
@@ -152,9 +167,14 @@ namespace coppercli.Menus
             var probePoints = AppState.ProbePoints;
             hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
 
-            if (hasComplete && AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
+            if (hasComplete)
             {
-                menu.Add(new MenuItem<ProbeAction>("Apply to G-Code", 'a', ProbeAction.ApplyToGCode));
+                menu.Add(new MenuItem<ProbeAction>("Save to File", 's', ProbeAction.SaveToFile));
+
+                if (AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
+                {
+                    menu.Add(new MenuItem<ProbeAction>("Apply to G-Code", 'a', ProbeAction.ApplyToGCode));
+                }
             }
 
             menu.Add(new MenuItem<ProbeAction>("Back", 'q', ProbeAction.Back));
@@ -546,9 +566,6 @@ namespace coppercli.Menus
         }
 
         // ANSI escape for RGB foreground color
-        private const string AnsiReset = "\x1b[0m";
-        private const string AnsiDim = "\x1b[2m";
-
         private static string AnsiRgb(int r, int g, int b) => $"\x1b[38;2;{r};{g};{b}m";
 
         /// <summary>
@@ -696,8 +713,6 @@ namespace coppercli.Menus
         private static void ShowProbeResults()
         {
             var probePoints = AppState.ProbePoints;
-            var session = AppState.Session;
-            var currentFile = AppState.CurrentFile;
 
             if (probePoints == null)
             {
@@ -713,6 +728,25 @@ namespace coppercli.Menus
             }
             AnsiConsole.WriteLine();
 
+            PromptSaveProbeData();
+        }
+
+        /// <summary>
+        /// Prompts user to save probe data to a file.
+        /// Can be called after probing completes or from the menu.
+        /// </summary>
+        private static void PromptSaveProbeData()
+        {
+            var probePoints = AppState.ProbePoints;
+            var session = AppState.Session;
+            var currentFile = AppState.CurrentFile;
+
+            if (probePoints == null || probePoints.NotProbed.Count > 0)
+            {
+                MenuHelpers.ShowError("No complete probe data to save.");
+                return;
+            }
+
             string defaultFilename;
             if (currentFile != null && !string.IsNullOrEmpty(currentFile.FileName))
             {
@@ -727,46 +761,52 @@ namespace coppercli.Menus
                 ? Path.Combine(session.LastBrowseDirectory, defaultFilename)
                 : defaultFilename;
 
-            var path = MenuHelpers.Ask("Save probe data:", defaultPath);
-
-            if (path.StartsWith("~"))
+            while (true)
             {
-                path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Substring(2));
-            }
+                var path = MenuHelpers.AskString("Save probe data:", defaultPath);
 
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data not saved[/]");
-                return;
-            }
-
-            if (File.Exists(path))
-            {
-                if (!MenuHelpers.Confirm($"Overwrite {Path.GetFileName(path)}?", true))
+                // Escape pressed - cancel save
+                if (path == null)
                 {
                     AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data not saved[/]");
                     return;
                 }
-            }
 
-            try
-            {
-                probePoints.Save(path);
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data saved to {Markup.Escape(path)}[/]");
-
-                session.LastSavedProbeFile = Path.GetFullPath(path);
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
+                if (path.StartsWith("~"))
                 {
-                    session.LastBrowseDirectory = dir;
+                    path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Substring(2));
                 }
-                Persistence.SaveSession();
-            }
-            catch (Exception ex)
-            {
-                AnsiConsole.MarkupLine($"[{ColorError}]Error saving: {Markup.Escape(ex.Message)}[/]");
-            }
 
+                if (File.Exists(path))
+                {
+                    if (!MenuHelpers.Confirm($"Overwrite {Path.GetFileName(path)}?", true))
+                    {
+                        // Loop back to prompt for a different filename
+                        defaultPath = path;
+                        continue;
+                    }
+                }
+
+                try
+                {
+                    probePoints.Save(path);
+                    AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data saved to {Markup.Escape(path)}[/]");
+
+                    session.LastSavedProbeFile = Path.GetFullPath(path);
+                    var dir = Path.GetDirectoryName(path);
+                    if (!string.IsNullOrEmpty(dir))
+                    {
+                        session.LastBrowseDirectory = dir;
+                    }
+                    Persistence.SaveSession();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"[{ColorError}]Error saving: {Markup.Escape(ex.Message)}[/]");
+                    return;
+                }
+            }
         }
 
         /// <summary>
