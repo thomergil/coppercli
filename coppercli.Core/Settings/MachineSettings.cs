@@ -1,3 +1,5 @@
+using coppercli.Core.Util;
+
 namespace coppercli.Core.Settings
 {
     public enum ConnectionType
@@ -14,14 +16,14 @@ namespace coppercli.Core.Settings
         // Connection
         public ConnectionType ConnectionType { get; set; } = ConnectionType.Serial;
         public string SerialPortName { get; set; } = "/dev/ttyUSB0";
-        public int SerialPortBaud { get; set; } = 115200;
+        public int SerialPortBaud { get; set; } = Constants.DefaultBaudRate;
         public bool SerialPortDTR { get; set; } = false;
         public string EthernetIP { get; set; } = "192.168.1.101";
-        public int EthernetPort { get; set; } = 34000;
+        public int EthernetPort { get; set; } = Constants.DefaultEthernetPort;
 
         // Machine
-        public int StatusPollInterval { get; set; } = 100;
-        public int ControllerBufferSize { get; set; } = 127;
+        public int StatusPollInterval { get; set; } = Constants.DefaultStatusPollIntervalMs;
+        public int ControllerBufferSize { get; set; } = Constants.DefaultControllerBufferSize;
         public bool LogTraffic { get; set; } = false;
         public bool EnableDebugLogging { get; set; } = false;
         public bool PauseFileOnHold { get; set; } = true;

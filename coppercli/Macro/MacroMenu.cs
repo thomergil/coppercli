@@ -156,7 +156,7 @@ namespace coppercli.Macro
                 Persistence.SaveSession();
 
                 AnsiConsole.MarkupLine($"[dim]Parsed {commands.Count} commands[/]");
-                Thread.Sleep(500);
+                Thread.Sleep(MacroParseDisplayMs);
 
                 var runner = new MacroRunner(commands, macroName);
                 runner.Run();

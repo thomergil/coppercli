@@ -26,7 +26,9 @@ namespace coppercli.Core.Util
             {
                 string content = LoadEmbeddedResource(resourceName);
                 if (string.IsNullOrEmpty(content))
+                {
                     return;
+                }
 
                 Regex LineParser = new Regex(@"""([0-9]+)"",""[^\n\r""]*"",""([^\n\r""]*)""");
 
@@ -113,7 +115,9 @@ namespace coppercli.Core.Util
         public static void Initialize()
         {
             if (_initialized)
+            {
                 return;
+            }
 
             Console.WriteLine("Loading GRBL Code Database");
 
@@ -143,9 +147,13 @@ namespace coppercli.Core.Util
             }
 
             if (dict.ContainsKey(errorCode))
+            {
                 return dict[errorCode];
+            }
             else
+            {
                 return alarm ? $"Unknown Alarm: {errorCode}" : $"Unknown Error: {errorCode}";
+            }
         }
 
         static Regex ErrorExp = new Regex(@"error:(\d+)");

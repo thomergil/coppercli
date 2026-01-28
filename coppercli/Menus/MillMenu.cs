@@ -45,14 +45,7 @@ namespace coppercli.Menus
 
             AnsiConsole.MarkupLine("[dim]Preparing machine...[/]");
 
-            // Clear Door state if present (sends CycleStart - safe while moving)
-            MachineCommands.ClearDoorState(machine);
-
-            // Wait for machine to reach Idle
-            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
-
-            // Check for Alarm - cannot proceed, user must manually resolve
-            if (StatusHelpers.IsAlarm(machine))
+            if (!MachineCommands.EnsureMachineReady(machine))
             {
                 MenuHelpers.ShowError("Machine is in ALARM state. Please home the machine and try again.");
                 return;
@@ -134,8 +127,7 @@ namespace coppercli.Menus
                     if (machine.Status != statusBefore || !StatusHelpers.IsIdle(machine))
                     {
                         Logger.Log("Settling: status changed from {0} to {1}, resetting", statusBefore, machine.Status);
-                        MachineCommands.ClearDoorState(machine);
-                        StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
+                        MachineCommands.EnsureMachineReady(machine);
                         stableCount = 0;
                     }
                     else
@@ -588,7 +580,10 @@ namespace coppercli.Menus
             {
                 if (overlay[j] == '\u001b')
                 {
-                    while (j < overlay.Length && overlay[j] != 'm') j++;
+                    while (j < overlay.Length && overlay[j] != 'm')
+                    {
+                        j++;
+                    }
                 }
                 else
                 {
@@ -606,11 +601,20 @@ namespace coppercli.Menus
                     // First, skip any ANSI codes in the row (consume but don't output)
                     while (rowIdx < row.Length && row[rowIdx] == '\u001b')
                     {
-                        while (rowIdx < row.Length && row[rowIdx] != 'm') rowIdx++;
-                        if (rowIdx < row.Length) rowIdx++; // skip 'm'
+                        while (rowIdx < row.Length && row[rowIdx] != 'm')
+                        {
+                            rowIdx++;
+                        }
+                        if (rowIdx < row.Length)
+                        {
+                            rowIdx++; // skip 'm'
+                        }
                     }
                     // Skip the visible character in row
-                    if (rowIdx < row.Length) rowIdx++;
+                    if (rowIdx < row.Length)
+                    {
+                        rowIdx++;
+                    }
 
                     // Output from overlay: first any ANSI codes, then the visible char
                     while (overlayIdx < overlay.Length && overlay[overlayIdx] == '\u001b')

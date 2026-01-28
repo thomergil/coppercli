@@ -152,12 +152,10 @@ namespace coppercli
         public const int ProbeGridHeaderPadding = 8;
 
         // =========================================================================
-        // Proxy
+        // Proxy (see also coppercli.Core.Util.Constants for shared proxy constants)
         // =========================================================================
         public const int ProxyDefaultPort = 34000;
         public const int ProxyStatusUpdateIntervalMs = 500;
-        public const int ProxyBufferSize = 4096;
-        public const int ProxyThreadSleepMs = 1;
         public const string ProxyNoClientStatus = "No client connected";
         public const string ProxyListeningStatus = "Listening...";
 
@@ -172,6 +170,7 @@ namespace coppercli
         // =========================================================================
         public const string MacroExtension = ".cmacro";
         public const char MacroCommentChar = '#';
+        public const int MacroParseDisplayMs = 500;   // Brief pause to show parsed command count
 
         // =========================================================================
         // Tool change

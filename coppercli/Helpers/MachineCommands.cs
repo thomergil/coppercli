@@ -150,5 +150,44 @@ namespace coppercli.Helpers
             return false;
         }
 
+        /// <summary>
+        /// Performs a relative Z move, then returns to absolute mode.
+        /// Use for small Z adjustments like retracting after a probe.
+        /// </summary>
+        public static void RaiseZRelative(Machine machine, double distance)
+        {
+            machine.SendLine(CmdRelative);
+            machine.SendLine($"{CmdRapidMove} Z{distance:F3}");
+            machine.SendLine(CmdAbsolute);
+        }
+
+        /// <summary>
+        /// Rapid move to Z height and wait for arrival.
+        /// Combines MoveToSafeHeight with WaitForZHeight for common "raise and wait" pattern.
+        /// </summary>
+        public static void RapidMoveAndWaitZ(Machine machine, double targetZ, int timeoutMs = 0)
+        {
+            machine.SendLine(CmdAbsolute);
+            machine.SendLine($"{CmdRapidMove} Z{targetZ:F3}");
+            StatusHelpers.WaitForZHeight(machine, targetZ, timeoutMs);
+        }
+
+        /// <summary>
+        /// Prepares machine for an operation by clearing Door state, waiting for Idle,
+        /// and checking for Alarm. Returns true if machine is ready, false if in Alarm state.
+        /// Use at the start of milling, probing, or other operations that require a clean state.
+        /// </summary>
+        public static bool EnsureMachineReady(Machine machine, int idleTimeoutMs = 0)
+        {
+            if (idleTimeoutMs <= 0)
+            {
+                idleTimeoutMs = CliConstants.IdleWaitTimeoutMs;
+            }
+
+            ClearDoorState(machine);
+            StatusHelpers.WaitForIdle(machine, idleTimeoutMs);
+            return !StatusHelpers.IsAlarm(machine);
+        }
+
     }
 }

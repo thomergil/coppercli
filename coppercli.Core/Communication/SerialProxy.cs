@@ -3,6 +3,7 @@
 using System.IO.Ports;
 using System.Net;
 using System.Net.Sockets;
+using coppercli.Core.Util;
 
 namespace coppercli.Core.Communication
 {
@@ -15,8 +16,6 @@ namespace coppercli.Core.Communication
         // =========================================================================
         // Constants
         // =========================================================================
-        private const int BufferSize = 4096;
-        private const int ThreadSleepMs = 1;
         private const int HeartbeatIntervalMs = 10000;  // Send status query every 10s of inactivity
         private const int MaxMissedHeartbeats = 3;      // Disconnect after 3 missed heartbeats (30s)
         private const int HealthCheckIntervalMs = 5000; // Check health every 5 seconds
@@ -113,8 +112,8 @@ namespace coppercli.Core.Communication
                 // Open serial port
                 _serialPort = new SerialPort(serialPort, baudRate)
                 {
-                    ReadTimeout = 100,
-                    WriteTimeout = 1000
+                    ReadTimeout = Constants.SerialPortReadTimeoutMs,
+                    WriteTimeout = Constants.SerialPortWriteTimeoutMs
                 };
                 _serialPort.Open();
                 RaiseInfo($"Opened serial port {serialPort} @ {baudRate}");
@@ -238,8 +237,8 @@ namespace coppercli.Core.Communication
                 {
                     _serialPort = new SerialPort(SerialPortName, BaudRate)
                     {
-                        ReadTimeout = 100,
-                        WriteTimeout = 1000
+                        ReadTimeout = Constants.SerialPortReadTimeoutMs,
+                        WriteTimeout = Constants.SerialPortWriteTimeoutMs
                     };
                     _serialPort.Open();
                     RaiseInfo($"Serial port recovered: {SerialPortName}");
@@ -311,7 +310,7 @@ namespace coppercli.Core.Communication
                     // Check for pending connection with timeout
                     if (!_listener.Pending())
                     {
-                        Thread.Sleep(100);
+                        Thread.Sleep(Constants.ProxyAcceptLoopSleepMs);
                         continue;
                     }
 
@@ -388,7 +387,7 @@ namespace coppercli.Core.Communication
         /// </summary>
         private void SerialToTcpLoop()
         {
-            var buffer = new byte[BufferSize];
+            var buffer = new byte[Constants.ProxyBufferSize];
 
             while (_cts != null && !_cts.IsCancellationRequested)
             {
@@ -429,7 +428,7 @@ namespace coppercli.Core.Communication
                     }
                     else
                     {
-                        Thread.Sleep(ThreadSleepMs);
+                        Thread.Sleep(Constants.ProxyThreadSleepMs);
                     }
                 }
                 catch (TimeoutException)
@@ -462,7 +461,7 @@ namespace coppercli.Core.Communication
         /// </summary>
         private void TcpToSerialLoop()
         {
-            var buffer = new byte[BufferSize];
+            var buffer = new byte[Constants.ProxyBufferSize];
             var lastHeartbeatCheck = DateTime.Now;
 
             while (_cts != null && !_cts.IsCancellationRequested)

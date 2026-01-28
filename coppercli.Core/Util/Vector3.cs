@@ -59,9 +59,13 @@ namespace coppercli.Core.Util
             set
             {
                 if (value < 0)
+                {
                     throw new ArgumentOutOfRangeException("value", value, NEGATIVE_MAGNITUDE);
+                }
                 if (this == new Vector3(0, 0, 0))
+                {
                     throw new ArgumentException(ORAGIN_VECTOR_MAGNITUDE, "this");
+                }
                 this = this * (value / Magnitude);
             }
         }
@@ -213,7 +217,9 @@ namespace coppercli.Core.Util
         public static Vector3 Normalize(Vector3 v1)
         {
             if (v1.Magnitude == 0)
+            {
                 throw new DivideByZeroException(NORMALIZE_0);
+            }
 
             double inverse = 1 / v1.Magnitude;
             return new Vector3(v1.X * inverse, v1.Y * inverse, v1.Z * inverse);
@@ -279,7 +285,10 @@ namespace coppercli.Core.Util
 
         public static Vector3 Max(Vector3 v1, Vector3 v2)
         {
-            if (v1 >= v2) return v1;
+            if (v1 >= v2)
+            {
+                return v1;
+            }
             return v2;
         }
 
@@ -290,7 +299,10 @@ namespace coppercli.Core.Util
 
         public static Vector3 Min(Vector3 v1, Vector3 v2)
         {
-            if (v1 <= v2) return v1;
+            if (v1 <= v2)
+            {
+                return v1;
+            }
             return v2;
         }
 
@@ -416,8 +428,14 @@ namespace coppercli.Core.Util
         {
             string output = null;
 
-            if (IsUnitVector()) output += UNIT_VECTOR;
-            else output += POSITIONAL_VECTOR;
+            if (IsUnitVector())
+            {
+                output += UNIT_VECTOR;
+            }
+            else
+            {
+                output += POSITIONAL_VECTOR;
+            }
 
             output += string.Format("( x={0}, y={1}, z={2} )", X, Y, Z);
             output += MAGNITUDE + Magnitude;
@@ -427,13 +445,18 @@ namespace coppercli.Core.Util
 
         public string ToString(string format, IFormatProvider formatProvider)
         {
-            if (format == null || format == "") return String.Format("({0}, {1}, {2})", X, Y, Z);
+            if (format == null || format == "")
+            {
+                return String.Format("({0}, {1}, {2})", X, Y, Z);
+            }
 
             char firstChar = format[0];
             string remainder = null;
 
             if (format.Length > 1)
+            {
                 remainder = format.Substring(1);
+            }
 
             switch (firstChar)
             {
@@ -472,8 +495,14 @@ namespace coppercli.Core.Util
 
         public int CompareTo(Vector3 other)
         {
-            if (this < other) return -1;
-            else if (this > other) return 1;
+            if (this < other)
+            {
+                return -1;
+            }
+            else if (this > other)
+            {
+                return 1;
+            }
             return 0;
         }
 
@@ -565,11 +594,15 @@ namespace coppercli.Core.Util
         {
             string[] components = input.Split(',');
             if (components.Length != 3)
+            {
                 throw new FormatException("string does not contain 3 components");
+            }
 
             double[] values = new double[3];
             for (int i = 0; i < 3; i++)
+            {
                 values[i] = double.Parse(components[i], Constants.DecimalParseFormat);
+            }
 
             return new Vector3(values);
         }

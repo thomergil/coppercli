@@ -62,9 +62,9 @@ namespace coppercli.Core.Communication
         public Vector3 LastProbePosMachine { get; private set; }
         public Vector3 LastProbePosWork { get; private set; }
 
-        public int FeedOverride { get; private set; } = 100;
-        public int RapidOverride { get; private set; } = 100;
-        public int SpindleOverride { get; private set; } = 100;
+        public int FeedOverride { get; private set; } = Constants.OverrideDefaultPercent;
+        public int RapidOverride { get; private set; } = Constants.OverrideDefaultPercent;
+        public int SpindleOverride { get; private set; } = Constants.OverrideDefaultPercent;
 
         public bool PinStateProbe { get; private set; } = false;
         public bool PinStateLimitX { get; private set; } = false;
@@ -431,7 +431,7 @@ namespace coppercli.Core.Communication
                             LastStatusPoll = Now;
                         }
 
-                        if (filePosChanged && (Now - LastFilePosUpdate).TotalMilliseconds > 500)
+                        if (filePosChanged && (Now - LastFilePosUpdate).TotalMilliseconds > Constants.FilePosUpdateIntervalMs)
                         {
                             RaiseEvent(FilePositionChanged);
                             LastFilePosUpdate = Now;
@@ -478,7 +478,7 @@ namespace coppercli.Core.Communication
                             }
                             else
                             {
-                                if ((DateTime.Now - StartTime).TotalMilliseconds > 200)
+                                if ((DateTime.Now - StartTime).TotalMilliseconds > Constants.ErrorGracePeriodMs)
                                     RaiseEvent(ReportError, $"Received <{line}> without anything in the Sent Buffer");
 
                                 BufferState = 0;
@@ -675,9 +675,9 @@ namespace coppercli.Core.Communication
             Plane = ArcPlane.XY;
             BufferState = 0;
 
-            FeedOverride = 100;
-            RapidOverride = 100;
-            SpindleOverride = 100;
+            FeedOverride = Constants.OverrideDefaultPercent;
+            RapidOverride = Constants.OverrideDefaultPercent;
+            SpindleOverride = Constants.OverrideDefaultPercent;
 
             OverrideChanged?.Invoke();
 
@@ -729,9 +729,9 @@ namespace coppercli.Core.Communication
 
             BufferState = 0;
 
-            FeedOverride = 100;
-            RapidOverride = 100;
-            SpindleOverride = 100;
+            FeedOverride = Constants.OverrideDefaultPercent;
+            RapidOverride = Constants.OverrideDefaultPercent;
+            SpindleOverride = Constants.OverrideDefaultPercent;
 
             OverrideChanged?.Invoke();
 

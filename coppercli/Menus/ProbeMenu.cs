@@ -451,10 +451,7 @@ namespace coppercli.Menus
             double currentZ = machine.WorkPosition.Z;
             double safeZ = Math.Max(currentZ, traceHeight.Value);
             AnsiConsole.MarkupLine($"[dim]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{safeZ:F3}");
-
-            StatusHelpers.WaitForZHeight(machine, safeZ);
+            MachineCommands.RapidMoveAndWaitZ(machine, safeZ);
 
             var corners = new[]
             {
@@ -786,9 +783,7 @@ namespace coppercli.Menus
             machine.SendLine($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}");
             machine.SendLine($"{CmdProbeToward} Z-{settings.ProbeMaxDepth:F3} F{settings.ProbeFeed:F1}");
 
-            machine.SendLine(CmdRelative);
-            machine.SendLine($"{CmdRapidMove} Z{settings.ProbeMinimumHeight:F3}");
-            machine.SendLine(CmdAbsolute);
+            MachineCommands.RaiseZRelative(machine, settings.ProbeMinimumHeight);
         }
 
         private static void SortProbePointsByDistance()
@@ -865,9 +860,7 @@ namespace coppercli.Menus
                     probePoints.NotProbed.RemoveAt(0);
                 }
 
-                AppState.Machine.SendLine(CmdRelative);
-                AppState.Machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
-                AppState.Machine.SendLine(CmdAbsolute);
+                MachineCommands.RaiseZRelative(AppState.Machine, settings.ProbeSafeHeight);
 
                 if (probePoints.NotProbed.Count > 0)
                 {

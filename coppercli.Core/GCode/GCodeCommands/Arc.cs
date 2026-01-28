@@ -60,12 +60,16 @@ namespace coppercli.Core.GCode.GCodeCommands
                 if (Direction == ArcDirection.CW)
                 {
                     if (span >= 0)
+                    {
                         span -= 2 * Math.PI;
+                    }
                 }
                 else
                 {
                     if (span <= 0)
+                    {
                         span += 2 * Math.PI;
+                    }
                 }
 
                 return span;
@@ -106,7 +110,9 @@ namespace coppercli.Core.GCode.GCodeCommands
             int divisions = (int)Math.Ceiling(Length / length);
 
             if (divisions < 1)
+            {
                 divisions = 1;
+            }
 
             Vector3 lastEnd = Start;
 
