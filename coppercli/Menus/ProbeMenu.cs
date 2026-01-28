@@ -367,30 +367,52 @@ namespace coppercli.Menus
             // Ensure machine is idle before starting
             StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
 
-            AppState.StartProbing();
-
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
-
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing started. Press Escape to stop.[/]");
-
-            ProbeNextPoint();
-            WaitForProbingComplete();
-
-            AppState.StopProbing();
-            Console.WriteLine();
-
-            if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
+            // Warn if in network mode and sleep prevention unavailable
+            if (SleepPrevention.ShouldWarn())
             {
-                Persistence.ClearProbeAutoSave();
-                ShowProbeResults();
-                if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
+                var proceed = MenuHelpers.ConfirmOrQuit(
+                    $"[{ColorWarning}]{SleepPreventionWarning}[/]: {SleepPreventionSubMessage.Replace("Y=Continue  X=Cancel", "Continue?")}",
+                    false);
+                if (proceed != true)
                 {
-                    ApplyProbeGrid();
-                    return OfferToMill();
+                    return false;
                 }
             }
-            return false;
+
+            // Start sleep prevention (no-op if unavailable)
+            SleepPrevention.Start();
+
+            try
+            {
+                AppState.StartProbing();
+
+                machine.SendLine(CmdAbsolute);
+                machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
+
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing started. Press Escape to stop.[/]");
+
+                ProbeNextPoint();
+                WaitForProbingComplete();
+
+                AppState.StopProbing();
+                Console.WriteLine();
+
+                if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
+                {
+                    Persistence.ClearProbeAutoSave();
+                    ShowProbeResults();
+                    if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
+                    {
+                        ApplyProbeGrid();
+                        return OfferToMill();
+                    }
+                }
+                return false;
+            }
+            finally
+            {
+                SleepPrevention.Stop();
+            }
         }
 
         private static bool CreateProbeGrid(double margin, double gridSize)

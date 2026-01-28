@@ -10,6 +10,7 @@
 - **Dangerous G-code detection**: Parser now warns about G28/G30 (home commands that may crash into workpiece) and G20 (imperial units that may cause coordinate confusion).
 - **Pre-mill safety check**: If loaded file contains dangerous commands or uses imperial units, displays warnings and asks for confirmation before running. Defaults to NO.
 - **Tool change uses machine coordinates**: All safety retracts during M6 tool change use G53 (machine coordinates) for predictable behavior.
+- **Homing required before milling**: If machine hasn't been homed, milling will automatically home first. Without homing, machine coordinates are undefined and safety retracts could move in the wrong direction.
 
 ### New Features
 
@@ -17,7 +18,9 @@
   - **With tool setter**: If your machine has a tool setter (probe button), coppercli measures both tools and calculates the Z offset automatically. No need to re-zero.
   - **Without tool setter**: Prompts you to probe the PCB surface with the new tool to re-establish Z zero.
   - **M0 after M6 skipped**: If M0 (program pause) immediately follows M6 (as pcb2gcode generates), the redundant M0 is skipped. This allows coppercli to work with pcb2gcode's native tool change format without requiring `nom6=1`.
-- **Machine profiles**: Select your CNC machine in Settings to auto-configure tool setter position. Built-in profiles for Nomad 3, Shapeoko, X-Carve. Add custom machines in `machine-profiles.yaml`.
+- **Machine profiles**: Select your CNC machine in Settings to auto-configure tool setter position. Built-in profiles for Carbide 3D (Nomad 3, Shapeoko), Sienci (LongMill), OpenBuilds (LEAD, MiniMill), SainSmart/Genmitsu, Inventables (X-Carve), and generic 3018/6040 machines. Add custom machines in `machine-profiles.yaml`.
+- **Machine profile warning**: Main menu displays selected machine profile. If no profile is selected, shows warning in red. Before milling, displays confirmation overlay if no profile is configured.
+- **Sleep prevention**: Prevents system idle sleep during milling and probing. Uses `SetThreadExecutionState` on Windows, `caffeinate` on macOS, and `systemd-inhibit` on Linux. In network mode, warns if sleep prevention is unavailable since system sleep could disconnect and leave machine in unknown state.
 - **Tool setter setup**: Settings menu includes interactive jog-based setup to configure or override tool setter position.
 - **Macros**: New macro system for automating repetitive workflows. Create `.cmacro` files with G-code, prompts, and comments. Access via main menu or run directly with `--macro` / `-m` command-line flag.
 - **Macro placeholders**: Use `[name:file]` syntax for files that vary between runs. Prompts file browser at runtime, or pass via CLI with `--name path`.
@@ -25,6 +28,7 @@
 
 ### Changes
 
+- **Tool setter Y coordinate now optional**: For machines with moving beds (like Nomad 3), only the X coordinate is needed to reach the tool setter. Y can be omitted in `machine-profiles.yaml` to avoid unnecessary bed movement.
 - **Vim-style jog multiplier**: Press a digit (1-5 in Fast mode, 1-9 in other modes) before a jog direction to multiply the distance. For example, in Normal mode (1mm), pressing `3→` jogs 3mm right.
 - **Jog menu shows machine position**: Now displays both work and machine coordinates.
 - **Jog menu key changes**: Some keys changed to support vim-style multipliers and HJKL navigation:
@@ -43,6 +47,8 @@
 
 ### Bug Fixes
 
+- **Proxy network disconnect**: When network connection is lost during milling via proxy, the proxy now sends soft reset (in addition to feed hold) to fully stop the machine and turn off the spindle. Previously, spindle kept spinning.
+- **Mill startup Z safety**: Before starting a G-code file, coppercli now raises Z to safe height (machine coordinates) to prevent dragging across workpiece if Z was left low from previous operation.
 - **Windows NuGet restore**: Added troubleshooting note to README for `NETSDK1064: Package System.IO.Ports was not found` error - run `dotnet restore` first.
 
 ## v0.2.3

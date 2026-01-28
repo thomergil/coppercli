@@ -325,6 +325,12 @@ namespace coppercli
         /// <summary>Sub-message for no machine profile warning.</summary>
         public const string NoMachineProfileSubMessage = "Y=Continue  X=Cancel";
 
+        /// <summary>Warning message when sleep prevention unavailable in network mode.</summary>
+        public const string SleepPreventionWarning = "Sleep prevention unavailable";
+
+        /// <summary>Sub-message for sleep prevention warning.</summary>
+        public const string SleepPreventionSubMessage = "System may sleep during job. Y=Continue  X=Cancel";
+
         // =========================================================================
         // Probe grid display sizing
         // =========================================================================
@@ -468,5 +474,27 @@ namespace coppercli
 
         /// <summary>Clearance above last known position for rapid approach (mm).</summary>
         public const double ToolSetterApproachClearance = 20.0;
+
+        // =========================================================================
+        // Sleep prevention
+        // =========================================================================
+
+        /// <summary>macOS command to prevent idle sleep.</summary>
+        public const string CaffeinateCommand = "caffeinate";
+
+        /// <summary>caffeinate argument: prevent idle sleep.</summary>
+        public const string CaffeinateArgs = "-i";
+
+        /// <summary>Linux command to prevent sleep via systemd.</summary>
+        public const string SystemdInhibitCommand = "systemd-inhibit";
+
+        /// <summary>systemd-inhibit arguments: block idle and sleep.</summary>
+        public const string SystemdInhibitArgs = "--what=idle:sleep --why=\"CNC operation\" sleep infinity";
+
+        /// <summary>Command to check if a program exists (Unix).</summary>
+        public const string WhichCommand = "which";
+
+        /// <summary>Timeout for checking program availability (ms).</summary>
+        public const int ProgramCheckTimeoutMs = 1000;
     }
 }

@@ -288,15 +288,30 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Build a rapid move command to tool setter position.
+        /// Only includes Y if specified (some machines like Nomad 3 don't need Y).
+        /// </summary>
+        private static string BuildToolSetterMoveCommand((double X, double? Y) setterPos)
+        {
+            var cmd = $"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1}";
+            if (setterPos.Y.HasValue)
+            {
+                cmd += $" Y{setterPos.Y.Value:F1}";
+            }
+            return cmd;
+        }
+
+        /// <summary>
         /// Tool change with tool setter (Mode A).
         /// Probes tool setter for offset calculation.
         /// </summary>
-        private static bool HandleToolChangeWithSetter((double X, double Y) setterPos, double returnX, double returnY, string toolInfoStr)
+        private static bool HandleToolChangeWithSetter((double X, double? Y) setterPos, double returnX, double returnY, string toolInfoStr)
         {
             var machine = AppState.Machine;
             var session = AppState.Session;
 
-            Logger.Log("HandleToolChangeWithSetter: ENTRY - setterPos=({0:F1}, {1:F1})", setterPos.X, setterPos.Y);
+            Logger.Log("HandleToolChangeWithSetter: ENTRY - setterPos=(X={0:F1}, Y={1})",
+                setterPos.X, setterPos.Y.HasValue ? $"{setterPos.Y.Value:F1}" : "n/a");
 
             // Always reset reference tool length - user may have changed tool manually
             Logger.Log("HandleToolChangeWithSetter: Resetting reference tool length");
@@ -310,7 +325,7 @@ namespace coppercli.Helpers
             {
                 // Move to tool setter position (machine coordinates)
                 SetStatus(ToolChangeStatusMovingToSetter);
-                machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1} Y{setterPos.Y:F1}");
+                machine.SendLine(BuildToolSetterMoveCommand(setterPos));
                 WaitForStableIdle();
 
                 SetStatus(ToolChangeStatusMeasuringRef);
@@ -361,7 +376,7 @@ namespace coppercli.Helpers
 
             // Move to tool setter and probe the new tool
             SetStatus(ToolChangeStatusMovingToSetter);
-            machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1} Y{setterPos.Y:F1}");
+            machine.SendLine(BuildToolSetterMoveCommand(setterPos));
             WaitForStableIdle();
 
             SetStatus(ToolChangeStatusMeasuringNew);

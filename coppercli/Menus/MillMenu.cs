@@ -168,6 +168,37 @@ namespace coppercli.Menus
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
+                // === SLEEP PREVENTION ===
+                // Warn if in network mode and caffeinate not available
+                if (SleepPrevention.ShouldWarn())
+                {
+                    Logger.Log("Sleep prevention unavailable in network mode - showing warning");
+                    while (true)
+                    {
+                        DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, SleepPreventionWarning, SleepPreventionSubMessage);
+
+                        if (Console.KeyAvailable)
+                        {
+                            var key = Console.ReadKey(true);
+                            if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
+                            {
+                                Logger.Log("Sleep prevention warning acknowledged");
+                                break;
+                            }
+                            if (InputHelpers.IsKey(key, ConsoleKey.X, 'x') ||
+                                InputHelpers.IsExitKey(key))
+                            {
+                                Logger.Log("Milling aborted due to sleep prevention warning");
+                                return;
+                            }
+                        }
+                        Thread.Sleep(StatusPollIntervalMs);
+                    }
+                }
+
+                // Start sleep prevention (no-op if unavailable)
+                SleepPrevention.Start();
+
                 // === SETTLING PHASE ===
                 // Wait for machine to be stable in Idle state for the full settle period
                 int settleSeconds = PostIdleSettleMs / OneSecondMs;
@@ -449,6 +480,9 @@ namespace coppercli.Menus
             }
             finally
             {
+                // Stop sleep prevention
+                SleepPrevention.Stop();
+
                 // Unsubscribe from events
                 machine.LineSent -= logLineSent;
                 machine.LineReceived -= logLineReceived;

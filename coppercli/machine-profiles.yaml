@@ -1,35 +1,88 @@
 # Machine Profiles for coppercli
-# Define tool setter positions for different CNC machines
+# Define tool setter positions for different CNC machines (GRBL-based only)
 # Users can add their own machines or override in Settings > Setup Tool Setter
 #
 # Tool setter coordinates are in machine coordinates (G53).
 # Probe sequence: fast probe, retract, slow probe for accuracy.
+#
+# Note on Y coordinate:
+# - Moving-bed machines (e.g., Nomad 3): Y moves the bed, not the spindle.
+#   Only X is needed to reach the tool setter. Omit Y.
+# - Moving-gantry machines (e.g., Shapeoko): Both X and Y move the spindle.
+#   Both coordinates are needed.
 
 machines:
+  # =========================================================================
+  # Carbide 3D
+  # =========================================================================
   nomad3:
     name: "Carbide 3D Nomad 3"
-    description: "Desktop CNC with built-in tool length probe (back-right corner)"
+    description: "Desktop CNC with built-in tool length probe"
     tool_setter:
-      # Machine coordinates for tool setter probe (verified by jogging)
+      # Y omitted: Nomad 3 has moving bed (Y), spindle moves in X only
       x: -5.0
-      y: -3.0
-      # Probe parameters
-      probe_depth: 105.0      # Max probe distance (mm)
-      fast_feed: 800.0        # Fast probe feed (mm/min)
-      slow_feed: 200.0        # Slow probe feed (mm/min)
-      retract: 10.0           # Retract distance between probes (mm)
+      probe_depth: 105.0
+      fast_feed: 800.0
+      slow_feed: 200.0
+      retract: 10.0
 
   shapeoko:
-    name: "Carbide 3D Shapeoko"
-    description: "Hobbyist CNC router - use BitSetter accessory if available"
+    name: "Carbide 3D Shapeoko (with BitSetter)"
+    description: "Moving gantry CNC - configure BitSetter X/Y in settings"
+    # BitSetter position varies by installation
     tool_setter: null
 
+  # =========================================================================
+  # Sienci Labs
+  # =========================================================================
+  longmill:
+    name: "Sienci LongMill"
+    description: "Moving gantry CNC - configure tool setter X/Y in settings"
+    tool_setter: null
+
+  # =========================================================================
+  # OpenBuilds
+  # =========================================================================
+  openbuilds-lead:
+    name: "OpenBuilds LEAD CNC"
+    description: "Moving gantry CNC with BlackBox controller - configure tool setter in settings"
+    tool_setter: null
+
+  openbuilds-minimill:
+    name: "OpenBuilds MiniMill"
+    description: "Compact moving gantry CNC - configure tool setter in settings"
+    tool_setter: null
+
+  # =========================================================================
+  # SainSmart / Genmitsu
+  # =========================================================================
+  genmitsu-3018:
+    name: "SainSmart Genmitsu 3018"
+    description: "Budget desktop CNC - no built-in tool setter"
+    tool_setter: null
+
+  # =========================================================================
+  # Inventables
+  # =========================================================================
   x-carve:
     name: "Inventables X-Carve"
-    description: "Hobbyist CNC router - no built-in tool setter"
+    description: "Moving gantry CNC - no built-in tool setter"
+    tool_setter: null
+
+  # =========================================================================
+  # Generic / Other
+  # =========================================================================
+  generic-3018:
+    name: "Generic 3018/3020 CNC"
+    description: "Chinese desktop CNC - no built-in tool setter"
+    tool_setter: null
+
+  generic-6040:
+    name: "Generic 6040 CNC"
+    description: "Chinese desktop CNC - configure tool setter in settings if equipped"
     tool_setter: null
 
   custom:
-    name: "Custom / Other"
+    name: "Custom / Other GRBL Machine"
     description: "Configure tool setter position in Settings > Setup Tool Setter"
     tool_setter: null

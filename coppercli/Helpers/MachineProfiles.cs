@@ -104,7 +104,8 @@ namespace coppercli.Helpers
                 return new ToolSetterConfig
                 {
                     X = settings.ToolSetterX,
-                    Y = settings.ToolSetterY,
+                    // Only set Y if non-zero (0 means "not configured" for manual override)
+                    Y = settings.ToolSetterY != 0 ? settings.ToolSetterY : null,
                     ProbeDepth = CliConstants.ToolSetterProbeDepth,
                     FastFeed = CliConstants.ToolSetterSeekFeed,
                     SlowFeed = CliConstants.ToolSetterProbeFeed,
@@ -118,10 +119,11 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Get tool setter position (X, Y).
+        /// Get tool setter position (X, required; Y, optional).
         /// Returns null if no tool setter is configured.
+        /// Y is null for machines where only X matters (e.g., moving-bed machines like Nomad 3).
         /// </summary>
-        public static (double X, double Y)? GetToolSetterPosition()
+        public static (double X, double? Y)? GetToolSetterPosition()
         {
             var config = GetToolSetterConfig();
             if (config != null)
@@ -170,7 +172,11 @@ namespace coppercli.Helpers
     public class ToolSetterConfig
     {
         public double X { get; set; }
-        public double Y { get; set; }
+        /// <summary>
+        /// Y position for tool setter. Nullable because some machines (e.g., Nomad 3)
+        /// have moving beds where only X matters to reach the tool setter.
+        /// </summary>
+        public double? Y { get; set; }
         public double ProbeDepth { get; set; } = 50.0;
         public double FastFeed { get; set; } = 800.0;
         public double SlowFeed { get; set; } = 200.0;
