@@ -144,14 +144,6 @@ namespace coppercli.Menus
 
                 // === MACHINE IS NOW IN KNOWN GOOD STATE ===
 
-                // Move Z up to safe height and start milling
-                Logger.Log("Moving to safe height Z{0}", SafeZHeightMm);
-                DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, $"Moving to safe height Z{SafeZHeightMm:F1}...");
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{SafeZHeightMm:F1}");
-                StatusHelpers.WaitForIdle(machine, ZHeightWaitTimeoutMs);
-                Logger.Log("At safe height, status={0}", machine.Status);
-
                 // Start milling
                 Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
                 machine.FileGoto(0);
