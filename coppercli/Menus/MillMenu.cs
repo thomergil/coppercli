@@ -468,8 +468,7 @@ namespace coppercli.Menus
                 {
                     if (MenuHelpers.ConfirmOrQuit("Clear probe data?", true) == true)
                     {
-                        AppState.ProbePoints = null;
-                        AppState.AreProbePointsApplied = false;
+                        AppState.DiscardProbeData();
                         Persistence.ClearProbeAutoSave();
                         AppState.Session.LastSavedProbeFile = "";
                         Persistence.SaveSession();

@@ -172,8 +172,7 @@ namespace coppercli.Menus
 
         private static void ClearProbeData()
         {
-            AppState.ProbePoints = null;
-            AppState.AreProbePointsApplied = false;
+            AppState.DiscardProbeData();
             Persistence.ClearProbeAutoSave();
             AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data cleared[/]");
         }
