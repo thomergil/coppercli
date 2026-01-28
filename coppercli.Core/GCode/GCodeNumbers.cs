@@ -8,6 +8,13 @@ namespace coppercli.Core.GCode
     public static class GCodeNumbers
     {
         // =========================================================================
+        // Dwell (G4)
+        // =========================================================================
+
+        /// <summary>G4: Dwell. Pauses for specified time (P parameter in seconds).</summary>
+        public const int Dwell = 4;
+
+        // =========================================================================
         // Plane selection (G17-G19)
         // Determines which two axes form the working plane for arcs and canned cycles.
         // =========================================================================
@@ -32,6 +39,42 @@ namespace coppercli.Core.GCode
         public const int UnitsMillimeters = 21;
 
         // =========================================================================
+        // Home / predefined positions (G28-G30)
+        // =========================================================================
+
+        /// <summary>G28: Return to home position (may crash into workpiece).</summary>
+        public const int Home = 28;
+
+        /// <summary>G30: Return to secondary home position (may crash into workpiece).</summary>
+        public const int HomeSecondary = 30;
+
+        // =========================================================================
+        // Probing (G38.x)
+        // =========================================================================
+
+        /// <summary>G38.2: Probe toward workpiece, stop on contact, signal error if no contact.</summary>
+        public const double ProbeToward = 38.2;
+
+        /// <summary>G38.3: Probe toward workpiece, stop on contact, no error if no contact.</summary>
+        public const double ProbeTowardNoError = 38.3;
+
+        /// <summary>G38.4: Probe away from workpiece, stop on loss of contact, signal error if no loss.</summary>
+        public const double ProbeAway = 38.4;
+
+        /// <summary>G38.5: Probe away from workpiece, stop on loss of contact, no error if no loss.</summary>
+        public const double ProbeAwayNoError = 38.5;
+
+        // =========================================================================
+        // Coordinate systems (G10, G53-G59)
+        // =========================================================================
+
+        /// <summary>G10: Set work offset (coordinate system data).</summary>
+        public const int SetWorkOffset = 10;
+
+        /// <summary>G53: Move in machine coordinates (non-modal, applies to one line only).</summary>
+        public const int MachineCoordinates = 53;
+
+        // =========================================================================
         // Distance mode (G90-G91)
         // =========================================================================
 
@@ -40,6 +83,16 @@ namespace coppercli.Core.GCode
 
         /// <summary>G91: Incremental positioning. Coordinates are relative to current position.</summary>
         public const int DistanceIncremental = 91;
+
+        // =========================================================================
+        // Arc distance mode (G90.1-G91.1)
+        // =========================================================================
+
+        /// <summary>G90.1: Absolute arc center mode (IJK are absolute coordinates).</summary>
+        public const double ArcDistanceAbsolute = 90.1;
+
+        /// <summary>G91.1: Incremental arc center mode (IJK are relative to start point). Default.</summary>
+        public const double ArcDistanceIncremental = 91.1;
 
         // =========================================================================
         // Feed rate mode (G93-G94)

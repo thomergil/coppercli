@@ -256,7 +256,7 @@ namespace coppercli.Core.GCode
                     int code = ((MCode)c).Code;
                     if (!GCodeIncludeMEnd)
                     {
-                        if (code == 2 || code == 30)
+                        if (code == GCodeNumbers.MCodeProgramEnd || code == GCodeNumbers.MCodeProgramEndReset)
                             continue;
                     }
                     GCode.Add($"M{code}");

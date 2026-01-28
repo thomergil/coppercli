@@ -236,89 +236,91 @@ namespace coppercli.Core.GCode
                 {
                     double param = Words[i].Parameter;
 
-                    if (param == 90)
+                    if (param == GCodeNumbers.DistanceAbsolute)
                     {
                         State.DistanceMode = ParseDistanceMode.Absolute;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 91)
+                    if (param == GCodeNumbers.DistanceIncremental)
                     {
                         State.DistanceMode = ParseDistanceMode.Incremental;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 90.1)
+                    if (param == GCodeNumbers.ArcDistanceAbsolute)
                     {
                         State.ArcDistanceMode = ParseDistanceMode.Absolute;
                         Words.RemoveAt(i);
                         continue;
                     }
-                    if (param == 91.1)
+                    if (param == GCodeNumbers.ArcDistanceIncremental)
                     {
                         State.ArcDistanceMode = ParseDistanceMode.Incremental;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 21)
+                    if (param == GCodeNumbers.UnitsMillimeters)
                     {
                         State.Unit = ParseUnit.Metric;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 20)
+                    if (param == GCodeNumbers.UnitsInches)
                     {
                         State.Unit = ParseUnit.Imperial;
-                        Warnings.Add($"WARNING: File uses INCHES (G20) - coordinates may be incorrect if machine expects mm. (line {lineNumber})");
+                        Warnings.Add($"WARNING: File uses INCHES (G{GCodeNumbers.UnitsInches}) - coordinates may be incorrect if machine expects mm. (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 28)
+                    if (param == GCodeNumbers.Home)
                     {
-                        Warnings.Add($"DANGER: G28 (Home) command found - may crash into workpiece! (line {lineNumber})");
+                        Warnings.Add($"DANGER: G{GCodeNumbers.Home} (Home) command found - may crash into workpiece! (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 30)
+                    if (param == GCodeNumbers.HomeSecondary)
                     {
-                        Warnings.Add($"DANGER: G30 (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
+                        Warnings.Add($"DANGER: G{GCodeNumbers.HomeSecondary} (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 17)
+                    if (param == GCodeNumbers.PlaneXY)
                     {
                         State.Plane = ArcPlane.XY;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 18)
+                    if (param == GCodeNumbers.PlaneYZ)
                     {
                         State.Plane = ArcPlane.ZX;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 19)
+                    if (param == GCodeNumbers.PlaneZX)
                     {
                         State.Plane = ArcPlane.YZ;
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    if (param == 4)
+                    if (param == GCodeNumbers.Dwell)
                     {
                         if (Words.Count >= 2 && Words[i + 1].Command == 'P')
                         {
                             if (Words[i + 1].Parameter < 0)
+                            {
                                 Warnings.Add($"dwell time must be positive. (line {lineNumber})");
+                            }
 
                             Commands.Add(new Dwell() { Seconds = Math.Abs(Words[i + 1].Parameter), LineNumber = lineNumber });
                             Words.RemoveAt(i + 1);
@@ -343,14 +345,13 @@ namespace coppercli.Core.GCode
                         i--;
                         continue;
                     }
-                    // G53 = machine coordinates (non-modal, applies to next move only)
-                    // G10 = set work offset
-                    // G28/G30 = go to predefined position
-                    // G38.x = probing
-                    // G43.1 = tool length offset
                     // These are valid GRBL commands - pass through without warning
-                    if (param == 53 || param == 10 || param == 28 || param == 30 ||
-                        (param >= 38 && param < 39) || param == 43.1)
+                    if (param == GCodeNumbers.MachineCoordinates ||
+                        param == GCodeNumbers.SetWorkOffset ||
+                        param == GCodeNumbers.Home ||
+                        param == GCodeNumbers.HomeSecondary ||
+                        (param >= GCodeNumbers.ProbeToward && param <= GCodeNumbers.ProbeAwayNoError) ||
+                        param == GCodeNumbers.ToolLengthOffsetDynamic)
                     {
                         Words.RemoveAt(i);
                         i--;
