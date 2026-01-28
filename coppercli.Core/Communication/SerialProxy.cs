@@ -22,6 +22,8 @@ namespace coppercli.Core.Communication
         private const int RecoveryDelayMs = 1000;       // Wait before attempting recovery
         private const byte GrblStatusQuery = (byte)'?';
         private const byte GrblFeedHold = (byte)'!';    // Feed hold to stop movement
+        private const byte GrblSoftReset = 0x18;        // Ctrl+X soft reset to cancel and stop spindle
+        private const int SafetyResetDelayMs = 100;     // Delay between feed hold and soft reset
 
         // =========================================================================
         // Events
@@ -484,7 +486,7 @@ namespace coppercli.Core.Communication
                     // Use Socket.Poll to check for data or disconnection
                     // Poll returns true if: connection closed, data available, or error
                     var socket = client.Client;
-                    if (socket.Poll(100000, SelectMode.SelectRead)) // 100ms timeout
+                    if (socket.Poll(Constants.SocketPollTimeoutMicroseconds, SelectMode.SelectRead))
                     {
                         if (socket.Available == 0)
                         {
@@ -586,11 +588,15 @@ namespace coppercli.Core.Communication
                 CloseClientUnlocked();
             }
 
-            // Safety: send feed hold to stop any in-progress movement
+            // Safety: send feed hold then soft reset to fully stop the machine
             try
             {
+                // Feed hold stops movement immediately
                 _serialPort?.Write(new byte[] { GrblFeedHold }, 0, 1);
-                RaiseInfo("Feed hold sent (safety stop)");
+                Thread.Sleep(SafetyResetDelayMs);
+                // Soft reset cancels job and stops spindle
+                _serialPort?.Write(new byte[] { GrblSoftReset }, 0, 1);
+                RaiseInfo("Feed hold + soft reset sent (safety stop)");
             }
             catch
             {

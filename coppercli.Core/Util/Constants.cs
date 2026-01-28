@@ -77,6 +77,9 @@ namespace coppercli.Core.Util
         /// <summary>Sleep interval in proxy accept loop when waiting for connections (ms).</summary>
         public const int ProxyAcceptLoopSleepMs = 100;
 
+        /// <summary>Socket poll timeout for checking data/disconnection (microseconds). 100ms.</summary>
+        public const int SocketPollTimeoutMicroseconds = 100000;
+
         // =========================================================================
         // Work loop timing
         // =========================================================================
