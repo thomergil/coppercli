@@ -1,6 +1,6 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A terminal-based tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, session recovery, and real-time visualization. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A keyboard-driven terminal tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, session recovery, and real-time visualization. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -43,7 +43,7 @@ For a complete end-to-end guide on milling PCBs, from KiCad export through G-cod
 
 ## Background
 
-Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), an excellent CNC milling with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimum interaction, and recovers interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
+Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), an excellent CNC milling with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimal interaction, and can recover interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
 
 ## Features
 
@@ -108,7 +108,7 @@ coppercli --proxy --headless
 
 When the proxy starts, it displays the IP addresses clients can use to connect. A client should connect to the displayed IP and port (default: 34000) using TCP. Only one client can connect at a time. Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds).
 
-**Warning:** Do not run the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled.
+**Warning:** While coppercli employs tools to prevent sleep, do not run the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled.
 
 ## Command-Line Arguments
 
