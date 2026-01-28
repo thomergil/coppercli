@@ -320,3 +320,6 @@ release/
 
 # Homebrew tap is a separate repo
 homebrew-tap/
+
+# Claude Code instructions
+CLAUDE.md
