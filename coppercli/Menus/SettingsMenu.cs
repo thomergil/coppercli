@@ -149,19 +149,22 @@ namespace coppercli.Menus
 
             Console.Clear();
             AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Select Machine[/]").RuleStyle(ColorPrompt));
+            AnsiConsole.MarkupLine($"[{ColorDim}]Select your CNC machine to load tool setter configuration.[/]");
             AnsiConsole.WriteLine();
 
             // Build menu options from profiles
             var options = new List<string>();
-            foreach (var id in profileIds)
+            for (int i = 0; i < profileIds.Count; i++)
             {
-                var profile = MachineProfiles.GetProfile(id);
-                string name = profile?.Name ?? id;
-                string desc = profile?.Description ?? "";
-                string toolSetter = profile?.ToolSetter != null ? $"[{ColorSuccess}](has tool setter)[/]" : $"[{ColorDim}](no tool setter)[/]";
-                options.Add($"{name} {toolSetter}");
+                var profile = MachineProfiles.GetProfile(profileIds[i]);
+                string name = profile?.Name ?? profileIds[i];
+                string toolSetter = profile?.ToolSetter != null ? "(has tool setter)" : "(no tool setter)";
+                // Use index+1 as menu number, first letter of name as mnemonic
+                char mnemonic = char.ToLower(name[0]);
+                options.Add($"{i + 1}. {name} {toolSetter} ({mnemonic})");
             }
-            options.Add("Clear selection");
+            options.Add($"{profileIds.Count + 1}. Clear selection (c)");
+            options.Add($"0. Cancel (q)");
 
             // Find current selection index
             int currentIndex = profileIds.IndexOf(settings.MachineProfile);
@@ -170,16 +173,25 @@ namespace coppercli.Menus
                 currentIndex = 0;
             }
 
-            AnsiConsole.MarkupLine($"[{ColorDim}]Select your CNC machine to load tool setter configuration.[/]");
-            AnsiConsole.WriteLine();
+            int selectedIndex = MenuHelpers.ShowMenu("Select machine:", options.ToArray(), currentIndex);
 
-            var selection = AnsiConsole.Prompt(
-                new SelectionPrompt<string>()
-                    .Title("Select machine:")
-                    .PageSize(10)
-                    .AddChoices(options));
+            // Cancel (last option, or Escape which also returns last)
+            if (selectedIndex == options.Count - 1)
+            {
+                return;
+            }
 
-            int selectedIndex = options.IndexOf(selection);
+            // Clear selection
+            if (selectedIndex == profileIds.Count)
+            {
+                settings.MachineProfile = "";
+                saveSettings();
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Machine selection cleared[/]");
+                MenuHelpers.WaitEnter();
+                return;
+            }
+
+            // Machine selected
             if (selectedIndex >= 0 && selectedIndex < profileIds.Count)
             {
                 settings.MachineProfile = profileIds[selectedIndex];
@@ -197,15 +209,8 @@ namespace coppercli.Menus
                     AnsiConsole.MarkupLine($"[{ColorWarning}]This machine has no tool setter configured.[/]");
                     AnsiConsole.MarkupLine($"[{ColorDim}]Tool changes will require re-probing the PCB surface.[/]");
                 }
+                MenuHelpers.WaitEnter();
             }
-            else
-            {
-                settings.MachineProfile = "";
-                saveSettings();
-                AnsiConsole.MarkupLine($"[{ColorWarning}]Machine selection cleared[/]");
-            }
-
-            MenuHelpers.WaitEnter();
         }
 
         /// <summary>

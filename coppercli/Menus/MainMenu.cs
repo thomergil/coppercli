@@ -42,7 +42,7 @@ namespace coppercli.Menus
                 EnabledWhen: () => AppState.Machine.Connected),
             new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy,
                 EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet),
-            new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
+            new MenuItem<MainAction>("Settings", 's', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
         );
