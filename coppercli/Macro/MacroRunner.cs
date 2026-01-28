@@ -348,6 +348,7 @@ namespace coppercli.Macro
 
                 if (StatusHelpers.IsIdle(machine))
                 {
+                    AppState.IsHomed = true;
                     return true;
                 }
 

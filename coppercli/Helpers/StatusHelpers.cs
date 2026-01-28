@@ -52,7 +52,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Waits for Z to reach the target height (within tolerance).
+        /// Waits for work Z to reach the target height (within tolerance).
         /// </summary>
         public static void WaitForZHeight(Machine machine, double targetZ, int timeoutMs = 0)
         {
@@ -66,6 +66,30 @@ namespace coppercli.Helpers
             while ((DateTime.Now - startTime).TotalMilliseconds < timeoutMs)
             {
                 double dz = Math.Abs(machine.WorkPosition.Z - targetZ);
+                if (dz < PositionToleranceMm)
+                {
+                    return;  // Reached target
+                }
+                Thread.Sleep(StatusPollIntervalMs);
+            }
+        }
+
+        /// <summary>
+        /// Waits for machine Z to reach the target height (within tolerance).
+        /// Use for G53 moves where we're targeting machine coordinates.
+        /// </summary>
+        public static void WaitForMachineZHeight(Machine machine, double targetZ, int timeoutMs = 0)
+        {
+            if (timeoutMs <= 0)
+            {
+                timeoutMs = ZHeightWaitTimeoutMs;
+            }
+
+            var startTime = DateTime.Now;
+
+            while ((DateTime.Now - startTime).TotalMilliseconds < timeoutMs)
+            {
+                double dz = Math.Abs(machine.MachinePosition.Z - targetZ);
                 if (dz < PositionToleranceMm)
                 {
                     return;  // Reached target

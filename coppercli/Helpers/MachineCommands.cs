@@ -1,6 +1,7 @@
 // Extracted from Program.cs - Repeated G-code command patterns
 
 using coppercli.Core.Communication;
+using static coppercli.CliConstants;
 using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Helpers
@@ -170,6 +171,52 @@ namespace coppercli.Helpers
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{targetZ:F3}");
             StatusHelpers.WaitForZHeight(machine, targetZ, timeoutMs);
+        }
+
+        /// <summary>
+        /// Safety retract Z to machine coordinate position and BLOCK until complete.
+        /// Uses G53 for machine coordinates. Waits for move to start, then waits for
+        /// machine Z position to reach target. This is the safest way to retract before
+        /// starting an operation - guarantees Z is up before any other commands execute.
+        /// </summary>
+        public static void SafetyRetractZ(Machine machine, double targetMachineZ, int timeoutMs = 0)
+        {
+            if (timeoutMs <= 0)
+            {
+                timeoutMs = ZHeightWaitTimeoutMs;
+            }
+
+            double startZ = machine.MachinePosition.Z;
+
+            // Always enforce absolute mode - there's no valid reason to be in G91 during milling
+            machine.SendLine(CmdAbsolute);
+            machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{targetMachineZ:F3}");
+
+            // If already at target, just wait briefly for command to process
+            if (Math.Abs(startZ - targetMachineZ) < PositionToleranceMm)
+            {
+                Thread.Sleep(CommandDelayMs);
+                StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
+                return;
+            }
+
+            // Wait for move to actually start (position changes or status becomes Run)
+            var startTime = DateTime.Now;
+            while ((DateTime.Now - startTime).TotalMilliseconds < timeoutMs)
+            {
+                if (Math.Abs(machine.MachinePosition.Z - startZ) > PositionToleranceMm)
+                {
+                    break;  // Move started
+                }
+                if (machine.Status.StartsWith(StatusRun))
+                {
+                    break;  // Move started
+                }
+                Thread.Sleep(StatusPollIntervalMs);
+            }
+
+            // Now wait for Z to reach target position
+            StatusHelpers.WaitForMachineZHeight(machine, targetMachineZ, timeoutMs);
         }
 
         /// <summary>
