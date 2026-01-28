@@ -21,6 +21,8 @@ A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featur
 
 Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for running from source.
 
+**Windows troubleshooting:** If you get `NETSDK1064: Package System.IO.Ports was not found`, run `dotnet restore` first.
+
 ## Screenshots
 
 | Main Menu                                 | File Browser                                 | Jog                                      |

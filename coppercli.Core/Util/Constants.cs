@@ -1,56 +1,103 @@
-using System;
 using System.Globalization;
 
 namespace coppercli.Core.Util
 {
-    public class Constants
+    /// <summary>
+    /// Core constants shared across the coppercli.Core library.
+    /// CLI-specific constants belong in coppercli/CliConstants.cs.
+    /// GRBL protocol constants belong in GrblProtocol.cs.
+    /// </summary>
+    public static class Constants
     {
-        public static NumberFormatInfo DecimalParseFormat = new NumberFormatInfo() { NumberDecimalSeparator = "." };
+        // =========================================================================
+        // Number formatting (ensures consistent decimal parsing across locales)
+        // =========================================================================
 
-        public static NumberFormatInfo DecimalOutputFormat
-        {
-            get
-            {
-                return new NumberFormatInfo() { NumberDecimalSeparator = ".", NumberDecimalDigits = 3 };
-            }
-        }
+        /// <summary>
+        /// Number format for parsing decimals from G-code and GRBL responses.
+        /// Forces '.' as decimal separator regardless of system locale.
+        /// </summary>
+        public static readonly NumberFormatInfo DecimalParseFormat = new() { NumberDecimalSeparator = "." };
 
-        public static string FileFilterGCode = "GCode|*.tap;*.nc;*.ngc|All Files|*.*";
-        public static string FileFilterProbeGrid = "Probe Grids|*.pgrid|All Files|*.*";
-        public static string FileFilterSettings = "Grbl settings|*.gbl;*.nc;*.ngc|All Files|*.*";
-
-        public static string LogFile = "log.txt";
-
-        public static char[] NewLines = new char[] { '\n', '\r' };
-
-        public static Version MinimumGrblVersion = new Version(1, 1, (int)'f');
+        /// <summary>
+        /// Number format for outputting decimals in G-code commands.
+        /// Forces '.' as decimal separator with 3 decimal places.
+        /// </summary>
+        public static readonly NumberFormatInfo DecimalOutputFormat = new() { NumberDecimalSeparator = ".", NumberDecimalDigits = 3 };
 
         // =========================================================================
-        // Serial port defaults
+        // Version requirements
         // =========================================================================
-        public const int SerialPortReadTimeoutMs = 100;
-        public const int SerialPortWriteTimeoutMs = 1000;
+
+        /// <summary>
+        /// Minimum supported GRBL version. The build number encodes the letter suffix (e.g., 'f' = 102).
+        /// GRBL 1.1f introduced the real-time status report format we depend on.
+        /// </summary>
+        public static readonly Version MinimumGrblVersion = new(1, 1, 'f');
+
+        // =========================================================================
+        // Serial port timing
+        // =========================================================================
+
+        /// <summary>Read timeout for serial port operations (ms).</summary>
+        public const int SerialReadTimeoutMs = 100;
+
+        /// <summary>Write timeout for serial port operations (ms).</summary>
+        public const int SerialWriteTimeoutMs = 1000;
+
+        /// <summary>Default baud rate for GRBL controllers (GRBL v0.9+ default).</summary>
         public const int DefaultBaudRate = 115200;
 
         // =========================================================================
         // GRBL controller defaults
         // =========================================================================
-        public const int DefaultControllerBufferSize = 127;
-        public const int OverrideDefaultPercent = 100;  // Feed/Rapid/Spindle override reset value
-        public const int DefaultStatusPollIntervalMs = 100;
+
+        /// <summary>Default GRBL serial buffer size in bytes. Commands are queued until this fills.</summary>
+        public const int GrblBufferSize = 127;
+
+        /// <summary>Default value for feed/rapid/spindle overrides (100% = normal speed).</summary>
+        public const int OverrideDefaultPercent = 100;
+
+        /// <summary>Default interval for polling machine status via '?' command (ms).</summary>
+        public const int StatusPollIntervalMs = 100;
+
+        /// <summary>Default TCP port for Ethernet-connected GRBL controllers.</summary>
         public const int DefaultEthernetPort = 34000;
 
         // =========================================================================
-        // Proxy defaults
+        // Proxy server (for bridging serial to TCP)
         // =========================================================================
+
+        /// <summary>Buffer size for proxy TCP read/write operations (bytes).</summary>
         public const int ProxyBufferSize = 4096;
+
+        /// <summary>Sleep interval in proxy worker thread when no data available (ms).</summary>
         public const int ProxyThreadSleepMs = 1;
+
+        /// <summary>Sleep interval in proxy accept loop when waiting for connections (ms).</summary>
         public const int ProxyAcceptLoopSleepMs = 100;
 
         // =========================================================================
         // Work loop timing
         // =========================================================================
+
+        /// <summary>Interval for updating file position during G-code streaming (ms).</summary>
         public const int FilePosUpdateIntervalMs = 500;
-        public const int ErrorGracePeriodMs = 200;      // Ignore spurious errors during startup
+
+        /// <summary>
+        /// Grace period after connection to ignore spurious errors (ms).
+        /// Some controllers send garbage during initialization.
+        /// </summary>
+        public const int ErrorGracePeriodMs = 200;
+
+        // =========================================================================
+        // Logging
+        // =========================================================================
+
+        /// <summary>
+        /// Filename for raw serial traffic log (created when LogTraffic setting is enabled).
+        /// This logs all bytes sent/received on the serial port for debugging.
+        /// </summary>
+        public const string SerialTrafficLogFile = "serial_traffic.log";
     }
 }

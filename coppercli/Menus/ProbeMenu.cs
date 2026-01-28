@@ -35,7 +35,7 @@ namespace coppercli.Menus
             while (true)
             {
                 Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Probe[/]").RuleStyle("blue"));
+                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Probe[/]").RuleStyle(ColorPrompt));
 
                 var probePoints = AppState.ProbePoints;
                 var currentFile = AppState.CurrentFile;
@@ -48,30 +48,30 @@ namespace coppercli.Menus
                     AnsiConsole.WriteLine(probePoints.GetInfo());
                     if (!AppState.AreProbePointsApplied && currentFile != null)
                     {
-                        AnsiConsole.MarkupLine("[yellow]* Probe data not yet applied to G-Code[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]* Probe data not yet applied to G-Code[/]");
                     }
                     else if (AppState.AreProbePointsApplied)
                     {
-                        AnsiConsole.MarkupLine("[green]Probe data applied to G-Code[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied to G-Code[/]");
                     }
                 }
                 else if (hasIncomplete)
                 {
-                    AnsiConsole.MarkupLine("[yellow]Incomplete probe data found (autosaved)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]Incomplete probe data found (autosaved)[/]");
                 }
                 else
                 {
-                    AnsiConsole.MarkupLine("[dim]No probe data[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]No probe data[/]");
                 }
 
                 if (currentFile == null)
                 {
-                    AnsiConsole.MarkupLine("[dim]No G-Code file loaded (required for probing)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]No G-Code file loaded (required for probing)[/]");
                 }
 
                 if (!AppState.IsWorkZeroSet)
                 {
-                    AnsiConsole.MarkupLine("[dim]Work zero not set (required for probing)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]Work zero not set (required for probing)[/]");
                 }
 
                 AnsiConsole.WriteLine();
@@ -129,20 +129,20 @@ namespace coppercli.Menus
             {
                 string continueLabel = canProbe
                     ? "Continue Probing"
-                    : "Continue Probing [dim](connect & set work zero first)[/]";
+                    : $"Continue Probing [{ColorDim}](connect & set work zero first)[/]";
                 menu.Add(new MenuItem<ProbeAction>(continueLabel, 'c', ProbeAction.ContinueProbing));
                 menu.Add(new MenuItem<ProbeAction>("Clear Probe Data", 'x', ProbeAction.ClearProbeData));
 
                 string startLabel = canProbe
                     ? "Clear and Start Probing"
-                    : "Clear and Start Probing [dim](load G-Code & set work zero first)[/]";
+                    : $"Clear and Start Probing [{ColorDim}](load G-Code & set work zero first)[/]";
                 menu.Add(new MenuItem<ProbeAction>(startLabel, 'p', ProbeAction.ClearAndStartProbing));
             }
             else
             {
                 string startLabel = canProbe
                     ? "Start Probing"
-                    : "Start Probing [dim](load G-Code & set work zero first)[/]";
+                    : $"Start Probing [{ColorDim}](load G-Code & set work zero first)[/]";
                 menu.Add(new MenuItem<ProbeAction>(startLabel, 'p', ProbeAction.StartProbing));
             }
 
@@ -175,7 +175,7 @@ namespace coppercli.Menus
             AppState.ProbePoints = null;
             AppState.AreProbePointsApplied = false;
             Persistence.ClearProbeAutoSave();
-            AnsiConsole.MarkupLine("[yellow]Probe data cleared[/]");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data cleared[/]");
         }
 
         private static void LoadProbeGrid()
@@ -190,13 +190,13 @@ namespace coppercli.Menus
             {
                 AppState.ProbePoints = ProbeGrid.Load(path);
                 AppState.AreProbePointsApplied = false;
-                AnsiConsole.MarkupLine($"[green]Probe data loaded[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded[/]");
                 AnsiConsole.WriteLine(AppState.ProbePoints.GetInfo());
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
-                Console.ReadKey();
+                AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.WaitEnter();
             }
         }
 
@@ -217,7 +217,7 @@ namespace coppercli.Menus
             try
             {
                 AppState.ApplyProbeData();
-                AnsiConsole.MarkupLine("[green]Probe data applied to G-Code![/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied to G-Code![/]");
             }
             catch (Exception ex)
             {
@@ -270,12 +270,12 @@ namespace coppercli.Menus
 
             if (probePoints!.NotProbed.Count == 0)
             {
-                AnsiConsole.MarkupLine("[yellow]Probe data is already complete.[/]");
-                Console.ReadKey();
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data is already complete.[/]");
+                MenuHelpers.WaitEnter();
                 return false;
             }
 
-            AnsiConsole.MarkupLine($"[green]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
 
             // Ensure machine is idle before starting
             StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
@@ -285,7 +285,7 @@ namespace coppercli.Menus
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
 
-            AnsiConsole.MarkupLine("[green]Probing resumed. Press Escape to stop.[/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing resumed. Press Escape to stop.[/]");
 
             ProbeNextPoint();
             WaitForProbingComplete();
@@ -331,13 +331,13 @@ namespace coppercli.Menus
                 return false;
             }
 
-            var margin = MenuHelpers.AskDoubleOrQuit("Probe margin (mm)", DefaultProbeMargin);
+            var margin = MenuHelpers.AskDouble("Probe margin (mm)", DefaultProbeMargin);
             if (margin == null)
             {
                 return false;
             }
 
-            var gridSize = MenuHelpers.AskDoubleOrQuit("Grid size (mm)", DefaultProbeGridSize);
+            var gridSize = MenuHelpers.AskDouble("Grid size (mm)", DefaultProbeGridSize);
             if (gridSize == null)
             {
                 return false;
@@ -372,7 +372,7 @@ namespace coppercli.Menus
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
 
-            AnsiConsole.MarkupLine("[green]Probing started. Press Escape to stop.[/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing started. Press Escape to stop.[/]");
 
             ProbeNextPoint();
             WaitForProbingComplete();
@@ -406,8 +406,8 @@ namespace coppercli.Menus
                 AppState.ProbePoints = new ProbeGrid(gridSize, new Vector2(minX, minY), new Vector2(maxX, maxY));
                 AppState.AreProbePointsApplied = false;
                 var hm = AppState.ProbePoints;
-                AnsiConsole.MarkupLine($"[green]Probe grid: {hm.SizeX}x{hm.SizeY} = {hm.TotalPoints} points[/]");
-                AnsiConsole.MarkupLine($"[dim]Bounds: X({minX:F2} to {maxX:F2}) Y({minY:F2} to {maxY:F2})[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe grid: {hm.SizeX}x{hm.SizeY} = {hm.TotalPoints} points[/]");
+                AnsiConsole.MarkupLine($"[{ColorDim}]Bounds: X({minX:F2} to {maxX:F2}) Y({minY:F2} to {maxY:F2})[/]");
                 return true;
             }
             catch (Exception ex)
@@ -428,20 +428,20 @@ namespace coppercli.Menus
                 return false;
             }
 
-            var traceHeight = MenuHelpers.AskDoubleOrQuit("Trace height (mm)", settings.OutlineTraceHeight);
+            var traceHeight = MenuHelpers.AskDouble("Trace height (mm)", settings.OutlineTraceHeight);
             if (traceHeight == null)
             {
                 return false;
             }
 
-            var traceFeed = MenuHelpers.AskDoubleOrQuit("Trace feed (mm/min)", settings.OutlineTraceFeed);
+            var traceFeed = MenuHelpers.AskDouble("Trace feed (mm/min)", settings.OutlineTraceFeed);
             if (traceFeed == null)
             {
                 return false;
             }
 
-            AnsiConsole.MarkupLine($"[yellow]Tracing probe outline at Z={traceHeight.Value:F1}mm, feed={traceFeed.Value:F0}mm/min[/]");
-            AnsiConsole.MarkupLine("[dim]Press Escape to cancel[/]");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]Tracing probe outline at Z={traceHeight.Value:F1}mm, feed={traceFeed.Value:F0}mm/min[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Press Escape to cancel[/]");
 
             double minX = probePoints.Min.X;
             double minY = probePoints.Min.Y;
@@ -450,7 +450,7 @@ namespace coppercli.Menus
 
             double currentZ = machine.WorkPosition.Z;
             double safeZ = Math.Max(currentZ, traceHeight.Value);
-            AnsiConsole.MarkupLine($"[dim]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
             MachineCommands.RapidMoveAndWaitZ(machine, safeZ);
 
             var corners = new[]
@@ -468,23 +468,24 @@ namespace coppercli.Menus
                 {
                     machine.FeedHold();
                     machine.SoftReset();
-                    AnsiConsole.MarkupLine("\n[yellow]Outline trace cancelled - machine stopped[/]");
+                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Outline trace cancelled - machine stopped[/]");
                     return false;
                 }
 
                 AnsiConsole.MarkupLine($"  Moving to {label} ({x:F1}, {y:F1})...");
+                machine.SendLine(CmdAbsolute);
                 machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traceFeed.Value:F0}");
 
                 if (!StatusHelpers.WaitForMoveComplete(machine, x, y, CheckEscape))
                 {
                     machine.FeedHold();
                     machine.SoftReset();
-                    AnsiConsole.MarkupLine("\n[yellow]Outline trace cancelled - machine stopped[/]");
+                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Outline trace cancelled - machine stopped[/]");
                     return false;
                 }
             }
 
-            AnsiConsole.MarkupLine("[green]Outline trace complete![/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Outline trace complete![/]");
 
             return MenuHelpers.ConfirmOrQuit("Continue with probing?", true) ?? false;
         }
@@ -502,7 +503,7 @@ namespace coppercli.Menus
                 if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
                 {
                     AppState.StopProbing();
-                    AnsiConsole.MarkupLine("\n[yellow]Probing stopped by user[/]");
+                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Probing stopped by user[/]");
                     break;
                 }
 
@@ -599,8 +600,8 @@ namespace coppercli.Menus
             string header = $"Probing: {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
             int headerPad = Math.Max(0, (Console.WindowWidth - header.Length) / 2);
             Console.WriteLine();
-            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[bold]{header}[/]");
-            AnsiConsole.MarkupLine(new string(' ', headerPad) + "[dim]Press Escape to stop[/]");
+            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorBold}]{header}[/]");
+            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]Press Escape to stop[/]");
 
             // Show color legend when we have a range
             if (hasRange)
@@ -682,7 +683,7 @@ namespace coppercli.Menus
                 return;
             }
 
-            AnsiConsole.MarkupLine("[green]Probing complete![/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing complete![/]");
             AnsiConsole.MarkupLine($"  Points: {probePoints.TotalPoints}");
             if (probePoints.HasValidHeights)
             {
@@ -714,7 +715,7 @@ namespace coppercli.Menus
 
             if (string.IsNullOrWhiteSpace(path))
             {
-                AnsiConsole.MarkupLine("[yellow]Probe data not saved[/]");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data not saved[/]");
                 return;
             }
 
@@ -722,7 +723,7 @@ namespace coppercli.Menus
             {
                 if (!MenuHelpers.Confirm($"Overwrite {Path.GetFileName(path)}?", true))
                 {
-                    AnsiConsole.MarkupLine("[yellow]Probe data not saved[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data not saved[/]");
                     return;
                 }
             }
@@ -730,7 +731,7 @@ namespace coppercli.Menus
             try
             {
                 probePoints.Save(path);
-                AnsiConsole.MarkupLine($"[green]Probe data saved to {Markup.Escape(path)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data saved to {Markup.Escape(path)}[/]");
 
                 session.LastSavedProbeFile = Path.GetFullPath(path);
                 var dir = Path.GetDirectoryName(path);
@@ -742,7 +743,7 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error saving: {Markup.Escape(ex.Message)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Error saving: {Markup.Escape(ex.Message)}[/]");
             }
 
         }
@@ -780,6 +781,7 @@ namespace coppercli.Menus
 
             var coords = probePoints.GetCoordinates(probePoints.NotProbed[0]);
 
+            machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}");
             machine.SendLine($"{CmdProbeToward} Z-{settings.ProbeMaxDepth:F3} F{settings.ProbeFeed:F1}");
 
@@ -842,6 +844,7 @@ namespace coppercli.Menus
                 }
                 else
                 {
+                    AppState.Machine.SendLine(CmdAbsolute);
                     AppState.Machine.SendLine($"{CmdRapidMove} Z{Math.Max(settings.ProbeSafeHeight, pos.Z):F3}");
                     AppState.Probing = false;
                 }
@@ -851,7 +854,7 @@ namespace coppercli.Menus
                 if (settings.AbortOnProbeFail)
                 {
                     AppState.Probing = false;
-                    AnsiConsole.MarkupLine("\n[red]Probe failed! Aborting.[/]");
+                    AnsiConsole.MarkupLine($"\n[{ColorError}]Probe failed! Aborting.[/]");
                     return;
                 }
 

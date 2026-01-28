@@ -95,6 +95,15 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Check if a G-code line contains an M0 program pause command.
+        /// Matches M0 or M00 but not M01 (optional stop) or other M-codes.
+        /// </summary>
+        public static bool IsM0Line(string line)
+        {
+            return Regex.IsMatch(line, M0Pattern, RegexOptions.IgnoreCase);
+        }
+
+        /// <summary>
         /// Extract tool number from a G-code line (e.g., T1, T02).
         /// Returns null if no T code found.
         /// </summary>
@@ -333,6 +342,7 @@ namespace coppercli.Helpers
                 double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
                 double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
                 SetStatus(ToolChangeStatusMovingToWork);
+                machine.SendLine(CmdAbsolute);
                 machine.SendLine($"{CmdRapidMove} X{centerX:F3} Y{centerY:F3}");
                 WaitForStableIdle();
             }
@@ -381,6 +391,7 @@ namespace coppercli.Helpers
 
             // Raise Z and return to original XY position
             SetStatus(ToolChangeStatusReturning);
+            machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
             WaitForStableIdle();
             machine.SendLine($"{CmdRapidMove} X{returnX:F3} Y{returnY:F3}");
@@ -615,19 +626,19 @@ namespace coppercli.Helpers
                 return false;
             }
 
-            AnsiConsole.MarkupLine("[dim]Moving to tool setter...[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Moving to tool setter...[/]");
             machine.SendLine(CmdAbsolute);
             machine.SendLine($"{CmdRapidMove} Z{RetractZMm:F1}");
             StatusHelpers.WaitForIdle(machine, ZHeightWaitTimeoutMs);
             machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} X{toolSetterPos.Value.X:F1} Y{toolSetterPos.Value.Y:F1}");
             StatusHelpers.WaitForIdle(machine, MoveCompleteTimeoutMs);
 
-            AnsiConsole.MarkupLine("[dim]Probing tool setter for reference...[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Probing tool setter for reference...[/]");
             double? toolLength = ProbeToolSetter();
 
             if (toolLength == null)
             {
-                AnsiConsole.MarkupLine("[red]Probe failed![/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Probe failed![/]");
                 return false;
             }
 
@@ -635,7 +646,7 @@ namespace coppercli.Helpers
             session.HasReferenceToolLength = true;
             Persistence.SaveSession();
 
-            AnsiConsole.MarkupLine($"[green]Reference tool length: {toolLength:F3}mm[/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]Reference tool length: {toolLength:F3}mm[/]");
 
             // Raise Z after probing
             machine.SendLine($"{CmdRapidMove} Z{RetractZMm:F1}");

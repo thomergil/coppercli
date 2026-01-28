@@ -112,8 +112,8 @@ namespace coppercli.Core.Communication
                 // Open serial port
                 _serialPort = new SerialPort(serialPort, baudRate)
                 {
-                    ReadTimeout = Constants.SerialPortReadTimeoutMs,
-                    WriteTimeout = Constants.SerialPortWriteTimeoutMs
+                    ReadTimeout = Constants.SerialReadTimeoutMs,
+                    WriteTimeout = Constants.SerialWriteTimeoutMs
                 };
                 _serialPort.Open();
                 RaiseInfo($"Opened serial port {serialPort} @ {baudRate}");
@@ -237,8 +237,8 @@ namespace coppercli.Core.Communication
                 {
                     _serialPort = new SerialPort(SerialPortName, BaudRate)
                     {
-                        ReadTimeout = Constants.SerialPortReadTimeoutMs,
-                        WriteTimeout = Constants.SerialPortWriteTimeoutMs
+                        ReadTimeout = Constants.SerialReadTimeoutMs,
+                        WriteTimeout = Constants.SerialWriteTimeoutMs
                     };
                     _serialPort.Open();
                     RaiseInfo($"Serial port recovered: {SerialPortName}");

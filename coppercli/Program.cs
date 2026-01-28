@@ -8,6 +8,7 @@ using coppercli.Helpers;
 using coppercli.Macro;
 using coppercli.Menus;
 using Spectre.Console;
+using static coppercli.CliConstants;
 
 namespace coppercli;
 
@@ -26,7 +27,7 @@ class Program
         Logger.Enabled = AppState.Settings.EnableDebugLogging || debugMode;
         if (Logger.Enabled)
         {
-            AnsiConsole.MarkupLine($"[dim]Log: {Logger.LogFilePath}[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Log: {Logger.LogFilePath}[/]");
             Logger.Log("=== Startup ===");
         }
 
@@ -195,7 +196,7 @@ class Program
 
         if (!File.Exists(macroFile))
         {
-            AnsiConsole.MarkupLine($"[red]Macro file not found: {Markup.Escape(macroFile)}[/]");
+            AnsiConsole.MarkupLine($"[{ColorError}]Macro file not found: {Markup.Escape(macroFile)}[/]");
             Environment.Exit(1);
         }
 
@@ -243,7 +244,7 @@ class Program
         // Validate we have saved serial settings
         if (string.IsNullOrEmpty(settings.SerialPortName))
         {
-            AnsiConsole.MarkupLine("[red]No saved serial port settings. Run coppercli normally first to configure.[/]");
+            AnsiConsole.MarkupLine($"[{ColorError}]No saved serial port settings. Run coppercli normally first to configure.[/]");
             Environment.Exit(1);
         }
 
@@ -347,16 +348,16 @@ class Program
                     // Auto-apply probe data if G-code is loaded and probe is complete
                     if (AppState.ApplyProbeData())
                     {
-                        AnsiConsole.MarkupLine($"[green]Probe data loaded and applied: {pp.TotalPoints} points[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded and applied: {pp.TotalPoints} points[/]");
                     }
                     else
                     {
-                        AnsiConsole.MarkupLine($"[green]Probe data loaded: {pp.TotalPoints} points[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded: {pp.TotalPoints} points[/]");
                     }
                 }
                 catch (Exception ex)
                 {
-                    AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
+                    AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
                 }
             }
         }
@@ -379,13 +380,13 @@ class Program
                         AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
                         AppState.AreProbePointsApplied = false;
                         var hm = AppState.ProbePoints;
-                        AnsiConsole.MarkupLine($"[green]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
                         // Start probing directly
                         ProbeMenu.ContinueProbing();
                     }
                     catch (Exception ex)
                     {
-                        AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(ex.Message)}[/]");
+                        AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
                     }
                 }
             }
@@ -405,7 +406,7 @@ class Program
         {
             if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
-                AnsiConsole.MarkupLine($"[red]Error: {Markup.Escape(msg)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(msg)}[/]");
             }
         };
 
@@ -413,7 +414,7 @@ class Program
         {
             if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
-                AnsiConsole.MarkupLine($"[blue]Info: {Markup.Escape(msg)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorPrompt}]Info: {Markup.Escape(msg)}[/]");
             }
         };
 

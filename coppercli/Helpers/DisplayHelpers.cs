@@ -1,26 +1,79 @@
 using System.Text;
+using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
 {
     /// <summary>
     /// Helper functions for console display, especially for flicker-free full-screen modes.
     /// </summary>
+    /// <remarks>
+    /// WHY TWO COLOR SYSTEMS?
+    ///
+    /// This codebase uses two color systems:
+    ///
+    /// 1. Spectre.Console markup ([{ColorError}], [{ColorSuccess}], etc.)
+    ///    - Used for: Menus, dialogs, static output
+    ///    - Rendered by Spectre's pipeline with rich formatting
+    ///
+    /// 2. Raw ANSI escape codes (AnsiError, AnsiSuccess, etc.)
+    ///    - Used for: Live displays (JogMenu, MillMenu, MacroRunner, SetupToolSetter)
+    ///    - Required for flicker-free updates using Console.SetCursorPosition(0, 0)
+    ///    - WriteLineTruncated() pads lines to full width, overwriting old content
+    ///    - Spectre.Console's rendering doesn't support this precise cursor control
+    ///
+    /// Both systems use the same semantic color names (Error=red, Success=green, etc.)
+    /// defined in CliConstants. The ANSI codes below map to the same meanings.
+    /// </remarks>
     internal static class DisplayHelpers
     {
         // =========================================================================
-        // ANSI escape codes for colored output
-        // Using raw ANSI instead of Spectre.Console for flicker-free updates
+        // Raw ANSI escape codes
         // =========================================================================
         public const string AnsiReset = "\u001b[0m";
-        public const string AnsiCyan = "\u001b[36m";
-        public const string AnsiBoldCyan = "\u001b[1;36m";
-        public const string AnsiYellow = "\u001b[93m";
-        public const string AnsiGreen = "\u001b[32m";
-        public const string AnsiBoldGreen = "\u001b[1;32m";
-        public const string AnsiBoldBlue = "\u001b[1;34m";
-        public const string AnsiRed = "\u001b[31m";
-        public const string AnsiBoldRed = "\u001b[1;31m";
-        public const string AnsiDim = "\u001b[2m";
+        private const string AnsiCodeCyan = "\u001b[36m";
+        private const string AnsiCodeBoldCyan = "\u001b[1;36m";
+        private const string AnsiCodeYellow = "\u001b[93m";
+        private const string AnsiCodeGreen = "\u001b[32m";
+        private const string AnsiCodeBoldGreen = "\u001b[1;32m";
+        private const string AnsiCodeBlue = "\u001b[34m";
+        private const string AnsiCodeBoldBlue = "\u001b[1;34m";
+        private const string AnsiCodeRed = "\u001b[31m";
+        private const string AnsiCodeBoldRed = "\u001b[1;31m";
+        private const string AnsiCodeDim = "\u001b[2m";
+
+        // =========================================================================
+        // Semantic ANSI colors (match CliConstants color theme)
+        // =========================================================================
+
+        /// <summary>ANSI code for errors (red). Matches ColorError.</summary>
+        public const string AnsiError = AnsiCodeRed;
+
+        /// <summary>ANSI code for success/confirmation (green). Matches ColorSuccess.</summary>
+        public const string AnsiSuccess = AnsiCodeGreen;
+
+        /// <summary>ANSI code for warnings/values (yellow). Matches ColorWarning.</summary>
+        public const string AnsiWarning = AnsiCodeYellow;
+
+        /// <summary>ANSI code for prompts/headers (blue). Matches ColorPrompt.</summary>
+        public const string AnsiPrompt = AnsiCodeBoldBlue;
+
+        /// <summary>ANSI code for info/labels (cyan). Matches ColorInfo.</summary>
+        public const string AnsiInfo = AnsiCodeCyan;
+
+        /// <summary>ANSI code for secondary/disabled text. Matches ColorDim.</summary>
+        public const string AnsiDim = AnsiCodeDim;
+
+        // =========================================================================
+        // Legacy ANSI names (for existing code - use semantic names in new code)
+        // =========================================================================
+        public const string AnsiCyan = AnsiCodeCyan;
+        public const string AnsiBoldCyan = AnsiCodeBoldCyan;
+        public const string AnsiYellow = AnsiCodeYellow;
+        public const string AnsiGreen = AnsiCodeGreen;
+        public const string AnsiBoldGreen = AnsiCodeBoldGreen;
+        public const string AnsiBoldBlue = AnsiCodeBoldBlue;
+        public const string AnsiRed = AnsiCodeRed;
+        public const string AnsiBoldRed = AnsiCodeBoldRed;
 
         /// <summary>
         /// Gets the console window size safely, returning defaults if unavailable.

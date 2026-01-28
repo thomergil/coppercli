@@ -1,5 +1,6 @@
 // Extracted from Program.cs
 
+using System.Linq;
 using coppercli.Core.Communication;
 using coppercli.Helpers;
 using Spectre.Console;
@@ -33,6 +34,29 @@ namespace coppercli.Menus
                 return;
             }
 
+            // Check for dangerous warnings in the loaded file
+            var currentFile = AppState.CurrentFile;
+            if (currentFile != null && currentFile.Warnings.Count > 0)
+            {
+                var dangerWarnings = currentFile.Warnings.Where(w =>
+                    w.Contains("DANGER") || w.Contains("INCHES")).ToList();
+
+                if (dangerWarnings.Count > 0)
+                {
+                    AnsiConsole.MarkupLine($"[{ColorError}]WARNING: File contains potentially dangerous commands:[/]");
+                    foreach (var warning in dangerWarnings)
+                    {
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]  {warning}[/]");
+                    }
+                    AnsiConsole.WriteLine();
+
+                    if (MenuHelpers.ConfirmOrQuit("Continue despite warnings?", false) != true)
+                    {
+                        return;
+                    }
+                }
+            }
+
             // Ask first - user might open door to check/prepare
             if (MenuHelpers.ConfirmOrQuit("Probe clip and magnet removed, door closed, spindle ready?", true) != true)
             {
@@ -43,7 +67,7 @@ namespace coppercli.Menus
             // Machine may be in unknown state: door open, still moving, etc.
             // We must get it to a known good state before proceeding.
 
-            AnsiConsole.MarkupLine("[dim]Preparing machine...[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Preparing machine...[/]");
 
             if (!MachineCommands.EnsureMachineReady(machine))
             {
@@ -137,7 +161,13 @@ namespace coppercli.Menus
                 }
                 Logger.Log("Settling complete");
 
-                // === MACHINE IS NOW IN KNOWN GOOD STATE ===
+                // === ESTABLISH KNOWN MACHINE STATE ===
+                // Defense in depth: ensure absolute mode and XY plane before milling
+                // Note: We do NOT send G21 (mm) here - the file should specify its own units
+                // Sending G21 when file expects G20 (inches) would cause 25x position errors
+                machine.SendLine(CmdAbsolute);  // G90 - absolute mode (safe, all CAM uses this)
+                machine.SendLine("G17");        // XY plane (standard for PCB milling)
+                Logger.Log("Sent state initialization: G90 G17");
 
                 // Start milling - let the G-code file handle its own positioning
                 Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
@@ -209,6 +239,18 @@ namespace coppercli.Menus
                                 {
                                     Logger.Log("Tool change completed successfully, resuming");
                                     totalPausedTime += DateTime.Now - pauseStartTime;
+
+                                    // Skip M0 if it immediately follows M6 (pcb2gcode generates M6+M0 sequence)
+                                    // This prevents a redundant pause after tool change is already complete
+                                    int currentLine = machine.FilePosition;
+                                    if (currentLine >= 0 && currentLine < machine.File.Count)
+                                    {
+                                        if (ToolChangeHelpers.IsM0Line(machine.File[currentLine]))
+                                        {
+                                            Logger.Log("Skipping M0 at line {0} (redundant after M6 tool change)", currentLine);
+                                            machine.FileGoto(currentLine + 1);
+                                        }
+                                    }
 
                                     // Resume file sending
                                     machine.FileStart();
@@ -306,6 +348,10 @@ namespace coppercli.Menus
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
+                // Retract Z to maximum safe height
+                machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{MillCompleteZ:F1}");
+                StatusHelpers.WaitForIdle(machine, MoveCompleteTimeoutMs);
+
                 var finalElapsed = DateTime.Now - startTime - totalPausedTime;
                 DrawMillProgress(false, visitedCells, finalElapsed, startLine);
 
@@ -319,7 +365,7 @@ namespace coppercli.Menus
                         Persistence.ClearProbeAutoSave();
                         AppState.Session.LastSavedProbeFile = "";
                         Persistence.SaveSession();
-                        AnsiConsole.MarkupLine("[green]Probe data cleared[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data cleared[/]");
                         Thread.Sleep(ConfirmationDisplayMs);
                     }
                 }
@@ -359,7 +405,7 @@ namespace coppercli.Menus
 
             var (winWidth, winHeight) = GetSafeWindowSize();
 
-            string header = $"{AnsiBoldBlue}Milling{AnsiReset}";
+            string header = $"{AnsiPrompt}Milling{AnsiReset}";
             int headerPad = Math.Max(0, (winWidth - 7) / 2);
             WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
             WriteLineTruncated("", winWidth);
@@ -375,11 +421,11 @@ namespace coppercli.Menus
             string statusDisplay;
             if (status.StartsWith(StatusHold))
             {
-                statusDisplay = $"{AnsiYellow}{OverlayHoldMessage}{AnsiReset}";
+                statusDisplay = $"{AnsiWarning}{OverlayHoldMessage}{AnsiReset}";
             }
             else if (paused)
             {
-                statusDisplay = $"{AnsiYellow}PAUSED{AnsiReset}";
+                statusDisplay = $"{AnsiWarning}PAUSED{AnsiReset}";
             }
             else if (status.StartsWith(StatusAlarm))
             {
@@ -387,7 +433,7 @@ namespace coppercli.Menus
             }
             else
             {
-                statusDisplay = $"{AnsiCyan}{status}{AnsiReset}";
+                statusDisplay = $"{AnsiInfo}{status}{AnsiReset}";
             }
 
             int lineWidth = totalLines.ToString().Length;
@@ -395,26 +441,26 @@ namespace coppercli.Menus
 
             if (settlingMessage != null)
             {
-                WriteLineTruncated($"  {AnsiYellow}{settlingMessage}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  {AnsiWarning}{settlingMessage}{AnsiReset}", winWidth);
             }
             else
             {
-                WriteLineTruncated($"  {AnsiCyan}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{AnsiReset} {pct,5:F1}%", winWidth);
+                WriteLineTruncated($"  {AnsiInfo}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{AnsiReset} {pct,5:F1}%", winWidth);
             }
-            WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {AnsiCyan}{FormatTimeSpan(elapsed)}{AnsiReset}   ETA: {AnsiCyan}{etaStr}{AnsiReset}", winWidth);
-            WriteLineTruncated($"  X:{AnsiCyan}{pos.X,8:F2}{AnsiReset}  Y:{AnsiCyan}{pos.Y,8:F2}{AnsiReset}  Z:{AnsiCyan}{pos.Z,8:F2}{AnsiReset}   Line {lineStr}/{totalLines}", winWidth);
+            WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {AnsiInfo}{FormatTimeSpan(elapsed)}{AnsiReset}   ETA: {AnsiInfo}{etaStr}{AnsiReset}", winWidth);
+            WriteLineTruncated($"  X:{AnsiInfo}{pos.X,8:F2}{AnsiReset}  Y:{AnsiInfo}{pos.Y,8:F2}{AnsiReset}  Z:{AnsiInfo}{pos.Z,8:F2}{AnsiReset}   Line {lineStr}/{totalLines}", winWidth);
 
             // Tool change action line (always output to keep layout stable)
             if (ToolChangeHelpers.StatusAction != null)
             {
-                WriteLineTruncated($"  {AnsiDim}[{ToolChangeLabel}]{AnsiReset} {AnsiCyan}{ToolChangeHelpers.StatusAction}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  {AnsiDim}[{ToolChangeLabel}]{AnsiReset} {AnsiInfo}{ToolChangeHelpers.StatusAction}{AnsiReset}", winWidth);
             }
             else
             {
                 WriteLineTruncated("", winWidth);
             }
 
-            WriteLineTruncated($"  {AnsiBoldCyan}P{AnsiReset}=Pause  {AnsiBoldCyan}R{AnsiReset}=Resume  {AnsiBoldRed}X{AnsiReset}=Stop", winWidth);
+            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiBoldRed}X{AnsiReset}=Stop", winWidth);
 
             double minX = currentFile.Min.X;
             double maxX = currentFile.Max.X;
@@ -450,7 +496,7 @@ namespace coppercli.Menus
             // Determine overlay message and color (if any)
             string? overlayMessage = null;
             string? overlaySubMessage = null;
-            string overlayColor = AnsiYellow;
+            string overlayColor = AnsiWarning;
 
             if (ToolChangeHelpers.OverlayMessage != null)
             {
@@ -499,7 +545,7 @@ namespace coppercli.Menus
 
         private static void DrawPositionGrid(int width, int height, int posX, int posY,
             HashSet<(int, int)> visited, int winWidth, double minX, double maxX, double minY, double maxY,
-            string? overlayMessage = null, string overlayColor = AnsiYellow, string? overlaySubMessage = null)
+            string? overlayMessage = null, string overlayColor = AnsiWarning, string? overlaySubMessage = null)
         {
             int matrixWidth = width * MillGridCharsPerCell;
             int leftPadding = Math.Max(0, (winWidth - matrixWidth - MillBorderPadding) / 2);
@@ -527,7 +573,7 @@ namespace coppercli.Menus
                 {
                     if (x == posX && y == posY)
                     {
-                        gridContent.Append(AnsiYellow).Append(MillCurrentPosMarker).Append(AnsiReset);
+                        gridContent.Append(AnsiWarning).Append(MillCurrentPosMarker).Append(AnsiReset);
                     }
                     else if (visited.Contains((x, y)))
                     {
@@ -546,7 +592,7 @@ namespace coppercli.Menus
                 {
                     int boxLineIndex = boxTopRow - y;
                     string boxLine = GetOverlayBoxLine(boxLineIndex, boxWidth,
-                        overlayMessage, overlayColor, subMsg, AnsiCyan);
+                        overlayMessage, overlayColor, subMsg, AnsiInfo);
 
                     // Overlay the box onto the row (margin lines are empty - show background)
                     if (!string.IsNullOrEmpty(boxLine))
@@ -682,7 +728,7 @@ namespace coppercli.Menus
             machine.SoftReset();
 
             Console.WriteLine();
-            AnsiConsole.MarkupLine($"[yellow]Stopped at line {position} - stopping spindle and raising Z...[/]");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]Stopped at line {position} - stopping spindle and raising Z...[/]");
 
             Thread.Sleep(ResetWaitMs);
 
@@ -696,7 +742,7 @@ namespace coppercli.Menus
 
             machine.SendLine(CmdSpindleOff);
             machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{RetractZMm:F1}");
+            machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
             Thread.Sleep(CommandDelayMs);
         }
     }

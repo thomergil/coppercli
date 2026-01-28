@@ -46,7 +46,7 @@ namespace coppercli.Menus
             while (true)
             {
                 Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Settings[/]").RuleStyle("blue"));
+                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Settings[/]").RuleStyle(ColorPrompt));
 
                 var table = new Table();
                 table.AddColumn("Setting");
@@ -54,7 +54,7 @@ namespace coppercli.Menus
 
                 // Machine profile
                 var profile = MachineProfiles.GetProfile(settings.MachineProfile);
-                string machineDisplay = profile != null ? profile.Name ?? settings.MachineProfile : "[dim]Not selected[/]";
+                string machineDisplay = profile != null ? profile.Name ?? settings.MachineProfile : $"[{ColorDim}]Not selected[/]";
                 table.AddRow("Machine", machineDisplay);
 
                 table.AddRow("Serial Port", settings.SerialPortName);
@@ -75,7 +75,7 @@ namespace coppercli.Menus
                 }
                 else
                 {
-                    table.AddRow("Tool Setter Position", "[dim]Not configured[/]");
+                    table.AddRow("Tool Setter Position", $"[{ColorDim}]Not configured[/]");
                 }
 
                 AnsiConsole.Write(table);
@@ -124,7 +124,7 @@ namespace coppercli.Menus
                         break;
                     case SettingAction.Save:
                         saveSettings();
-                        AnsiConsole.MarkupLine("[green]Settings saved[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Settings saved[/]");
                         Thread.Sleep(ResetWaitMs);
                         break;
                     case SettingAction.Back:
@@ -148,7 +148,7 @@ namespace coppercli.Menus
             }
 
             Console.Clear();
-            AnsiConsole.Write(new Rule("[bold blue]Select Machine[/]").RuleStyle("blue"));
+            AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Select Machine[/]").RuleStyle(ColorPrompt));
             AnsiConsole.WriteLine();
 
             // Build menu options from profiles
@@ -158,7 +158,7 @@ namespace coppercli.Menus
                 var profile = MachineProfiles.GetProfile(id);
                 string name = profile?.Name ?? id;
                 string desc = profile?.Description ?? "";
-                string toolSetter = profile?.ToolSetter != null ? "[green](has tool setter)[/]" : "[dim](no tool setter)[/]";
+                string toolSetter = profile?.ToolSetter != null ? $"[{ColorSuccess}](has tool setter)[/]" : $"[{ColorDim}](no tool setter)[/]";
                 options.Add($"{name} {toolSetter}");
             }
             options.Add("Clear selection");
@@ -170,7 +170,7 @@ namespace coppercli.Menus
                 currentIndex = 0;
             }
 
-            AnsiConsole.MarkupLine("[dim]Select your CNC machine to load tool setter configuration.[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]Select your CNC machine to load tool setter configuration.[/]");
             AnsiConsole.WriteLine();
 
             var selection = AnsiConsole.Prompt(
@@ -185,28 +185,27 @@ namespace coppercli.Menus
                 settings.MachineProfile = profileIds[selectedIndex];
                 var profile = MachineProfiles.GetProfile(settings.MachineProfile);
                 saveSettings();
-                AnsiConsole.MarkupLine($"[green]Selected: {profile?.Name ?? settings.MachineProfile}[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Selected: {profile?.Name ?? settings.MachineProfile}[/]");
 
                 if (profile?.ToolSetter != null)
                 {
                     AnsiConsole.MarkupLine($"Tool setter at X{profile.ToolSetter.X:F1} Y{profile.ToolSetter.Y:F1}");
-                    AnsiConsole.MarkupLine("[yellow]Use 'Setup Tool Setter' to verify/override if needed.[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]Use 'Setup Tool Setter' to verify/override if needed.[/]");
                 }
                 else
                 {
-                    AnsiConsole.MarkupLine("[yellow]This machine has no tool setter configured.[/]");
-                    AnsiConsole.MarkupLine("[dim]Tool changes will require re-probing the PCB surface.[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]This machine has no tool setter configured.[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]Tool changes will require re-probing the PCB surface.[/]");
                 }
             }
             else
             {
                 settings.MachineProfile = "";
                 saveSettings();
-                AnsiConsole.MarkupLine("[yellow]Machine selection cleared[/]");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Machine selection cleared[/]");
             }
 
-            AnsiConsole.MarkupLine("[dim]Press any key to continue[/]");
-            Console.ReadKey(true);
+            MenuHelpers.WaitEnter();
         }
 
         /// <summary>
@@ -234,14 +233,14 @@ namespace coppercli.Menus
                     var (winWidth, _) = DisplayHelpers.GetSafeWindowSize();
 
                     Console.SetCursorPosition(0, 0);
-                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldBlue}Setup Tool Setter{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiPrompt}Setup Tool Setter{DisplayHelpers.AnsiReset}", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
                     DisplayHelpers.WriteLineTruncated("Jog the spindle directly above your tool setter probe.", winWidth);
                     DisplayHelpers.WriteLineTruncated("The tool tip should be centered over the probe button/plate.", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
                     var mpos = machine.MachinePosition;
-                    DisplayHelpers.WriteLineTruncated($"Machine Position: X:{DisplayHelpers.AnsiYellow}{mpos.X,8:F3}{DisplayHelpers.AnsiReset}  Y:{DisplayHelpers.AnsiYellow}{mpos.Y,8:F3}{DisplayHelpers.AnsiReset}  Z:{DisplayHelpers.AnsiYellow}{mpos.Z,8:F3}{DisplayHelpers.AnsiReset}", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"Machine Position: X:{DisplayHelpers.AnsiWarning}{mpos.X,9:F3}{DisplayHelpers.AnsiReset}  Y:{DisplayHelpers.AnsiWarning}{mpos.Y,9:F3}{DisplayHelpers.AnsiReset}  Z:{DisplayHelpers.AnsiWarning}{mpos.Z,9:F3}{DisplayHelpers.AnsiReset}", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
                     if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
@@ -250,16 +249,16 @@ namespace coppercli.Menus
                     }
                     else
                     {
-                        DisplayHelpers.WriteLineTruncated("[dim]No tool setter position saved[/]", winWidth);
+                        DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiDim}No tool setter position saved{DisplayHelpers.AnsiReset}", winWidth);
                     }
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
                     var mode = JogModes[AppState.JogPresetIndex];
-                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldCyan}Jog:{DisplayHelpers.AnsiReset} {DisplayHelpers.AnsiGreen}{mode.Name}{DisplayHelpers.AnsiReset} {mode.Feed}mm/min {mode.BaseDistance}mm", winWidth);
-                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Arrows{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiCyan}HJKL{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiCyan}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiCyan}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
-                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiCyan}Tab{DisplayHelpers.AnsiReset} - Cycle speed", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiInfo}Jog:{DisplayHelpers.AnsiReset} {DisplayHelpers.AnsiSuccess}{mode.Name}{DisplayHelpers.AnsiReset} {mode.Feed}mm/min {mode.BaseDistance}mm", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Arrows{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}HJKL{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiInfo}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Tab{DisplayHelpers.AnsiReset} - Cycle speed", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
-                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiBoldGreen}Enter{DisplayHelpers.AnsiReset} - Save this position    {DisplayHelpers.AnsiCyan}C{DisplayHelpers.AnsiReset} - Clear saved    {DisplayHelpers.AnsiCyan}Esc/Q{DisplayHelpers.AnsiReset} - Cancel", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiBoldGreen}Enter{DisplayHelpers.AnsiReset} - Save this position    {DisplayHelpers.AnsiInfo}C{DisplayHelpers.AnsiReset} - Clear saved    {DisplayHelpers.AnsiInfo}Esc/Q{DisplayHelpers.AnsiReset} - Cancel", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
                     var keyOrNull = InputHelpers.ReadKeyPolling();
@@ -280,7 +279,7 @@ namespace coppercli.Menus
                         settings.ToolSetterX = mpos.X;
                         settings.ToolSetterY = mpos.Y;
                         saveSettings();
-                        AnsiConsole.MarkupLine($"[green]Tool setter position saved: X{mpos.X:F1} Y{mpos.Y:F1}[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Tool setter position saved: X{mpos.X:F1} Y{mpos.Y:F1}[/]");
                         Thread.Sleep(ConfirmationDisplayMs);
                         return;
                     }
@@ -291,7 +290,7 @@ namespace coppercli.Menus
                         settings.ToolSetterX = 0;
                         settings.ToolSetterY = 0;
                         saveSettings();
-                        AnsiConsole.MarkupLine("[yellow]Tool setter position cleared[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Tool setter position cleared[/]");
                         Thread.Sleep(ConfirmationDisplayMs);
                         continue;
                     }

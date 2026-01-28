@@ -2,11 +2,21 @@
 
 ## v0.3.0
 
+### Safety Improvements
+
+- **Emergency stop (X key) now uses machine coordinates**: Previously sent `G0 Z6` in work coordinates, which could plunge the tool if work zero was set incorrectly. Now sends `G53 G0 Z-1` to retract to near top of machine travel regardless of work coordinate offset.
+- **Defense in depth for coordinate systems**: All manual moves (jog presets, probe moves, tool change) now explicitly send G90 (absolute mode) before executing. Prevents dangerous behavior if G-code left machine in G91 (incremental) mode.
+- **State initialization before milling**: Sends G90 G17 (absolute mode, XY plane) before starting any G-code file to establish known machine state.
+- **Dangerous G-code detection**: Parser now warns about G28/G30 (home commands that may crash into workpiece) and G20 (imperial units that may cause coordinate confusion).
+- **Pre-mill safety check**: If loaded file contains dangerous commands or uses imperial units, displays warnings and asks for confirmation before running. Defaults to NO.
+- **Tool change uses machine coordinates**: All safety retracts during M6 tool change use G53 (machine coordinates) for predictable behavior.
+
 ### New Features
 
 - **Tool change support (M6)**: Automatic tool change handling during milling. When the G-code contains M6, coppercli pauses, guides you through the tool change, and automatically compensates for the new tool length.
   - **With tool setter**: If your machine has a tool setter (probe button), coppercli measures both tools and calculates the Z offset automatically. No need to re-zero.
   - **Without tool setter**: Prompts you to probe the PCB surface with the new tool to re-establish Z zero.
+  - **M0 after M6 skipped**: If M0 (program pause) immediately follows M6 (as pcb2gcode generates), the redundant M0 is skipped. This allows coppercli to work with pcb2gcode's native tool change format without requiring `nom6=1`.
 - **Machine profiles**: Select your CNC machine in Settings to auto-configure tool setter position. Built-in profiles for Nomad 3, Shapeoko, X-Carve. Add custom machines in `machine-profiles.yaml`.
 - **Tool setter setup**: Settings menu includes interactive jog-based setup to configure or override tool setter position.
 - **Macros**: New macro system for automating repetitive workflows. Create `.cmacro` files with G-code, prompts, and comments. Access via main menu or run directly with `--macro` / `-m` command-line flag.
@@ -27,7 +37,13 @@
 - **Faster settling**: Reduced post-idle settle time from 10s to 5s.
 - **Proxy auto-recovery**: Serial proxy now auto-recovers after system suspend/resume by detecting unhealthy state and attempting to reconnect.
 - **Connection handling**: "Port opened but no GRBL response" now auto-disconnects instead of prompting.
-- **G-code compatibility**: G53, G10, G28, G30, G38.x, G43.1 no longer produce parser warnings.
+- **G-code compatibility**: G53, G10, G28, G30, G38.x, G43.1, G94 no longer produce parser warnings. G93 (inverse time feed rate) produces a warning since height map and time estimates assume G94.
+- **Proxy no longer experimental**: Proxy mode has been tested and the [experimental] tag removed from the menu.
+- **T codes parsed with comments**: Tool change commands now extract tool name from comments (e.g., `T2 (1/8" End Mill)`) for display during tool changes.
+
+### Bug Fixes
+
+- **Windows NuGet restore**: Added troubleshooting note to README for `NETSDK1064: Package System.IO.Ports was not found` error - run `dotnet restore` first.
 
 ## v0.2.3
 

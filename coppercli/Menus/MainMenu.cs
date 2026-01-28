@@ -1,5 +1,6 @@
 // Extracted from Program.cs
 
+using coppercli.Core.Settings;
 using coppercli.Helpers;
 using coppercli.Macro;
 using Spectre.Console;
@@ -39,7 +40,8 @@ namespace coppercli.Menus
                     (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
                 EnabledWhen: () => AppState.Machine.Connected),
-            new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy),
+            new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy,
+                EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -54,24 +56,30 @@ namespace coppercli.Menus
             Console.Clear();
 
             // Show status header
-            var statusColor = machine.Connected ? "green" : "red";
+            var statusColor = machine.Connected ? ColorSuccess : ColorError;
             var statusText = machine.Connected ? machine.Status : StatusDisconnected;
+            var settings = AppState.Settings;
+            var connectionInfo = machine.Connected
+                ? (settings.ConnectionType == ConnectionType.Serial
+                    ? $" ({settings.SerialPortName})"
+                    : $" ({settings.EthernetIP}:{settings.EthernetPort})")
+                : "";
 
-            AnsiConsole.Write(new Rule($"[bold blue]{AppTitle} {AppVersion}[/]").RuleStyle("blue"));
-            AnsiConsole.MarkupLine($"Status: [{statusColor}]{statusText}[/] | " +
-                $"X:[yellow]{machine.WorkPosition.X:F3}[/] " +
-                $"Y:[yellow]{machine.WorkPosition.Y:F3}[/] " +
-                $"Z:[yellow]{machine.WorkPosition.Z:F3}[/]");
+            AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]{AppTitle} {AppVersion}[/]").RuleStyle(ColorPrompt));
+            AnsiConsole.MarkupLine($"Status: [{statusColor}]{statusText}[/][{ColorDim}]{connectionInfo}[/] | " +
+                $"X:[{ColorWarning}]{machine.WorkPosition.X:F3}[/] " +
+                $"Y:[{ColorWarning}]{machine.WorkPosition.Y:F3}[/] " +
+                $"Z:[{ColorWarning}]{machine.WorkPosition.Z:F3}[/]");
 
             if (currentFile != null)
             {
-                AnsiConsole.MarkupLine($"File: [cyan]{currentFile.FileName}[/] ({currentFile.Size.X:F1} x {currentFile.Size.Y:F1} mm)");
+                AnsiConsole.MarkupLine($"File: [{ColorInfo}]{currentFile.FileName}[/] ({currentFile.Size.X:F1} x {currentFile.Size.Y:F1} mm)");
             }
 
             if (probePoints != null)
             {
-                var appliedStatus = AppState.AreProbePointsApplied ? "[green]applied[/]" : "[yellow]not applied[/]";
-                AnsiConsole.MarkupLine($"Probe: [cyan]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points, {appliedStatus})");
+                var appliedStatus = AppState.AreProbePointsApplied ? $"[{ColorSuccess}]applied[/]" : $"[{ColorWarning}]not applied[/]";
+                AnsiConsole.MarkupLine($"Probe: [{ColorInfo}]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points, {appliedStatus})");
             }
 
             AnsiConsole.WriteLine();

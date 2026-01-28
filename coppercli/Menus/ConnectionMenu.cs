@@ -34,7 +34,7 @@ namespace coppercli.Menus
         // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
             new MenuItem<ConnType>("Serial", 's', ConnType.Serial),
-            new MenuItem<ConnType>("Network (TCP/IP) [experimental]", 'n', ConnType.Ethernet),
+            new MenuItem<ConnType>("Network (TCP/IP)", 'n', ConnType.Ethernet),
             new MenuItem<ConnType>("Back", 'q', ConnType.Back)
         );
 
@@ -49,7 +49,7 @@ namespace coppercli.Menus
                 {
                     machine.Disconnect();
                     AppState.IsWorkZeroSet = false;
-                    AnsiConsole.MarkupLine($"[yellow]{StatusDisconnected}[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]{StatusDisconnected}[/]");
                 }
             }
             else
@@ -75,7 +75,7 @@ namespace coppercli.Menus
 
                     if (ports.Length == 0)
                     {
-                        AnsiConsole.MarkupLine("[red]No serial ports found![/]");
+                        AnsiConsole.MarkupLine($"[{ColorError}]No serial ports found![/]");
                         return;
                     }
 
@@ -112,7 +112,7 @@ namespace coppercli.Menus
                         }
                         else
                         {
-                            AnsiConsole.MarkupLine("[red]No GRBL device found on any port.[/]");
+                            AnsiConsole.MarkupLine($"[{ColorError}]No GRBL device found on any port.[/]");
                         }
                         return;
                     }
@@ -165,9 +165,9 @@ namespace coppercli.Menus
                         if (localIPs.Count > 0)
                         {
                             var sampleIP = localIPs[0].Split('.');
-                            AnsiConsole.MarkupLine($"[dim]Your IP: {localIPs[0]}[/]");
-                            AnsiConsole.MarkupLine($"[dim]  /24 = {sampleIP[0]}.{sampleIP[1]}.{sampleIP[2]}.* (254 hosts)[/]");
-                            AnsiConsole.MarkupLine($"[dim]  /16 = {sampleIP[0]}.{sampleIP[1]}.*.* (65534 hosts)[/]");
+                            AnsiConsole.MarkupLine($"[{ColorDim}]Your IP: {localIPs[0]}[/]");
+                            AnsiConsole.MarkupLine($"[{ColorDim}]  /24 = {sampleIP[0]}.{sampleIP[1]}.{sampleIP[2]}.* (254 hosts)[/]");
+                            AnsiConsole.MarkupLine($"[{ColorDim}]  /16 = {sampleIP[0]}.{sampleIP[1]}.*.* (65534 hosts)[/]");
                         }
 
                         int mask = MenuHelpers.Ask("Subnet mask:", 24);
@@ -202,11 +202,11 @@ namespace coppercli.Menus
             var settings = AppState.Settings;
             if (settings.ConnectionType == ConnectionType.Serial)
             {
-                AnsiConsole.MarkupLine($"[blue]Connecting to {settings.SerialPortName} @ {settings.SerialPortBaud}...[/]");
+                AnsiConsole.MarkupLine($"[{ColorPrompt}]Connecting to {settings.SerialPortName} @ {settings.SerialPortBaud}...[/]");
             }
             else
             {
-                AnsiConsole.MarkupLine($"[blue]Connecting to {settings.EthernetIP}:{settings.EthernetPort}...[/]");
+                AnsiConsole.MarkupLine($"[{ColorPrompt}]Connecting to {settings.EthernetIP}:{settings.EthernetPort}...[/]");
             }
             ConnectWithCurrentSettings();
         }
@@ -238,7 +238,7 @@ namespace coppercli.Menus
                         // Don't announce Alarm state - it will be cleared silently
                         if (message != StatusIdle && !message.StartsWith(StatusAlarm))
                         {
-                            AnsiConsole.MarkupLine($"[green]Connected! GRBL status: {message}[/]");
+                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected! GRBL status: {message}[/]");
                         }
                         // Save connection settings and remember this as the last successful connection type
                         AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
@@ -247,28 +247,28 @@ namespace coppercli.Menus
                         break;
                     case ConnectionResult.Success:
                         // Port opened but no GRBL response - not a usable connection
-                        AnsiConsole.MarkupLine("[yellow]Warning: Port opened but no GRBL response received.[/]");
-                        AnsiConsole.MarkupLine("[yellow]Check that the correct port is selected and GRBL is running.[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Warning: Port opened but no GRBL response received.[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Check that the correct port is selected and GRBL is running.[/]");
                         machine.Disconnect();
                         break;
                     case ConnectionResult.Timeout:
-                        AnsiConsole.MarkupLine("[red]Connection timed out.[/]");
+                        AnsiConsole.MarkupLine($"[{ColorError}]Connection timed out.[/]");
                         if (machine.Connected)
                         {
                             machine.Disconnect();
                         }
                         break;
                     case ConnectionResult.PortNotOpened:
-                        AnsiConsole.MarkupLine("[red]Could not open serial port. Is the machine powered on?[/]");
+                        AnsiConsole.MarkupLine($"[{ColorError}]Could not open serial port. Is the machine powered on?[/]");
                         break;
                     case ConnectionResult.Error:
-                        AnsiConsole.MarkupLine($"[red]Connection failed: {Markup.Escape(message ?? "Unknown error")}[/]");
+                        AnsiConsole.MarkupLine($"[{ColorError}]Connection failed: {Markup.Escape(message ?? "Unknown error")}[/]");
                         break;
                 }
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Connection failed: {Markup.Escape(ex.Message)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Connection failed: {Markup.Escape(ex.Message)}[/]");
             }
             finally
             {
@@ -281,13 +281,13 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var settings = AppState.Settings;
 
-            AnsiConsole.MarkupLine($"[blue]Scanning {ports.Length} port(s) at {CommonBaudRates.Length} baud rates...[/]");
+            AnsiConsole.MarkupLine($"[{ColorPrompt}]Scanning {ports.Length} port(s) at {CommonBaudRates.Length} baud rates...[/]");
 
             foreach (var baud in CommonBaudRates)
             {
                 foreach (var port in ports)
                 {
-                    AnsiConsole.Markup($"  Trying [cyan]{port}[/] @ [cyan]{baud}[/]... ");
+                    AnsiConsole.Markup($"  Trying [{ColorInfo}]{port}[/] @ [{ColorInfo}]{baud}[/]... ");
 
                     settings.SerialPortName = port;
                     settings.SerialPortBaud = baud;
@@ -298,7 +298,7 @@ namespace coppercli.Menus
 
                         if (result == ConnectionResult.Success && message != null)
                         {
-                            AnsiConsole.MarkupLine($"[green]Found! Status: {message}[/]");
+                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Found! Status: {message}[/]");
                             return true;
                         }
 
@@ -314,7 +314,7 @@ namespace coppercli.Menus
                             ConnectionResult.Error => "failed",
                             _ => "no response"
                         };
-                        AnsiConsole.MarkupLine($"[dim]{status}[/]");
+                        AnsiConsole.MarkupLine($"[{ColorDim}]{status}[/]");
                     }
                     catch (Exception)
                     {
@@ -322,7 +322,7 @@ namespace coppercli.Menus
                         {
                             machine.Disconnect();
                         }
-                        AnsiConsole.MarkupLine("[dim]failed[/]");
+                        AnsiConsole.MarkupLine($"[{ColorDim}]failed[/]");
                     }
                 }
             }
@@ -340,12 +340,12 @@ namespace coppercli.Menus
 
             if (localIPs.Count == 0)
             {
-                AnsiConsole.MarkupLine("[red]Could not determine local network address.[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Could not determine local network address.[/]");
                 return false;
             }
 
             int totalHosts = (1 << (32 - mask)) - 2; // Exclude network and broadcast
-            AnsiConsole.MarkupLine($"[blue]Scanning {localIPs.Count} network(s), /{mask} ({totalHosts} hosts each), port {port}...[/]");
+            AnsiConsole.MarkupLine($"[{ColorPrompt}]Scanning {localIPs.Count} network(s), /{mask} ({totalHosts} hosts each), port {port}...[/]");
 
             foreach (var localIP in localIPs)
             {
@@ -353,13 +353,13 @@ namespace coppercli.Menus
                 string rangeDesc = mask == 24
                     ? $"{parts[0]}.{parts[1]}.{parts[2]}.x"
                     : $"{parts[0]}.{parts[1]}.x.x/{mask}";
-                AnsiConsole.MarkupLine($"  Scanning [cyan]{rangeDesc}[/]...");
+                AnsiConsole.MarkupLine($"  Scanning [{ColorInfo}]{rangeDesc}[/]...");
 
                 var found = ScanNetwork(localIP, mask, port);
 
                 if (found.Count > 0)
                 {
-                    AnsiConsole.MarkupLine($"  [green]Found {found.Count} device(s)[/]");
+                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]Found {found.Count} device(s)[/]");
 
                     // Build menu with devices and Back option
                     var options = found.Select((ip, i) => $"{i + 1}. {ip}:{port}").ToList();
@@ -383,12 +383,12 @@ namespace coppercli.Menus
                         return true;
                     }
 
-                    // Connection failed - wait for keypress so user can see error
-                    Console.ReadKey(true);
+                    // Connection failed - wait for user to see error
+                    MenuHelpers.WaitEnter();
                     return false;
                 }
 
-                AnsiConsole.MarkupLine("  [dim]No devices found[/]");
+                AnsiConsole.MarkupLine($"  [{ColorDim}]No devices found[/]");
             }
 
             return false;
@@ -634,7 +634,7 @@ namespace coppercli.Menus
             {
                 if (StatusHelpers.IsDoor(machine))
                 {
-                    AnsiConsole.MarkupLine("[yellow]Door is open. Close the door and press Enter.[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]Door is open. Close the door and press Enter.[/]");
                     Console.ReadLine();
                     MachineCommands.ClearDoorState(machine);
                 }

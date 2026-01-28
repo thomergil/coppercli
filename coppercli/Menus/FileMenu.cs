@@ -36,14 +36,16 @@ namespace coppercli.Menus
         /// Generic file browser with filter support. Returns selected file path or null if cancelled.
         /// Press / to start filtering, then type to filter. Backspace removes filter chars, Esc clears filter.
         /// </summary>
-        public static string? BrowseForFile(string[] extensions, string? defaultFileName = null)
+        public static string? BrowseForFile(string[] extensions, string? defaultFileName = null, string? startDirectory = null)
         {
             var session = AppState.Session;
 
-            // Start at last browse directory if it exists, otherwise current directory
-            string currentDir = !string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory)
-                ? session.LastBrowseDirectory
-                : Environment.CurrentDirectory;
+            // Start at specified directory, last browse directory, or current directory
+            string currentDir = !string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory)
+                ? startDirectory
+                : !string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory)
+                    ? session.LastBrowseDirectory
+                    : Environment.CurrentDirectory;
 
             string filter = "";
             bool filterActive = false;
@@ -177,17 +179,17 @@ namespace coppercli.Menus
 
                 // Render
                 Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Select File[/]").RuleStyle("blue"));
+                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Select File[/]").RuleStyle(ColorPrompt));
 
                 // Show directory and filter
                 if (filterActive)
                 {
                     var filterDisplay = string.IsNullOrEmpty(filter) ? "_" : Markup.Escape(filter);
-                    AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]  [yellow]Filter: {filterDisplay}[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(currentDir)}[/]  [{ColorWarning}]Filter: {filterDisplay}[/]");
                 }
                 else
                 {
-                    AnsiConsole.MarkupLine($"[dim]{Markup.Escape(currentDir)}[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(currentDir)}[/]");
                 }
                 AnsiConsole.WriteLine();
 
@@ -215,7 +217,7 @@ namespace coppercli.Menus
                 // Show "more above" indicator
                 if (hasMoreAbove)
                 {
-                    MarkupLineClear($"[dim]  ▲ {viewStart} more above[/]");
+                    MarkupLineClear($"[{ColorDim}]  ▲ {viewStart} more above[/]");
                 }
 
                 // Draw visible options with shortcuts
@@ -228,7 +230,7 @@ namespace coppercli.Menus
 
                     if (i == selected)
                     {
-                        MarkupLineClear($"[green]> {prefix} {escapedDisplay}[/]");
+                        MarkupLineClear($"[{ColorSuccess}]> {prefix} {escapedDisplay}[/]");
                     }
                     else
                     {
@@ -239,17 +241,17 @@ namespace coppercli.Menus
                 // Show "more below" indicator
                 if (hasMoreBelow)
                 {
-                    MarkupLineClear($"[dim]  ▼ {filteredItems.Count - viewEnd} more below[/]");
+                    MarkupLineClear($"[{ColorDim}]  ▼ {filteredItems.Count - viewEnd} more below[/]");
                 }
 
                 // Help text
                 if (!filterActive)
                 {
-                    MarkupLineClear("[dim]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
+                    MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
                 }
                 else
                 {
-                    MarkupLineClear("[dim]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
+                    MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
                 }
 
                 // Read key
@@ -396,8 +398,8 @@ namespace coppercli.Menus
 
             if (!File.Exists(path))
             {
-                AnsiConsole.MarkupLine($"[red]File not found: {Markup.Escape(path)}[/]");
-                Console.ReadKey();
+                AnsiConsole.MarkupLine($"[{ColorError}]File not found: {Markup.Escape(path)}[/]");
+                MenuHelpers.WaitEnter();
                 return;
             }
 
@@ -408,17 +410,16 @@ namespace coppercli.Menus
 
                 if (currentFile.Warnings.Count > 0)
                 {
-                    AnsiConsole.MarkupLine($"[yellow]Warnings ({currentFile.Warnings.Count}):[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]Warnings ({currentFile.Warnings.Count}):[/]");
                     foreach (var w in currentFile.Warnings.Take(5))
                     {
-                        AnsiConsole.MarkupLine($"  [yellow]{Markup.Escape(w)}[/]");
+                        AnsiConsole.MarkupLine($"  [{ColorWarning}]{Markup.Escape(w)}[/]");
                     }
                     if (currentFile.Warnings.Count > 5)
                     {
-                        AnsiConsole.MarkupLine($"  [yellow]... and {currentFile.Warnings.Count - 5} more[/]");
+                        AnsiConsole.MarkupLine($"  [{ColorWarning}]... and {currentFile.Warnings.Count - 5} more[/]");
                     }
-                    AnsiConsole.MarkupLine("[yellow]Press any key to continue...[/]");
-                    InputHelpers.WaitForKeyPolling();
+                    MenuHelpers.WaitEnter();
                 }
 
                 // Load into machine
@@ -434,7 +435,7 @@ namespace coppercli.Menus
                     if (MenuHelpers.Confirm("Apply existing probe data to this file?", true))
                     {
                         AppState.ApplyProbeData();
-                        AnsiConsole.MarkupLine("[green]Probe data applied![/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied![/]");
                     }
                 }
 
@@ -449,7 +450,7 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error loading file: {Markup.Escape(ex.Message)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Error loading file: {Markup.Escape(ex.Message)}[/]");
                 InputHelpers.WaitForKeyPolling();
             }
         }

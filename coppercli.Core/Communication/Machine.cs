@@ -596,7 +596,7 @@ namespace coppercli.Core.Communication
             {
                 try
                 {
-                    Log = new StreamWriter(Constants.LogFile);
+                    Log = new StreamWriter(Constants.SerialTrafficLogFile);
                 }
                 catch (Exception e)
                 {

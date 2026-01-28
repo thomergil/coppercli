@@ -33,7 +33,7 @@ namespace coppercli.Macro
         {
             if (_commands.Count == 0)
             {
-                AnsiConsole.MarkupLine("[yellow]Macro is empty.[/]");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Macro is empty.[/]");
                 return true;
             }
 
@@ -53,16 +53,16 @@ namespace coppercli.Macro
                     {
                         if (_aborted)
                         {
-                            AnsiConsole.MarkupLine("\n[yellow]Macro aborted by user.[/]");
+                            AnsiConsole.MarkupLine($"\n[{ColorWarning}]Macro aborted by user.[/]");
                         }
                         else
                         {
-                            AnsiConsole.MarkupLine($"\n[red]Macro failed at step {_currentStep + 1}: {command.DisplayText}[/]");
+                            AnsiConsole.MarkupLine($"\n[{ColorError}]Macro failed at step {_currentStep + 1}: {command.DisplayText}[/]");
                         }
                         Console.CursorVisible = true;
                         if (!AppState.MacroMode)
                         {
-                            MenuHelpers.PromptEnter("Macro stopped.");
+                            MenuHelpers.ShowPrompt("Macro stopped.");
                         }
                         return false;
                     }
@@ -73,10 +73,10 @@ namespace coppercli.Macro
                 // Draw final state
                 DrawProgress();
                 Console.CursorVisible = true;
-                AnsiConsole.MarkupLine("\n[green]Macro completed successfully![/]");
+                AnsiConsole.MarkupLine($"\n[{ColorSuccess}]Macro completed successfully![/]");
                 if (!AppState.MacroMode)
                 {
-                    MenuHelpers.PromptEnter("");
+                    MenuHelpers.ShowPrompt("");
                 }
                 return true;
             }
@@ -97,18 +97,18 @@ namespace coppercli.Macro
             Console.SetCursorPosition(0, 0);
 
             // Header
-            DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiBoldBlue}Macro: {_macroName}{DisplayHelpers.AnsiReset}", winWidth);
+            DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiPrompt}Macro: {_macroName}{DisplayHelpers.AnsiReset}", winWidth);
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
             // Status line
             var statusColor = StatusHelpers.IsProblematicState(machine)
-                ? DisplayHelpers.AnsiRed
-                : DisplayHelpers.AnsiGreen;
+                ? DisplayHelpers.AnsiError
+                : DisplayHelpers.AnsiSuccess;
             DisplayHelpers.WriteLineTruncated(
                 $"Status: {statusColor}{machine.Status}{DisplayHelpers.AnsiReset}  " +
-                $"X:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.X:F3}{DisplayHelpers.AnsiReset} " +
-                $"Y:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.Y:F3}{DisplayHelpers.AnsiReset} " +
-                $"Z:{DisplayHelpers.AnsiYellow}{machine.WorkPosition.Z:F3}{DisplayHelpers.AnsiReset}",
+                $"X:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.X:F3}{DisplayHelpers.AnsiReset} " +
+                $"Y:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.Y:F3}{DisplayHelpers.AnsiReset} " +
+                $"Z:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.Z:F3}{DisplayHelpers.AnsiReset}",
                 winWidth);
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
@@ -164,12 +164,12 @@ namespace coppercli.Macro
                 if (i < _currentStep)
                 {
                     marker = "[done]";
-                    color = DisplayHelpers.AnsiGreen;
+                    color = DisplayHelpers.AnsiSuccess;
                 }
                 else if (i == _currentStep)
                 {
                     marker = "  ==> ";
-                    color = DisplayHelpers.AnsiBoldCyan;
+                    color = DisplayHelpers.AnsiInfo;
                 }
                 else
                 {
@@ -185,7 +185,7 @@ namespace coppercli.Macro
                 {
                     int boxLine = currentRow - boxStartRow;
                     string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
-                        overlayMessage, DisplayHelpers.AnsiYellow,
+                        overlayMessage, DisplayHelpers.AnsiWarning,
                         overlaySubtext ?? "", DisplayHelpers.AnsiDim);
                     string composited = DisplayHelpers.CompositeOverlay(line, boxContent, boxLeftPad, winWidth);
                     DisplayHelpers.WriteLineTruncated(composited, winWidth);
@@ -204,7 +204,7 @@ namespace coppercli.Macro
                 {
                     int boxLine = currentRow - boxStartRow;
                     string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
-                        overlayMessage, DisplayHelpers.AnsiYellow,
+                        overlayMessage, DisplayHelpers.AnsiWarning,
                         overlaySubtext ?? "", DisplayHelpers.AnsiDim);
                     // CompositeOverlay handles empty margin lines (returns background)
                     string composited = DisplayHelpers.CompositeOverlay("", boxContent, boxLeftPad, winWidth);
@@ -288,7 +288,7 @@ namespace coppercli.Macro
                 case MacroCommandType.Echo:
                     if (command.Args.Length > 0)
                     {
-                        AnsiConsole.MarkupLine($"[cyan]{Markup.Escape(command.Args[0])}[/]");
+                        AnsiConsole.MarkupLine($"[{ColorInfo}]{Markup.Escape(command.Args[0])}[/]");
                     }
                     return true;
 
@@ -296,7 +296,7 @@ namespace coppercli.Macro
                     return ExecuteWait(command.Args);
 
                 default:
-                    AnsiConsole.MarkupLine($"[red]Unknown command: {command.Type}[/]");
+                    AnsiConsole.MarkupLine($"[{ColorError}]Unknown command: {command.Type}[/]");
                     return false;
             }
         }
@@ -305,7 +305,7 @@ namespace coppercli.Macro
         {
             if (args.Length == 0)
             {
-                AnsiConsole.MarkupLine("[red]load command requires a filename[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]load command requires a filename[/]");
                 return false;
             }
 
@@ -313,7 +313,7 @@ namespace coppercli.Macro
 
             if (!File.Exists(path))
             {
-                AnsiConsole.MarkupLine($"[red]File not found: {Markup.Escape(path)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]File not found: {Markup.Escape(path)}[/]");
                 return false;
             }
 
@@ -327,7 +327,7 @@ namespace coppercli.Macro
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error loading file: {Markup.Escape(ex.Message)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Error loading file: {Markup.Escape(ex.Message)}[/]");
                 return false;
             }
         }
@@ -353,14 +353,14 @@ namespace coppercli.Macro
 
                 if (StatusHelpers.IsAlarm(machine))
                 {
-                    AnsiConsole.MarkupLine("[red]Homing failed - machine in alarm state[/]");
+                    AnsiConsole.MarkupLine($"[{ColorError}]Homing failed - machine in alarm state[/]");
                     return false;
                 }
 
                 Thread.Sleep(StatusPollIntervalMs);
             }
 
-            AnsiConsole.MarkupLine("[red]Homing timed out[/]");
+            AnsiConsole.MarkupLine($"[{ColorError}]Homing timed out[/]");
             return false;
         }
 
@@ -454,13 +454,13 @@ namespace coppercli.Macro
 
             if (!probeDone)
             {
-                AnsiConsole.MarkupLine("[red]Probe timed out[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Probe timed out[/]");
                 return false;
             }
 
             if (!probeSuccess)
             {
-                AnsiConsole.MarkupLine("[red]Probe failed - no contact[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Probe failed - no contact[/]");
                 return false;
             }
 
@@ -473,13 +473,13 @@ namespace coppercli.Macro
             var probePoints = AppState.ProbePoints;
             if (probePoints == null)
             {
-                AnsiConsole.MarkupLine("[red]No probe data available[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]No probe data available[/]");
                 return false;
             }
 
             if (probePoints.NotProbed.Count > 0)
             {
-                AnsiConsole.MarkupLine("[red]Probe grid is incomplete[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]Probe grid is incomplete[/]");
                 return false;
             }
 
@@ -558,7 +558,7 @@ namespace coppercli.Macro
 
                 if (StatusHelpers.IsAlarm(machine))
                 {
-                    AnsiConsole.MarkupLine("[red]Machine entered alarm state[/]");
+                    AnsiConsole.MarkupLine($"[{ColorError}]Machine entered alarm state[/]");
                     return false;
                 }
 

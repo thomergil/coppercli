@@ -30,8 +30,8 @@ namespace coppercli.Menus
                 var currentPort = settings.SerialPortName;
                 var currentBaud = settings.SerialPortBaud;
 
-                AnsiConsole.MarkupLine($"[yellow]Currently connected to {currentPort} @ {currentBaud}[/]");
-                AnsiConsole.MarkupLine("[dim]Proxy will disconnect and take over the serial port.[/]");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Currently connected to {currentPort} @ {currentBaud}[/]");
+                AnsiConsole.MarkupLine($"[{ColorDim}]Proxy will disconnect and take over the serial port.[/]");
                 AnsiConsole.WriteLine();
 
                 if (!MenuHelpers.Confirm("Disconnect and start proxy with current settings?"))
@@ -136,7 +136,7 @@ namespace coppercli.Menus
             {
                 lock (messages)
                 {
-                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {AnsiRed}{msg}{AnsiReset}");
+                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {AnsiError}{msg}{AnsiReset}");
                     while (messages.Count > MaxMessages)
                     {
                         messages.RemoveAt(0);
@@ -184,7 +184,7 @@ namespace coppercli.Menus
             {
                 lock (messages)
                 {
-                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {AnsiRed}{msg}{AnsiReset}");
+                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {AnsiError}{msg}{AnsiReset}");
                     while (messages.Count > MaxMessages)
                     {
                         messages.RemoveAt(0);
@@ -245,14 +245,14 @@ namespace coppercli.Menus
             Console.SetCursorPosition(0, 0);
 
             // Header
-            string header = $"{AnsiBoldBlue}Proxy{AnsiReset}";
+            string header = $"{AnsiPrompt}Proxy{AnsiReset}";
             int headerPad = Math.Max(0, (winWidth - 10) / 2);
             WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
             WriteLineTruncated("", winWidth);
 
             // Connection info
-            WriteLineTruncated($"  Serial Port:    {AnsiCyan}{proxy.SerialPortName}{AnsiReset}", winWidth);
-            WriteLineTruncated($"  Baud Rate:      {AnsiCyan}{proxy.BaudRate}{AnsiReset}", winWidth);
+            WriteLineTruncated($"  Serial Port:    {AnsiInfo}{proxy.SerialPortName}{AnsiReset}", winWidth);
+            WriteLineTruncated($"  Baud Rate:      {AnsiInfo}{proxy.BaudRate}{AnsiReset}", winWidth);
 
             // Show local IP addresses for easy client connection
             var localIps = GetLocalIPAddresses();
@@ -263,7 +263,7 @@ namespace coppercli.Menus
             }
             else
             {
-                WriteLineTruncated($"  TCP Port:       {AnsiCyan}{proxy.TcpPort}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  TCP Port:       {AnsiInfo}{proxy.TcpPort}{AnsiReset}", winWidth);
             }
 
             WriteLineTruncated("", winWidth);
@@ -271,16 +271,16 @@ namespace coppercli.Menus
             // Client status
             if (proxy.HasClient)
             {
-                WriteLineTruncated($"  Client:         {AnsiGreen}{proxy.ClientAddress}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  Client:         {AnsiSuccess}{proxy.ClientAddress}{AnsiReset}", winWidth);
                 if (proxy.ClientConnectedTime.HasValue)
                 {
                     var duration = DateTime.Now - proxy.ClientConnectedTime.Value;
-                    WriteLineTruncated($"  Connected:      {AnsiGreen}{FormatDuration(duration)}{AnsiReset}", winWidth);
+                    WriteLineTruncated($"  Connected:      {AnsiSuccess}{FormatDuration(duration)}{AnsiReset}", winWidth);
                 }
             }
             else
             {
-                WriteLineTruncated($"  Client:         {AnsiYellow}{ProxyNoClientStatus}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  Client:         {AnsiWarning}{ProxyNoClientStatus}{AnsiReset}", winWidth);
                 WriteLineTruncated("", winWidth);
             }
 
@@ -290,7 +290,7 @@ namespace coppercli.Menus
             WriteLineTruncated("", winWidth);
 
             // Recent messages
-            WriteLineTruncated($"  {AnsiBoldCyan}Recent activity:{AnsiReset}", winWidth);
+            WriteLineTruncated($"  {AnsiInfo}Recent activity:{AnsiReset}", winWidth);
             lock (messages)
             {
                 for (int i = 0; i < MaxMessages; i++)
@@ -308,7 +308,7 @@ namespace coppercli.Menus
             WriteLineTruncated("", winWidth);
 
             // Instructions
-            WriteLineTruncated($"  {AnsiDim}Press {AnsiReset}{AnsiCyan}q{AnsiReset}{AnsiDim} or {AnsiReset}{AnsiCyan}Escape{AnsiReset}{AnsiDim} to stop proxy{AnsiReset}", winWidth);
+            WriteLineTruncated($"  {AnsiDim}Press {AnsiReset}{AnsiInfo}q{AnsiReset}{AnsiDim} or {AnsiReset}{AnsiInfo}Escape{AnsiReset}{AnsiDim} to stop proxy{AnsiReset}", winWidth);
         }
 
         /// <summary>

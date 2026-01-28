@@ -273,6 +273,21 @@ namespace coppercli.Core.GCode
                     if (param == 20)
                     {
                         State.Unit = ParseUnit.Imperial;
+                        Warnings.Add($"WARNING: File uses INCHES (G20) - coordinates may be incorrect if machine expects mm. (line {lineNumber})");
+                        Words.RemoveAt(i);
+                        i--;
+                        continue;
+                    }
+                    if (param == 28)
+                    {
+                        Warnings.Add($"DANGER: G28 (Home) command found - may crash into workpiece! (line {lineNumber})");
+                        Words.RemoveAt(i);
+                        i--;
+                        continue;
+                    }
+                    if (param == 30)
+                    {
+                        Warnings.Add($"DANGER: G30 (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
@@ -311,6 +326,22 @@ namespace coppercli.Core.GCode
                             i--;
                             continue;
                         }
+                    }
+                    // G94 = units per minute feed rate (default) - safe to ignore
+                    if (param == GCodeNumbers.FeedRateUnitsPerMinute)
+                    {
+                        Words.RemoveAt(i);
+                        i--;
+                        continue;
+                    }
+                    // G93 = inverse time feed rate - warn because height map and time
+                    // calculations assume G94. Feed values would be misinterpreted.
+                    if (param == GCodeNumbers.FeedRateInverseTime)
+                    {
+                        Warnings.Add($"WARNING: G93 (inverse time feed) not fully supported - height map correction and time estimates will be incorrect. (line {lineNumber})");
+                        Words.RemoveAt(i);
+                        i--;
+                        continue;
                     }
                     // G53 = machine coordinates (non-modal, applies to next move only)
                     // G10 = set work offset

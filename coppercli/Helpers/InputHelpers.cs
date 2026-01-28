@@ -10,21 +10,25 @@ namespace coppercli.Helpers
     /// </summary>
     internal static class InputHelpers
     {
-        public const string InvalidNumberMessage = "[red]Invalid number, using default[/]";
-
         /// <summary>
-        /// Reads a key while polling for machine status changes.
-        /// Returns the key pressed, or null if status changed (caller should redraw).
+        /// Reads a key while polling for machine status changes and terminal resize.
+        /// Returns the key pressed, or null if status/size changed (caller should redraw).
         /// </summary>
         public static ConsoleKeyInfo? ReadKeyPolling()
         {
             var lastStatus = AppState.Machine?.Status;
+            var (lastWidth, lastHeight) = DisplayHelpers.GetSafeWindowSize();
             while (!Console.KeyAvailable)
             {
                 Thread.Sleep(StatusPollIntervalMs);
                 if (AppState.Machine?.Status != lastStatus)
                 {
                     return null; // Status changed, caller should redraw
+                }
+                var (width, height) = DisplayHelpers.GetSafeWindowSize();
+                if (width != lastWidth || height != lastHeight)
+                {
+                    return null; // Terminal resized, caller should redraw
                 }
             }
             return Console.ReadKey(true);

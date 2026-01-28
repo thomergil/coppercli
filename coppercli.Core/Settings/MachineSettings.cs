@@ -22,8 +22,8 @@ namespace coppercli.Core.Settings
         public int EthernetPort { get; set; } = Constants.DefaultEthernetPort;
 
         // Machine
-        public int StatusPollInterval { get; set; } = Constants.DefaultStatusPollIntervalMs;
-        public int ControllerBufferSize { get; set; } = Constants.DefaultControllerBufferSize;
+        public int StatusPollInterval { get; set; } = Constants.StatusPollIntervalMs;
+        public int ControllerBufferSize { get; set; } = Constants.GrblBufferSize;
         public bool LogTraffic { get; set; } = false;
         public bool EnableDebugLogging { get; set; } = false;
         public bool PauseFileOnHold { get; set; } = true;

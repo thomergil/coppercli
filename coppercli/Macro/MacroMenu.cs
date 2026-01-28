@@ -12,6 +12,8 @@ namespace coppercli.Macro
     /// </summary>
     internal static class MacroMenu
     {
+        private enum MacroAction { Load, Run, Back }
+
         public static void Show()
         {
             if (!MenuHelpers.RequireConnection())
@@ -20,77 +22,67 @@ namespace coppercli.Macro
             }
 
             var session = AppState.Session;
-            var hasLastMacro = !string.IsNullOrEmpty(session.LastMacroFile) && File.Exists(session.LastMacroFile);
 
             while (true)
             {
+                var hasLoadedMacro = !string.IsNullOrEmpty(session.LastMacroFile) && File.Exists(session.LastMacroFile);
+                var macroFileName = hasLoadedMacro ? Path.GetFileName(session.LastMacroFile) : "(none)";
+
                 Console.Clear();
-                AnsiConsole.Write(new Rule("[bold blue]Macro[/]").RuleStyle("blue"));
+                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Macro[/]").RuleStyle(ColorPrompt));
                 AnsiConsole.WriteLine();
 
-                var options = new List<string>();
-                if (hasLastMacro)
-                {
-                    var fileName = Path.GetFileName(session.LastMacroFile);
-                    options.Add($"1. Run {fileName} (r)");
-                    options.Add("2. Run Other Macro... (o)");
-                }
-                else
-                {
-                    options.Add("1. Run Macro... (r)");
-                }
-                options.Add("0. Back (q)");
+                var menu = new MenuDef<MacroAction>(
+                    new MenuItem<MacroAction>("Load Macro...", 'l', MacroAction.Load),
+                    new MenuItem<MacroAction>($"Run {macroFileName}", 'r', MacroAction.Run,
+                        EnabledWhen: () => hasLoadedMacro),
+                    new MenuItem<MacroAction>("Back", 'q', MacroAction.Back)
+                );
 
-                int choice = MenuHelpers.ShowMenu("Select an option:", options.ToArray());
+                var selected = MenuHelpers.ShowMenu("Select an option:", menu);
 
-                if (hasLastMacro)
+                switch (selected.Option)
                 {
-                    switch (choice)
-                    {
-                        case 0: // Run last macro
-                            RunMacroFromPath(session.LastMacroFile);
-                            break;
-                        case 1: // Run other macro
-                            RunMacro();
-                            hasLastMacro = !string.IsNullOrEmpty(session.LastMacroFile) && File.Exists(session.LastMacroFile);
-                            break;
-                        default: // Back
-                            return;
-                    }
-                }
-                else
-                {
-                    switch (choice)
-                    {
-                        case 0: // Run Macro
-                            RunMacro();
-                            hasLastMacro = !string.IsNullOrEmpty(session.LastMacroFile) && File.Exists(session.LastMacroFile);
-                            break;
-                        default: // Back
-                            return;
-                    }
+                    case MacroAction.Load:
+                        LoadMacro();
+                        break;
+                    case MacroAction.Run:
+                        RunMacroFromPath(session.LastMacroFile!);
+                        break;
+                    case MacroAction.Back:
+                        return;
                 }
             }
         }
 
         /// <summary>
-        /// Browse for and run a macro file.
+        /// Browse for and select a macro file (does not run it).
         /// </summary>
-        private static void RunMacro()
+        private static void LoadMacro()
         {
             var path = BrowseForMacro();
             if (path != null)
             {
-                RunMacroFromPath(path);
+                var session = AppState.Session;
+                session.LastMacroFile = path;
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    session.LastMacroBrowseDirectory = dir;
+                }
+                Persistence.SaveSession();
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded: {Markup.Escape(Path.GetFileName(path))}[/]");
+                Thread.Sleep(500);
             }
         }
 
         /// <summary>
-        /// Browse for a macro file.
+        /// Browse for a macro file, starting from the last macro directory.
         /// </summary>
         private static string? BrowseForMacro()
         {
-            return FileMenu.BrowseForFile(new[] { MacroExtension });
+            var session = AppState.Session;
+            return FileMenu.BrowseForFile(new[] { MacroExtension }, startDirectory: session.LastMacroBrowseDirectory);
         }
 
         /// <summary>
@@ -109,7 +101,7 @@ namespace coppercli.Macro
         {
             try
             {
-                AnsiConsole.MarkupLine($"[dim]Loading macro: {Markup.Escape(path)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorDim}]Loading macro: {Markup.Escape(path)}[/]");
 
                 var commands = MacroParser.Parse(path);
                 var macroName = Path.GetFileName(path);
@@ -130,12 +122,12 @@ namespace coppercli.Macro
                         // Prompt for this placeholder
                         var displayName = ph.Name.Replace('_', ' ');
                         displayName = char.ToUpper(displayName[0]) + displayName[1..];
-                        AnsiConsole.MarkupLine($"[yellow]Select {Markup.Escape(displayName)}:[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Select {Markup.Escape(displayName)}:[/]");
 
                         var filePath = FileMenu.BrowseForFile(GCodeExtensions);
                         if (filePath == null)
                         {
-                            AnsiConsole.MarkupLine("[yellow]Macro cancelled.[/]");
+                            AnsiConsole.MarkupLine($"[{ColorWarning}]Macro cancelled.[/]");
                             return;
                         }
 
@@ -155,7 +147,7 @@ namespace coppercli.Macro
                 }
                 Persistence.SaveSession();
 
-                AnsiConsole.MarkupLine($"[dim]Parsed {commands.Count} commands[/]");
+                AnsiConsole.MarkupLine($"[{ColorDim}]Parsed {commands.Count} commands[/]");
                 Thread.Sleep(MacroParseDisplayMs);
 
                 var runner = new MacroRunner(commands, macroName);
@@ -163,13 +155,13 @@ namespace coppercli.Macro
             }
             catch (MacroParseException ex)
             {
-                AnsiConsole.MarkupLine($"[red]Macro parse error: {Markup.Escape(ex.Message)}[/]");
-                MenuHelpers.PromptEnter("");
+                AnsiConsole.MarkupLine($"[{ColorError}]Macro parse error: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowPrompt("");
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[red]Error running macro: {Markup.Escape(ex.Message)}[/]");
-                MenuHelpers.PromptEnter("");
+                AnsiConsole.MarkupLine($"[{ColorError}]Error running macro: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowPrompt("");
             }
         }
     }

@@ -2,6 +2,7 @@
 
 using Spectre.Console;
 using System.Text.RegularExpressions;
+using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
 {
@@ -68,14 +69,13 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Displays an error message and waits for a keypress.
+        /// Displays an error message and waits for Enter.
         /// </summary>
         /// <param name="message">The error message to display (without markup).</param>
         public static void ShowError(string message)
         {
-            AnsiConsole.MarkupLine($"[red]{Markup.Escape(message)}[/]");
-            AnsiConsole.MarkupLine("[dim]Press any key to continue[/]");
-            Console.ReadKey(true);
+            AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(message)}[/]");
+            WaitEnter();
         }
 
         /// <summary>
@@ -138,11 +138,45 @@ namespace coppercli.Helpers
                     mnemonics[char.ToLower(match.Groups[1].Value[0])] = i;
                 }
 
-                // Check for leading number/letter (e.g., "0. " or "A. ")
-                var leadingMatch = Regex.Match(options[i], @"^(\w)\.");
+                // Check for leading number/letter (e.g., "0. " or "A. " or "10. ")
+                var leadingMatch = Regex.Match(options[i], @"^(\w+)\.");
                 if (leadingMatch.Success)
                 {
-                    leadingKeys[char.ToUpper(leadingMatch.Groups[1].Value[0])] = i;
+                    // For single char, use as key; for multi-char numbers, use last digit
+                    string prefix = leadingMatch.Groups[1].Value;
+                    if (prefix.Length == 1)
+                    {
+                        leadingKeys[char.ToUpper(prefix[0])] = i;
+                    }
+                }
+            }
+
+            // Right-align numeric prefixes for cleaner display
+            // Find max prefix width (e.g., "10." is wider than "1.")
+            int maxPrefixWidth = 0;
+            foreach (var opt in options)
+            {
+                var prefixMatch = Regex.Match(opt, @"^(\d+)\.");
+                if (prefixMatch.Success)
+                {
+                    maxPrefixWidth = Math.Max(maxPrefixWidth, prefixMatch.Groups[1].Value.Length);
+                }
+            }
+
+            // Create display versions with right-aligned numbers
+            var displayOptions = new string[options.Length];
+            for (int i = 0; i < options.Length; i++)
+            {
+                var prefixMatch = Regex.Match(options[i], @"^(\d+)\.(.*)$");
+                if (prefixMatch.Success && maxPrefixWidth > 1)
+                {
+                    string num = prefixMatch.Groups[1].Value;
+                    string rest = prefixMatch.Groups[2].Value;
+                    displayOptions[i] = num.PadLeft(maxPrefixWidth) + "." + rest;
+                }
+                else
+                {
+                    displayOptions[i] = options[i];
                 }
             }
 
@@ -197,28 +231,28 @@ namespace coppercli.Helpers
 
                 // Draw menu
                 Console.SetCursorPosition(0, Console.CursorTop);
-                MarkupLineClear($"[bold]{Markup.Escape(title)}[/]");
+                MarkupLineClear($"[{ColorBold}]{Markup.Escape(title)}[/]");
 
                 // Show "more above" indicator
                 if (hasMoreAbove)
                 {
-                    MarkupLineClear($"[dim]  ▲ {viewStart} more above[/]");
+                    MarkupLineClear($"[{ColorDim}]  ▲ {viewStart} more above[/]");
                     linesDrawn++;
                 }
 
-                // Draw visible options
+                // Draw visible options (use displayOptions for right-aligned numbers)
                 for (int i = viewStart; i < viewEnd; i++)
                 {
                     bool isEnabled = enabledStates?[i] ?? true;
-                    string escapedOption = Markup.Escape(options[i]);
+                    string escapedOption = Markup.Escape(displayOptions[i]);
 
                     if (i == selected)
                     {
-                        MarkupLineClear($"[green]> {escapedOption}[/]");
+                        MarkupLineClear($"[{ColorSuccess}]> {escapedOption}[/]");
                     }
                     else if (!isEnabled)
                     {
-                        MarkupLineClear($"[dim]  {escapedOption}[/]");
+                        MarkupLineClear($"[{ColorDim}]  {escapedOption}[/]");
                     }
                     else
                     {
@@ -230,11 +264,11 @@ namespace coppercli.Helpers
                 // Show "more below" indicator
                 if (hasMoreBelow)
                 {
-                    MarkupLineClear($"[dim]  ▼ {options.Length - viewEnd} more below[/]");
+                    MarkupLineClear($"[{ColorDim}]  ▼ {options.Length - viewEnd} more below[/]");
                     linesDrawn++;
                 }
 
-                MarkupLineClear("[dim]Arrows + Enter, number, letter, or Esc to go back[/]");
+                MarkupLineClear($"[{ColorDim}]Arrows + Enter, number, letter, or Esc to go back[/]");
                 linesDrawn++;
 
                 var keyOrNull = InputHelpers.ReadKeyPolling();
@@ -359,98 +393,24 @@ namespace coppercli.Helpers
 
         /// <summary>
         /// Displays a confirmation dialog. Returns true for yes, false for no.
+        /// Escape returns the default value.
         /// Responds immediately on keypress (no Enter required).
         /// </summary>
         public static bool Confirm(string message, bool defaultYes = false)
         {
-            string defaultHint = defaultYes ? "Y/n" : "y/N";
-            AnsiConsole.Markup($"{message} [blue][[{defaultHint}]][/] ");
-
-            while (true)
-            {
-                var key = Console.ReadKey(true);
-                char c = char.ToLower(key.KeyChar);
-
-                if (key.Key == ConsoleKey.Enter)
-                {
-                    AnsiConsole.WriteLine(defaultYes ? "y" : "n");
-                    return defaultYes;
-                }
-                if (key.Key == ConsoleKey.Y || c == 'y')
-                {
-                    AnsiConsole.WriteLine("y");
-                    return true;
-                }
-                if (key.Key == ConsoleKey.N || c == 'n')
-                {
-                    AnsiConsole.WriteLine("n");
-                    return false;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Prompts for a numeric value with quit option.
-        /// Returns the value, or null if user pressed q/Escape.
-        /// </summary>
-        public static double? AskDoubleOrQuit(string prompt, double defaultValue)
-        {
-            AnsiConsole.Markup($"{prompt} [blue][[{defaultValue:G}]][/] [dim](q to cancel)[/]: ");
-
-            var input = new System.Text.StringBuilder();
-            while (true)
-            {
-                var key = Console.ReadKey(true);
-
-                if (key.Key == ConsoleKey.Enter)
-                {
-                    Console.WriteLine();
-                    if (input.Length == 0)
-                    {
-                        return defaultValue;
-                    }
-                    if (double.TryParse(input.ToString(), out double result))
-                    {
-                        return result;
-                    }
-                    AnsiConsole.MarkupLine($"[red]Invalid number. Try again.[/]");
-                    AnsiConsole.Markup($"{prompt} [blue][[{defaultValue:G}]][/] [dim](q to cancel)[/]: ");
-                    input.Clear();
-                    continue;
-                }
-
-                if (key.Key == ConsoleKey.Escape || (input.Length == 0 && char.ToLower(key.KeyChar) == 'q'))
-                {
-                    Console.WriteLine();
-                    return null;
-                }
-
-                if (key.Key == ConsoleKey.Backspace)
-                {
-                    if (input.Length > 0)
-                    {
-                        input.Remove(input.Length - 1, 1);
-                        Console.Write("\b \b");
-                    }
-                    continue;
-                }
-
-                if (char.IsDigit(key.KeyChar) || key.KeyChar == '.' || key.KeyChar == '-')
-                {
-                    input.Append(key.KeyChar);
-                    Console.Write(key.KeyChar);
-                }
-            }
+            var result = ConfirmOrQuit(message, defaultYes);
+            return result ?? defaultYes; // Escape/quit returns default
         }
 
         /// <summary>
         /// Displays a confirmation dialog with quit option.
-        /// Returns true for yes, false for no, null for quit.
+        /// Returns true for yes, false for no, null for quit/Escape.
+        /// Responds immediately on keypress (no Enter required).
         /// </summary>
         public static bool? ConfirmOrQuit(string message, bool defaultYes = false)
         {
             string defaultHint = defaultYes ? "Y/n/q" : "y/N/q";
-            AnsiConsole.Markup($"{message} [blue][[{defaultHint}]][/] ");
+            AnsiConsole.Markup($"{message} [{ColorPrompt}][[{defaultHint}]][/] ");
 
             while (true)
             {
@@ -474,8 +434,62 @@ namespace coppercli.Helpers
                 }
                 if (key.Key == ConsoleKey.Q || key.Key == ConsoleKey.Escape || c == 'q')
                 {
-                    AnsiConsole.WriteLine("q");
+                    AnsiConsole.WriteLine();
                     return null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Prompts for a numeric value with quit option.
+        /// Returns the value, or null if user pressed q/Escape.
+        /// </summary>
+        public static double? AskDouble(string prompt, double defaultValue)
+        {
+            AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{defaultValue:G}]][/]: ");
+
+            var input = new System.Text.StringBuilder();
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+
+                if (key.Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine();
+                    if (input.Length == 0)
+                    {
+                        return defaultValue;
+                    }
+                    if (double.TryParse(input.ToString(), out double result))
+                    {
+                        return result;
+                    }
+                    AnsiConsole.MarkupLine($"[{ColorError}]Invalid number. Try again.[/]");
+                    AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{defaultValue:G}]][/]: ");
+                    input.Clear();
+                    continue;
+                }
+
+                if (key.Key == ConsoleKey.Escape)
+                {
+                    Console.WriteLine();
+                    return null;
+                }
+
+                if (key.Key == ConsoleKey.Backspace)
+                {
+                    if (input.Length > 0)
+                    {
+                        input.Remove(input.Length - 1, 1);
+                        Console.Write("\b \b");
+                    }
+                    continue;
+                }
+
+                if (char.IsDigit(key.KeyChar) || key.KeyChar == '.' || key.KeyChar == '-' || key.KeyChar == '+')
+                {
+                    input.Append(key.KeyChar);
+                    Console.Write(key.KeyChar);
                 }
             }
         }
@@ -484,10 +498,19 @@ namespace coppercli.Helpers
         /// Displays a message and waits for Enter to continue.
         /// Used by macro system for user prompts.
         /// </summary>
-        public static void PromptEnter(string message)
+        public static void ShowPrompt(string message)
         {
-            AnsiConsole.MarkupLine($"[yellow]{Markup.Escape(message)}[/]");
-            AnsiConsole.MarkupLine("[dim]Press Enter to continue...[/]");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]{Markup.Escape(message)}[/]");
+            WaitEnter();
+        }
+
+        /// <summary>
+        /// Waits for Enter key to be pressed.
+        /// </summary>
+        /// <param name="message">Optional custom message. Default: "Press Enter to continue"</param>
+        public static void WaitEnter(string? message = null)
+        {
+            AnsiConsole.MarkupLine($"[{ColorDim}]{message ?? CliConstants.PromptEnter}[/]");
             Console.ReadLine();
         }
     }
