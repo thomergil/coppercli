@@ -105,26 +105,26 @@ namespace coppercli.Helpers
 
         /// <summary>
         /// Returns the menu key character for a given index, or null if beyond limit.
-        /// 0-9 use digits '1'-'9' then '0', indices 10-35 use 'A'-'Z'.
-        /// Returns null for indices >= 36.
+        /// 0-8 use digits '1'-'9', index 9 uses '0', indices 10-35 use 'A'-'Z'.
+        /// Returns null for indices >= MaxMenuShortcuts (36).
         /// </summary>
         public static char? GetMenuKey(int index)
         {
-            if (index < 9)
+            if (index < MenuShortcutZeroIndex)
             {
                 return (char)('1' + index);
             }
-            else if (index == 9)
+            else if (index == MenuShortcutZeroIndex)
             {
                 return '0';
             }
-            else if (index < 36)
+            else if (index < MaxMenuShortcuts)
             {
-                return (char)('A' + index - 10);
+                return (char)('A' + index - MenuShortcutAlphaStart);
             }
             else
             {
-                return null; // No shortcut for items beyond 36
+                return null;
             }
         }
     }

@@ -72,7 +72,7 @@ namespace coppercli.Macro
                 }
                 Persistence.SaveSession();
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded: {Markup.Escape(Path.GetFileName(path))}[/]");
-                Thread.Sleep(500);
+                Thread.Sleep(ConfirmationDisplayMs);
             }
         }
 

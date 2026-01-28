@@ -86,7 +86,7 @@ namespace coppercli.Helpers
             }
             catch
             {
-                return (80, 24);
+                return (CliConstants.FallbackTerminalWidth, CliConstants.FallbackTerminalHeight);
             }
         }
 
@@ -204,6 +204,15 @@ namespace coppercli.Helpers
         /// Structure: margin, border, padding, line1, line2, padding, border, margin = 8 lines
         /// </summary>
         public const int OverlayBoxHeight = 8;
+
+        /// <summary>Padding added to content width for overlay box (border + inner padding on each side).</summary>
+        public const int OverlayBoxPadding = 6;
+
+        /// <summary>Minimum width for overlay box for aesthetics.</summary>
+        public const int OverlayBoxMinWidth = 20;
+
+        /// <summary>Margin from grid edge for overlay box.</summary>
+        public const int OverlayBoxMargin = 4;
 
         /// <summary>
         /// Gets a single line of an overlay box.

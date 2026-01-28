@@ -264,7 +264,7 @@ namespace coppercli.Menus
 
                 // Build shortcut map for current filtered items
                 var shortcuts = new Dictionary<char, int>();
-                for (int i = 0; i < filteredItems.Count && i < 36; i++)
+                for (int i = 0; i < filteredItems.Count && i < MaxMenuShortcuts; i++)
                 {
                     var shortcut = InputHelpers.GetMenuKey(i);
                     if (shortcut.HasValue)
