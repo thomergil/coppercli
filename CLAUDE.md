@@ -82,6 +82,8 @@ static readonly (string Label, char Mnemonic, Action Handler)[] MainMenuItems = 
 
 Log file location: `coppercli/bin/Debug/net8.0/coppercli.log`
 
+**NEVER suggest the user forgot to compile.** If something isn't working as expected, assume the code is wrong and investigate further.
+
 ## Git
 
 **IMPORTANT:** NEVER run git commands (add, commit, push, etc.) unless the user EXPLICITLY asks. Do not volunteer git commands. Do not stage files automatically after editing. Do not commit. Do not push. Wait for explicit instructions.
