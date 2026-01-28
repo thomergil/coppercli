@@ -342,6 +342,8 @@ namespace coppercli.Menus
             {
                 machine.SendLine($"{CmdZeroWorkOffset} Z0");
                 AppState.IsWorkZeroSet = true;
+                // Discard probe data - it's now invalid with new work zero
+                AppState.DiscardProbeData();
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Z zeroed[/]");
                 Thread.Sleep(ConfirmationDisplayMs);
                 machine.SendLine(CmdAbsolute);
@@ -352,6 +354,8 @@ namespace coppercli.Menus
             {
                 machine.SendLine($"{CmdZeroWorkOffset} X0 Y0 Z0");
                 AppState.IsWorkZeroSet = true;
+                // Discard probe data - it's now invalid with new work zero
+                AppState.DiscardProbeData();
 
                 // Store work zero in session
                 var session = AppState.Session;

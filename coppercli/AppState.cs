@@ -73,5 +73,39 @@ namespace coppercli
             AreProbePointsApplied = true;
             return true;
         }
+
+        /// <summary>
+        /// Discards probe data and reloads the G-code file if probe data was applied.
+        /// Called when work zero changes (Zero XYZ, Zero Z) since probe data is now invalid.
+        /// Does nothing if no probe data exists.
+        /// </summary>
+        public static void DiscardProbeData()
+        {
+            // Nothing to discard
+            if (ProbePoints == null && !AreProbePointsApplied)
+            {
+                return;
+            }
+
+            bool wasApplied = AreProbePointsApplied;
+            ProbePoints = null;
+            AreProbePointsApplied = false;
+
+            // If probe data was applied to the G-code, reload the original file
+            if (wasApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
+                File.Exists(Session.LastLoadedGCodeFile))
+            {
+                try
+                {
+                    CurrentFile = GCodeFile.Load(Session.LastLoadedGCodeFile);
+                    Machine.SetFile(CurrentFile.GetGCode());
+                    Helpers.Logger.Log("DiscardProbeData: Reloaded {0}", Session.LastLoadedGCodeFile);
+                }
+                catch (Exception ex)
+                {
+                    Helpers.Logger.Log("DiscardProbeData: Failed to reload file: {0}", ex.Message);
+                }
+            }
+        }
     }
 }
