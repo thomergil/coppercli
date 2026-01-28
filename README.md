@@ -52,9 +52,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3L` = 3× right)
 - Feed override during milling (`+`/`-`/`0` for ±10%/reset)
 - Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
-- Machine profiles: built-in configs for Nomad 3, Shapeoko, LongMill, X-Carve, 3018, etc.
-- Dangerous G-code warnings: flags G28/G30 (crash risk) and G20 (imperial units) before milling
-- Sleep prevention during milling/probing (Windows/macOS/Linux)
+- Built-in machine profiles
 - Probe grid auto-leveling with configurable parameters (safe height, depth, feed rate, grid size)
 - Real-time probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
@@ -62,7 +60,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Macros for multi-step workflows with file placeholders
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
 - Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
-- Built-in file browser with `/` filter
+- Built-in file browser with optional search/filter
 - Session recovery: interrupted probing resumes, remembers last file, restores home points
 
 ## Macros
@@ -110,7 +108,7 @@ coppercli --proxy --headless
 
 When the proxy starts, it displays the IP addresses clients can use to connect. A client should connect to the displayed IP and port (default: 34000) using TCP. Only one client can connect at a time. Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds).
 
-**Warning:** Do not run the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled.
+**Warning:** Do not run the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled.
 
 ## Command-Line Arguments
 
