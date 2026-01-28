@@ -190,27 +190,27 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Wait for user to press P (proceed) or X (abort).
-        /// Returns true if P pressed, false if X pressed or abort.
+        /// Wait for user to press Y (continue) or X (abort).
+        /// Returns true if Y pressed, false if X pressed or abort.
         /// Periodically refreshes display while waiting.
         /// </summary>
-        private static bool WaitForProbeOrAbort()
+        private static bool WaitForContinueOrAbort()
         {
-            Logger.Log("WaitForProbeOrAbort: Waiting for P or X key...");
+            Logger.Log("WaitForContinueOrAbort: Waiting for Y or X key...");
             while (true)
             {
                 if (Console.KeyAvailable)
                 {
                     var key = Console.ReadKey(true);
-                    Logger.Log("WaitForProbeOrAbort: Key pressed: {0} (char: {1})", key.Key, key.KeyChar);
-                    if (InputHelpers.IsKey(key, ConsoleKey.P, 'p'))
+                    Logger.Log("WaitForContinueOrAbort: Key pressed: {0} (char: {1})", key.Key, key.KeyChar);
+                    if (InputHelpers.IsKey(key, ConsoleKey.Y, 'y'))
                     {
-                        Logger.Log("WaitForProbeOrAbort: P pressed, proceeding");
+                        Logger.Log("WaitForContinueOrAbort: Y pressed, proceeding");
                         return true;
                     }
                     if (InputHelpers.IsKey(key, ConsoleKey.X, 'x'))
                     {
-                        Logger.Log("WaitForProbeOrAbort: X pressed, aborting");
+                        Logger.Log("WaitForContinueOrAbort: X pressed, aborting");
                         SetOverlay("Tool change aborted");
                         Thread.Sleep(ConfirmationDisplayMs);
                         return false;
@@ -363,9 +363,9 @@ namespace coppercli.Helpers
             }
 
             // NOW prompt user to change tool - this is when overlay should appear
-            SetOverlay(toolInfoStr, "Change tool, press P. X=abort");
+            SetOverlay(toolInfoStr, "Change tool. Y=Continue  X=Cancel");
 
-            if (!WaitForProbeOrAbort())
+            if (!WaitForContinueOrAbort())
             {
                 ClearOverlay();
                 return false;
@@ -426,9 +426,9 @@ namespace coppercli.Helpers
         {
             var machine = AppState.Machine;
 
-            SetOverlay(toolInfoStr, "Change tool + clip, press P. X=abort");
+            SetOverlay(toolInfoStr, "Change tool + attach clip. Y=Continue  X=Cancel");
 
-            if (!WaitForProbeOrAbort())
+            if (!WaitForContinueOrAbort())
             {
                 ClearOverlay();
                 return false;
