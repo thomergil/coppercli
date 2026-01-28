@@ -1,10 +1,10 @@
-# <img src="doc/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
+# <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
 A lightweight terminal-based tool for PCB milling with GRBL CNC machines, featuring probe-based auto-leveling, macros for repeatable workflows, session recovery, real-time visualization, and cross-platform support. Default menu selections minimize keypresses from G-code to milled PCB. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
 
 | Probing | Milling |
 |:-------:|:-------:|
-| <img src="doc/probing.png" width="400"> | <img src="doc/milling-screen.png" width="400"> |
+| <img src="img/probing.png" width="400"> | <img src="img/milling-screen.png" width="400"> |
 
 ## Install
 
@@ -25,15 +25,15 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for runn
 
 | Main Menu                                 | File Browser                                 | Jog                                      |
 | ----------------------------------------- | -------------------------------------------- | ---------------------------------------- |
-| <img src="doc/main-menu.png" width="200"> | <img src="doc/file-browser.png" width="200"> | <img src="doc/jog-menu.png" width="200"> |
+| <img src="img/main-menu.png" width="200"> | <img src="img/file-browser.png" width="200"> | <img src="img/jog-menu.png" width="200"> |
 
 | Probe Setup | Probing | Milling |
 |-------------|---------|---------|
-| <img src="doc/probe-menu.png" width="200"> | <img src="doc/probing.png" width="200"> | <img src="doc/milling-screen.png" width="200"> |
+| <img src="img/probe-menu.png" width="200"> | <img src="img/probing.png" width="200"> | <img src="img/milling-screen.png" width="200"> |
 
 | Settings | Proxy | Milled PCB |
 |----------|-------|------------|
-| <img src="doc/settings-menu.png" width="200"> | <img src="doc/proxy.png" width="200"> | <img src="doc/milled-pcb.jpg" width="200"> |
+| <img src="img/settings-menu.png" width="200"> | <img src="img/proxy.png" width="200"> | <img src="img/milled-pcb.jpg" width="200"> |
 
 ## Tutorial
 
@@ -85,11 +85,11 @@ coppercli --macro pcb-job.cmacro --back_file ~/boards/back.ngc
 
 Placeholders like `[back_file:file]` prompt a file browser at runtime, or accept values via `--name path` on the command line. See [docs/macros.md](docs/macros.md) for the full command reference.
 
-## Proxy Mode (EXPERIMENTAL)
+## Proxy Mode
 
 coppercli can act as a serial-to-TCP bridge, allowing remote GRBL clients to connect to your CNC machine over the network.
 
-Select "Proxy [experimental]" from the main menu, or start it from the command line:
+Select "Proxy" from the main menu, or start it from the command line:
 
 ```bash
 # Start proxy with interactive TUI display

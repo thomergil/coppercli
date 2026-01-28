@@ -39,7 +39,7 @@ namespace coppercli.Menus
                     (AppState.ProbePoints == null || AppState.AreProbePointsApplied)),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
                 EnabledWhen: () => AppState.Machine.Connected),
-            new MenuItem<MainAction>("Proxy [experimental]", 'x', MainAction.Proxy),
+            new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy),
             new MenuItem<MainAction>("Settings", 't', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
