@@ -34,7 +34,7 @@ namespace coppercli.Menus
         // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
             new MenuItem<ConnType>("Serial", 's', ConnType.Serial),
-            new MenuItem<ConnType>("Network (TCP/IP)", 'n', ConnType.Ethernet),
+            new MenuItem<ConnType>("Network", 'n', ConnType.Ethernet),
             new MenuItem<ConnType>("Back", 'q', ConnType.Back)
         );
 

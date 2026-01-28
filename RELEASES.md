@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.3.1
+
+### Changes
+
+- Renamed "Network (TCP/IP)" to "Network" in connection menu.
+
 ## v0.3.0
 
 ### Safety Improvements
