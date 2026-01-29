@@ -208,7 +208,7 @@ namespace coppercli.Menus
             try
             {
                 AppState.ProbePoints = ProbeGrid.Load(path);
-                AppState.AreProbePointsApplied = false;
+                AppState.ResetProbeApplicationState();
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded[/]");
                 AnsiConsole.WriteLine(AppState.ProbePoints.GetInfo());
             }
@@ -278,7 +278,7 @@ namespace coppercli.Menus
                 {
                     AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
                     probePoints = AppState.ProbePoints;
-                    AppState.AreProbePointsApplied = false;
+                    AppState.ResetProbeApplicationState();
                 }
                 catch (Exception ex)
                 {
@@ -445,7 +445,7 @@ namespace coppercli.Menus
             try
             {
                 AppState.ProbePoints = new ProbeGrid(gridSize, new Vector2(minX, minY), new Vector2(maxX, maxY));
-                AppState.AreProbePointsApplied = false;
+                AppState.ResetProbeApplicationState();
                 var hm = AppState.ProbePoints;
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe grid: {hm.SizeX}x{hm.SizeY} = {hm.TotalPoints} points[/]");
                 AnsiConsole.MarkupLine($"[{ColorDim}]Bounds: X({minX:F2} to {maxX:F2}) Y({minY:F2} to {maxY:F2})[/]");

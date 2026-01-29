@@ -322,7 +322,7 @@ namespace coppercli.Macro
                 var file = GCodeFile.Load(path);
                 AppState.CurrentFile = file;
                 AppState.Machine.SetFile(file.GetGCode());
-                AppState.AreProbePointsApplied = false;
+                AppState.ResetProbeApplicationState();
                 return true;
             }
             catch (Exception ex)

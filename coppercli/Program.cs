@@ -378,7 +378,7 @@ class Program
                     try
                     {
                         AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
-                        AppState.AreProbePointsApplied = false;
+                        AppState.ResetProbeApplicationState();
                         var hm = AppState.ProbePoints;
                         AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
                         // Start probing directly

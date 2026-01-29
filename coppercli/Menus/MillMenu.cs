@@ -100,6 +100,7 @@ namespace coppercli.Menus
             Action logModeChanged = () => Logger.Log("MODE changed to: {0}", machine.Mode);
             Action logStatusChanged = () => Logger.Log("Status changed to: {0}", machine.Status);
             Action<string> logInfo = (msg) => Logger.Log("INFO: {0}", msg);
+            Action<string> logError = (msg) => Logger.Log("ERROR: {0}", msg);
 
             machine.LineSent += logLineSent;
             machine.LineReceived += logLineReceived;
@@ -107,6 +108,7 @@ namespace coppercli.Menus
             machine.OperatingModeChanged += logModeChanged;
             machine.StatusChanged += logStatusChanged;
             machine.Info += logInfo;
+            machine.NonFatalException += logError;
 
             Console.Clear();
             Console.CursorVisible = false;
@@ -142,19 +144,21 @@ namespace coppercli.Menus
                     }
                 }
 
-                // === SAFETY CONFIRMATION ===
-                // Show checklist as overlay - this is critically important
-                Logger.Log("Safety confirmation phase");
+                // === SAFETY CONFIRMATION + DEPTH ADJUSTMENT ===
+                // Show checklist and depth adjustment as overlay
+                Logger.Log("Safety confirmation phase, depth={0:F2}mm", AppState.DepthAdjustment);
                 while (true)
                 {
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, SafetyChecklistMessage, SafetyChecklistSubMessage);
+                    string depthStr = AppState.DepthAdjustment == 0 ? "0" : $"{AppState.DepthAdjustment:+0.00;-0.00}";
+                    string safetyMsg = $"{SafetyChecklistMessage}  Depth: {depthStr}mm";
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, safetyMsg, SafetyDepthSubMessage);
 
                     if (Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
                         if (InputHelpers.IsKey(key, ConsoleKey.Y))
                         {
-                            Logger.Log("Safety confirmed (Y pressed)");
+                            Logger.Log("Safety confirmed, depth={0:F2}mm", AppState.DepthAdjustment);
                             break;
                         }
                         if (InputHelpers.IsKey(key, ConsoleKey.N) ||
@@ -163,6 +167,18 @@ namespace coppercli.Menus
                         {
                             Logger.Log("Safety confirmation aborted");
                             return;
+                        }
+                        if (key.Key == ConsoleKey.DownArrow)
+                        {
+                            // Down = deeper into material (negative Z)
+                            AppState.DepthAdjustment = Math.Max(AppState.DepthAdjustment - DepthAdjustmentIncrement, -DepthAdjustmentMax);
+                            Logger.Log("Depth adjustment: {0:F2}mm (deeper)", AppState.DepthAdjustment);
+                        }
+                        if (key.Key == ConsoleKey.UpArrow)
+                        {
+                            // Up = shallower (positive Z)
+                            AppState.DepthAdjustment = Math.Min(AppState.DepthAdjustment + DepthAdjustmentIncrement, DepthAdjustmentMax);
+                            Logger.Log("Depth adjustment: {0:F2}mm (shallower)", AppState.DepthAdjustment);
                         }
                     }
                     Thread.Sleep(StatusPollIntervalMs);
@@ -276,6 +292,24 @@ namespace coppercli.Menus
                 machine.SendLine(CmdAbsolute);  // G90 - absolute mode (safe, all CAM uses this)
                 machine.SendLine("G17");        // XY plane (standard for PCB milling)
                 Logger.Log("Sent state initialization: G90 G17");
+
+                // Apply depth adjustment (negative = deeper, matches Z axis convention)
+                // Only modify the work offset when there's an actual adjustment
+                // IMPORTANT: G10 L2 P1 Z sets G54 Z to an absolute value, not relative!
+                // We must read the current offset and add our adjustment to it.
+                if (AppState.DepthAdjustment != 0)
+                {
+                    // Get current work offset Z (this is the G54 Z value)
+                    double currentOffsetZ = machine.WorkOffset.Z;
+                    double newOffsetZ = currentOffsetZ + AppState.DepthAdjustment;
+                    machine.SendLine($"G10 L2 P1 Z{newOffsetZ:F3}");
+                    Logger.Log("Applied depth adjustment: Work offset Z changed from {0:F3} to {1:F3} (adjustment: {2:F3})",
+                        currentOffsetZ, newOffsetZ, AppState.DepthAdjustment);
+                }
+                else
+                {
+                    Logger.Log("No depth adjustment (0mm)");
+                }
 
                 // Start milling - G-code file handles positioning from safe height
                 Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
@@ -504,6 +538,7 @@ namespace coppercli.Menus
                 machine.OperatingModeChanged -= logModeChanged;
                 machine.StatusChanged -= logStatusChanged;
                 machine.Info -= logInfo;
+                machine.NonFatalException -= logError;
 
                 Logger.Log("=== MonitorMilling ended ===");
                 Console.CursorVisible = true;

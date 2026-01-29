@@ -413,8 +413,8 @@ namespace coppercli.Menus
                 // Load into machine
                 machine.SetFile(currentFile.GetGCode());
 
-                // Reset height map applied state for new file
-                AppState.AreProbePointsApplied = false;
+                // Reset height map applied state and depth adjustment for new file
+                AppState.ResetProbeApplicationState();
 
                 // Offer to apply existing probe data if complete
                 var probePoints = AppState.ProbePoints;

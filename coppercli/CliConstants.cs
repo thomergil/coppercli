@@ -232,6 +232,16 @@ namespace coppercli
         public const double DefaultProbeGridSize = 5.0;
 
         // =========================================================================
+        // Depth adjustment (re-milling)
+        // =========================================================================
+
+        /// <summary>Increment for depth adjustment per keypress (mm).</summary>
+        public const double DepthAdjustmentIncrement = 0.02;
+
+        /// <summary>Maximum depth adjustment in either direction (mm).</summary>
+        public const double DepthAdjustmentMax = 1.0;
+
+        // =========================================================================
         // Mill progress display: Grid sizing
         // Terminal characters are ~2:1 aspect ratio (taller than wide), so we use
         // 2 characters per cell horizontally to approximate square cells.
@@ -315,6 +325,9 @@ namespace coppercli
 
         /// <summary>Safety checklist sub-message with key instructions.</summary>
         public const string SafetyChecklistSubMessage = "Y=Start  N=Cancel";
+
+        /// <summary>Combined safety/depth sub-message with key instructions.</summary>
+        public const string SafetyDepthSubMessage = "↑/↓=Depth  Y=Start  X=Cancel";
 
         /// <summary>Overlay message when machine is in alarm state.</summary>
         public const string OverlayAlarmMessage = "ALARM - Press X to stop";

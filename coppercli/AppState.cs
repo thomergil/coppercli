@@ -36,6 +36,9 @@ namespace coppercli
         public static bool MacroMode { get; set; } = false;
         public static Action<Vector3, bool>? SingleProbeCallback { get; set; }
 
+        // Depth adjustment for re-milling (positive = deeper)
+        public static double DepthAdjustment { get; set; } = 0;
+
         // Jog state
         public static int JogPresetIndex { get; set; } = 1;  // Start at Normal
 
@@ -55,6 +58,15 @@ namespace coppercli
         {
             Probing = false;
             Machine.ProbeStop();
+        }
+
+        /// <summary>
+        /// Resets probe application state. Called when G-code or probe grid changes.
+        /// </summary>
+        public static void ResetProbeApplicationState()
+        {
+            AreProbePointsApplied = false;
+            DepthAdjustment = 0;
         }
 
         /// <summary>
@@ -89,7 +101,7 @@ namespace coppercli
 
             bool wasApplied = AreProbePointsApplied;
             ProbePoints = null;
-            AreProbePointsApplied = false;
+            ResetProbeApplicationState();
 
             // If probe data was applied to the G-code, reload the original file
             if (wasApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
