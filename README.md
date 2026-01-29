@@ -1,6 +1,6 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A keyboard-driven terminal tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, real-time visualization, optional depth-adjusted remills, and session recovery. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), which is Windows-only.
+Cross-platform, keyboard-driven terminal tool for PCB milling on GRBL machines with probe-based auto-leveling, tool changes, real-time visualization, depth-adjusted remills, session recovery, and a safety-first approach. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), which is Windows-only.
 
 | Probing | Milling |
 |:-------:|:-------:|
