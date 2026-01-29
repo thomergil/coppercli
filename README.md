@@ -21,6 +21,8 @@ Cross-platform, keyboard-driven terminal tool for PCB milling on GRBL machines w
 
 Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) for running from source.
 
+**GRBL version:** As per the [OpenCNCPilot documentation](https://github.com/martin2250/OpenCNCPilot), make sure to use GRBL version 1.1f (later versions may work but are untested). Earlier versions (0.8, 0.9, 1.0) will NOT work. There are no workarounds, so you need to update your controller firmware.
+
 ## Screenshots
 
 | Main Menu                                 | File Browser                                 | Jog                                      |
