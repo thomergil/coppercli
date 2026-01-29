@@ -1,6 +1,6 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-A keyboard-driven terminal tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, session recovery, and real-time visualization. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot).
+A keyboard-driven terminal tool for PCB milling with GRBL CNC machines. Probe-based auto-leveling, automatic tool changes (M6), macros, real-time visualization, optional depth-adjusted remills, and session recovery. Cross-platform. Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), which is Windows-only.
 
 | Probing | Milling |
 |:-------:|:-------:|
@@ -47,8 +47,8 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 
 - Cross-platform, auto-detects serial port and baud rate
 - Keyboard-driven: single-key menu navigation, arrow/HJKL for jogging, Tab to cycle speeds
-- Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3k` = 3× up)
-- Feed override during milling (`+`/`-`/`0` for ±10%/reset)
+- Jog speed presets (fast/normal/slow/creep) with vim-style multipliers (e.g., `3k` = 3× up)
+- Feed speed override during milling in 10% increments
 - Depth adjustment for re-milling in ±0.02mm increments
 - Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
 - Built-in machine profiles
@@ -60,6 +60,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
 - Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
 - Built-in file browser with optional search/filter
+- Safety-first: refuses suspect settings, requires homing, raises to safe height before moves
 - Session recovery: interrupted probing resumes, remembers last file, restores home points
 
 ## Macros
@@ -107,7 +108,7 @@ coppercli --proxy --headless
 
 When the proxy starts, it displays the IP addresses clients can use to connect. A client should connect to the displayed IP and port (default: 34000) using TCP. Only one client can connect at a time. Clients that disconnect ungracefully are detected via heartbeat timeout (30 seconds).
 
-**Warning:** While coppercli employs tools to prevent sleep, do not run the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled.
+**Warning:** While coppercli employs tools to prevent sleep, be careful running the client (coppercli connecting to proxy) on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. The proxy attempts to stop the machine on disconnect (feed hold + soft reset), but this is not guaranteed. Always run the client on a device connected to power with sleep disabled. You should always stay close to your CNC machine when it is running.
 
 ## Command-Line Arguments
 
