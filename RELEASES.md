@@ -2,9 +2,19 @@
 
 ## v0.3.1
 
+### New Features
+
+- **Depth adjustment for re-milling**: During the safety confirmation before milling, press ↑/↓ to adjust cut depth by ±0.02mm (up to ±1mm). Useful for re-milling boards that didn't cut deep enough the first time.
+- **Save probe data to file**: New "Save to File" option in probe menu, available when probing is complete.
+
 ### Changes
 
+- **Disabled menu items show reasons**: Menu items now explain why they're disabled (e.g., "Jog [j] (connect first)", "Mill [m] (apply probe data first)").
+- **Menu mnemonic format**: Changed from `(x)` to `[x]` for better readability.
+- **Settings mnemonic**: Changed from `t` to `s`.
 - Renamed "Network (TCP/IP)" to "Network" in connection menu.
+- "Press Enter to continue" prompts now also accept Escape or Q.
+- Declining to overwrite when saving probe data now re-prompts for a filename instead of canceling.
 
 ## v0.3.0
 

@@ -49,6 +49,7 @@ Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin P
 - Keyboard-driven: single-key menu navigation, arrow/HJKL for jogging, Tab to cycle speeds
 - Jog speed presets (Fast/Normal/Slow/Creep) with vim-style multipliers (e.g., `3k` = 3× up)
 - Feed override during milling (`+`/`-`/`0` for ±10%/reset)
+- Depth adjustment for re-milling (`↑`/`↓` at safety prompt for ±0.02mm)
 - Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
 - Built-in machine profiles
 - Probe grid auto-leveling with configurable parameters (safe height, depth, feed rate, grid size)
