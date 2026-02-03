@@ -235,10 +235,15 @@ namespace coppercli.Core.GCode
                 ? $"Z range: {MinHeight:F3} to {MaxHeight:F3}"
                 : "Z range: --";
 
+            int pct = TotalPoints > 0 ? (int)Math.Round(100.0 * Progress / TotalPoints) : 0;
+            string progressText = Progress == TotalPoints
+                ? $"Progress: {Progress}/{TotalPoints} (complete)"
+                : $"Progress: {Progress}/{TotalPoints} ({pct}%)";
+
             return $"Probe Grid: {SizeX}x{SizeY} points\n" +
                    $"Area: X[{Min.X:F3} to {Max.X:F3}] Y[{Min.Y:F3} to {Max.Y:F3}]\n" +
                    $"Grid: {GridX:F3} x {GridY:F3}\n" +
-                   $"Progress: {Progress}/{TotalPoints} points probed\n" +
+                   $"{progressText}\n" +
                    zRange;
         }
     }

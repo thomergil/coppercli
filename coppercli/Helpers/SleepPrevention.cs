@@ -26,20 +26,30 @@ namespace coppercli.Helpers
         // ES_DISPLAY_REQUIRED = 0x00000002 - not needed, allow display to sleep
 
         /// <summary>
+        /// Creates a ProcessStartInfo configured for background execution.
+        /// Consolidates common setup to avoid duplication across platform-specific methods.
+        /// </summary>
+        private static ProcessStartInfo CreateProcessStartInfo(string fileName, string arguments, bool redirectStdErr = false)
+        {
+            return new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = redirectStdErr
+            };
+        }
+
+        /// <summary>
         /// Check if a program exists on Unix-like systems using 'which'.
         /// </summary>
         private static bool IsProgramAvailable(string programName)
         {
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = WhichCommand,
-                    Arguments = programName,
-                    RedirectStandardOutput = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
+                var psi = CreateProcessStartInfo(WhichCommand, programName);
                 using var process = Process.Start(psi);
                 process?.WaitForExit(ProgramCheckTimeoutMs);
                 bool found = process?.ExitCode == 0;
@@ -157,15 +167,7 @@ namespace coppercli.Helpers
             Logger.Log("SleepPrevention: Starting {0} {1}", CaffeinateCommand, CaffeinateArgs);
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = CaffeinateCommand,
-                    Arguments = CaffeinateArgs,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
+                var psi = CreateProcessStartInfo(CaffeinateCommand, CaffeinateArgs, redirectStdErr: true);
                 _caffeinateProcess = Process.Start(psi);
                 _isActive = _caffeinateProcess != null;
                 if (_isActive)
@@ -196,15 +198,7 @@ namespace coppercli.Helpers
             Logger.Log("SleepPrevention: Starting {0} {1}", SystemdInhibitCommand, SystemdInhibitArgs);
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = SystemdInhibitCommand,
-                    Arguments = SystemdInhibitArgs,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
+                var psi = CreateProcessStartInfo(SystemdInhibitCommand, SystemdInhibitArgs, redirectStdErr: true);
                 _caffeinateProcess = Process.Start(psi);
                 _isActive = _caffeinateProcess != null;
                 if (_isActive)
@@ -300,7 +294,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Check if we're in network mode (Ethernet connection).
+        /// Check if we're in network mode (TCP/IP connection).
         /// Sleep is more dangerous in network mode because disconnection can leave machine in unknown state.
         /// </summary>
         public static bool IsNetworkMode()

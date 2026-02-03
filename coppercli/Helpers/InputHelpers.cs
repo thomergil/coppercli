@@ -2,6 +2,7 @@
 
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
@@ -108,14 +109,6 @@ namespace coppercli.Helpers
         public static bool IsEnterKey(ConsoleKeyInfo key)
         {
             return key.Key == ConsoleKey.Enter;
-        }
-
-        /// <summary>
-        /// Checks if a key press is Backspace.
-        /// </summary>
-        public static bool IsBackspaceKey(ConsoleKeyInfo key)
-        {
-            return key.Key == ConsoleKey.Backspace;
         }
 
         /// <summary>

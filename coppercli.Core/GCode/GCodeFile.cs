@@ -79,7 +79,9 @@ namespace coppercli.Core.GCode
                     TravelDistance += m.Length;
 
                     if (m is Line && !((Line)m).Rapid && ((Line)m).Feed > 0.0)
+                    {
                         TotalTime += TimeSpan.FromMinutes(m.Length / m.Feed);
+                    }
 
                     min = Vector3.ElementwiseMin(min, m.End);
                     max = Vector3.ElementwiseMax(max, m.End);
@@ -87,7 +89,9 @@ namespace coppercli.Core.GCode
                     max = Vector3.ElementwiseMax(max, m.Start);
 
                     if (m is Line && (m as Line).Rapid)
+                    {
                         continue;
+                    }
 
                     minfeed = Vector3.ElementwiseMin(minfeed, m.End);
                     maxfeed = Vector3.ElementwiseMax(maxfeed, m.End);
@@ -103,7 +107,9 @@ namespace coppercli.Core.GCode
             for (int i = 0; i < 3; i++)
             {
                 if (size[i] < 0)
+                {
                     size[i] = 0;
+                }
             }
 
             Size = size;
@@ -115,7 +121,9 @@ namespace coppercli.Core.GCode
             for (int i = 0; i < 3; i++)
             {
                 if (sizefeed[i] < 0)
+                {
                     sizefeed[i] = 0;
+                }
             }
 
             SizeFeed = sizefeed;
@@ -154,12 +162,32 @@ namespace coppercli.Core.GCode
 
         public List<string> GetGCode()
         {
-            List<string> GCode = new List<string>(Toolpath.Count + 1) { "G90 G91.1 G21 G17" };
+            // Preamble on separate lines for standalone files
+            // G90=absolute, G91.1=arc incremental, G21=mm, G17=XY plane
+            List<string> GCode = new List<string>(Toolpath.Count + 5) { "G90", "G91.1", "G21", "G17" };
 
             NumberFormatInfo nfi = new NumberFormatInfo();
             nfi.NumberDecimalSeparator = ".";
 
+            // Defense in depth: find first feed rate and output it early.
+            // Without this, standalone F values (e.g., "G01 F600" with no coords) are lost
+            // during regeneration, causing GRBL errors for commands before any motion.
+            double firstFeed = 0;
+            foreach (Command c in Toolpath)
+            {
+                if (c is Motion m && m.Feed > 0)
+                {
+                    firstFeed = m.Feed;
+                    break;
+                }
+            }
+            if (firstFeed > 0)
+            {
+                GCode.Add(string.Format(nfi, "F{0:0.###}", firstFeed));
+            }
+
             ParserState State = new ParserState();
+            State.Feed = firstFeed;  // Sync state so we don't duplicate the F value
             var xyz = "XYZ";
 
             foreach (Command c in Toolpath)
@@ -184,9 +212,13 @@ namespace coppercli.Core.GCode
                     for (int i = 0; i < 3; i++)
                     {
                         if (!l.PositionValid[i])
+                        {
                             continue;
+                        }
                         if (!l.StartValid || State.Position[i] != l.End[i])
+                        {
                             code += string.Format(nfi, " {0}{1:0.###}", xyz[i], l.End[i]);
+                        }
                     }
 
                     GCode.Add(code);
@@ -223,16 +255,24 @@ namespace coppercli.Core.GCode
                     code += string.Format(nfi, " X{0:0.###}", a.End.X);
                     code += string.Format(nfi, " Y{0:0.###}", a.End.Y);
                     if (State.Position.Z != a.End.Z)
+                    {
                         code += string.Format(nfi, " Z{0:0.###}", a.End.Z);
+                    }
 
                     Vector3 Center = new Vector3(a.U, a.V, 0).RollComponents((int)a.Plane) - State.Position;
 
                     if (Center.X != 0 && a.Plane != ArcPlane.YZ)
+                    {
                         code += string.Format(nfi, " I{0:0.###}", Center.X);
+                    }
                     if (Center.Y != 0 && a.Plane != ArcPlane.ZX)
+                    {
                         code += string.Format(nfi, " J{0:0.###}", Center.Y);
+                    }
                     if (Center.Z != 0 && a.Plane != ArcPlane.XY)
+                    {
                         code += string.Format(nfi, " K{0:0.###}", Center.Z);
+                    }
 
                     GCode.Add(code);
                     State.Position = a.End;
@@ -257,7 +297,9 @@ namespace coppercli.Core.GCode
                     if (!GCodeIncludeMEnd)
                     {
                         if (code == GCodeNumbers.MCodeProgramEnd || code == GCodeNumbers.MCodeProgramEndReset)
+                        {
                             continue;
+                        }
                     }
                     GCode.Add($"M{code}");
                     continue;
@@ -266,7 +308,9 @@ namespace coppercli.Core.GCode
                 if (c is Spindle)
                 {
                     if (!GCodeIncludeSpindle)
+                    {
                         continue;
+                    }
 
                     GCode.Add(string.Format(nfi, "S{0}", ((Spindle)c).Speed));
                     continue;
@@ -275,7 +319,9 @@ namespace coppercli.Core.GCode
                 if (c is Dwell)
                 {
                     if (!GCodeIncludeDwell)
+                    {
                         continue;
+                    }
 
                     GCode.Add(string.Format(nfi, "G4 P{0}", ((Dwell)c).Seconds));
                     continue;
@@ -349,7 +395,9 @@ namespace coppercli.Core.GCode
                     {
                         Arc a = m as Arc;
                         if (a.Plane != ArcPlane.XY)
+                        {
                             throw new Exception("GCode contains arcs in YZ or XZ plane (G18/19), can't apply height map. Use 'Arcs to Lines' if you really need this.");
+                        }
                     }
 
                     if (m is Line)
@@ -398,7 +446,9 @@ namespace coppercli.Core.GCode
                         Arc newArc = new Arc();
 
                         if (oldArc.Plane != ArcPlane.XY)
+                        {
                             throw new Exception("GCode contains arcs in YZ or XZ plane (G18/19), can't rotate gcode. Use 'Arcs to Lines' if you really need this.");
+                        }
 
                         newArc.Direction = oldArc.Direction;
                         newArc.Plane = oldArc.Plane;
@@ -418,7 +468,9 @@ namespace coppercli.Core.GCode
                         newMotion = newLine;
                     }
                     else
+                    {
                         throw new Exception("this shouldn't happen, please contact the author on GitHub");
+                    }
 
                     newMotion.Start = oldMotion.Start;
                     newMotion.End = oldMotion.End;

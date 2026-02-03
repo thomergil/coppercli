@@ -17,7 +17,7 @@ using System.Threading.Tasks;
 
 namespace coppercli.Core.Communication
 {
-    public class Machine
+    public class Machine : IMachine
     {
         public enum OperatingMode
         {
@@ -70,6 +70,24 @@ namespace coppercli.Core.Communication
         public bool PinStateLimitX { get; private set; } = false;
         public bool PinStateLimitY { get; private set; } = false;
         public bool PinStateLimitZ { get; private set; } = false;
+
+        /// <summary>
+        /// Whether the machine has been homed since connection.
+        /// Set by HomeAndWait() or MillingController after successful homing.
+        /// </summary>
+        public bool IsHomed { get; set; } = false;
+
+        /// <summary>
+        /// Whether homing is currently in progress.
+        /// Set by MachineWait.HomeAsync - the single source of truth for homing.
+        /// </summary>
+        public bool IsHoming { get; set; } = false;
+
+        /// <summary>
+        /// Timestamp of last received status response from GRBL.
+        /// Used to detect when GRBL stops/starts responding (e.g., during homing).
+        /// </summary>
+        public DateTime LastStatusReceived { get; private set; } = DateTime.MinValue;
 
         public double FeedRateRealtime { get; private set; } = 0;
         public double SpindleSpeedRealtime { get; private set; } = 0;
@@ -250,7 +268,10 @@ namespace coppercli.Core.Communication
                 {
                     Log.WriteLine(message);
                 }
-                catch { throw; }
+                catch
+                {
+                    throw;
+                }
             }
         }
 
@@ -285,6 +306,28 @@ namespace coppercli.Core.Communication
 
                 bool SendMacroStatusReceived = false;
 
+                // Local function to send a line to GRBL and update state
+                void SendLineToGrbl(string line)
+                {
+                    // // Log every line sent with hex dump for debugging
+                    // var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+                    // var hex = BitConverter.ToString(bytes).Replace("-", " ");
+                    // Controllers.ControllerLog.Log($"GRBL_SEND[{Sent.Count}]: \"{line}\" len={line.Length} hex=[{hex}]");
+
+                    writer.Write(line);
+                    writer.Write('\n');
+                    writer.Flush();
+
+                    RecordLog("> " + line);
+
+                    RaiseEvent(UpdateStatus, line);
+                    RaiseEvent(LineSent, line);
+
+                    BufferState += line.Length + 1;
+
+                    Sent.Enqueue(line);
+                }
+
                 writer.Write($"\n{CmdViewGCodeState}\n");
                 writer.Write($"\n{CmdViewParameters}\n");
                 writer.Flush();
@@ -310,7 +353,7 @@ namespace coppercli.Core.Communication
                         {
                             if (File.Count > FilePosition && (File[FilePosition].Length + 1) < (ControllerBufferSize - BufferState))
                             {
-                                string sendLine = File[FilePosition].Replace(" ", "");
+                                string sendLine = File[FilePosition];
 
                                 // Check if this is an M6 tool change line - don't send to GRBL
                                 // (GRBL doesn't support M6, we handle it in coppercli)
@@ -318,18 +361,7 @@ namespace coppercli.Core.Communication
 
                                 if (!isM6Line)
                                 {
-                                    writer.Write(sendLine);
-                                    writer.Write('\n');
-                                    writer.Flush();
-
-                                    RecordLog("> " + sendLine);
-
-                                    RaiseEvent(UpdateStatus, sendLine);
-                                    RaiseEvent(LineSent, sendLine);
-
-                                    BufferState += sendLine.Length + 1;
-
-                                    Sent.Enqueue(sendLine);
+                                    SendLineToGrbl(sendLine);
                                 }
                                 else
                                 {
@@ -374,20 +406,7 @@ namespace coppercli.Core.Communication
                                         }
                                         else
                                         {
-                                            sendLine = sendLine.Replace(" ", "");
-
-                                            writer.Write(sendLine);
-                                            writer.Write('\n');
-                                            writer.Flush();
-
-                                            RecordLog("> " + sendLine);
-
-                                            RaiseEvent(UpdateStatus, sendLine);
-                                            RaiseEvent(LineSent, sendLine);
-
-                                            BufferState += sendLine.Length + 1;
-
-                                            Sent.Enqueue(sendLine);
+                                            SendLineToGrbl(sendLine);
                                         }
                                     }
                                     break;
@@ -406,20 +425,8 @@ namespace coppercli.Core.Communication
                         }
                         else if (ToSend.Count > 0 && (((string)ToSend.Peek()).Length + 1) < (ControllerBufferSize - BufferState))
                         {
-                            string sendLine = ((string)ToSend.Dequeue()).Replace(" ", "");
-
-                            writer.Write(sendLine);
-                            writer.Write('\n');
-                            writer.Flush();
-
-                            RecordLog("> " + sendLine);
-
-                            RaiseEvent(UpdateStatus, sendLine);
-                            RaiseEvent(LineSent, sendLine);
-
-                            BufferState += sendLine.Length + 1;
-
-                            Sent.Enqueue(sendLine);
+                            string sendLine = (string)ToSend.Dequeue();
+                            SendLineToGrbl(sendLine);
                         }
 
                         DateTime Now = DateTime.Now;
@@ -452,16 +459,25 @@ namespace coppercli.Core.Communication
 
                     RecordLog("< " + line);
 
+                    // // Log all non-status responses
+                    // if (!line.StartsWith("<"))
+                    // {
+                    //     Controllers.ControllerLog.Log($"GRBL_RECV: \"{line}\" Sent.Count={Sent.Count} BufferState={BufferState}");
+                    // }
+
                     if (line == ResponseOk)
                     {
                         if (Sent.Count != 0)
                         {
-                            BufferState -= ((string)Sent.Dequeue()).Length + 1;
+                            var acked = (string)Sent.Dequeue();
+                            // Controllers.ControllerLog.Log($"GRBL_OK: acked \"{acked}\"");
+                            BufferState -= acked.Length + 1;
                         }
                         else
                         {
                             // This can happen during startup (initial $G/$# aren't queued)
                             // or if buffer state gets out of sync - just reset it
+                            // Controllers.ControllerLog.Log("GRBL_OK: nothing in Sent queue, resetting BufferState");
                             BufferState = 0;
                         }
                     }
@@ -473,11 +489,13 @@ namespace coppercli.Core.Communication
                             {
                                 string errorline = (string)Sent.Dequeue();
 
+                                // Controllers.ControllerLog.Log($"GRBL_ERROR: \"{line}\" for command \"{errorline}\"");
                                 RaiseEvent(ReportError, $"{line}: {errorline}");
                                 BufferState -= errorline.Length + 1;
                             }
                             else
                             {
+                                // Controllers.ControllerLog.Log($"GRBL_ERROR: \"{line}\" but Sent queue empty!");
                                 if ((DateTime.Now - StartTime).TotalMilliseconds > Constants.ErrorGracePeriodMs)
                                     RaiseEvent(ReportError, $"Received <{line}> without anything in the Sent Buffer");
 
@@ -503,6 +521,7 @@ namespace coppercli.Core.Communication
                         }
                         else if (line.StartsWith(ResponseAlarmPrefix))
                         {
+                            // Controllers.ControllerLog.Log($"GRBL_ALARM: \"{line}\"");
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
                             ToSend.Clear();
@@ -538,7 +557,7 @@ namespace coppercli.Core.Communication
         {
             if (Connected)
             {
-                throw new Exception("Can't Connect: Already Connected");
+                throw new Exception("Already connected. Close the existing connection first.");
             }
 
             switch (_settings.ConnectionType)
@@ -554,7 +573,7 @@ namespace coppercli.Core.Communication
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        RaiseEvent(NonFatalException, $"Access denied to {_settings.SerialPortName} (port may be in use)");
+                        RaiseEvent(NonFatalException, $"Cannot access {_settings.SerialPortName} - serial port is in use by another connection. Close the existing connection first.");
                     }
                     catch (IOException ex)
                     {
@@ -735,8 +754,21 @@ namespace coppercli.Core.Communication
 
             OverrideChanged?.Invoke();
 
-            SendLine(CmdViewGCodeState);
-            SendLine(CmdViewParameters);
+            // These commands query GRBL's modal state ($G) and coordinate offsets ($#).
+            // They are commented out because:
+            // 1. They get queued immediately, before GRBL has time to process the soft reset.
+            //    GRBL needs ~500ms (ResetWaitMs) after reset before accepting commands.
+            //    This causes "Missing the expected G-code word value" errors.
+            // 2. The initial connection (lines 294-295) already sends $G/$# with proper timing.
+            // 3. No callers depend on these being sent immediately:
+            //    - ConnectionMenu: WaitForGrblResponse just polls status, doesn't need $G/$#
+            //    - JogMenu (M key): Immediately homes, doesn't need prior state
+            //    - JogMenu (R key): Manual reset, state updates via polling
+            //    - JogMenu (ProbeZ cancel): Just clearing state
+            //    - CncWebServer API/WebSocket reset: No wait, would error immediately
+            //    - MachineWait.StopAndResetAsync: Waits AFTER this returns, too late
+            // SendLine(CmdViewGCodeState);
+            // SendLine(CmdViewParameters);
         }
 
         public void SendMacroLines(params string[] lines)
@@ -864,7 +896,9 @@ namespace coppercli.Core.Communication
                         if (int.TryParse(m.Groups[2].Value, out code))
                         {
                             if (IsPauseMCode(code))
-                                pauselines[line] = true;
+                        {
+                            pauselines[line] = true;
+                        }
                         }
                     }
                 }
@@ -904,6 +938,19 @@ namespace coppercli.Core.Communication
                 RaiseEvent(Info, "Not in Manual Mode");
                 return;
             }
+
+            // // Log machine state and first 20 lines of file for debugging
+            // Controllers.ControllerLog.Log($"FILE_START: Mode={Mode}, Status={Status}, FilePosition={FilePosition}, File.Count={File.Count}");
+            // Controllers.ControllerLog.Log($"FILE_START: BufferState={BufferState}, ToSend.Count={ToSend.Count}, Sent.Count={Sent.Count}");
+            // Controllers.ControllerLog.Log($"FILE_START: WorkPos=({WorkPosition.X:F3}, {WorkPosition.Y:F3}, {WorkPosition.Z:F3})");
+            // Controllers.ControllerLog.Log($"FILE_START: MachinePos=({MachinePosition.X:F3}, {MachinePosition.Y:F3}, {MachinePosition.Z:F3})");
+            // for (int i = 0; i < Math.Min(20, File.Count); i++)
+            // {
+            //     var line = File[i];
+            //     var bytes = System.Text.Encoding.UTF8.GetBytes(line);
+            //     var hex = BitConverter.ToString(bytes).Replace("-", " ");
+            //     Controllers.ControllerLog.Log($"FILE[{i}]: \"{line}\" len={line.Length} hex=[{hex}]");
+            // }
 
             Mode = OperatingMode.SendFile;
         }
@@ -1006,7 +1053,10 @@ namespace coppercli.Core.Communication
                     CurrentTLO = double.Parse(line.Substring(5, line.Length - 6), Constants.DecimalParseFormat);
                     RaiseEvent(PositionUpdateReceived);
                 }
-                catch { RaiseEvent(NonFatalException, "Error while Parsing Status Message"); }
+                catch
+                {
+                    RaiseEvent(NonFatalException, "Error while Parsing Status Message");
+                }
                 return;
             }
 
@@ -1074,7 +1124,10 @@ namespace coppercli.Core.Communication
                     }
                 }
             }
-            catch { RaiseEvent(NonFatalException, "Error while Parsing Status Message"); }
+            catch
+            {
+                RaiseEvent(NonFatalException, "Error while Parsing Status Message");
+            }
         }
 
         private void ParseStatus(string line)
@@ -1086,6 +1139,8 @@ namespace coppercli.Core.Communication
                 ReportBadStatus(line);
                 return;
             }
+
+            LastStatusReceived = DateTime.Now;
 
             bool posUpdate = false;
             bool overrideUpdate = false;
@@ -1216,17 +1271,7 @@ namespace coppercli.Core.Communication
                 {
                     try
                     {
-                        string PositionString = m.Groups[2].Value;
-
-                        if (_settings.IgnoreAdditionalAxes)
-                        {
-                            string[] parts = PositionString.Split(',');
-                            if (parts.Length > 3)
-                            {
-                                Array.Resize(ref parts, 3);
-                                PositionString = string.Join(",", parts);
-                            }
-                        }
+                        string PositionString = TrimToThreeAxes(m.Groups[2].Value);
 
                         NewMachinePosition = Vector3.Parse(PositionString);
 
@@ -1313,19 +1358,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            string PositionString = pos.Value;
-
-            if (_settings.IgnoreAdditionalAxes)
-            {
-                string[] parts = PositionString.Split(',');
-                if (parts.Length > 3)
-                {
-                    Array.Resize(ref parts, 3);
-                    PositionString = string.Join(",", parts);
-                }
-            }
-
-            Vector3 ProbePos = Vector3.Parse(PositionString);
+            Vector3 ProbePos = Vector3.Parse(TrimToThreeAxes(pos.Value));
             LastProbePosMachine = ProbePos;
 
             ProbePos -= WorkOffset;
@@ -1370,6 +1403,23 @@ namespace coppercli.Core.Communication
         private void ReportBadStatus(string line)
         {
             NonFatalException?.Invoke($"Received Bad Status: '{line}'");
+        }
+
+        /// <summary>
+        /// Trims a position string to 3 axes if IgnoreAdditionalAxes is enabled.
+        /// </summary>
+        private string TrimToThreeAxes(string positionString)
+        {
+            if (_settings.IgnoreAdditionalAxes)
+            {
+                string[] parts = positionString.Split(',');
+                if (parts.Length > 3)
+                {
+                    Array.Resize(ref parts, 3);
+                    return string.Join(",", parts);
+                }
+            }
+            return positionString;
         }
 
         // Event helpers - direct invocation instead of WPF Dispatcher

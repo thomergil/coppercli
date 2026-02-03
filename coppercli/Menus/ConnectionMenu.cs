@@ -1,14 +1,18 @@
 // Extracted from Program.cs
 
 using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using coppercli.Core.Communication;
+using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
 using coppercli.Helpers;
+using coppercli.WebServer;
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Menus
@@ -23,6 +27,8 @@ namespace coppercli.Menus
             Success,
             Timeout,
             PortNotOpened,
+            ClientAlreadyConnected,
+            SerialPortBusy,
             Error
         }
 
@@ -137,7 +143,7 @@ namespace coppercli.Menus
                 {
                     settings.ConnectionType = ConnectionType.Ethernet;
 
-                    // Build dynamic Ethernet menu
+                    // Build dynamic network menu
                     var ethMenu = new MenuDef<EthernetOption>();
 
                     // Add Reconnect option if we have saved settings
@@ -170,8 +176,8 @@ namespace coppercli.Menus
                             AnsiConsole.MarkupLine($"[{ColorDim}]  /16 = {sampleIP[0]}.{sampleIP[1]}.*.* (65534 hosts)[/]");
                         }
 
-                        int mask = MenuHelpers.Ask("Subnet mask:", 24);
-                        mask = Math.Clamp(mask, 16, 24);
+                        int mask = MenuHelpers.Ask("Subnet mask:", NetworkScanDefaultMask);
+                        mask = Math.Clamp(mask, NetworkScanMinMask, NetworkScanDefaultMask);
                         int scanPort = MenuHelpers.Ask("Port to scan for:", ProxyDefaultPort);
 
                         if (AutoDetectEthernet(scanPort, mask))
@@ -221,30 +227,12 @@ namespace coppercli.Menus
 
             try
             {
-                ConnectionResult result = ConnectionResult.Error;
-                string? message = null;
-
-                // Suppress errors during connection (initial status parsing may produce transient errors)
-                AppState.SuppressErrors = true;
-                AnsiConsole.Status()
-                    .Start("Connecting...", ctx =>
-                    {
-                        (result, message) = TryConnect(ConnectionTimeoutMs + GrblResponseTimeoutMs);
-                    });
-                AppState.SuppressErrors = false;
+                var (result, message) = TryConnectWithStatus("Connecting...");
 
                 switch (result)
                 {
                     case ConnectionResult.Success when message != null:
-                        // Don't announce Alarm state - it will be cleared silently
-                        if (message != StatusIdle && !message.StartsWith(StatusAlarm))
-                        {
-                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected! GRBL status: {message}[/]");
-                        }
-                        // Save connection settings and remember this as the last successful connection type
-                        AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
-                        Persistence.SaveSettings();
-                        Persistence.SaveSession();
+                        HandleSuccessfulConnection(message);
                         break;
                     case ConnectionResult.Success:
                         // Port opened but no GRBL response - not a usable connection
@@ -257,6 +245,39 @@ namespace coppercli.Menus
                         if (machine.Connected)
                         {
                             machine.Disconnect();
+                        }
+                        break;
+                    case ConnectionResult.ClientAlreadyConnected:
+                        // Another TUI client is already connected to the proxy
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Another TUI client is already connected to the proxy.[/]");
+                        AnsiConsole.MarkupLine($"[{ColorDim}]Close the other TUI client first, then try again.[/]");
+                        break;
+                    case ConnectionResult.SerialPortBusy:
+                        // Serial port is busy (likely because a web client is using it)
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Serial port is busy (a web client may be connected).[/]");
+                        if (!MenuHelpers.Confirm("Force disconnect the web client?"))
+                        {
+                            Environment.Exit(0);
+                        }
+                        if (TryForceDisconnectRemote(settings))
+                        {
+                            Thread.Sleep(ForceDisconnectDelayMs);
+                            // Retry connection
+                            (result, message) = TryConnectWithStatus("Reconnecting...");
+                            if (result == ConnectionResult.Success && message != null)
+                            {
+                                HandleSuccessfulConnection(message);
+                            }
+                            else
+                            {
+                                AnsiConsole.MarkupLine($"[{ColorError}]Reconnection failed.[/]");
+                                Environment.Exit(1);
+                            }
+                        }
+                        else
+                        {
+                            AnsiConsole.MarkupLine($"[{ColorError}]Could not contact web server to force disconnect.[/]");
+                            Environment.Exit(1);
                         }
                         break;
                     case ConnectionResult.PortNotOpened:
@@ -282,6 +303,41 @@ namespace coppercli.Menus
             {
                 AppState.SuppressErrors = false;
             }
+        }
+
+        /// <summary>
+        /// Wraps TryConnect with status display and error suppression.
+        /// </summary>
+        private static (ConnectionResult Result, string? Message) TryConnectWithStatus(string statusMessage)
+        {
+            ConnectionResult result = ConnectionResult.Error;
+            string? message = null;
+
+            AppState.SuppressErrors = true;
+            AnsiConsole.Status()
+                .Start(statusMessage, ctx =>
+                {
+                    (result, message) = TryConnect(ConnectionTimeoutMs + GrblResponseTimeoutMs);
+                });
+            AppState.SuppressErrors = false;
+
+            return (result, message);
+        }
+
+        /// <summary>
+        /// Handles successful connection: announces status and saves settings.
+        /// </summary>
+        private static void HandleSuccessfulConnection(string grblStatus)
+        {
+            // Don't announce Alarm state - it will be cleared silently
+            if (grblStatus != StatusIdle && !grblStatus.StartsWith(StatusAlarm))
+            {
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected! GRBL status: {grblStatus}[/]");
+            }
+            // Save connection settings and remember this as the last successful connection type
+            AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
+            Persistence.SaveSettings();
+            Persistence.SaveSession();
         }
 
         private static bool AutoDetectSerial(string[] ports)
@@ -519,37 +575,60 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             string? grblStatus = null;
             bool timedOut = false;
+            bool connectionRejected = false;
+            bool serialPortBusy = false;
             Exception? error = null;
 
-            var connectTask = Task.Run(() =>
+            // Listen for rejection/error messages from proxy
+            void OnLineReceived(string line)
             {
-                machine.Connect();
-                if (!machine.Connected)
+                if (line.StartsWith(ProxyConnectionRejectedPrefix))
                 {
-                    return null;
+                    connectionRejected = true;
                 }
-                machine.SoftReset();
-                return StatusHelpers.WaitForGrblResponse(machine, GrblResponseTimeoutMs);
-            });
-
-            if (connectTask.Wait(timeoutMs))
-            {
-                try
+                else if (line.StartsWith(ProxySerialPortInUsePrefix) || line.StartsWith(ProxySerialPortBusyPrefix))
                 {
-                    grblStatus = connectTask.Result;
-                }
-                catch (AggregateException ae)
-                {
-                    error = ae.InnerException;
+                    serialPortBusy = true;
                 }
             }
-            else
+
+            machine.LineReceived += OnLineReceived;
+            try
             {
-                timedOut = true;
-                connectTask.ContinueWith(t =>
+                var connectTask = Task.Run(() =>
                 {
-                    var _ = t.Exception;
-                }, TaskContinuationOptions.OnlyOnFaulted);
+                    machine.Connect();
+                    if (!machine.Connected)
+                    {
+                        return null;
+                    }
+                    machine.SoftReset();
+                    return MachineWait.WaitForStatusChangeAsync(machine, StatusDisconnected, GrblResponseTimeoutMs).GetAwaiter().GetResult();
+                });
+
+                if (connectTask.Wait(timeoutMs))
+                {
+                    try
+                    {
+                        grblStatus = connectTask.Result;
+                    }
+                    catch (AggregateException ae)
+                    {
+                        error = ae.InnerException;
+                    }
+                }
+                else
+                {
+                    timedOut = true;
+                    connectTask.ContinueWith(t =>
+                    {
+                        var _ = t.Exception;
+                    }, TaskContinuationOptions.OnlyOnFaulted);
+                }
+            }
+            finally
+            {
+                machine.LineReceived -= OnLineReceived;
             }
 
             if (error != null)
@@ -568,7 +647,45 @@ namespace coppercli.Menus
             {
                 return (ConnectionResult.Success, null);
             }
+            if (connectionRejected)
+            {
+                return (ConnectionResult.ClientAlreadyConnected, null);
+            }
+            if (serialPortBusy)
+            {
+                return (ConnectionResult.SerialPortBusy, null);
+            }
             return (ConnectionResult.PortNotOpened, null);
+        }
+
+        /// <summary>
+        /// Attempts to force disconnect web clients on a remote server by calling the HTTP API.
+        /// Returns true if the API call succeeded.
+        /// </summary>
+        private static bool TryForceDisconnectRemote(MachineSettings settings)
+        {
+            if (settings.ConnectionType != ConnectionType.Ethernet || string.IsNullOrEmpty(settings.EthernetIP))
+            {
+                return false;
+            }
+
+            // Web server typically runs on proxy port + 1 (default: 34000 + 1 = 34001)
+            int webPort = settings.EthernetPort + 1;
+            var url = $"http://{settings.EthernetIP}:{webPort}{WebConstants.ApiForceDisconnect}";
+
+            try
+            {
+                using var client = new HttpClient();
+                client.Timeout = TimeSpan.FromMilliseconds(ForceDisconnectApiTimeoutMs);
+                var response = client.PostAsync(url, null).Result;
+                Logger.Log($"TryForceDisconnectRemote: {url} returned {response.StatusCode}");
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"TryForceDisconnectRemote failed: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -594,15 +711,15 @@ namespace coppercli.Menus
             }
 
             // Clear any alarm/door state before homing
-            while (StatusHelpers.IsProblematicState(machine))
+            while (MachineWait.IsProblematic(machine))
             {
-                if (StatusHelpers.IsDoor(machine))
+                if (MachineWait.IsDoor(machine))
                 {
                     AnsiConsole.MarkupLine($"[{ColorWarning}]Door is open. Close the door and press Enter.[/]");
                     Console.ReadLine();
                     MachineCommands.ClearDoorState(machine);
                 }
-                else if (StatusHelpers.IsAlarm(machine))
+                else if (MachineWait.IsAlarm(machine))
                 {
                     // Silently clear alarm state
                     MachineCommands.Unlock(machine);
@@ -610,19 +727,11 @@ namespace coppercli.Menus
                 Thread.Sleep(CommandDelayMs);
             }
 
-            MachineCommands.Home(machine);
-
             AnsiConsole.Status()
                 .Start("Homing...", ctx =>
                 {
-                    StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
+                    MachineCommands.HomeAndWait(machine);
                 });
-
-            // Mark as homed after successful homing
-            if (StatusHelpers.IsIdle(machine))
-            {
-                AppState.IsHomed = true;
-            }
         }
     }
 }

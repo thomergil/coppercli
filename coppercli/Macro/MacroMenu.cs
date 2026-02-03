@@ -64,14 +64,7 @@ namespace coppercli.Macro
             var path = BrowseForMacro();
             if (path != null)
             {
-                var session = AppState.Session;
-                session.LastMacroFile = path;
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    session.LastMacroBrowseDirectory = dir;
-                }
-                Persistence.SaveSession();
+                SaveMacroSession(path);
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded: {Markup.Escape(Path.GetFileName(path))}[/]");
                 Thread.Sleep(ConfirmationDisplayMs);
             }
@@ -84,6 +77,21 @@ namespace coppercli.Macro
         {
             var session = AppState.Session;
             return FileMenu.BrowseForFile(new[] { MacroExtension }, startDirectory: session.LastMacroBrowseDirectory);
+        }
+
+        /// <summary>
+        /// Saves macro path to session for "last used" tracking.
+        /// </summary>
+        private static void SaveMacroSession(string path)
+        {
+            var session = AppState.Session;
+            session.LastMacroFile = path;
+            var dir = Path.GetDirectoryName(path);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                session.LastMacroBrowseDirectory = dir;
+            }
+            Persistence.SaveSession();
         }
 
         /// <summary>
@@ -139,14 +147,7 @@ namespace coppercli.Macro
                 }
 
                 // Save as last macro file
-                var session = AppState.Session;
-                session.LastMacroFile = path;
-                var dir = Path.GetDirectoryName(path);
-                if (!string.IsNullOrEmpty(dir))
-                {
-                    session.LastMacroBrowseDirectory = dir;
-                }
-                Persistence.SaveSession();
+                SaveMacroSession(path);
 
                 AnsiConsole.MarkupLine($"[{ColorDim}]Parsed {commands.Count} commands[/]");
                 Thread.Sleep(MacroParseDisplayMs);

@@ -1,3 +1,4 @@
+#nullable enable
 using coppercli.Core.GCode.GCodeCommands;
 using coppercli.Core.Util;
 using System;
@@ -57,14 +58,14 @@ namespace coppercli.Core.GCode
 
     public static class GCodeParser
     {
-        public static ParserState State;
+        public static ParserState State = null!;
 
         public static Regex GCodeSplitter = new Regex(@"([A-Z])\s*(\-?\d+\.?\d*)", RegexOptions.Compiled);
         private static double[] MotionCommands = new double[] { 0, 1, 2, 3 };
         private static string ValidWords = "GMXYZIJKFRSP";
         private static string IgnoreAxes = "ABC";
-        public static List<Command> Commands;
-        public static List<string> Warnings;
+        public static List<Command> Commands = null!;
+        public static List<string> Warnings = null!;
 
         /// <summary>
         /// When true, A, B, C axes are ignored during parsing
@@ -88,6 +89,108 @@ namespace coppercli.Core.GCode
             Parse(File.ReadLines(path));
         }
 
+        // =========================================================================
+        // M-code detection utilities (for tool change, pause, etc.)
+        // =========================================================================
+
+        private static readonly Regex M6Pattern = new Regex(@"\bM0*6\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex M0Pattern = new Regex(@"\bM0+\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ToolNumberPattern = new Regex(@"\bT(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ToolNamePattern = new Regex(@"\(([^)]+)\)", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Returns true if the line contains an M6 (tool change) command.
+        /// </summary>
+        public static bool IsM6Line(string line)
+        {
+            return M6Pattern.IsMatch(line);
+        }
+
+        /// <summary>
+        /// Returns true if the line contains an M0 (program pause) command.
+        /// </summary>
+        public static bool IsM0Line(string line)
+        {
+            return M0Pattern.IsMatch(line);
+        }
+
+        /// <summary>
+        /// Extracts the tool number from a line (e.g., "T1" returns 1).
+        /// Returns null if no tool number found.
+        /// </summary>
+        public static int? ExtractToolNumber(string line)
+        {
+            var match = ToolNumberPattern.Match(line);
+            if (match.Success && int.TryParse(match.Groups[1].Value, out int toolNumber))
+            {
+                return toolNumber;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Extracts the tool name from a comment in the line.
+        /// Returns null if no comment found.
+        /// </summary>
+        public static string? ExtractToolName(string line)
+        {
+            var match = ToolNamePattern.Match(line);
+            if (match.Success)
+            {
+                return match.Groups[1].Value.Trim();
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Finds tool info by searching the given line and preceding lines.
+        /// Returns (toolNumber, toolName) tuple.
+        /// </summary>
+        public static (int? ToolNumber, string? ToolName) FindToolInfo(IList<string> lines, int lineIndex)
+        {
+            int? toolNumber = null;
+            string? toolName = null;
+
+            // First check the current line
+            if (lineIndex >= 0 && lineIndex < lines.Count)
+            {
+                string line = lines[lineIndex];
+                toolNumber = ExtractToolNumber(line);
+                toolName = ExtractToolName(line);
+            }
+
+            // Search backwards for missing info (tool number and/or name)
+            for (int i = lineIndex - 1; i >= 0 && i >= lineIndex - Constants.ToolInfoSearchLines; i--)
+            {
+                if (i >= lines.Count)
+                {
+                    continue;
+                }
+
+                // Stop if we have both number and name
+                if (toolNumber != null && toolName != null)
+                {
+                    break;
+                }
+
+                string prevLine = lines[i];
+
+                // Look for tool number if we don't have one
+                if (toolNumber == null)
+                {
+                    toolNumber = ExtractToolNumber(prevLine);
+                }
+
+                // Look for tool name if we don't have one
+                if (toolName == null)
+                {
+                    toolName = ExtractToolName(prevLine);
+                }
+            }
+
+            return (toolNumber, toolName);
+        }
+
         public static void Parse(IEnumerable<string> file)
         {
             int i = 0;
@@ -102,7 +205,9 @@ namespace coppercli.Core.GCode
                 string line = CleanupLine(linei, i);
 
                 if (string.IsNullOrWhiteSpace(line))
+                {
                     continue;
+                }
 
                 Parse(line.ToUpper(), i);
             }
@@ -136,7 +241,9 @@ namespace coppercli.Core.GCode
             int commentIndex = line.IndexOf(';');
 
             if (commentIndex > -1)
+            {
                 line = line.Remove(commentIndex);
+            }
 
             int start = -1;
 
@@ -145,7 +252,9 @@ namespace coppercli.Core.GCode
                 int end = line.IndexOf(')');
 
                 if (end < start)
+                {
                     throw new ParseException("mismatched parentheses", lineNumber);
+                }
 
                 line = line.Remove(start, end - start);
             }
@@ -193,11 +302,15 @@ namespace coppercli.Core.GCode
                 }
 
                 if (Words[i].Command != 'F')
+                {
                     continue;
+                }
 
                 State.Feed = Words[i].Parameter;
                 if (State.Unit == ParseUnit.Imperial)
+                {
                     State.Feed *= 25.4;
+                }
                 Words.RemoveAt(i--);
                 continue;
             }
@@ -209,7 +322,9 @@ namespace coppercli.Core.GCode
                     int param = (int)Words[i].Parameter;
 
                     if (param != Words[i].Parameter || param < 0)
+                    {
                         throw new ParseException("M code can only have positive integer parameters", lineNumber);
+                    }
 
                     Commands.Add(new MCode() { Code = param, LineNumber = lineNumber });
 
@@ -223,7 +338,9 @@ namespace coppercli.Core.GCode
                     double param = Words[i].Parameter;
 
                     if (param < 0)
+                    {
                         Warnings.Add($"spindle speed must be positive. (line {lineNumber})");
+                    }
 
                     Commands.Add(new Spindle() { Speed = Math.Abs(param), LineNumber = lineNumber });
 
@@ -273,21 +390,21 @@ namespace coppercli.Core.GCode
                     if (param == GCodeNumbers.UnitsInches)
                     {
                         State.Unit = ParseUnit.Imperial;
-                        Warnings.Add($"WARNING: File uses INCHES (G{GCodeNumbers.UnitsInches}) - coordinates may be incorrect if machine expects mm. (line {lineNumber})");
+                        Warnings.Add($"{Constants.WarningPrefixInches}: File uses inches (G{GCodeNumbers.UnitsInches}) - coordinates may be incorrect if machine expects mm. (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
                     if (param == GCodeNumbers.Home)
                     {
-                        Warnings.Add($"DANGER: G{GCodeNumbers.Home} (Home) command found - may crash into workpiece! (line {lineNumber})");
+                        Warnings.Add($"{Constants.WarningPrefixDanger}: G{GCodeNumbers.Home} (Home) command found - may crash into workpiece! (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
                     if (param == GCodeNumbers.HomeSecondary)
                     {
-                        Warnings.Add($"DANGER: G{GCodeNumbers.HomeSecondary} (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
+                        Warnings.Add($"{Constants.WarningPrefixDanger}: G{GCodeNumbers.HomeSecondary} (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
                         Words.RemoveAt(i);
                         i--;
                         continue;
@@ -364,7 +481,9 @@ namespace coppercli.Core.GCode
             }
 
             if (Words.Count == 0)
+            {
                 return;
+            }
 
             int MotionMode = State.LastMotionMode;
 
@@ -376,7 +495,9 @@ namespace coppercli.Core.GCode
             }
 
             if (MotionMode < 0)
+            {
                 throw new ParseException("no motion mode active", lineNumber);
+            }
 
             double UnitMultiplier = (State.Unit == ParseUnit.Metric) ? 1 : 25.4;
 
@@ -401,7 +522,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'X')
+                    {
                         continue;
+                    }
                     EndPos.X = Words[i].Parameter * UnitMultiplier + Incremental * EndPos.X;
                     Words.RemoveAt(i);
                     State.PositionValid[0] = true;
@@ -411,7 +534,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'Y')
+                    {
                         continue;
+                    }
                     EndPos.Y = Words[i].Parameter * UnitMultiplier + Incremental * EndPos.Y;
                     Words.RemoveAt(i);
                     State.PositionValid[1] = true;
@@ -421,7 +546,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'Z')
+                    {
                         continue;
+                    }
                     EndPos.Z = Words[i].Parameter * UnitMultiplier + Incremental * EndPos.Z;
                     Words.RemoveAt(i);
                     State.PositionValid[2] = true;
@@ -441,7 +568,9 @@ namespace coppercli.Core.GCode
             if (MotionMode <= 1)
             {
                 if (Words.Count > 0)
+                {
                     Warnings.Add($"motion command must be last in line (ignoring unused words {string.Join(" ", Words)} in block). (line {lineNumber})");
+                }
 
                 Line motion = new Line();
                 motion.Start = State.Position;
@@ -484,7 +613,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'I')
+                    {
                         continue;
+                    }
 
                     switch (State.Plane)
                     {
@@ -506,7 +637,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'J')
+                    {
                         continue;
+                    }
 
                     switch (State.Plane)
                     {
@@ -528,7 +661,9 @@ namespace coppercli.Core.GCode
                 for (int i = 0; i < Words.Count; i++)
                 {
                     if (Words[i].Command != 'K')
+                    {
                         continue;
+                    }
 
                     switch (State.Plane)
                     {
@@ -552,18 +687,26 @@ namespace coppercli.Core.GCode
             for (int i = 0; i < Words.Count; i++)
             {
                 if (Words[i].Command != 'R')
+                {
                     continue;
+                }
 
                 if (IJKused)
+                {
                     throw new ParseException("both IJK and R notation used", lineNumber);
+                }
 
                 if (State.Position == EndPos)
+                {
                     throw new ParseException("arcs in R-notation must have non-coincident start and end points", lineNumber);
+                }
 
                 double Radius = Words[i].Parameter * UnitMultiplier;
 
                 if (Radius == 0)
+                {
                     throw new ParseException("radius can't be zero", lineNumber);
+                }
 
                 double A, B;
 
@@ -607,7 +750,9 @@ namespace coppercli.Core.GCode
             }
 
             if (Words.Count > 0)
+            {
                 Warnings.Add($"motion command must be last in line (ignoring unused words {string.Join(" ", Words)} in block). (line {lineNumber})");
+            }
 
             Arc arc = new Arc();
             arc.Start = State.Position;

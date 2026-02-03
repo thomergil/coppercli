@@ -9,16 +9,25 @@ namespace coppercli.Core.Settings
         // Connection - tracks last successful connection for auto-reconnect
         public ConnectionType? LastSuccessfulConnectionType { get; set; }
 
-        // File browsing
+        // File browsing (G-code)
         public string LastBrowseDirectory { get; set; } = "";
         public string LastLoadedGCodeFile { get; set; } = "";
+
+        // File browsing (probe grids) - separate from G-code to avoid pwd confusion
+        public string LastProbeBrowseDirectory { get; set; } = "";
         public string LastMacroBrowseDirectory { get; set; } = "";
         public string LastMacroFile { get; set; } = "";
 
         // Probe auto-save (for resuming interrupted probes)
         public string ProbeAutoSavePath { get; set; } = "";
 
-        // Last saved complete probe file
+        // G-Code file that was loaded when probe data was created (for recovery)
+        public string ProbeSourceGCodeFile { get; set; } = "";
+
+        // Current probe file (timestamped file created on probe completion)
+        public string CurrentProbeFile { get; set; } = "";
+
+        // Last saved/renamed probe file (user-chosen name)
         public string LastSavedProbeFile { get; set; } = "";
 
         // Work zero position (stored when user sets X0 Y0 Z0)

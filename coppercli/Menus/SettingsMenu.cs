@@ -3,6 +3,7 @@
 using Spectre.Console;
 using coppercli.Helpers;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Menus
 {
@@ -222,9 +223,8 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
             var settings = AppState.Settings;
 
-            if (!machine.Connected)
+            if (!MenuHelpers.RequireConnection())
             {
-                MenuHelpers.ShowError("Connect to machine first");
                 return;
             }
 
@@ -263,7 +263,7 @@ namespace coppercli.Menus
                     DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Arrows{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}HJKL{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiInfo}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
                     DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Tab{DisplayHelpers.AnsiReset} - Cycle speed", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
-                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiBoldGreen}Enter{DisplayHelpers.AnsiReset} - Save this position    {DisplayHelpers.AnsiInfo}C{DisplayHelpers.AnsiReset} - Clear saved    {DisplayHelpers.AnsiInfo}Esc/Q{DisplayHelpers.AnsiReset} - Cancel", winWidth);
+                    DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiSuccessBold}Enter{DisplayHelpers.AnsiReset} - Save this position    {DisplayHelpers.AnsiInfo}C{DisplayHelpers.AnsiReset} - Clear saved    {DisplayHelpers.AnsiInfo}Esc/Q{DisplayHelpers.AnsiReset} - Cancel", winWidth);
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
                     var keyOrNull = InputHelpers.ReadKeyPolling();
@@ -278,7 +278,7 @@ namespace coppercli.Menus
                         return;
                     }
 
-                    if (key.Key == ConsoleKey.Enter)
+                    if (InputHelpers.IsEnterKey(key))
                     {
                         // Save current machine position as tool setter
                         settings.ToolSetterX = mpos.X;

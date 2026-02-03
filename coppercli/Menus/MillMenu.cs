@@ -1,10 +1,14 @@
-// Extracted from Program.cs
+// Mill menu - thin wrapper around MillingController
+// Controller owns workflow logic, TUI owns display and user interaction
 
 using System.Linq;
 using coppercli.Core.Communication;
+using coppercli.Core.Controllers;
+using coppercli.Core.Util;
 using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Helpers.DisplayHelpers;
 
@@ -12,9 +16,20 @@ namespace coppercli.Menus
 {
     /// <summary>
     /// Mill menu for running G-code files with progress display.
+    /// Uses MillingController for workflow logic.
     /// </summary>
     internal static class MillMenu
     {
+        // Shared state for display updates (set by event handlers, read by render loop)
+        private static ProgressInfo? _latestProgress;
+        private static ControllerState _latestState;
+        private static ToolChangeInfo? _pendingToolChange;
+        private static ControllerError? _latestError;
+
+        // Tool change display state (replaces ToolChangeHelpers static properties)
+        private static string? _toolChangeOverlayMessage;
+        private static string? _toolChangeOverlaySubMessage;
+        private static string? _toolChangeStatusAction;
 
         public static void Show()
         {
@@ -23,28 +38,40 @@ namespace coppercli.Menus
             // Defense in depth: ensure auto-clear is disabled during milling
             machine.EnableAutoStateClear = false;
 
-            if (!MenuHelpers.RequireConnection())
+            try
             {
-                return;
-            }
+                // Validate preflight (shared with WebServer)
+                var preflight = MenuHelpers.ValidateMillPreflight();
 
-            if (machine.File.Count == 0)
-            {
-                MenuHelpers.ShowError("No file loaded");
-                return;
-            }
+                // Handle blocking errors first
+                if (preflight.Error == MillPreflightError.NotConnected)
+                {
+                    MenuHelpers.ShowError(DisabledConnect);
+                    return;
+                }
+                if (preflight.Error == MillPreflightError.NoFile)
+                {
+                    MenuHelpers.ShowError(DisabledNoFile);
+                    return;
+                }
+                if (preflight.Error == MillPreflightError.ProbeNotApplied)
+                {
+                    MenuHelpers.ShowError(DisabledProbeNotApplied);
+                    return;
+                }
+                if (preflight.Error == MillPreflightError.ProbeIncomplete)
+                {
+                    MenuHelpers.ShowError(string.Format(DisabledProbeIncomplete, preflight.ProbeProgress));
+                    return;
+                }
+                // AlarmState will be handled by EnsureMachineReady below
 
-            // Check for dangerous warnings in the loaded file
-            var currentFile = AppState.CurrentFile;
-            if (currentFile != null && currentFile.Warnings.Count > 0)
-            {
-                var dangerWarnings = currentFile.Warnings.Where(w =>
-                    w.Contains("DANGER") || w.Contains("INCHES")).ToList();
-
-                if (dangerWarnings.Count > 0)
+                // Handle dangerous command warnings (prompt user)
+                if (preflight.Warnings.Contains(MillPreflightWarning.DangerousCommands) &&
+                    preflight.DangerousWarnings?.Count > 0)
                 {
                     AnsiConsole.MarkupLine($"[{ColorError}]WARNING: File contains potentially dangerous commands:[/]");
-                    foreach (var warning in dangerWarnings)
+                    foreach (var warning in preflight.DangerousWarnings)
                     {
                         AnsiConsole.MarkupLine($"[{ColorWarning}]  {warning}[/]");
                     }
@@ -55,41 +82,69 @@ namespace coppercli.Menus
                         return;
                     }
                 }
+
+                // Handle no machine profile warning
+                if (preflight.Warnings.Contains(MillPreflightWarning.NoMachineProfile))
+                {
+                    if (MenuHelpers.ConfirmOrQuit($"[{ColorWarning}]{NoMachineProfileWarning}[/]. Continue?", false) != true)
+                    {
+                        return;
+                    }
+                }
+
+                // Handle sleep prevention warning
+                if (SleepPrevention.ShouldWarn())
+                {
+                    if (MenuHelpers.ConfirmOrQuit($"[{ColorWarning}]{SleepPreventionWarning}[/]. Continue?", false) != true)
+                    {
+                        return;
+                    }
+                }
+
+                // === TAKE CONTROL OF MACHINE STATE ===
+                AnsiConsole.MarkupLine($"[{ColorDim}]Preparing machine...[/]");
+
+                if (!MachineCommands.EnsureMachineReady(machine))
+                {
+                    MenuHelpers.ShowError(ErrorMachineAlarm);
+                    return;
+                }
+
+                MonitorMilling();
             }
-
-            // === TAKE CONTROL OF MACHINE STATE ===
-            // Machine may be in unknown state: door open, still moving, etc.
-            // We must get it to a known good state before proceeding.
-
-            AnsiConsole.MarkupLine($"[{ColorDim}]Preparing machine...[/]");
-
-            if (!MachineCommands.EnsureMachineReady(machine))
+            finally
             {
-                MenuHelpers.ShowError("Machine is in ALARM state. Please home the machine and try again.");
-                return;
+                // Re-enable auto-clear when leaving mill menu
+                machine.EnableAutoStateClear = true;
             }
-
-            MonitorMilling();
         }
 
         private static void MonitorMilling()
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
+            var controller = AppState.Milling;
 
+            // Reset shared state
+            _latestProgress = null;
+            _latestState = ControllerState.Idle;
+            _pendingToolChange = null;
+            _latestError = null;
+
+            // TUI state for display
             bool paused = false;
-            bool hasEverRun = false;
             var visitedCells = new HashSet<(int, int)>();
-
             var startTime = DateTime.Now;
             var pauseStartTime = DateTime.Now;
             var totalPausedTime = TimeSpan.Zero;
             int startLine = machine.FilePosition;
-
             var (lastWidth, lastHeight) = GetSafeWindowSize();
 
+            // Cancellation token for stopping the controller
+            using var cts = new CancellationTokenSource();
+
             Logger.Clear();
-            Logger.Log("=== MonitorMilling started ===");
+            Logger.Log("=== MonitorMilling started (controller-based) ===");
             Logger.Log("Log file: {0}", Logger.LogFilePath);
             Logger.Log("File.Count={0}, FilePosition={1}", machine.File.Count, machine.FilePosition);
 
@@ -110,42 +165,38 @@ namespace coppercli.Menus
             machine.Info += logInfo;
             machine.NonFatalException += logError;
 
+            // Subscribe to controller events
+            Action<ControllerState> onStateChanged = state =>
+            {
+                _latestState = state;
+                Logger.Log("Controller state: {0}", state);
+            };
+            Action<ProgressInfo> onProgressChanged = progress =>
+            {
+                _latestProgress = progress;
+            };
+            Action<ToolChangeInfo> onToolChange = info =>
+            {
+                _pendingToolChange = info;
+                Logger.Log("Tool change detected: T{0} at line {1}", info.ToolNumber, info.LineNumber);
+            };
+            Action<ControllerError> onError = error =>
+            {
+                _latestError = error;
+                Logger.Log("Controller error: {0}", error.Message);
+            };
+
+            controller.StateChanged += onStateChanged;
+            controller.ProgressChanged += onProgressChanged;
+            controller.ToolChangeDetected += onToolChange;
+            controller.ErrorOccurred += onError;
+
             Console.Clear();
             Console.CursorVisible = false;
 
             try
             {
-                // === MACHINE PROFILE WARNING ===
-                // Warn if no machine profile is selected (tool setter won't work)
-                var profile = MachineProfiles.GetProfile(AppState.Settings.MachineProfile);
-                if (profile == null)
-                {
-                    Logger.Log("No machine profile selected - showing warning");
-                    while (true)
-                    {
-                        DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, NoMachineProfileWarning, NoMachineProfileSubMessage);
-
-                        if (Console.KeyAvailable)
-                        {
-                            var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.Y))
-                            {
-                                Logger.Log("No profile warning acknowledged (Y pressed)");
-                                break;
-                            }
-                            if (InputHelpers.IsKey(key, ConsoleKey.X) ||
-                                InputHelpers.IsExitKey(key))
-                            {
-                                Logger.Log("Milling aborted due to no machine profile");
-                                return;
-                            }
-                        }
-                        Thread.Sleep(StatusPollIntervalMs);
-                    }
-                }
-
                 // === SAFETY CONFIRMATION + DEPTH ADJUSTMENT ===
-                // Show checklist and depth adjustment as overlay
                 Logger.Log("Safety confirmation phase, depth={0:F2}mm", AppState.DepthAdjustment);
                 while (true)
                 {
@@ -170,307 +221,121 @@ namespace coppercli.Menus
                         }
                         if (key.Key == ConsoleKey.DownArrow)
                         {
-                            // Down = deeper into material (negative Z)
-                            AppState.DepthAdjustment = Math.Max(AppState.DepthAdjustment - DepthAdjustmentIncrement, -DepthAdjustmentMax);
+                            AppState.AdjustDepthDeeper();
                             Logger.Log("Depth adjustment: {0:F2}mm (deeper)", AppState.DepthAdjustment);
                         }
                         if (key.Key == ConsoleKey.UpArrow)
                         {
-                            // Up = shallower (positive Z)
-                            AppState.DepthAdjustment = Math.Min(AppState.DepthAdjustment + DepthAdjustmentIncrement, DepthAdjustmentMax);
+                            AppState.AdjustDepthShallower();
                             Logger.Log("Depth adjustment: {0:F2}mm (shallower)", AppState.DepthAdjustment);
                         }
                     }
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
-                // === SLEEP PREVENTION ===
-                // Warn if in network mode and caffeinate not available
-                if (SleepPrevention.ShouldWarn())
-                {
-                    Logger.Log("Sleep prevention unavailable in network mode - showing warning");
-                    while (true)
-                    {
-                        DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, SleepPreventionWarning, SleepPreventionSubMessage);
-
-                        if (Console.KeyAvailable)
-                        {
-                            var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.Y))
-                            {
-                                Logger.Log("Sleep prevention warning acknowledged");
-                                break;
-                            }
-                            if (InputHelpers.IsKey(key, ConsoleKey.X) ||
-                                InputHelpers.IsExitKey(key))
-                            {
-                                Logger.Log("Milling aborted due to sleep prevention warning");
-                                return;
-                            }
-                        }
-                        Thread.Sleep(StatusPollIntervalMs);
-                    }
-                }
-
-                // Start sleep prevention (no-op if unavailable)
+                // Start sleep prevention
                 SleepPrevention.Start();
 
-                // === SETTLING PHASE ===
-                // Wait for machine to be stable in Idle state for the full settle period
-                int settleSeconds = PostIdleSettleMs / OneSecondMs;
-                int stableCount = 0;
-                Logger.Log("Settling phase: waiting {0} seconds", settleSeconds);
-                while (stableCount < settleSeconds)
+                // === CONFIGURE AND START CONTROLLER ===
+                controller.Options = new MillingOptions
                 {
-                    string statusBefore = machine.Status;
-                    string settleMessage = StatusHelpers.IsIdle(machine)
-                        ? $"Settling... {settleSeconds - stableCount}s"
-                        : "Waiting for idle.";
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, settleMessage);
+                    FilePath = currentFile?.FileName,
+                    DepthAdjustment = (float)AppState.DepthAdjustment,
+                    RequireHoming = !AppState.Machine.IsHomed,
+                };
 
-                    // Check for X key to stop during settling
-                    for (int ms = 0; ms < OneSecondMs; ms += StatusPollIntervalMs)
-                    {
-                        if (Console.KeyAvailable)
-                        {
-                            var key = Console.ReadKey(true);
-                            if (InputHelpers.IsKey(key, ConsoleKey.X))
-                            {
-                                Logger.Log("Stopping during settling (X pressed)");
-                                StopAndRaiseZ();
-                                return;
-                            }
-                        }
-                        Thread.Sleep(StatusPollIntervalMs);
-                    }
+                Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
+                    controller.Options.RequireHoming, controller.Options.DepthAdjustment);
 
-                    if (machine.Status != statusBefore || !StatusHelpers.IsIdle(machine))
-                    {
-                        Logger.Log("Settling: status changed from {0} to {1}, resetting", statusBefore, machine.Status);
-                        MachineCommands.EnsureMachineReady(machine);
-                        stableCount = 0;
-                    }
-                    else
-                    {
-                        stableCount++;
-                    }
-                }
-                Logger.Log("Settling complete");
-
-                // === HOMING (if not already homed) ===
-                // Machine coordinates are undefined until homed. G53 moves would be dangerous.
-                // Homing also moves Z to top, which is safe for subsequent operations.
-                if (!AppState.IsHomed)
+                // Reset controller if needed (from previous run)
+                if (controller.State != ControllerState.Idle)
                 {
-                    Logger.Log("Machine not homed - homing now");
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, "Homing...");
-                    MachineCommands.Home(machine);
-                    StatusHelpers.WaitForIdle(machine, HomingTimeoutMs);
-                    if (StatusHelpers.IsIdle(machine))
-                    {
-                        AppState.IsHomed = true;
-                        Logger.Log("Homing complete");
-                    }
-                    else
-                    {
-                        Logger.Log("Homing failed");
-                        MenuHelpers.ShowError("Homing failed. Cannot mill without homing.");
-                        return;
-                    }
+                    controller.Reset();
                 }
 
-                // === SAFETY RETRACT ===
-                // Raise Z to safe height. If we just homed, Z is already at top (near no-op).
-                // If we homed earlier then jogged down, this is essential.
-                Logger.Log("Safety retract to Z={0} (machine coords)", MillStartSafetyZ);
-                MachineCommands.SafetyRetractZ(machine, MillStartSafetyZ);
+                // Start controller (fire and forget - we monitor via events)
+                _ = controller.StartAsync(cts.Token);
 
-                // === ESTABLISH KNOWN MACHINE STATE ===
-                // Defense in depth: ensure absolute mode and XY plane before milling
-                // Note: We do NOT send G21 (mm) here - the file should specify its own units
-                // Sending G21 when file expects G20 (inches) would cause 25x position errors
-                machine.SendLine(CmdAbsolute);  // G90 - absolute mode (safe, all CAM uses this)
-                machine.SendLine("G17");        // XY plane (standard for PCB milling)
-                Logger.Log("Sent state initialization: G90 G17");
-
-                // Apply depth adjustment (negative = deeper, matches Z axis convention)
-                // Only modify the work offset when there's an actual adjustment
-                // IMPORTANT: G10 L2 P1 Z sets G54 Z to an absolute value, not relative!
-                // We must read the current offset and add our adjustment to it.
-                if (AppState.DepthAdjustment != 0)
-                {
-                    // Get current work offset Z (this is the G54 Z value)
-                    double currentOffsetZ = machine.WorkOffset.Z;
-                    double newOffsetZ = currentOffsetZ + AppState.DepthAdjustment;
-                    machine.SendLine($"G10 L2 P1 Z{newOffsetZ:F3}");
-                    Logger.Log("Applied depth adjustment: Work offset Z changed from {0:F3} to {1:F3} (adjustment: {2:F3})",
-                        currentOffsetZ, newOffsetZ, AppState.DepthAdjustment);
-                }
-                else
-                {
-                    Logger.Log("No depth adjustment (0mm)");
-                }
-
-                // Start milling - G-code file handles positioning from safe height
-                Logger.Log("Before FileGoto: Mode={0}, FilePosition={1}, Connected={2}", machine.Mode, machine.FilePosition, machine.Connected);
-                machine.FileGoto(0);
-                Logger.Log("After FileGoto: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
-                Logger.Log("Calling FileStart (requires Mode=Manual)...");
-                machine.FileStart();
-                Logger.Log("After FileStart: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
-                if (machine.Mode != Machine.OperatingMode.SendFile)
-                {
-                    Logger.Log("WARNING: Mode is not SendFile after FileStart! Mode={0}", machine.Mode);
-                }
-                Thread.Sleep(CommandDelayMs);
-                Logger.Log("After delay: Mode={0}, FilePosition={1}", machine.Mode, machine.FilePosition);
-
-                // Mark that file has run - even if Mode changed back to Manual before we enter the loop,
-                // the file DID run (we called FileStart and lines were sent)
-                hasEverRun = true;
+                // Record start time for ETA calculation
+                startTime = DateTime.Now;
+                startLine = 0;
 
                 Console.Clear();
 
-                int loopCount = 0;
-                int stableIdleCount = 0;
-
+                // === MONITOR LOOP ===
                 while (true)
                 {
-                    loopCount++;
-                    bool isRunning = machine.Mode == Machine.OperatingMode.SendFile;
-
-                    if (isRunning && !hasEverRun)
+                    // Check controller state for completion
+                    var state = _latestState;
+                    if (state == ControllerState.Completed ||
+                        state == ControllerState.Failed ||
+                        state == ControllerState.Cancelled)
                     {
-                        Logger.Log("Loop {0}: hasEverRun set to true", loopCount);
-                        hasEverRun = true;
+                        Logger.Log("Controller finished with state: {0}", state);
+                        break;
                     }
 
-                    // Detect M6-triggered pause: Mode is Manual (file paused), not user-initiated
-                    // Note: Don't require hasEverRun - file may have run so fast we never saw SendFile mode
-                    if (!isRunning && !paused)
+                    // Handle pending tool change
+                    if (_pendingToolChange != null)
                     {
-                        // Check if previous line was M6
-                        int prevLine = machine.FilePosition - 1;
-                        if (prevLine >= 0 && prevLine < machine.File.Count)
+                        var tcInfo = _pendingToolChange;
+                        _pendingToolChange = null;
+
+                        Logger.Log("Handling tool change for T{0}", tcInfo.ToolNumber);
+                        pauseStartTime = DateTime.Now;
+
+                        // Run tool change using ToolChangeController
+                        bool success = RunToolChangeController(tcInfo, visitedCells, startTime, totalPausedTime, startLine);
+
+                        if (success)
                         {
-                            if (ToolChangeHelpers.IsM6Line(machine.File[prevLine]))
-                            {
-                                // Tool change commences immediately without prompting.
-                                // The user expects M6 to mean "do tool change now" - no extra confirmation needed.
-                                // HandleToolChange() will guide them through the process.
-                                Logger.Log("M6 tool change detected at line {0}, initiating automatically", prevLine);
-                                Logger.Log("M6 detection: Status={0}, Mode={1}, BufferState={2}",
-                                    machine.Status, machine.Mode, machine.BufferState);
-                                Logger.Log("M6 detection: WorkPos=({0:F3}, {1:F3}, {2:F3})",
-                                    machine.WorkPosition.X, machine.WorkPosition.Y, machine.WorkPosition.Z);
-                                pauseStartTime = DateTime.Now;
-
-                                // Set up refresh callback so tool change can update the overlay
-                                ToolChangeHelpers.RefreshDisplay = () =>
-                                {
-                                    var currentPausedTime = DateTime.Now - pauseStartTime;
-                                    var elapsed = DateTime.Now - startTime - totalPausedTime - currentPausedTime;
-                                    DrawMillProgress(false, visitedCells, elapsed, startLine);
-                                };
-
-                                bool success = ToolChangeHelpers.HandleToolChange();
-
-                                ToolChangeHelpers.RefreshDisplay = null;
-
-                                if (success)
-                                {
-                                    Logger.Log("Tool change completed successfully, resuming");
-                                    totalPausedTime += DateTime.Now - pauseStartTime;
-
-                                    // Skip M0 if it immediately follows M6 (pcb2gcode generates M6+M0 sequence)
-                                    // This prevents a redundant pause after tool change is already complete
-                                    int currentLine = machine.FilePosition;
-                                    if (currentLine >= 0 && currentLine < machine.File.Count)
-                                    {
-                                        if (ToolChangeHelpers.IsM0Line(machine.File[currentLine]))
-                                        {
-                                            Logger.Log("Skipping M0 at line {0} (redundant after M6 tool change)", currentLine);
-                                            machine.FileGoto(currentLine + 1);
-                                        }
-                                    }
-
-                                    // Resume file sending
-                                    machine.FileStart();
-                                    Logger.Log("After tool change resume: Mode={0}, Status={1}", machine.Mode, machine.Status);
-                                    stableIdleCount = 0;  // Reset stable count after tool change
-                                }
-                                else
-                                {
-                                    Logger.Log("Tool change aborted by user");
-                                    StopAndRaiseZ();
-                                    return;
-                                }
-                            }
+                            Logger.Log("Tool change completed successfully, resuming");
+                            totalPausedTime += DateTime.Now - pauseStartTime;
+                            controller.Resume();
+                            paused = false;
+                        }
+                        else
+                        {
+                            Logger.Log("Tool change aborted by user");
+                            cts.Cancel();
+                            // Wait for controller to finish cleanup
+                            Thread.Sleep(ResetWaitMs);
+                            return;
                         }
                     }
 
-                    bool reachedEnd = machine.FilePosition >= machine.File.Count;
-                    bool machineIdle = machine.Status == StatusIdle;
-
-                    // Log state every 10 iterations or on significant changes
-                    if (loopCount % 10 == 1 || !isRunning)
-                    {
-                        Logger.Log("Loop {0}: Mode={1}, isRunning={2}, hasEverRun={3}, paused={4}, reachedEnd={5}, machineIdle={6}, FilePos={7}/{8}, Status={9}",
-                            loopCount, machine.Mode, isRunning, hasEverRun, paused, reachedEnd, machineIdle,
-                            machine.FilePosition, machine.File.Count, machine.Status);
-                    }
-
-                    // Check for stable idle completion - must be idle for settle period
-                    if (hasEverRun && !isRunning && !paused && reachedEnd)
-                    {
-                        if (StatusHelpers.WaitForStableIdleAsync(machine, ref stableIdleCount))
-                        {
-                            Logger.Log("Exit condition met - milling complete (stable idle for {0}ms)", IdleSettleMs);
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        stableIdleCount = 0;
-                    }
-
+                    // Handle keyboard input
                     if (Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
                         Logger.Log("Key pressed: {0}", key.Key);
+
                         if (InputHelpers.IsKey(key, ConsoleKey.P))
                         {
-                            Logger.Log("Pausing (FeedHold)");
-                            machine.FeedHold();
-                            paused = true;
-                            pauseStartTime = DateTime.Now;
+                            if (state == ControllerState.Running)
+                            {
+                                Logger.Log("Pausing");
+                                controller.Pause();
+                                paused = true;
+                                pauseStartTime = DateTime.Now;
+                            }
                         }
                         else if (InputHelpers.IsKey(key, ConsoleKey.R))
                         {
-                            Logger.Log("Resuming: Mode={0}, Status={1}", machine.Mode, machine.Status);
-
-                            // If machine is in Hold state, release the hold
-                            if (StatusHelpers.IsHold(machine))
+                            if (state == ControllerState.Paused)
                             {
-                                Logger.Log("Status is Hold - sending CycleStart to release hold");
-                                machine.CycleStart();
+                                Logger.Log("Resuming");
+                                controller.Resume();
+                                paused = false;
+                                totalPausedTime += DateTime.Now - pauseStartTime;
                             }
-
-                            // If Mode is Manual (file sending stopped), restart it
-                            if (machine.Mode == Machine.OperatingMode.Manual)
-                            {
-                                Logger.Log("Mode is Manual - calling FileStart to resume file sending");
-                                machine.FileStart();
-                            }
-
-                            paused = false;
-                            totalPausedTime += DateTime.Now - pauseStartTime;
-                            Logger.Log("After resume: Mode={0}, Status={1}", machine.Mode, machine.Status);
                         }
-                        else if (InputHelpers.IsKey(key, ConsoleKey.X))
+                        else if (InputHelpers.IsExitKey(key))
                         {
-                            Logger.Log("Stopping (X pressed)");
-                            StopAndRaiseZ();
+                            Logger.Log("Stopping (Escape pressed)");
+                            cts.Cancel();
+                            // Wait for controller to finish cleanup
+                            Thread.Sleep(ResetWaitMs);
                             return;
                         }
                         else if (key.KeyChar == '+' || key.KeyChar == '=')
@@ -490,9 +355,14 @@ namespace coppercli.Menus
                         }
                     }
 
+                    // Update paused state from controller
+                    paused = (state == ControllerState.Paused);
+
+                    // Calculate elapsed time
                     var currentPausedTime = paused ? (DateTime.Now - pauseStartTime) : TimeSpan.Zero;
                     var elapsed = DateTime.Now - startTime - totalPausedTime - currentPausedTime;
 
+                    // Handle window resize
                     var (curWidth, curHeight) = GetSafeWindowSize();
                     if (curWidth != lastWidth || curHeight != lastHeight)
                     {
@@ -501,29 +371,46 @@ namespace coppercli.Menus
                         lastHeight = curHeight;
                     }
 
-                    DrawMillProgress(paused, visitedCells, elapsed, startLine);
+                    // Draw progress with current phase message if in setup phases
+                    string? statusMessage = null;
+                    if (_latestProgress != null && _latestProgress.Phase != "Milling")
+                    {
+                        statusMessage = _latestProgress.Message;
+                    }
+
+                    DrawMillProgress(paused, visitedCells, elapsed, startLine, statusMessage);
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
-                // Retract Z to maximum safe height
-                machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{MillCompleteZ:F1}");
-                StatusHelpers.WaitForIdle(machine, MoveCompleteTimeoutMs);
-
+                // === COMPLETION ===
+                var finalState = _latestState;
                 var finalElapsed = DateTime.Now - startTime - totalPausedTime;
-                DrawMillProgress(false, visitedCells, finalElapsed, startLine);
 
-                // Offer to clear probe data after successful mill
-                if (AppState.ProbePoints != null)
+                if (finalState == ControllerState.Completed)
                 {
-                    if (MenuHelpers.ConfirmOrQuit("Clear probe data?", true) == true)
+                    DrawMillProgress(false, visitedCells, finalElapsed, startLine);
+
+                    // Offer to clear probe data after successful mill
+                    if (AppState.ProbePoints != null)
                     {
-                        AppState.DiscardProbeData();
-                        Persistence.ClearProbeAutoSave();
-                        AppState.Session.LastSavedProbeFile = "";
-                        Persistence.SaveSession();
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data cleared[/]");
-                        Thread.Sleep(ConfirmationDisplayMs);
+                        if (MenuHelpers.ConfirmOrQuit("Clear probe data?", true) == true)
+                        {
+                            AppState.DiscardProbeData();
+                            Persistence.ClearProbeAutoSave();
+                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data cleared[/]");
+                            Thread.Sleep(ConfirmationDisplayMs);
+                        }
                     }
+                }
+                else if (finalState == ControllerState.Failed && _latestError != null)
+                {
+                    MenuHelpers.ShowError(_latestError.Message);
+                }
+
+                // Reset controller for next use
+                if (controller.State != ControllerState.Idle)
+                {
+                    controller.Reset();
                 }
             }
             finally
@@ -531,7 +418,7 @@ namespace coppercli.Menus
                 // Stop sleep prevention
                 SleepPrevention.Stop();
 
-                // Unsubscribe from events
+                // Unsubscribe from machine events
                 machine.LineSent -= logLineSent;
                 machine.LineReceived -= logLineReceived;
                 machine.StatusReceived -= logStatusReceived;
@@ -539,6 +426,12 @@ namespace coppercli.Menus
                 machine.StatusChanged -= logStatusChanged;
                 machine.Info -= logInfo;
                 machine.NonFatalException -= logError;
+
+                // Unsubscribe from controller events
+                controller.StateChanged -= onStateChanged;
+                controller.ProgressChanged -= onProgressChanged;
+                controller.ToolChangeDetected -= onToolChange;
+                controller.ErrorOccurred -= onError;
 
                 Logger.Log("=== MonitorMilling ended ===");
                 Console.CursorVisible = true;
@@ -561,7 +454,7 @@ namespace coppercli.Menus
             var (winWidth, winHeight) = GetSafeWindowSize();
 
             string header = $"{AnsiPrompt}Milling{AnsiReset}";
-            int headerPad = Math.Max(0, (winWidth - 7) / 2);
+            int headerPad = Math.Max(0, (winWidth - CalculateDisplayLength(header)) / 2);
             WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
             WriteLineTruncated("", winWidth);
 
@@ -584,7 +477,7 @@ namespace coppercli.Menus
             }
             else if (status.StartsWith(StatusAlarm))
             {
-                statusDisplay = $"{AnsiBoldRed}{StatusAlarm}{AnsiReset}";
+                statusDisplay = $"{AnsiCritical}{StatusAlarm}{AnsiReset}";
             }
             else
             {
@@ -600,25 +493,25 @@ namespace coppercli.Menus
             }
             else
             {
-                WriteLineTruncated($"  {AnsiInfo}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - 15))}{AnsiReset} {pct,5:F1}%", winWidth);
+                WriteLineTruncated($"  {AnsiInfo}{BuildProgressBar(pct, Math.Min(MillProgressBarWidth, winWidth - MillProgressLinePadding))}{AnsiReset} {pct,5:F1}%", winWidth);
             }
             WriteLineTruncated($"  Status: {statusDisplay}    Elapsed: {AnsiInfo}{FormatTimeSpan(elapsed)}{AnsiReset}   ETA: {AnsiInfo}{etaStr}{AnsiReset}", winWidth);
             WriteLineTruncated($"  X:{AnsiInfo}{pos.X,8:F2}{AnsiReset}  Y:{AnsiInfo}{pos.Y,8:F2}{AnsiReset}  Z:{AnsiInfo}{pos.Z,8:F2}{AnsiReset}   Line {lineStr}/{totalLines}", winWidth);
 
             // Tool change action line (always output to keep layout stable)
-            if (ToolChangeHelpers.StatusAction != null)
+            if (_toolChangeStatusAction != null)
             {
-                WriteLineTruncated($"  {AnsiDim}[{ToolChangeLabel}]{AnsiReset} {AnsiInfo}{ToolChangeHelpers.StatusAction}{AnsiReset}", winWidth);
+                WriteLineTruncated($"  {AnsiDim}[{ToolChangeLabel}]{AnsiReset} {AnsiInfo}{_toolChangeStatusAction}{AnsiReset}", winWidth);
             }
             else
             {
                 WriteLineTruncated("", winWidth);
             }
 
-            // Show feed override if not 100%
+            // Show feed override if not default (100%)
             int feedOvr = machine.FeedOverride;
-            string feedOvrStr = feedOvr != 100 ? $"  Feed: {AnsiWarning}{feedOvr}%{AnsiReset}" : "";
-            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiBoldRed}X{AnsiReset}=Stop{feedOvrStr}", winWidth);
+            string feedOvrStr = feedOvr != OverrideDefaultPercent ? $"  Feed: {AnsiWarning}{feedOvr}%{AnsiReset}" : "";
+            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiCritical}Esc{AnsiReset}=Stop{feedOvrStr}", winWidth);
 
             double minX = currentFile.Min.X;
             double maxX = currentFile.Max.X;
@@ -627,7 +520,7 @@ namespace coppercli.Menus
             double rangeX = Math.Max(maxX - minX, MillMinRangeThreshold);
             double rangeY = Math.Max(maxY - minY, MillMinRangeThreshold);
 
-            int availableWidth = winWidth - 4;
+            int availableWidth = winWidth - MillGridHorizontalPadding;
             int availableHeight = winHeight - MillTermHeightPadding;
 
             int gridWidth = Math.Clamp(availableWidth / MillGridCharsPerCell, 1, MillGridMaxWidth);
@@ -656,10 +549,10 @@ namespace coppercli.Menus
             string? overlaySubMessage = null;
             string overlayColor = AnsiWarning;
 
-            if (ToolChangeHelpers.OverlayMessage != null)
+            if (_toolChangeOverlayMessage != null)
             {
-                overlayMessage = ToolChangeHelpers.OverlayMessage;
-                overlaySubMessage = ToolChangeHelpers.OverlaySubMessage;
+                overlayMessage = _toolChangeOverlayMessage;
+                overlaySubMessage = _toolChangeOverlaySubMessage;
             }
             else if (statusMessage != null)
             {
@@ -673,7 +566,7 @@ namespace coppercli.Menus
             else if (status.StartsWith(StatusAlarm))
             {
                 overlayMessage = OverlayAlarmMessage;
-                overlayColor = AnsiBoldRed;
+                overlayColor = AnsiCritical;
             }
 
             DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor, overlaySubMessage);
@@ -711,13 +604,7 @@ namespace coppercli.Menus
             string pad = new string(' ', leftPadding);
 
             // Calculate overlay box width based on content (if overlay is shown)
-            int contentWidth = overlayMessage?.Length ?? 0;
-            if (overlaySubMessage != null && overlaySubMessage.Length > contentWidth)
-            {
-                contentWidth = overlaySubMessage.Length;
-            }
-            int boxWidth = Math.Min(contentWidth + OverlayBoxPadding, matrixWidth - OverlayBoxMargin);
-            boxWidth = Math.Max(boxWidth, OverlayBoxMinWidth);
+            int boxWidth = CalculateOverlayBoxWidth(overlayMessage ?? "", overlaySubMessage ?? "", matrixWidth);
             int boxStartChar = (matrixWidth - boxWidth) / 2;
 
             // Center vertically in the grid (grid rows go from height-1 down to 0)
@@ -727,8 +614,8 @@ namespace coppercli.Menus
 
             WriteLineTruncated($"{pad}┌{new string('─', matrixWidth)}┐", winWidth);
 
-            // Use provided sub-message or default to "X=Stop"
-            string subMsg = overlaySubMessage ?? "X=Stop";
+            // Use provided sub-message or default to "Esc=Stop"
+            string subMsg = overlaySubMessage ?? "Esc=Stop";
 
             for (int y = height - 1; y >= 0; y--)
             {
@@ -776,7 +663,6 @@ namespace coppercli.Menus
         /// <summary>
         /// Overlay a string onto a row at a specific display position.
         /// Handles ANSI escape codes correctly (they don't take display width).
-        /// Works by iterating through both strings and outputting from the appropriate source.
         /// </summary>
         private static string OverlayOnRow(string row, string overlay, int startPos, int totalWidth)
         {
@@ -809,7 +695,6 @@ namespace coppercli.Menus
                 if (displayPos >= startPos && displayPos < overlayEnd)
                 {
                     // In overlay region: output from overlay, skip row content
-                    // First, skip any ANSI codes in the row (consume but don't output)
                     while (rowIdx < row.Length && row[rowIdx] == '\u001b')
                     {
                         while (rowIdx < row.Length && row[rowIdx] != 'm')
@@ -818,16 +703,14 @@ namespace coppercli.Menus
                         }
                         if (rowIdx < row.Length)
                         {
-                            rowIdx++; // skip 'm'
+                            rowIdx++;
                         }
                     }
-                    // Skip the visible character in row
                     if (rowIdx < row.Length)
                     {
                         rowIdx++;
                     }
 
-                    // Output from overlay: first any ANSI codes, then the visible char
                     while (overlayIdx < overlay.Length && overlay[overlayIdx] == '\u001b')
                     {
                         while (overlayIdx < overlay.Length && overlay[overlayIdx] != 'm')
@@ -837,11 +720,10 @@ namespace coppercli.Menus
                         }
                         if (overlayIdx < overlay.Length)
                         {
-                            result.Append(overlay[overlayIdx]); // 'm'
+                            result.Append(overlay[overlayIdx]);
                             overlayIdx++;
                         }
                     }
-                    // Output the visible char from overlay
                     if (overlayIdx < overlay.Length)
                     {
                         result.Append(overlay[overlayIdx]);
@@ -852,8 +734,6 @@ namespace coppercli.Menus
                 }
                 else
                 {
-                    // Outside overlay region: output from row
-                    // Copy ANSI codes
                     while (rowIdx < row.Length && row[rowIdx] == '\u001b')
                     {
                         while (rowIdx < row.Length && row[rowIdx] != 'm')
@@ -863,11 +743,10 @@ namespace coppercli.Menus
                         }
                         if (rowIdx < row.Length)
                         {
-                            result.Append(row[rowIdx]); // 'm'
+                            result.Append(row[rowIdx]);
                             rowIdx++;
                         }
                     }
-                    // Copy visible char
                     if (rowIdx < row.Length)
                     {
                         result.Append(row[rowIdx]);
@@ -884,31 +763,207 @@ namespace coppercli.Menus
             return result.ToString();
         }
 
-        private static void StopAndRaiseZ()
+        /// <summary>
+        /// Run tool change using ToolChangeController.
+        /// Handles async controller with synchronous TUI input loop.
+        /// Returns true if tool change succeeded, false if aborted.
+        /// </summary>
+        private static bool RunToolChangeController(
+            ToolChangeInfo tcInfo,
+            HashSet<(int, int)> visitedCells,
+            DateTime startTime,
+            TimeSpan totalPausedTime,
+            int startLine)
         {
-            var machine = AppState.Machine;
-            int position = machine.FilePosition;
+            var toolChangeController = AppState.ToolChange;
 
-            AppState.SuppressErrors = true;
-            machine.SoftReset();
-
-            Console.WriteLine();
-            AnsiConsole.MarkupLine($"[{ColorWarning}]Stopped at line {position} - stopping spindle and raising Z...[/]");
-
-            Thread.Sleep(ResetWaitMs);
-
-            if (StatusHelpers.IsAlarm(machine))
+            // Reset controller if needed
+            if (toolChangeController.State != ControllerState.Idle)
             {
-                machine.SendLine(CmdUnlock);
-                Thread.Sleep(CommandDelayMs);
+                toolChangeController.Reset();
             }
 
-            AppState.SuppressErrors = false;
+            // Set options from user settings and file bounds
+            var settings = AppState.Settings;
+            var currentFile = AppState.CurrentFile;
+            toolChangeController.Options = new ToolChangeOptions
+            {
+                ProbeMaxDepth = settings.ProbeMaxDepth,
+                ProbeFeed = settings.ProbeFeed,
+                RetractHeight = RetractZMm,
+                WorkAreaCenter = currentFile != null && currentFile.ContainsMotion
+                    ? new Vector3(
+                        (currentFile.Min.X + currentFile.Max.X) / 2,
+                        (currentFile.Min.Y + currentFile.Max.Y) / 2,
+                        0)
+                    : null
+            };
 
-            machine.SendLine(CmdSpindleOff);
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
-            Thread.Sleep(CommandDelayMs);
+            // State for tracking tool change progress
+            bool completed = false;
+            bool success = false;
+            UserInputRequest? pendingInput = null;
+            string? userResponse = null;
+            var pauseStartTime = DateTime.Now;
+
+            // Helper to refresh display
+            void RefreshDisplay()
+            {
+                var currentPausedTime = DateTime.Now - pauseStartTime;
+                var elapsed = startTime != DateTime.MinValue
+                    ? DateTime.Now - startTime - totalPausedTime - currentPausedTime
+                    : TimeSpan.Zero;
+                DrawMillProgress(false, visitedCells, elapsed, startLine);
+            }
+
+            // Subscribe to controller events
+            Action<ControllerState> onStateChanged = state =>
+            {
+                Logger.Log("ToolChange state: {0}", state);
+                if (state == ControllerState.Completed)
+                {
+                    completed = true;
+                    success = true;
+                }
+                else if (state == ControllerState.Failed || state == ControllerState.Cancelled)
+                {
+                    completed = true;
+                    success = false;
+                }
+            };
+
+            Action<ProgressInfo> onProgressChanged = progress =>
+            {
+                // Update status action for display
+                _toolChangeStatusAction = progress.Message;
+                _toolChangeOverlayMessage = null;
+                _toolChangeOverlaySubMessage = null;
+                RefreshDisplay();
+            };
+
+            Action<UserInputRequest> onUserInputRequired = request =>
+            {
+                // Store the request - we'll handle it in the main loop
+                pendingInput = request;
+                Logger.Log("ToolChange user input required: {0}", request.Message);
+            };
+
+            Action<ControllerError> onError = error =>
+            {
+                Logger.Log("ToolChange error: {0}", error.Message);
+                _toolChangeOverlayMessage = error.Message;
+                _toolChangeOverlaySubMessage = "Esc=Abort";
+                RefreshDisplay();
+            };
+
+            toolChangeController.StateChanged += onStateChanged;
+            toolChangeController.ProgressChanged += onProgressChanged;
+            toolChangeController.UserInputRequired += onUserInputRequired;
+            toolChangeController.ErrorOccurred += onError;
+
+            try
+            {
+                // Start tool change controller asynchronously
+                var toolChangeTask = Task.Run(async () =>
+                {
+                    return await toolChangeController.HandleToolChangeAsync(tcInfo);
+                });
+
+                // Main loop - handle input and refresh display
+                while (!completed)
+                {
+                    // Handle pending user input request
+                    if (pendingInput != null)
+                    {
+                        var request = pendingInput;
+                        pendingInput = null;
+
+                        // Build tool info for overlay
+                        string toolInfoStr = "TOOL CHANGE";
+                        if (tcInfo.ToolNumber > 0 || tcInfo.ToolName != null)
+                        {
+                            string toolDetail = tcInfo.ToolNumber > 0 ? $"T{tcInfo.ToolNumber}" : "";
+                            if (tcInfo.ToolName != null)
+                            {
+                                toolDetail += string.IsNullOrEmpty(toolDetail) ? tcInfo.ToolName : $" - {tcInfo.ToolName}";
+                            }
+                            toolInfoStr = $"TOOL CHANGE: {toolDetail}";
+                        }
+
+                        // Check if we're waiting for Z zero (Mode B) - allow jogging
+                        bool isWaitingForZeroZ = toolChangeController.Phase == ToolChangePhase.WaitingForZeroZ;
+                        string keyHint = isWaitingForZeroZ
+                            ? "J=Jog  Y=Continue  Esc=Cancel"
+                            : "Y=Continue  Esc=Cancel";
+
+                        // Show overlay with prompt
+                        _toolChangeOverlayMessage = toolInfoStr;
+                        _toolChangeOverlaySubMessage = $"{request.Message}  {keyHint}";
+                        _toolChangeStatusAction = null;
+                        RefreshDisplay();
+
+                        // Wait for user input (Y, X, or J if waiting for Z zero)
+                        while (userResponse == null && !completed)
+                        {
+                            if (Console.KeyAvailable)
+                            {
+                                var key = Console.ReadKey(true);
+                                if (InputHelpers.IsKey(key, ConsoleKey.Y))
+                                {
+                                    Logger.Log("ToolChange: Y pressed, continuing");
+                                    userResponse = "Continue";
+                                }
+                                else if (InputHelpers.IsExitKey(key))
+                                {
+                                    Logger.Log("ToolChange: Escape pressed, aborting");
+                                    userResponse = "Abort";
+                                }
+                                else if (isWaitingForZeroZ && InputHelpers.IsKey(key, ConsoleKey.J))
+                                {
+                                    Logger.Log("ToolChange: J pressed, opening jog menu");
+                                    JogMenu.Show();
+                                    // After returning from jog menu, refresh display and continue waiting
+                                    Console.Clear();
+                                    RefreshDisplay();
+                                }
+                            }
+                            RefreshDisplay();
+                            Thread.Sleep(StatusPollIntervalMs);
+                        }
+
+                        // Send the response to the controller
+                        if (userResponse != null)
+                        {
+                            request.OnResponse(userResponse);
+                            userResponse = null;
+                        }
+
+                        // Clear overlay
+                        _toolChangeOverlayMessage = null;
+                        _toolChangeOverlaySubMessage = null;
+                    }
+
+                    RefreshDisplay();
+                    Thread.Sleep(StatusPollIntervalMs);
+                }
+
+                // Wait for task to complete
+                toolChangeTask.Wait();
+
+                // Clear display state
+                _toolChangeOverlayMessage = null;
+                _toolChangeOverlaySubMessage = null;
+                _toolChangeStatusAction = null;
+
+                return success;
+            }
+            finally
+            {
+                toolChangeController.StateChanged -= onStateChanged;
+                toolChangeController.ProgressChanged -= onProgressChanged;
+                toolChangeController.UserInputRequired -= onUserInputRequired;
+                toolChangeController.ErrorOccurred -= onError;
+            }
         }
     }
 }

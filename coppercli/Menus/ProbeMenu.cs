@@ -1,10 +1,12 @@
 // Extracted from Program.cs
 
+using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Helpers.DisplayHelpers;
 
@@ -12,6 +14,7 @@ namespace coppercli.Menus
 {
     /// <summary>
     /// Probe menu for grid probing workflow.
+    /// Uses ProbeController for actual probing operations.
     /// </summary>
     internal static class ProbeMenu
     {
@@ -22,10 +25,15 @@ namespace coppercli.Menus
             ClearAndStartProbing,
             StartProbing,
             LoadFromFile,
+            RecoverAutosave,
             SaveToFile,
             ApplyToGCode,
             Back
         }
+
+        // Controller task for async probing
+        private static Task? _probeTask;
+        private static CancellationTokenSource? _probeCts;
 
         public static void Show()
         {
@@ -33,6 +41,9 @@ namespace coppercli.Menus
 
             // Defense in depth: ensure auto-clear is disabled during probing
             machine.EnableAutoStateClear = false;
+
+            // Load probe data from disk if needed (e.g., after server restart)
+            AppState.EnsureProbeDataLoaded();
 
             while (true)
             {
@@ -44,44 +55,49 @@ namespace coppercli.Menus
 
                 bool hasIncomplete = HasIncompleteProbeData();
                 bool hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
+                bool hasUnsaved = HasUnsavedCompleteProbe();
 
                 if (probePoints != null)
                 {
                     AnsiConsole.WriteLine(probePoints.GetInfo());
-                    if (!AppState.AreProbePointsApplied && currentFile != null)
+                    if (hasUnsaved)
                     {
-                        AnsiConsole.MarkupLine($"[{ColorWarning}]* Probe data not yet applied to G-Code[/]");
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusUnsaved}[/]");
+                    }
+                    else if (!AppState.AreProbePointsApplied && currentFile != null)
+                    {
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusNotApplied}[/]");
                     }
                     else if (AppState.AreProbePointsApplied)
                     {
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied to G-Code[/]");
+                        AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusApplied}[/]");
                     }
                 }
                 else if (hasIncomplete)
                 {
-                    AnsiConsole.MarkupLine($"[{ColorWarning}]Incomplete probe data found (autosaved)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusIncomplete}[/]");
                 }
                 else
                 {
-                    AnsiConsole.MarkupLine($"[{ColorDim}]No probe data[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{ProbeStatusNoData}[/]");
                 }
 
                 if (currentFile == null)
                 {
-                    AnsiConsole.MarkupLine($"[{ColorDim}]No G-Code file loaded (required for probing)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{ProbeStatusNoFile}[/]");
                 }
 
                 if (!AppState.IsWorkZeroSet)
                 {
-                    AnsiConsole.MarkupLine($"[{ColorDim}]Work zero not set (required for probing)[/]");
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{ProbeStatusNoZero}[/]");
                 }
 
                 AnsiConsole.WriteLine();
 
                 bool canProbe = currentFile != null && AppState.IsWorkZeroSet && machine.Connected;
 
-                var menu = BuildProbeMenu(hasIncomplete, hasComplete, canProbe);
-                var choice = MenuHelpers.ShowMenu("Probe options:", menu);
+                var menu = BuildProbeMenu(hasIncomplete, hasComplete, hasUnsaved, canProbe);
+                var choice = MenuHelpers.ShowMenu(ProbeMenuHeader, menu);
 
                 switch (choice.Option)
                 {
@@ -108,7 +124,13 @@ namespace coppercli.Menus
                         }
                         break;
                     case ProbeAction.LoadFromFile:
-                        LoadProbeGrid();
+                        if (LoadProbeGrid())
+                        {
+                            return; // Complete grid loaded, return to main menu
+                        }
+                        break;
+                    case ProbeAction.RecoverAutosave:
+                        RecoverFromAutosave();
                         break;
                     case ProbeAction.SaveToFile:
                         PromptSaveProbeData();
@@ -117,104 +139,168 @@ namespace coppercli.Menus
                         ApplyProbeGrid();
                         break;
                     case ProbeAction.Back:
-                        if (AppState.Probing)
-                        {
-                            AppState.StopProbing();
-                        }
                         return;
                 }
             }
         }
 
-        private static string? GetProbeDisabledReason()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                return "connect first";
-            }
-            if (AppState.CurrentFile == null)
-            {
-                return "load G-Code first";
-            }
-            if (!AppState.IsWorkZeroSet)
-            {
-                return "set work zero first";
-            }
-            return null;
-        }
-
-        private static MenuDef<ProbeAction> BuildProbeMenu(bool hasIncomplete, bool hasComplete, bool canProbe)
+        private static MenuDef<ProbeAction> BuildProbeMenu(bool hasIncomplete, bool hasComplete, bool hasUnsaved, bool canProbe)
         {
             var menu = new MenuDef<ProbeAction>();
 
+            // Show Save prominently at top when there's unsaved complete probe data
+            if (hasUnsaved)
+            {
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuSaveUnsaved, 's', ProbeAction.SaveToFile));
+                // Unsaved complete data: "Discard" since work would be lost
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscard, 'x', ProbeAction.ClearProbeData));
+            }
+
             if (hasIncomplete)
             {
-                menu.Add(new MenuItem<ProbeAction>("Continue Probing", 'c', ProbeAction.ContinueProbing,
-                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
-                menu.Add(new MenuItem<ProbeAction>("Clear Probe Data", 'x', ProbeAction.ClearProbeData));
-                menu.Add(new MenuItem<ProbeAction>("Clear and Start Probing", 'p', ProbeAction.ClearAndStartProbing,
-                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
+                // Partial state: Continue, Discard, or Discard+Start
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuContinue, 'c', ProbeAction.ContinueProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: MenuHelpers.GetProbeDisabledReason));
+                if (!hasUnsaved)  // Don't duplicate Discard
+                {
+                    // Partial data: "Discard" since work would be lost
+                    menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscard, 'x', ProbeAction.ClearProbeData));
+                }
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscardAndStart, 'p', ProbeAction.ClearAndStartProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: MenuHelpers.GetProbeDisabledReason));
             }
             else
             {
-                menu.Add(new MenuItem<ProbeAction>("Start Probing", 'p', ProbeAction.StartProbing,
-                    EnabledWhen: () => canProbe, DisabledReason: GetProbeDisabledReason));
+                // None or Complete state: Start new probing
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuStart, 'p', ProbeAction.StartProbing,
+                    EnabledWhen: () => canProbe, DisabledReason: MenuHelpers.GetProbeDisabledReason));
             }
 
-            menu.Add(new MenuItem<ProbeAction>("Load from File", 'l', ProbeAction.LoadFromFile));
+            menu.Add(new MenuItem<ProbeAction>(ProbeMenuLoad, 'l', ProbeAction.LoadFromFile));
+
+            // Show Recover option if autosave exists
+            var autosaveState = Persistence.GetProbeState();
+            if (autosaveState != Persistence.ProbeState.None)
+            {
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuRecover, 'r', ProbeAction.RecoverAutosave));
+            }
 
             // Re-check hasComplete after potential menu state changes
             var probePoints = AppState.ProbePoints;
             hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
 
-            if (hasComplete)
+            // Show Save option (if not already shown as prominent unsaved option)
+            if (hasComplete && !hasUnsaved)
             {
-                menu.Add(new MenuItem<ProbeAction>("Save to File", 's', ProbeAction.SaveToFile));
-
-                if (AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
-                {
-                    menu.Add(new MenuItem<ProbeAction>("Apply to G-Code", 'a', ProbeAction.ApplyToGCode));
-                }
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuSave, 's', ProbeAction.SaveToFile));
             }
 
-            menu.Add(new MenuItem<ProbeAction>("Back", 'q', ProbeAction.Back));
+            if (hasComplete && AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
+            {
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuApply, 'a', ProbeAction.ApplyToGCode));
+            }
+
+            menu.Add(new MenuItem<ProbeAction>(ProbeMenuBack, 'q', ProbeAction.Back));
 
             return menu;
         }
 
+        /// <summary>
+        /// Uses Persistence.GetProbeState() as single source of truth for probe state.
+        /// Returns true if state is Partial (incomplete data exists).
+        /// </summary>
         private static bool HasIncompleteProbeData()
         {
-            var session = AppState.Session;
-            var probePoints = AppState.ProbePoints;
-            return (probePoints != null && probePoints.NotProbed.Count > 0) ||
-                   (!string.IsNullOrEmpty(session.ProbeAutoSavePath) && File.Exists(session.ProbeAutoSavePath));
+            return Persistence.GetProbeState() == Persistence.ProbeState.Partial;
+        }
+
+        /// <summary>
+        /// Uses Persistence.GetProbeState() as single source of truth for probe state.
+        /// Returns true if state is Complete (complete data exists but not saved by user).
+        /// </summary>
+        private static bool HasUnsavedCompleteProbe()
+        {
+            return Persistence.GetProbeState() == Persistence.ProbeState.Complete;
         }
 
         private static void ClearProbeData()
         {
             AppState.DiscardProbeData();
             Persistence.ClearProbeAutoSave();
-            AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data cleared[/]");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusCleared}[/]");
         }
 
-        private static void LoadProbeGrid()
+        /// <summary>
+        /// Load probe grid from file. Returns true if a complete grid was loaded
+        /// (caller should exit to main menu), false otherwise.
+        /// </summary>
+        private static bool LoadProbeGrid()
         {
             var path = FileMenu.BrowseForProbeGridFile();
             if (path == null)
             {
-                return;
+                return false;
             }
 
             try
             {
                 AppState.ProbePoints = ProbeGrid.Load(path);
+
+                // Don't copy to autosave - loaded data is already saved (came from a file).
+                // Autosave is only for data from active probing that hasn't been saved yet.
+                // Clear any stale autosave to prevent "unsaved probe data" prompts.
+                Persistence.ClearProbeAutoSave();
+
+                // Update probe browse directory (separate from G-code browse directory)
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
+                {
+                    AppState.Session.LastProbeBrowseDirectory = dir;
+                }
+                Persistence.SaveSession();
+
                 AppState.ResetProbeApplicationState();
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusLoaded}[/]");
                 AnsiConsole.WriteLine(AppState.ProbePoints.GetInfo());
+
+                // If complete, auto-apply and return to main menu
+                if (AppState.ProbePoints.NotProbed.Count == 0)
+                {
+                    AppState.ApplyProbeData();
+                    AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusAppliedSuccess}[/]");
+                    return true;
+                }
+
+                // Incomplete: stay in probe menu
+                return false;
             }
             catch (Exception ex)
             {
                 AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.WaitEnter();
+                return false;
+            }
+        }
+
+        private static void RecoverFromAutosave()
+        {
+            var autosaveState = Persistence.GetProbeState();
+            if (autosaveState == Persistence.ProbeState.None)
+            {
+                AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeErrorNoAutosave}[/]");
+                MenuHelpers.WaitEnter();
+                return;
+            }
+
+            try
+            {
+                var grid = AppState.ForceLoadProbeFromAutosave();
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{string.Format(ProbeStatusRecovered, grid.Progress, grid.TotalPoints)}[/]");
+                AnsiConsole.WriteLine(grid.GetInfo());
+            }
+            catch (Exception ex)
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]{string.Format(ProbeErrorRecoveryFailed, Markup.Escape(ex.Message))}[/]");
                 MenuHelpers.WaitEnter();
             }
         }
@@ -223,20 +309,20 @@ namespace coppercli.Menus
         {
             if (AppState.CurrentFile == null)
             {
-                MenuHelpers.ShowError("No G-code file loaded");
+                MenuHelpers.ShowError(ProbeErrorNoFile);
                 return;
             }
 
             if (AppState.ProbePoints == null || AppState.ProbePoints.NotProbed.Count > 0)
             {
-                MenuHelpers.ShowError("Probe data not complete");
+                MenuHelpers.ShowError(ProbeErrorIncomplete);
                 return;
             }
 
             try
             {
                 AppState.ApplyProbeData();
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied to G-Code![/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusAppliedSuccess}[/]");
             }
             catch (Exception ex)
             {
@@ -245,7 +331,7 @@ namespace coppercli.Menus
         }
 
         /// <summary>
-        /// Continues an interrupted probing session.
+        /// Continues an interrupted probing session using ProbeController.
         /// </summary>
         /// <returns>True if milling was performed (caller should exit to main menu).</returns>
         internal static bool ContinueProbing()
@@ -257,76 +343,35 @@ namespace coppercli.Menus
 
             if (!AppState.IsWorkZeroSet)
             {
-                MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
+                MenuHelpers.ShowError(ProbeErrorNoZero);
                 return false;
             }
 
-            var session = AppState.Session;
+            // Auto-load from autosave if needed
+            AppState.EnsureProbeDataLoaded();
+
             var probePoints = AppState.ProbePoints;
-            var machine = AppState.Machine;
-            var settings = AppState.Settings;
 
-            if (probePoints == null || probePoints.NotProbed.Count == 0)
+            if (probePoints == null)
             {
-                if (string.IsNullOrEmpty(session.ProbeAutoSavePath) || !File.Exists(session.ProbeAutoSavePath))
-                {
-                    MenuHelpers.ShowError("No incomplete probe data found.");
-                    return false;
-                }
-
-                try
-                {
-                    AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
-                    probePoints = AppState.ProbePoints;
-                    AppState.ResetProbeApplicationState();
-                }
-                catch (Exception ex)
-                {
-                    MenuHelpers.ShowError($"Error loading probe data: {ex.Message}");
-                    return false;
-                }
+                MenuHelpers.ShowError(ProbeErrorNoIncomplete);
+                return false;
             }
 
-            if (probePoints!.NotProbed.Count == 0)
+            if (probePoints.NotProbed.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data is already complete.[/]");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusComplete}[/]");
                 MenuHelpers.WaitEnter();
                 return false;
             }
 
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Resuming probe: {probePoints.Progress}/{probePoints.TotalPoints} points complete[/]");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]{string.Format(ProbeFormatResume, probePoints.Progress, probePoints.TotalPoints)}[/]");
 
-            // Ensure machine is idle before starting
-            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
-
-            AppState.StartProbing();
-
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
-
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing resumed. Press Escape to stop.[/]");
-
-            ProbeNextPoint();
-            WaitForProbingComplete();
-
-            AppState.StopProbing();
-            Console.WriteLine();
-
-            if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
-            {
-                Persistence.ClearProbeAutoSave();
-                ShowProbeResults();
-                if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
-                {
-                    ApplyProbeGrid();
-                    return OfferToMill();
-                }
-            }
-            return false;
+            return RunProbeController(probePoints, traceOutline: false);
         }
 
         /// <summary>
-        /// Starts a new probing session.
+        /// Starts a new probing session using ProbeController.
         /// </summary>
         /// <returns>True if milling was performed (caller should exit to main menu).</returns>
         private static bool StartProbing()
@@ -340,23 +385,23 @@ namespace coppercli.Menus
 
             if (currentFile == null)
             {
-                MenuHelpers.ShowError("No G-Code file loaded. Load a file first.");
+                MenuHelpers.ShowError(ProbeErrorNoFileLoad);
                 return false;
             }
 
             if (!AppState.IsWorkZeroSet)
             {
-                MenuHelpers.ShowError("Work zero not set. Use Move menu to zero all axes (0) first.");
+                MenuHelpers.ShowError(ProbeErrorNoZero);
                 return false;
             }
 
-            var margin = MenuHelpers.AskDouble("Probe margin (mm)", DefaultProbeMargin);
+            var margin = MenuHelpers.AskDouble(ProbePromptMargin, DefaultProbeMargin);
             if (margin == null)
             {
                 return false;
             }
 
-            var gridSize = MenuHelpers.AskDouble("Grid size (mm)", DefaultProbeGridSize);
+            var gridSize = MenuHelpers.AskDouble(ProbePromptGridSize, DefaultProbeGridSize);
             if (gridSize == null)
             {
                 return false;
@@ -367,24 +412,11 @@ namespace coppercli.Menus
                 return false;
             }
 
-            var machine = AppState.Machine;
-            var settings = AppState.Settings;
-
-            var traceChoice = MenuHelpers.ConfirmOrQuit("Trace outline first?", true);
+            var traceChoice = MenuHelpers.ConfirmOrQuit(ProbePromptTraceOutline, true);
             if (traceChoice == null)
             {
                 return false;
             }
-            if (traceChoice == true)
-            {
-                if (!TraceProbeOutline())
-                {
-                    return false;
-                }
-            }
-
-            // Ensure machine is idle before starting
-            StatusHelpers.WaitForIdle(machine, IdleWaitTimeoutMs);
 
             // Warn if in network mode and sleep prevention unavailable
             if (SleepPrevention.ShouldWarn())
@@ -398,170 +430,223 @@ namespace coppercli.Menus
                 }
             }
 
-            // Start sleep prevention (no-op if unavailable)
-            SleepPrevention.Start();
-
-            try
-            {
-                AppState.StartProbing();
-
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdRapidMove} Z{settings.ProbeSafeHeight:F3}");
-
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing started. Press Escape to stop.[/]");
-
-                ProbeNextPoint();
-                WaitForProbingComplete();
-
-                AppState.StopProbing();
-                Console.WriteLine();
-
-                if (AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0)
-                {
-                    Persistence.ClearProbeAutoSave();
-                    ShowProbeResults();
-                    if (MenuHelpers.ConfirmOrQuit("Apply probe data to G-Code?", true) == true)
-                    {
-                        ApplyProbeGrid();
-                        return OfferToMill();
-                    }
-                }
-                return false;
-            }
-            finally
-            {
-                SleepPrevention.Stop();
-            }
+            return RunProbeController(AppState.ProbePoints!, traceOutline: traceChoice == true);
         }
 
-        private static bool CreateProbeGrid(double margin, double gridSize)
+        /// <summary>
+        /// Runs the ProbeController with the given grid.
+        /// Handles async controller with synchronous TUI input loop.
+        /// </summary>
+        private static bool RunProbeController(ProbeGrid grid, bool traceOutline)
         {
-            var currentFile = AppState.CurrentFile!;
-            var minX = currentFile.Min.X - margin;
-            var minY = currentFile.Min.Y - margin;
-            var maxX = currentFile.Max.X + margin;
-            var maxY = currentFile.Max.Y + margin;
+            var controller = AppState.Probe;
+            var settings = AppState.Settings;
+
+            // Configure controller options
+            controller.Options = new ProbeOptions
+            {
+                SafeHeight = settings.ProbeSafeHeight,
+                MaxDepth = settings.ProbeMaxDepth,
+                ProbeFeed = settings.ProbeFeed,
+                MinimumHeight = settings.ProbeMinimumHeight,
+                AbortOnFail = settings.AbortOnProbeFail,
+                XAxisWeight = settings.ProbeXAxisWeight,
+                TraceOutline = traceOutline,
+                TraceHeight = settings.OutlineTraceHeight,
+                TraceFeed = settings.OutlineTraceFeed
+            };
+
+            // Load the grid into controller (same object reference - updates in place)
+            controller.LoadGrid(grid);
+
+            // Wire up event handlers
+            controller.PointCompleted += OnPointCompleted;
+            controller.PhaseChanged += OnPhaseChanged;
+            controller.ProgressChanged += OnProgressChanged;
+            controller.ErrorOccurred += OnErrorOccurred;
+
+            // Start sleep prevention
+            SleepPrevention.Start();
+
+            _probeCts = new CancellationTokenSource();
+            bool completed = false;
+            bool cancelled = false;
 
             try
             {
-                AppState.ProbePoints = new ProbeGrid(gridSize, new Vector2(minX, minY), new Vector2(maxX, maxY));
-                AppState.ResetProbeApplicationState();
-                var hm = AppState.ProbePoints;
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe grid: {hm.SizeX}x{hm.SizeY} = {hm.TotalPoints} points[/]");
-                AnsiConsole.MarkupLine($"[{ColorDim}]Bounds: X({minX:F2} to {maxX:F2}) Y({minY:F2} to {maxY:F2})[/]");
-                return true;
+                // Start controller async
+                _probeTask = controller.StartAsync(_probeCts.Token);
+
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusStarted}[/]");
+
+                // Poll for completion with UI updates
+                WaitForProbeComplete(controller, grid);
+
+                // Check final state
+                completed = controller.State == ControllerState.Completed;
+                cancelled = controller.State == ControllerState.Cancelled;
+            }
+            catch (OperationCanceledException)
+            {
+                cancelled = true;
             }
             catch (Exception ex)
             {
-                MenuHelpers.ShowError($"Error creating probe grid: {ex.Message}");
-                return false;
+                AnsiConsole.MarkupLine($"\n[{ColorError}]{string.Format(ProbeFormatError, Markup.Escape(ex.Message))}[/]");
             }
-        }
-
-        private static bool TraceProbeOutline()
-        {
-            var probePoints = AppState.ProbePoints;
-            var machine = AppState.Machine;
-            var settings = AppState.Settings;
-
-            if (probePoints == null)
+            finally
             {
-                return false;
-            }
+                // Cleanup
+                controller.PointCompleted -= OnPointCompleted;
+                controller.PhaseChanged -= OnPhaseChanged;
+                controller.ProgressChanged -= OnProgressChanged;
+                controller.ErrorOccurred -= OnErrorOccurred;
+                SleepPrevention.Stop();
+                _probeCts?.Dispose();
+                _probeCts = null;
+                _probeTask = null;
 
-            var traceHeight = MenuHelpers.AskDouble("Trace height (mm)", settings.OutlineTraceHeight);
-            if (traceHeight == null)
-            {
-                return false;
+                // Reset controller for next use
+                controller.Reset();
             }
 
-            var traceFeed = MenuHelpers.AskDouble("Trace feed (mm/min)", settings.OutlineTraceFeed);
-            if (traceFeed == null)
+            Console.WriteLine();
+
+            if (cancelled)
             {
-                return false;
+                AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusStopped}[/]");
             }
 
-            AnsiConsole.MarkupLine($"[{ColorWarning}]Tracing probe outline at Z={traceHeight.Value:F1}mm, feed={traceFeed.Value:F0}mm/min[/]");
-            AnsiConsole.MarkupLine($"[{ColorDim}]Press Escape to cancel[/]");
-
-            double minX = probePoints.Min.X;
-            double minY = probePoints.Min.Y;
-            double maxX = probePoints.Max.X;
-            double maxY = probePoints.Max.Y;
-
-            double currentZ = machine.WorkPosition.Z;
-            double safeZ = Math.Max(currentZ, traceHeight.Value);
-            AnsiConsole.MarkupLine($"[{ColorDim}]Current Z={currentZ:F2}, moving to Z={safeZ:F2}[/]");
-            MachineCommands.RapidMoveAndWaitZ(machine, safeZ);
-
-            var corners = new[]
+            if (completed)
             {
-                (minX, minY, "bottom-left"),
-                (maxX, minY, "bottom-right"),
-                (maxX, maxY, "top-right"),
-                (minX, maxY, "top-left"),
-                (minX, minY, "back to start")
-            };
-
-            foreach (var (x, y, label) in corners)
-            {
-                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
+                // Probe data is in autosave, ready for user to save or discard
+                ShowProbeResults();
+                if (MenuHelpers.ConfirmOrQuit(ProbePromptApply, true) == true)
                 {
-                    machine.FeedHold();
-                    machine.SoftReset();
-                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Outline trace cancelled - machine stopped[/]");
-                    return false;
-                }
-
-                AnsiConsole.MarkupLine($"  Moving to {label} ({x:F1}, {y:F1})...");
-                machine.SendLine(CmdAbsolute);
-                machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{traceFeed.Value:F0}");
-
-                if (!StatusHelpers.WaitForMoveComplete(machine, x, y, CheckEscape))
-                {
-                    machine.FeedHold();
-                    machine.SoftReset();
-                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Outline trace cancelled - machine stopped[/]");
-                    return false;
+                    ApplyProbeGrid();
+                    return OfferToMill();
                 }
             }
 
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Outline trace complete![/]");
-
-            return MenuHelpers.ConfirmOrQuit("Continue with probing?", true) ?? false;
+            return false;
         }
 
-        private static bool CheckEscape() =>
-            Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape;
-
-        private static void WaitForProbingComplete()
+        /// <summary>
+        /// Waits for probing to complete, handling ESC/Space keys and UI updates.
+        /// </summary>
+        private static void WaitForProbeComplete(ProbeController controller, ProbeGrid grid)
         {
-            var probePoints = AppState.ProbePoints;
             int lastProgress = -1;
+            bool wasPaused = false;
 
-            while (AppState.Probing && probePoints != null && probePoints.NotProbed.Count > 0)
+            while (controller.State == ControllerState.Initializing ||
+                   controller.State == ControllerState.Running ||
+                   controller.State == ControllerState.Paused)
             {
-                if (Console.KeyAvailable && Console.ReadKey(true).Key == ConsoleKey.Escape)
+                // Check for key presses
+                if (Console.KeyAvailable)
                 {
-                    AppState.StopProbing();
-                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]Probing stopped by user[/]");
-                    break;
+                    var key = Console.ReadKey(true);
+
+                    if (InputHelpers.IsEscapeKey(key))
+                    {
+                        _probeCts?.Cancel();
+                        AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusStopping}[/]");
+
+                        // Wait for controller to stop
+                        try
+                        {
+                            _probeTask?.Wait(TimeSpan.FromMilliseconds(Constants.ControllerCancelTimeoutMs));
+                        }
+                        catch
+                        {
+                            // Ignore
+                        }
+                        break;
+                    }
+                    else if (key.Key == ConsoleKey.Spacebar)
+                    {
+                        // Toggle pause/resume
+                        if (controller.State == ControllerState.Running)
+                        {
+                            controller.Pause();
+                            AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusPaused}[/]");
+                        }
+                        else if (controller.State == ControllerState.Paused)
+                        {
+                            controller.Resume();
+                            AnsiConsole.MarkupLine($"\n[{ColorSuccess}]{ProbeStatusResumed}[/]");
+                        }
+                    }
                 }
 
-                if (probePoints.Progress != lastProgress)
+                // Show paused state change (e.g., auto-pause from slow probe)
+                bool isPaused = controller.State == ControllerState.Paused;
+                if (isPaused && !wasPaused)
                 {
-                    lastProgress = probePoints.Progress;
-                    DrawProbeMatrix();
+                    AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusPaused}[/]");
+                }
+                wasPaused = isPaused;
+
+                // Update display when progress changes
+                if (grid.Progress != lastProgress)
+                {
+                    lastProgress = grid.Progress;
+                    DrawProbeMatrix(grid);
                 }
 
                 Thread.Sleep(StatusPollIntervalMs);
             }
 
-            // Wait for machine to finish (e.g., the final Z raise) and draw completed state
-            if (probePoints != null && probePoints.NotProbed.Count == 0)
+            // Final draw
+            if (grid.NotProbed.Count == 0)
             {
-                DrawProbeMatrix();
-                StatusHelpers.WaitForIdle(AppState.Machine, IdleWaitTimeoutMs);
+                DrawProbeMatrix(grid);
+            }
+        }
+
+        private static void OnPointCompleted(int index, Vector2 coords, double z)
+        {
+            // Autosave progress
+            Persistence.SaveProbeProgress();
+            Logger.Log($"Probe point {index + 1} complete: ({coords.X:F3}, {coords.Y:F3}) Z={z:F3}");
+        }
+
+        private static void OnPhaseChanged(ProbePhase phase)
+        {
+            Logger.Log($"Probe phase: {phase}");
+        }
+
+        private static void OnProgressChanged(ProgressInfo progress)
+        {
+            // Progress is shown via DrawProbeMatrix
+        }
+
+        private static void OnErrorOccurred(ControllerError error)
+        {
+            AnsiConsole.MarkupLine($"\n[{ColorError}]{Markup.Escape(error.Message)}[/]");
+        }
+
+        private static bool CreateProbeGrid(double margin, double gridSize)
+        {
+            var currentFile = AppState.CurrentFile!;
+
+            try
+            {
+                var grid = AppState.SetupProbeGrid(
+                    new Vector2(currentFile.Min.X, currentFile.Min.Y),
+                    new Vector2(currentFile.Max.X, currentFile.Max.Y),
+                    margin,
+                    gridSize);
+
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{string.Format(ProbeFormatGrid, grid.SizeX, grid.SizeY, grid.TotalPoints)}[/]");
+                AnsiConsole.MarkupLine($"[{ColorDim}]{string.Format(ProbeFormatBounds, grid.Min.X, grid.Max.X, grid.Min.Y, grid.Max.Y)}[/]");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MenuHelpers.ShowError(string.Format(ProbeFormatGridError, ex.Message));
+                return false;
             }
         }
 
@@ -601,45 +686,40 @@ namespace coppercli.Menus
             }
         }
 
-        private static void DrawProbeMatrix()
+        private static void DrawProbeMatrix(ProbeGrid probePoints)
         {
-            var probePoints = AppState.ProbePoints;
-            if (probePoints == null)
-            {
-                return;
-            }
-
             var unprobed = new HashSet<(int, int)>();
             foreach (var p in probePoints.NotProbed)
             {
                 unprobed.Add((p.Item1, p.Item2));
             }
 
-            int maxWidth = Math.Min((Console.WindowWidth - ProbeGridConsolePadding) / 2, ProbeGridMaxDisplayWidth);
-            int maxHeight = Math.Min(Console.WindowHeight - ProbeGridHeaderPadding, ProbeGridMaxDisplayHeight);
+            var (winWidth, winHeight) = GetSafeWindowSize();
+            int maxWidth = Math.Min((winWidth - ProbeGridConsolePadding) / 2, ProbeGridMaxDisplayWidth);
+            int maxHeight = Math.Min(winHeight - ProbeGridHeaderPadding, ProbeGridMaxDisplayHeight);
 
             int stepX = Math.Max(1, (probePoints.SizeX + maxWidth - 1) / maxWidth);
             int stepY = Math.Max(1, (probePoints.SizeY + maxHeight - 1) / maxHeight);
 
             int matrixWidth = ((probePoints.SizeX + stepX - 1) / stepX) * 2;
-            int leftPadding = Math.Max(0, (Console.WindowWidth - matrixWidth) / 2);
+            int leftPadding = Math.Max(0, (winWidth - matrixWidth) / 2);
             string pad = new string(' ', leftPadding);
 
             // Get height range for color mapping
             double minZ = probePoints.MinHeight;
             double maxZ = probePoints.MaxHeight;
             double rangeZ = maxZ - minZ;
-            bool hasRange = probePoints.HasValidHeights && rangeZ > 0.0001;
+            bool hasRange = probePoints.HasValidHeights && rangeZ > Constants.HeightRangeEpsilon;
 
             Console.Clear();
             string zRange = probePoints.HasValidHeights
                 ? $"Z: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3}"
-                : "Z: --";
-            string header = $"Probing: {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
-            int headerPad = Math.Max(0, (Console.WindowWidth - header.Length) / 2);
+                : ProbeDisplayZNoData;
+            string header = $"{ProbeDisplayHeader} {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
+            int headerPad = Math.Max(0, (winWidth - header.Length) / 2);
             Console.WriteLine();
             AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorBold}]{header}[/]");
-            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]Press Escape to stop[/]");
+            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]{ProbeDisplayEscapeStop}[/]");
 
             // Show color legend when we have a range
             if (hasRange)
@@ -651,9 +731,8 @@ namespace coppercli.Menus
                 string legend = $"{AnsiRgb(rLow, gLow, bLow)}██{AnsiReset} {minZ:F3}  " +
                                 $"{AnsiRgb(rMid, gMid, bMid)}██{AnsiReset} {midZ:F3}  " +
                                 $"{AnsiRgb(rHigh, gHigh, bHigh)}██{AnsiReset} {maxZ:F3}";
-                // Approximate legend display length (3 colored blocks * 2 chars + 3 values ~7 chars each + spacing)
-                int legendDisplayLen = 2 + 7 + 2 + 2 + 7 + 2 + 2 + 7;
-                int legendPad = Math.Max(0, (Console.WindowWidth - legendDisplayLen) / 2);
+                int legendDisplayLen = CalculateDisplayLength(legend);
+                int legendPad = Math.Max(0, (winWidth - legendDisplayLen) / 2);
                 Console.WriteLine(new string(' ', legendPad) + legend);
             }
 
@@ -719,12 +798,12 @@ namespace coppercli.Menus
                 return;
             }
 
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probing complete![/]");
-            AnsiConsole.MarkupLine($"  Points: {probePoints.TotalPoints}");
+            AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusCompleteSuccess}[/]");
+            AnsiConsole.MarkupLine($"  {ProbeDisplayPoints} {probePoints.TotalPoints}");
             if (probePoints.HasValidHeights)
             {
-                AnsiConsole.MarkupLine($"  Z range: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3} mm");
-                AnsiConsole.MarkupLine($"  Variance: {probePoints.MaxHeight - probePoints.MinHeight:F3} mm");
+                AnsiConsole.MarkupLine($"  {ProbeDisplayZRange} {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3} {ProbeDisplayMm}");
+                AnsiConsole.MarkupLine($"  {ProbeDisplayVariance} {probePoints.MaxHeight - probePoints.MinHeight:F3} {ProbeDisplayMm}");
             }
             AnsiConsole.WriteLine();
 
@@ -732,7 +811,7 @@ namespace coppercli.Menus
         }
 
         /// <summary>
-        /// Prompts user to save probe data to a file.
+        /// Prompts user to save probe data to a file using the file browser.
         /// Can be called after probing completes or from the menu.
         /// </summary>
         private static void PromptSaveProbeData()
@@ -743,10 +822,11 @@ namespace coppercli.Menus
 
             if (probePoints == null || probePoints.NotProbed.Count > 0)
             {
-                MenuHelpers.ShowError("No complete probe data to save.");
+                MenuHelpers.ShowError(ProbeErrorNoComplete);
                 return;
             }
 
+            // Generate default filename based on G-code file or timestamp
             string defaultFilename;
             if (currentFile != null && !string.IsNullOrEmpty(currentFile.FileName))
             {
@@ -757,55 +837,48 @@ namespace coppercli.Menus
                 defaultFilename = DateTime.Now.ToString(ProbeDateFormat) + ".pgrid";
             }
 
-            string defaultPath = !string.IsNullOrEmpty(session.LastBrowseDirectory)
-                ? Path.Combine(session.LastBrowseDirectory, defaultFilename)
-                : defaultFilename;
+            // Use file browser to select save location
+            var path = FileMenu.BrowseForSaveLocation(
+                ProbeGridExtensions,
+                defaultFilename,
+                session.LastProbeBrowseDirectory);
 
-            while (true)
+            if (path == null)
             {
-                var path = MenuHelpers.AskString("Save probe data:", defaultPath);
+                AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusNotSaved}[/]");
+                Thread.Sleep(ConfirmationDisplayMs);
+                return;
+            }
 
-                // Escape pressed - cancel save
-                if (path == null)
+            // Confirm overwrite if file exists
+            if (File.Exists(path))
+            {
+                if (!MenuHelpers.Confirm(string.Format(ProbeFormatOverwrite, Path.GetFileName(path)), true))
                 {
-                    AnsiConsole.MarkupLine($"[{ColorWarning}]Probe data not saved[/]");
+                    AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusNotSaved}[/]");
+                    Thread.Sleep(ConfirmationDisplayMs);
                     return;
                 }
+            }
 
-                if (path.StartsWith("~"))
+            // Move autosave to user's chosen location
+            if (Persistence.SaveProbeToFile(path))
+            {
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]{string.Format(ProbeFormatSaved, Markup.Escape(path))}[/]");
+
+                // Update last probe browse directory
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
                 {
-                    path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Substring(2));
-                }
-
-                if (File.Exists(path))
-                {
-                    if (!MenuHelpers.Confirm($"Overwrite {Path.GetFileName(path)}?", true))
-                    {
-                        // Loop back to prompt for a different filename
-                        defaultPath = path;
-                        continue;
-                    }
-                }
-
-                try
-                {
-                    probePoints.Save(path);
-                    AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data saved to {Markup.Escape(path)}[/]");
-
-                    session.LastSavedProbeFile = Path.GetFullPath(path);
-                    var dir = Path.GetDirectoryName(path);
-                    if (!string.IsNullOrEmpty(dir))
-                    {
-                        session.LastBrowseDirectory = dir;
-                    }
+                    session.LastProbeBrowseDirectory = dir;
                     Persistence.SaveSession();
-                    return;
                 }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[{ColorError}]Error saving: {Markup.Escape(ex.Message)}[/]");
-                    return;
-                }
+                Thread.Sleep(ConfirmationDisplayMs);
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]{string.Format(ProbeFormatSaveError, "Failed to save probe data")}[/]");
+                MenuHelpers.WaitEnter();
             }
         }
 
@@ -818,123 +891,13 @@ namespace coppercli.Menus
             var currentFile = AppState.CurrentFile;
             if (currentFile != null && currentFile.ContainsMotion && AppState.AreProbePointsApplied)
             {
-                if (MenuHelpers.ConfirmOrQuit("Proceed to Milling?", true) == true)
+                if (MenuHelpers.ConfirmOrQuit(ProbePromptMill, true) == true)
                 {
                     MillMenu.Show();
                     return true;
                 }
             }
             return false;
-        }
-
-        private static void ProbeNextPoint()
-        {
-            var probePoints = AppState.ProbePoints;
-            var machine = AppState.Machine;
-            var settings = AppState.Settings;
-
-            if (!AppState.Probing || probePoints == null || probePoints.NotProbed.Count == 0)
-            {
-                return;
-            }
-
-            SortProbePointsByDistance();
-
-            var coords = probePoints.GetCoordinates(probePoints.NotProbed[0]);
-
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}");
-            machine.SendLine($"{CmdProbeToward} Z-{settings.ProbeMaxDepth:F3} F{settings.ProbeFeed:F1}");
-
-            MachineCommands.RaiseZRelative(machine, settings.ProbeMinimumHeight);
-        }
-
-        private static void SortProbePointsByDistance()
-        {
-            var probePoints = AppState.ProbePoints;
-            var settings = AppState.Settings;
-
-            if (probePoints == null)
-            {
-                return;
-            }
-
-            var currentPos = AppState.Machine.WorkPosition.GetXY();
-            probePoints.NotProbed.Sort((a, b) =>
-            {
-                var va = probePoints.GetCoordinates(a) - currentPos;
-                var vb = probePoints.GetCoordinates(b) - currentPos;
-                va.X *= settings.ProbeXAxisWeight;
-                vb.X *= settings.ProbeXAxisWeight;
-                return va.Magnitude.CompareTo(vb.Magnitude);
-            });
-        }
-
-        /// <summary>
-        /// Called by event handler when GRBL reports probe result.
-        /// </summary>
-        public static void OnProbeFinished(Vector3 pos, bool success)
-        {
-            if (AppState.SingleProbing)
-            {
-                AppState.SingleProbing = false;
-                AppState.Machine.ProbeStop();
-                AppState.SingleProbeCallback?.Invoke(pos, success);
-                AppState.SingleProbeCallback = null;
-                return;
-            }
-
-            var probePoints = AppState.ProbePoints;
-            var settings = AppState.Settings;
-
-            if (!AppState.Probing || probePoints == null || probePoints.NotProbed.Count == 0)
-            {
-                return;
-            }
-
-            if (success)
-            {
-                var point = probePoints.NotProbed[0];
-                probePoints.AddPoint(point.Item1, point.Item2, pos.Z);
-                probePoints.NotProbed.RemoveAt(0);
-                Persistence.SaveProbeProgress();
-
-                if (probePoints.NotProbed.Count > 0)
-                {
-                    ProbeNextPoint();
-                }
-                else
-                {
-                    AppState.Machine.SendLine(CmdAbsolute);
-                    AppState.Machine.SendLine($"{CmdRapidMove} Z{Math.Max(settings.ProbeSafeHeight, pos.Z):F3}");
-                    AppState.Probing = false;
-                }
-            }
-            else
-            {
-                if (settings.AbortOnProbeFail)
-                {
-                    AppState.Probing = false;
-                    AnsiConsole.MarkupLine($"\n[{ColorError}]Probe failed! Aborting.[/]");
-                    return;
-                }
-
-                if (probePoints.NotProbed.Count > 0)
-                {
-                    probePoints.NotProbed.RemoveAt(0);
-                }
-
-                MachineCommands.RaiseZRelative(AppState.Machine, settings.ProbeSafeHeight);
-
-                if (probePoints.NotProbed.Count > 0)
-                {
-                    ProbeNextPoint();
-                }
-                else
-                {
-                    AppState.Probing = false;
-                }
-            }
         }
     }
 }

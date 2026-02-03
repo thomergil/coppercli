@@ -22,51 +22,21 @@ namespace coppercli.Menus
             Probe,
             Mill,
             Macro,
-            Proxy,
+            Server,
             Settings,
             About,
             Exit
         }
 
         private static string? GetJogDisabledReason() =>
-            !AppState.Machine.Connected ? "connect first" : null;
-
-        private static string? GetProbeDisabledReason()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                return "connect first";
-            }
-            if (AppState.CurrentFile == null)
-            {
-                return "load G-Code first";
-            }
-            return null;
-        }
-
-        private static string? GetMillDisabledReason()
-        {
-            if (!AppState.Machine.Connected)
-            {
-                return "connect first";
-            }
-            if (AppState.Machine.File.Count == 0)
-            {
-                return "load G-Code first";
-            }
-            if (AppState.ProbePoints != null && !AppState.AreProbePointsApplied)
-            {
-                return "apply probe data first";
-            }
-            return null;
-        }
+            !AppState.Machine.Connected ? DisabledConnect : null;
 
         private static string? GetMacroDisabledReason() =>
-            !AppState.Machine.Connected ? "connect first" : null;
+            !AppState.Machine.Connected ? DisabledConnect : null;
 
-        private static string? GetProxyDisabledReason() =>
+        private static string? GetServerDisabledReason() =>
             AppState.Machine.Connected && AppState.Settings.ConnectionType == ConnectionType.Ethernet
-                ? "disconnect first"
+                ? DisabledDisconnect
                 : null;
 
         private static readonly MenuDef<MainAction> MainMenuDef = new(
@@ -76,18 +46,18 @@ namespace coppercli.Menus
                 EnabledWhen: () => AppState.Machine.Connected,
                 DisabledReason: GetJogDisabledReason),
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
-                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null,
-                DisabledReason: GetProbeDisabledReason),
+                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null && AppState.IsWorkZeroSet,
+                DisabledReason: MenuHelpers.GetProbeDisabledReason),
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
                 EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
                     (AppState.ProbePoints == null || AppState.AreProbePointsApplied),
-                DisabledReason: GetMillDisabledReason),
+                DisabledReason: MenuHelpers.GetMillDisabledReason),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
                 EnabledWhen: () => AppState.Machine.Connected,
                 DisabledReason: GetMacroDisabledReason),
-            new MenuItem<MainAction>("Proxy", 'x', MainAction.Proxy,
+            new MenuItem<MainAction>("Server", 'x', MainAction.Server,
                 EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet,
-                DisabledReason: GetProxyDisabledReason),
+                DisabledReason: GetServerDisabledReason),
             new MenuItem<MainAction>("Settings", 's', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -119,13 +89,19 @@ namespace coppercli.Menus
 
             if (currentFile != null)
             {
-                AnsiConsole.MarkupLine($"File: [{ColorInfo}]{currentFile.FileName}[/] ({currentFile.Size.X:F1} x {currentFile.Size.Y:F1} mm)");
+                var probeStatus = "";
+                if (probePoints != null)
+                {
+                    probeStatus = AppState.AreProbePointsApplied
+                        ? $", [{ColorSuccess}]probe grid applied[/]"
+                        : $", [{ColorWarning}]probe grid pending[/]";
+                }
+                AnsiConsole.MarkupLine($"File: [{ColorInfo}]{currentFile.FileName}[/] ({currentFile.Size.X:F1} x {currentFile.Size.Y:F1} mm{probeStatus})");
             }
 
             if (probePoints != null)
             {
-                var appliedStatus = AppState.AreProbePointsApplied ? $"[{ColorSuccess}]applied[/]" : $"[{ColorWarning}]not applied[/]";
-                AnsiConsole.MarkupLine($"Probe: [{ColorInfo}]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points, {appliedStatus})");
+                AnsiConsole.MarkupLine($"Probe: [{ColorInfo}]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points)");
             }
 
             // Show machine profile
@@ -170,7 +146,7 @@ namespace coppercli.Menus
                 case MainAction.Probe: ProbeMenu.Show(); break;
                 case MainAction.Mill: MillMenu.Show(); break;
                 case MainAction.Macro: MacroMenu.Show(); break;
-                case MainAction.Proxy: ProxyMenu.Show(); break;
+                case MainAction.Server: ServerMenu.Show(); break;
                 case MainAction.Settings: SettingsMenu.Show(Persistence.SaveSettings); break;
                 case MainAction.About: AboutMenu.Show(); break;
                 case MainAction.Exit: ExitProgram(); break;

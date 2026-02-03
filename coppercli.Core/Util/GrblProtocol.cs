@@ -69,6 +69,7 @@ namespace coppercli.Core.Util
         public const string CmdRapidMove = "G0";
         public const string CmdLinearMove = "G1";
         public const string CmdProbeToward = "G38.3";  // Probe toward workpiece, stop on contact (no error if no contact)
+        public const string CmdPlaneXY = "G17";        // XY plane selection (standard for PCB milling)
 
         // =========================================================================
         // M-code commands

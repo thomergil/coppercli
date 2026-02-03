@@ -1,11 +1,57 @@
 // Extracted from Program.cs - Menu display helpers
 
-using Spectre.Console;
+using System.Linq;
 using System.Text.RegularExpressions;
+using coppercli.Core.Controllers;
+using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
+    // =========================================================================
+    // Preflight validation (shared by TUI and WebServer)
+    // =========================================================================
+
+    /// <summary>
+    /// Error codes for mill preflight validation.
+    /// Used to decouple validation logic from UI-specific error messages.
+    /// </summary>
+    public enum MillPreflightError
+    {
+        None,
+        NotConnected,
+        NoFile,
+        ProbeNotApplied,
+        ProbeIncomplete,
+        AlarmState
+    }
+
+    /// <summary>
+    /// Warning codes for mill preflight validation.
+    /// </summary>
+    public enum MillPreflightWarning
+    {
+        NotHomed,
+        DangerousCommands,
+        NoMachineProfile
+    }
+
+    /// <summary>
+    /// Result of mill preflight validation.
+    /// </summary>
+    /// <param name="CanStart">True if milling can start.</param>
+    /// <param name="Error">Primary error preventing start, or None.</param>
+    /// <param name="Warnings">List of warnings (non-blocking).</param>
+    /// <param name="ProbeProgress">Probe progress if ProbeIncomplete (e.g., "5/20").</param>
+    /// <param name="DangerousWarnings">List of dangerous file warnings if DangerousCommands warning.</param>
+    public record MillPreflightResult(
+        bool CanStart,
+        MillPreflightError Error,
+        List<MillPreflightWarning> Warnings,
+        string? ProbeProgress = null,
+        List<string>? DangerousWarnings = null);
+
     /// <summary>
     /// A menu item with a label, mnemonic key, option type, and optional enabled condition.
     /// </summary>
@@ -72,6 +118,120 @@ namespace coppercli.Helpers
     internal static class MenuHelpers
     {
         /// <summary>
+        /// Returns the reason probing is disabled, or null if probing is allowed.
+        /// Checks: connection, file loaded, work zero set.
+        /// </summary>
+        public static string? GetProbeDisabledReason()
+        {
+            if (!AppState.Machine.Connected)
+            {
+                return DisabledConnect;
+            }
+            if (AppState.CurrentFile == null)
+            {
+                return DisabledNoFile;
+            }
+            if (!AppState.IsWorkZeroSet)
+            {
+                return DisabledNoZero;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Validates whether milling can start. Single source of truth for preflight checks.
+        /// Used by both TUI (GetMillDisabledReason) and WebServer (HandleMillPreflight).
+        /// </summary>
+        public static MillPreflightResult ValidateMillPreflight()
+        {
+            var warnings = new List<MillPreflightWarning>();
+            List<string>? dangerousWarnings = null;
+            string? probeProgress = null;
+
+            // Check connection
+            if (!AppState.Machine.Connected)
+            {
+                return new MillPreflightResult(false, MillPreflightError.NotConnected, warnings);
+            }
+
+            // Check file loaded
+            if (AppState.Machine.File.Count == 0)
+            {
+                return new MillPreflightResult(false, MillPreflightError.NoFile, warnings);
+            }
+
+            // Check for dangerous warnings in file (collect early, always returned)
+            var currentFile = AppState.CurrentFile;
+            if (currentFile?.Warnings.Count > 0)
+            {
+                dangerousWarnings = currentFile.Warnings
+                    .Where(w => w.Contains(WarningPrefixDanger) || w.Contains(WarningPrefixInches))
+                    .ToList();
+                if (dangerousWarnings.Count > 0)
+                {
+                    warnings.Add(MillPreflightWarning.DangerousCommands);
+                }
+                else
+                {
+                    dangerousWarnings = null;  // Empty list → null
+                }
+            }
+
+            // Check probe data applied (if probe points exist)
+            if (AppState.ProbePoints != null && !AppState.AreProbePointsApplied)
+            {
+                if (AppState.ProbePoints.NotProbed.Count > 0)
+                {
+                    probeProgress = $"{AppState.ProbePoints.Progress}/{AppState.ProbePoints.TotalPoints}";
+                    return new MillPreflightResult(false, MillPreflightError.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
+                }
+                return new MillPreflightResult(false, MillPreflightError.ProbeNotApplied, warnings, null, dangerousWarnings);
+            }
+
+            // Check machine state (alarm)
+            if (MachineWait.IsAlarm(AppState.Machine))
+            {
+                return new MillPreflightResult(false, MillPreflightError.AlarmState, warnings, null, dangerousWarnings);
+            }
+
+            // Check if homed (warning only - will home before milling)
+            if (!AppState.Machine.IsHomed)
+            {
+                warnings.Add(MillPreflightWarning.NotHomed);
+            }
+
+            // Check if machine profile is selected (warning only)
+            if (MachineProfiles.GetProfile(AppState.Settings.MachineProfile) == null)
+            {
+                warnings.Add(MillPreflightWarning.NoMachineProfile);
+            }
+
+            return new MillPreflightResult(true, MillPreflightError.None, warnings, null, dangerousWarnings);
+        }
+
+        /// <summary>
+        /// Returns the reason milling is disabled, or null if milling is allowed.
+        /// Wrapper around ValidateMillPreflight() for simple menu disabled state.
+        /// Note: AlarmState is NOT checked here (handled by EnsureMachineReady in MillMenu).
+        /// </summary>
+        public static string? GetMillDisabledReason()
+        {
+            var result = ValidateMillPreflight();
+
+            // Map errors to disabled reasons (AlarmState handled separately in MillMenu)
+            return result.Error switch
+            {
+                MillPreflightError.None => null,
+                MillPreflightError.NotConnected => DisabledConnect,
+                MillPreflightError.NoFile => DisabledNoFile,
+                MillPreflightError.ProbeNotApplied => DisabledProbeNotApplied,
+                MillPreflightError.ProbeIncomplete => string.Format(DisabledProbeIncomplete, result.ProbeProgress),
+                MillPreflightError.AlarmState => null,  // Not a menu blocker (handled in MillMenu)
+                _ => DisabledUnknown
+            };
+        }
+
+        /// <summary>
         /// Checks if the machine is connected. Shows error and waits for keypress if not.
         /// </summary>
         /// <returns>True if connected, false otherwise.</returns>
@@ -79,7 +239,7 @@ namespace coppercli.Helpers
         {
             if (!AppState.Machine.Connected)
             {
-                ShowError("Not connected!");
+                ShowError(ErrorNotConnected);
                 return false;
             }
             return true;
@@ -114,16 +274,13 @@ namespace coppercli.Helpers
         // Lines used by menu chrome (title + help text + scroll indicators)
         private const int MenuChromeLines = 4; // title, help, possible top/bottom indicators
 
-        // ANSI escape sequence to clear from cursor to end of line
-        private const string AnsiClearToEol = "\u001b[K";
-
         /// <summary>
         /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
         /// </summary>
         internal static void MarkupLineClear(string markup)
         {
             AnsiConsole.Markup(markup);
-            Console.WriteLine(AnsiClearToEol);
+            Console.WriteLine(DisplayHelpers.AnsiClearToEol);
         }
 
         /// <summary>
@@ -216,11 +373,17 @@ namespace coppercli.Helpers
                 viewStart = Math.Min(selected - maxVisibleItems + 1, options.Length - maxVisibleItems);
             }
 
+            // Remember starting position for redraw after status change
+            int startTop = Console.CursorTop;
+
             while (true)
             {
+                // Reset cursor to start position for clean redraw
+                Console.SetCursorPosition(0, startTop);
+
                 // Recalculate in case terminal was resized
                 (_, termHeight) = DisplayHelpers.GetSafeWindowSize();
-                maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - Console.CursorTop);
+                maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - startTop);
                 needsScrolling = options.Length > maxVisibleItems;
 
                 // Ensure viewStart is valid after resize
@@ -253,8 +416,7 @@ namespace coppercli.Helpers
                 // Calculate actual lines we'll draw (for cursor repositioning)
                 int linesDrawn = 1; // title
 
-                // Draw menu
-                Console.SetCursorPosition(0, Console.CursorTop);
+                // Draw menu (cursor already positioned at start of menu area)
                 MarkupLineClear($"[{ColorBold}]{Markup.Escape(title)}[/]");
 
                 // Show "more above" indicator
@@ -404,8 +566,14 @@ namespace coppercli.Helpers
 
         public static MenuItem<T> ShowMenu<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
+            // Capture start position so redraws don't stack
+            int startTop = Console.CursorTop;
+
             while (true)
             {
+                // Reset to start position before each draw
+                Console.SetCursorPosition(0, startTop);
+
                 int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates(), menu.Mnemonics);
                 if (index >= 0)
                 {
@@ -422,8 +590,29 @@ namespace coppercli.Helpers
         /// </summary>
         public static bool Confirm(string message, bool defaultYes = false)
         {
-            var result = ConfirmOrQuit(message, defaultYes);
-            return result ?? defaultYes; // Escape/quit returns default
+            string hint = defaultYes ? "Y/n" : "y/N";
+            AnsiConsole.Markup($"{message} [{ColorPrompt}][[{hint}]][/] ");
+
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+
+                if (InputHelpers.IsEnterKey(key) || InputHelpers.IsExitKey(key))
+                {
+                    AnsiConsole.WriteLine(defaultYes ? "y" : "n");
+                    return defaultYes;
+                }
+                if (InputHelpers.IsKey(key, ConsoleKey.Y))
+                {
+                    AnsiConsole.WriteLine("y");
+                    return true;
+                }
+                if (InputHelpers.IsKey(key, ConsoleKey.N))
+                {
+                    AnsiConsole.WriteLine("n");
+                    return false;
+                }
+            }
         }
 
         /// <summary>
@@ -433,30 +622,29 @@ namespace coppercli.Helpers
         /// </summary>
         public static bool? ConfirmOrQuit(string message, bool defaultYes = false)
         {
-            string defaultHint = defaultYes ? "Y/n/q" : "y/N/q";
-            AnsiConsole.Markup($"{message} [{ColorPrompt}][[{defaultHint}]][/] ");
+            string hint = defaultYes ? "Y/n/q" : "y/N/q";
+            AnsiConsole.Markup($"{message} [{ColorPrompt}][[{hint}]][/] ");
 
             while (true)
             {
                 var key = Console.ReadKey(true);
-                char c = char.ToLower(key.KeyChar);
 
-                if (key.Key == ConsoleKey.Enter)
+                if (InputHelpers.IsEnterKey(key))
                 {
                     AnsiConsole.WriteLine(defaultYes ? "y" : "n");
                     return defaultYes;
                 }
-                if (key.Key == ConsoleKey.Y || c == 'y')
+                if (InputHelpers.IsKey(key, ConsoleKey.Y))
                 {
                     AnsiConsole.WriteLine("y");
                     return true;
                 }
-                if (key.Key == ConsoleKey.N || c == 'n')
+                if (InputHelpers.IsKey(key, ConsoleKey.N))
                 {
                     AnsiConsole.WriteLine("n");
                     return false;
                 }
-                if (key.Key == ConsoleKey.Q || key.Key == ConsoleKey.Escape || c == 'q')
+                if (InputHelpers.IsExitKey(key))
                 {
                     AnsiConsole.WriteLine();
                     return null;
@@ -470,51 +658,24 @@ namespace coppercli.Helpers
         /// </summary>
         public static double? AskDouble(string prompt, double defaultValue)
         {
-            AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{defaultValue:G}]][/]: ");
-
-            var input = new System.Text.StringBuilder();
             while (true)
             {
-                var key = Console.ReadKey(true);
+                AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{defaultValue:G}]][/]: ");
+                var input = ReadLineWithEscape(c => char.IsDigit(c) || c == '.' || c == '-' || c == '+');
 
-                if (key.Key == ConsoleKey.Enter)
+                if (input == null)
                 {
-                    Console.WriteLine();
-                    if (input.Length == 0)
-                    {
-                        return defaultValue;
-                    }
-                    if (double.TryParse(input.ToString(), out double result))
-                    {
-                        return result;
-                    }
-                    AnsiConsole.MarkupLine($"[{ColorError}]Invalid number. Try again.[/]");
-                    AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{defaultValue:G}]][/]: ");
-                    input.Clear();
-                    continue;
-                }
-
-                if (key.Key == ConsoleKey.Escape)
-                {
-                    Console.WriteLine();
                     return null;
                 }
-
-                if (key.Key == ConsoleKey.Backspace)
+                if (input.Length == 0)
                 {
-                    if (input.Length > 0)
-                    {
-                        input.Remove(input.Length - 1, 1);
-                        Console.Write("\b \b");
-                    }
-                    continue;
+                    return defaultValue;
                 }
-
-                if (char.IsDigit(key.KeyChar) || key.KeyChar == '.' || key.KeyChar == '-' || key.KeyChar == '+')
+                if (double.TryParse(input, out double result))
                 {
-                    input.Append(key.KeyChar);
-                    Console.Write(key.KeyChar);
+                    return result;
                 }
+                AnsiConsole.MarkupLine($"[{ColorError}]Invalid number. Try again.[/]");
             }
         }
 
@@ -525,19 +686,28 @@ namespace coppercli.Helpers
         public static string? AskString(string prompt, string defaultValue)
         {
             AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{Markup.Escape(defaultValue)}]][/]: ");
+            var input = ReadLineWithEscape(c => !char.IsControl(c));
+            return input == null ? null : (input.Length == 0 ? defaultValue : input);
+        }
 
+        /// <summary>
+        /// Reads a line of input with Escape to cancel and Backspace support.
+        /// Returns the input string, or null if Escape was pressed.
+        /// </summary>
+        private static string? ReadLineWithEscape(Func<char, bool> acceptChar)
+        {
             var input = new System.Text.StringBuilder();
             while (true)
             {
                 var key = Console.ReadKey(true);
 
-                if (key.Key == ConsoleKey.Enter)
+                if (InputHelpers.IsEnterKey(key))
                 {
                     Console.WriteLine();
-                    return input.Length == 0 ? defaultValue : input.ToString();
+                    return input.ToString();
                 }
 
-                if (key.Key == ConsoleKey.Escape)
+                if (InputHelpers.IsEscapeKey(key))
                 {
                     Console.WriteLine();
                     return null;
@@ -553,8 +723,7 @@ namespace coppercli.Helpers
                     continue;
                 }
 
-                // Accept printable characters
-                if (!char.IsControl(key.KeyChar))
+                if (acceptChar(key.KeyChar))
                 {
                     input.Append(key.KeyChar);
                     Console.Write(key.KeyChar);

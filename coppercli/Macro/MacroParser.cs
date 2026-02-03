@@ -1,6 +1,7 @@
 // Macro file parser
 
 using System.Text.RegularExpressions;
+using coppercli.Helpers;
 using static coppercli.CliConstants;
 
 namespace coppercli.Macro
@@ -156,14 +157,10 @@ namespace coppercli.Macro
                 var filePath = args[0];
 
                 // Expand ~ for home directory
-                if (filePath.StartsWith("~"))
-                {
-                    filePath = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                        filePath.Substring(2));
-                }
+                filePath = PathHelpers.ExpandTilde(filePath);
+
                 // Resolve relative paths against macro directory
-                else if (!Path.IsPathRooted(filePath))
+                if (!Path.IsPathRooted(filePath))
                 {
                     filePath = Path.Combine(macroDir, filePath);
                 }

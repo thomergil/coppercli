@@ -30,7 +30,7 @@ namespace coppercli.Core.Settings
         public bool IgnoreAdditionalAxes { get; set; } = true;
 
         // Probing
-        public double ProbeSafeHeight { get; set; } = 5.0;
+        public double ProbeSafeHeight { get; set; } = Constants.RetractZMm;
         public double ProbeMinimumHeight { get; set; } = 1.0;
         public double ProbeMaxDepth { get; set; } = 5.0;
         public double ProbeFeed { get; set; } = 20.0;
@@ -38,7 +38,7 @@ namespace coppercli.Core.Settings
         public double ProbeOffsetX { get; set; } = 0.0;
         public double ProbeOffsetY { get; set; } = 0.0;
         public bool AbortOnProbeFail { get; set; } = false;
-        public double OutlineTraceHeight { get; set; } = 2.0;  // mm above Z0
+        public double OutlineTraceHeight { get; set; } = Constants.RetractZMm;
         public double OutlineTraceFeed { get; set; } = 600.0;  // mm/min (10mm/sec)
 
         // Firmware

@@ -24,6 +24,7 @@ namespace coppercli.Core.Communication
         private const byte GrblFeedHold = (byte)'!';    // Feed hold to stop movement
         private const byte GrblSoftReset = 0x18;        // Ctrl+X soft reset to cancel and stop spindle
         private const int SafetyResetDelayMs = 100;     // Delay between feed hold and soft reset
+        private const int SerialOpenTimeoutMs = 5000;     // Timeout for serial port open
 
         // =========================================================================
         // Events
@@ -32,6 +33,18 @@ namespace coppercli.Core.Communication
         public event Action<string>? Error;
         public event Action? ClientConnected;
         public event Action? ClientDisconnected;
+
+        // =========================================================================
+        // Callbacks
+        // =========================================================================
+
+        /// <summary>
+        /// Optional callback to check if the serial port is in use by another component
+        /// (e.g., web server's Machine connection). If set and returns true, the proxy
+        /// will reject new TUI clients with a specific message instead of attempting
+        /// to open the serial port.
+        /// </summary>
+        public Func<bool>? IsSerialPortInUse { get; set; }
 
         // =========================================================================
         // Public state properties
@@ -44,7 +57,7 @@ namespace coppercli.Core.Communication
         public int BaudRate { get; private set; }
 
         /// <summary>
-        /// Returns true if the proxy appears healthy (listener bound, serial port open).
+        /// Returns true if the proxy appears healthy (listener bound, serial port open when client connected).
         /// Useful for checking state after system suspend/resume.
         /// </summary>
         public bool IsHealthy
@@ -56,8 +69,8 @@ namespace coppercli.Core.Communication
                     return false;
                 }
 
-                // Check if serial port is still open
-                if (_serialPort == null || !_serialPort.IsOpen)
+                // Check if serial port is still open (only required when client is connected)
+                if (HasClient && (_serialPort == null || !_serialPort.IsOpen))
                 {
                     return false;
                 }
@@ -111,14 +124,26 @@ namespace coppercli.Core.Communication
 
             try
             {
-                // Open serial port
-                _serialPort = new SerialPort(serialPort, baudRate)
+                // Validate serial port is accessible (open then close) with timeout
+                var openTask = Task.Run(() =>
                 {
-                    ReadTimeout = Constants.SerialReadTimeoutMs,
-                    WriteTimeout = Constants.SerialWriteTimeoutMs
-                };
-                _serialPort.Open();
-                RaiseInfo($"Opened serial port {serialPort} @ {baudRate}");
+                    using var testPort = new SerialPort(serialPort, baudRate);
+                    testPort.Open();
+                    testPort.Close();
+                });
+
+                if (!openTask.Wait(SerialOpenTimeoutMs))
+                {
+                    throw new TimeoutException($"Timeout opening serial port {serialPort} (may be held by another process)");
+                }
+
+                // Re-throw any exception from the task
+                if (openTask.IsFaulted && openTask.Exception != null)
+                {
+                    throw openTask.Exception.InnerException ?? openTask.Exception;
+                }
+
+                RaiseInfo($"Validated serial port {serialPort} @ {baudRate}");
 
                 // Start TCP listener
                 _listener = new TcpListener(IPAddress.Any, tcpPort);
@@ -141,9 +166,6 @@ namespace coppercli.Core.Communication
             catch (Exception ex)
             {
                 // Cleanup on failure
-                _serialPort?.Close();
-                _serialPort?.Dispose();
-                _serialPort = null;
                 _listener?.Stop();
                 _listener = null;
                 throw new InvalidOperationException($"Failed to start proxy: {ex.Message}", ex);
@@ -204,82 +226,83 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
+        /// Force-disconnects the current client (if any) to allow another client to connect.
+        /// Sends a force-disconnect message before closing so the client can exit gracefully.
+        /// Returns true if a client was disconnected, false if no client was connected.
+        /// </summary>
+        public bool ForceDisconnectClient()
+        {
+            lock (_clientLock)
+            {
+                if (_client == null)
+                {
+                    return false;
+                }
+
+                RaiseInfo("Force-disconnecting client");
+
+                // Send message before closing so client knows to exit
+                SendMessage(_client, Constants.ProxyForceDisconnect);
+
+                // Graceful TCP shutdown: signal "no more data" but let client read pending data
+                try
+                {
+                    _client.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send);
+                }
+                catch
+                {
+                    // Ignore shutdown errors
+                }
+
+                // Brief delay to ensure message is received before connection closes
+                Thread.Sleep(Constants.ForceDisconnectMessageDelayMs);
+
+                CloseClientUnlocked();
+                return true;
+            }
+        }
+
+        /// <summary>
         /// Checks if resources are healthy and attempts recovery if not.
         /// Called periodically from AcceptLoop to handle suspend/resume.
         /// Returns true if healthy or recovery succeeded, false if unrecoverable.
+        /// Only attempts to recover the TCP listener - serial port issues will
+        /// naturally disconnect the client without recovery attempts.
         /// </summary>
         private bool TryRecoverIfNeeded()
         {
-            bool serialOk = _serialPort != null && _serialPort.IsOpen;
             bool listenerOk = _listener != null && _listener.Server.IsBound;
 
-            if (serialOk && listenerOk)
+            if (listenerOk)
             {
                 return true;
             }
 
-            // Something is wrong - attempt recovery
-            RaiseInfo("Proxy unhealthy, attempting recovery...");
+            // TCP listener is down - attempt recovery
+            RaiseInfo("TCP listener unhealthy, attempting recovery...");
             Thread.Sleep(RecoveryDelayMs);
 
-            // Try to recover serial port
-            if (!serialOk && _serialPort != null)
+            try
             {
-                try
-                {
-                    _serialPort.Close();
-                    _serialPort.Dispose();
-                }
-                catch
-                {
-                    // Ignore cleanup errors
-                }
-
-                try
-                {
-                    _serialPort = new SerialPort(SerialPortName, BaudRate)
-                    {
-                        ReadTimeout = Constants.SerialReadTimeoutMs,
-                        WriteTimeout = Constants.SerialWriteTimeoutMs
-                    };
-                    _serialPort.Open();
-                    RaiseInfo($"Serial port recovered: {SerialPortName}");
-                    serialOk = true;
-                }
-                catch (Exception ex)
-                {
-                    RaiseError($"Serial port recovery failed: {ex.Message}");
-                    return false;
-                }
+                _listener?.Stop();
+            }
+            catch
+            {
+                // Ignore cleanup errors
             }
 
-            // Try to recover TCP listener
-            if (!listenerOk)
+            try
             {
-                try
-                {
-                    _listener?.Stop();
-                }
-                catch
-                {
-                    // Ignore cleanup errors
-                }
-
-                try
-                {
-                    _listener = new TcpListener(IPAddress.Any, TcpPort);
-                    _listener.Start();
-                    RaiseInfo($"TCP listener recovered on port {TcpPort}");
-                    listenerOk = true;
-                }
-                catch (Exception ex)
-                {
-                    RaiseError($"TCP listener recovery failed: {ex.Message}");
-                    return false;
-                }
+                _listener = new TcpListener(IPAddress.Any, TcpPort);
+                _listener.Start();
+                RaiseInfo($"TCP listener recovered on port {TcpPort}");
+                return true;
             }
-
-            return serialOk && listenerOk;
+            catch (Exception ex)
+            {
+                RaiseError($"TCP listener recovery failed: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>
@@ -325,14 +348,7 @@ namespace coppercli.Core.Communication
                         if (_client != null)
                         {
                             RaiseInfo($"Rejected connection from {newClientAddress} (client already connected)");
-                            try
-                            {
-                                newClient.Close();
-                            }
-                            catch
-                            {
-                                // Ignore close errors
-                            }
+                            SendMessageAndClose(newClient, Constants.ProxyConnectionRejected);
                             continue;
                         }
 
@@ -348,6 +364,49 @@ namespace coppercli.Core.Communication
                     }
 
                     RaiseInfo($"Client connected: {ClientAddress}");
+
+                    // Check if serial port is in use by web client before attempting to open
+                    if (IsSerialPortInUse?.Invoke() == true)
+                    {
+                        RaiseInfo("Rejected: serial port in use by web client");
+                        SendMessage(newClient, Constants.ProxySerialPortInUse);
+                        lock (_clientLock) { CloseClientUnlocked(); }
+                        continue;
+                    }
+
+                    // Open serial port now that a client is connected
+                    try
+                    {
+                        _serialPort = new SerialPort(SerialPortName, BaudRate)
+                        {
+                            ReadTimeout = Constants.SerialReadTimeoutMs,
+                            WriteTimeout = Constants.SerialWriteTimeoutMs
+                        };
+
+                        // Open with timeout to avoid hanging if port is stuck
+                        var openTask = Task.Run(() => _serialPort.Open());
+                        if (!openTask.Wait(SerialOpenTimeoutMs))
+                        {
+                            _serialPort.Dispose();
+                            _serialPort = null;
+                            throw new TimeoutException($"Timeout opening {SerialPortName}");
+                        }
+                        if (openTask.IsFaulted && openTask.Exception != null)
+                        {
+                            throw openTask.Exception.InnerException ?? openTask.Exception;
+                        }
+
+                        RaiseInfo($"Opened serial port {SerialPortName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        var errorMsg = $"Cannot access {SerialPortName}: {ex.Message}\r\n";
+                        RaiseError(errorMsg.TrimEnd());
+                        SendMessage(newClient, errorMsg);
+                        lock (_clientLock) { CloseClientUnlocked(); }
+                        continue;
+                    }
+
                     ClientConnected?.Invoke();
 
                     // Start forwarding threads
@@ -368,6 +427,19 @@ namespace coppercli.Core.Communication
                     // Wait for forwarding threads to finish (client disconnect)
                     _serialToTcpThread.Join();
                     _tcpToSerialThread.Join();
+
+                    // Close serial port when client disconnects
+                    try
+                    {
+                        _serialPort?.Close();
+                        _serialPort?.Dispose();
+                        RaiseInfo("Closed serial port");
+                    }
+                    catch
+                    {
+                        // Ignore close errors
+                    }
+                    _serialPort = null;
                 }
                 catch (SocketException) when (_cts?.IsCancellationRequested == true)
                 {
@@ -605,6 +677,41 @@ namespace coppercli.Core.Communication
 
             RaiseInfo($"Client disconnected: {address}");
             ClientDisconnected?.Invoke();
+        }
+
+        /// <summary>
+        /// Sends a message to a client. Does not close the connection.
+        /// </summary>
+        private static void SendMessage(TcpClient client, string message)
+        {
+            try
+            {
+                var stream = client.GetStream();
+                var bytes = System.Text.Encoding.UTF8.GetBytes(message);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+            }
+            catch
+            {
+                // Ignore write errors
+            }
+        }
+
+        /// <summary>
+        /// Sends a message to a client and closes the connection.
+        /// Used for rejection messages before the client is fully accepted.
+        /// </summary>
+        private static void SendMessageAndClose(TcpClient client, string message)
+        {
+            SendMessage(client, message);
+            try
+            {
+                client.Close();
+            }
+            catch
+            {
+                // Ignore close errors
+            }
         }
 
         /// <summary>

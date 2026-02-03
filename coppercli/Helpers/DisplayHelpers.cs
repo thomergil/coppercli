@@ -63,17 +63,18 @@ namespace coppercli.Helpers
         /// <summary>ANSI code for secondary/disabled text. Matches ColorDim.</summary>
         public const string AnsiDim = AnsiCodeDim;
 
+        /// <summary>ANSI escape sequence to clear from cursor to end of line.</summary>
+        public const string AnsiClearToEol = "\u001b[K";
+
         // =========================================================================
-        // Legacy ANSI names (for existing code - use semantic names in new code)
+        // Bold variants for emphasis (highlighting important values/states)
         // =========================================================================
-        public const string AnsiCyan = AnsiCodeCyan;
-        public const string AnsiBoldCyan = AnsiCodeBoldCyan;
-        public const string AnsiYellow = AnsiCodeYellow;
-        public const string AnsiGreen = AnsiCodeGreen;
-        public const string AnsiBoldGreen = AnsiCodeBoldGreen;
-        public const string AnsiBoldBlue = AnsiCodeBoldBlue;
-        public const string AnsiRed = AnsiCodeRed;
-        public const string AnsiBoldRed = AnsiCodeBoldRed;
+
+        /// <summary>ANSI code for emphasized success values (bold green).</summary>
+        public const string AnsiSuccessBold = AnsiCodeBoldGreen;
+
+        /// <summary>ANSI code for critical errors/alerts (bold red).</summary>
+        public const string AnsiCritical = AnsiCodeBoldRed;
 
         /// <summary>
         /// Gets the console window size safely, returning defaults if unavailable.
@@ -95,7 +96,9 @@ namespace coppercli.Helpers
         /// Handles ANSI escape codes correctly (they don't count toward display width).
         /// This enables flicker-free updates when used with Console.SetCursorPosition(0, 0).
         /// </summary>
-        public static void WriteLineTruncated(string text, int maxWidth)
+        /// <param name="addNewline">If false, omits the trailing newline. Use for the last line
+        /// of a full-screen layout to prevent scrolling when terminal height equals content height.</param>
+        public static void WriteLineTruncated(string text, int maxWidth, bool addNewline = true)
         {
             // Calculate display length (excluding ANSI codes)
             int displayLen = CalculateDisplayLength(text);
@@ -111,7 +114,14 @@ namespace coppercli.Helpers
                 text = text + new string(' ', maxWidth - displayLen);
             }
 
-            Console.WriteLine(text);
+            if (addNewline)
+            {
+                Console.WriteLine(text);
+            }
+            else
+            {
+                Console.Write(text);
+            }
         }
 
         /// <summary>
@@ -200,10 +210,15 @@ namespace coppercli.Helpers
         // =========================================================================
 
         /// <summary>
-        /// Total height of an overlay box including margin.
-        /// Structure: margin, border, padding, line1, line2, padding, border, margin = 8 lines
+        /// Fixed lines in overlay box: 2 margins + 2 borders + 2 padding = 6.
+        /// Total height = OverlayBoxFixedLines + number of content lines.
         /// </summary>
-        public const int OverlayBoxHeight = 8;
+        public const int OverlayBoxFixedLines = 6;
+
+        /// <summary>
+        /// Total height for legacy 2-line overlay (for backward compatibility).
+        /// </summary>
+        public const int OverlayBoxHeight = OverlayBoxFixedLines + 2;
 
         /// <summary>Padding added to content width for overlay box (border + inner padding on each side).</summary>
         public const int OverlayBoxPadding = 6;
@@ -215,31 +230,89 @@ namespace coppercli.Helpers
         public const int OverlayBoxMargin = 4;
 
         /// <summary>
-        /// Gets a single line of an overlay box.
-        /// Lines 0 and 7 are margin (empty). Lines 1-6 are the box with padding.
+        /// Calculates overlay box height based on content lines.
+        /// </summary>
+        public static int CalculateOverlayBoxHeight(string[] contentLines)
+        {
+            return OverlayBoxFixedLines + contentLines.Length;
+        }
+
+        /// <summary>
+        /// Calculates overlay box width based on content, respecting min/max constraints.
+        /// </summary>
+        public static int CalculateOverlayBoxWidth(string[] contentLines, int maxWidth)
+        {
+            int contentWidth = contentLines.Max(l => l.Length);
+            int boxWidth = Math.Min(contentWidth + OverlayBoxPadding, maxWidth - OverlayBoxMargin);
+            return Math.Max(boxWidth, OverlayBoxMinWidth);
+        }
+
+        /// <summary>
+        /// Calculates overlay box width for a 2-line overlay (convenience overload).
+        /// </summary>
+        public static int CalculateOverlayBoxWidth(string line1, string line2, int maxWidth)
+        {
+            return CalculateOverlayBoxWidth(new[] { line1, line2 }, maxWidth);
+        }
+
+        /// <summary>
+        /// Gets a single line of a dynamic-height overlay box.
+        /// Structure: margin, border, padding, [content lines], padding, border, margin.
+        /// </summary>
+        public static string GetOverlayBoxLine(int lineIndex, int boxWidth,
+            string[] contentLines, string[] contentColors)
+        {
+            if (boxWidth < 4)
+            {
+                return "";
+            }
+
+            int totalHeight = CalculateOverlayBoxHeight(contentLines);
+            string inner = new string(' ', boxWidth - 2);
+
+            // Line indices: 0=margin, 1=border, 2=padding, 3..3+N-1=content, 3+N=padding, 3+N+1=border, 3+N+2=margin
+            int contentStart = 3;
+            int contentEnd = contentStart + contentLines.Length - 1;
+            int bottomPadding = contentEnd + 1;
+            int bottomBorder = bottomPadding + 1;
+            int bottomMargin = bottomBorder + 1;
+
+            if (lineIndex == 0 || lineIndex == bottomMargin)
+            {
+                return "";  // margins
+            }
+            if (lineIndex == 1)
+            {
+                return $"╔{new string('═', boxWidth - 2)}╗";
+            }
+            if (lineIndex == 2 || lineIndex == bottomPadding)
+            {
+                return $"║{inner}║";  // padding
+            }
+            if (lineIndex == bottomBorder)
+            {
+                return $"╚{new string('═', boxWidth - 2)}╝";
+            }
+            if (lineIndex >= contentStart && lineIndex <= contentEnd)
+            {
+                int contentIdx = lineIndex - contentStart;
+                string color = contentIdx < contentColors.Length ? contentColors[contentIdx] : "";
+                return $"║{color}{CenterText(contentLines[contentIdx], boxWidth - 2)}{AnsiReset}║";
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// Gets a single line of a 2-line overlay box (convenience overload).
+        /// Used by MillMenu and MacroRunner for message+subtext overlays.
         /// </summary>
         public static string GetOverlayBoxLine(int lineIndex, int boxWidth,
             string line1Text, string line1Color,
             string line2Text, string line2Color)
         {
-            // Guard against invalid box width
-            if (boxWidth < 4)
-            {
-                return "";
-            }
-            string inner = new string(' ', boxWidth - 2);
-            return lineIndex switch
-            {
-                0 => "",  // top margin
-                1 => $"╔{new string('═', boxWidth - 2)}╗",
-                2 => $"║{inner}║",  // top padding
-                3 => $"║{line1Color}{CenterText(line1Text, boxWidth - 2)}{AnsiReset}║",
-                4 => $"║{line2Color}{CenterText(line2Text, boxWidth - 2)}{AnsiReset}║",
-                5 => $"║{inner}║",  // bottom padding
-                6 => $"╚{new string('═', boxWidth - 2)}╝",
-                7 => "",  // bottom margin
-                _ => ""
-            };
+            return GetOverlayBoxLine(lineIndex, boxWidth,
+                new[] { line1Text, line2Text },
+                new[] { line1Color, line2Color });
         }
 
         /// <summary>
@@ -301,6 +374,82 @@ namespace coppercli.Helpers
             result.Append(AnsiReset);
 
             return result.ToString();
+        }
+
+        /// <summary>
+        /// Draws a centered overlay box. Used internally by ShowOverlayTimed and ShowOverlayAndWait.
+        /// Handles newlines in message/subtext to create multi-line overlays.
+        /// </summary>
+        private static void DrawCenteredOverlay(string message, string subtext, string messageColor)
+        {
+            var (winWidth, winHeight) = GetSafeWindowSize();
+
+            // Build content lines from message and subtext, handling embedded newlines
+            var lines = new List<string>();
+            var colors = new List<string>();
+
+            foreach (var line in message.Split('\n'))
+            {
+                lines.Add(line);
+                colors.Add(messageColor);
+            }
+            if (!string.IsNullOrEmpty(subtext))
+            {
+                foreach (var line in subtext.Split('\n'))
+                {
+                    lines.Add(line);
+                    colors.Add(AnsiDim);
+                }
+            }
+
+            var contentLines = lines.ToArray();
+            var contentColors = colors.ToArray();
+
+            int boxHeight = CalculateOverlayBoxHeight(contentLines);
+            int boxWidth = CalculateOverlayBoxWidth(contentLines, winWidth);
+            int boxLeft = (winWidth - boxWidth) / 2;
+            int boxTop = (winHeight - boxHeight) / 2;
+
+            for (int i = 0; i < boxHeight; i++)
+            {
+                Console.SetCursorPosition(boxLeft, boxTop + i);
+                Console.Write(GetOverlayBoxLine(i, boxWidth, contentLines, contentColors));
+            }
+        }
+
+        /// <summary>
+        /// Draws a centered overlay box for a specified duration.
+        /// Use this for confirmations that auto-dismiss.
+        /// </summary>
+        /// <param name="message">Main message to display.</param>
+        /// <param name="durationMs">How long to show the overlay.</param>
+        /// <param name="subtext">Secondary text (optional).</param>
+        /// <param name="messageColor">ANSI color for main message.</param>
+        public static void ShowOverlayTimed(string message, int durationMs, string? subtext = null, string? messageColor = null)
+        {
+            DrawCenteredOverlay(message, subtext ?? "", messageColor ?? AnsiSuccess);
+            Thread.Sleep(durationMs);
+        }
+
+        /// <summary>
+        /// Draws a centered overlay box and waits for Enter key.
+        /// Use this for alerts/errors in full-screen TUI modes.
+        /// </summary>
+        /// <param name="message">Main message to display.</param>
+        /// <param name="subtext">Secondary text (e.g., "Press Enter to continue").</param>
+        /// <param name="messageColor">ANSI color for main message.</param>
+        public static void ShowOverlayAndWait(string message, string? subtext = null, string? messageColor = null)
+        {
+            DrawCenteredOverlay(message, subtext ?? "Press Enter", messageColor ?? AnsiError);
+
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                if (InputHelpers.IsEnterKey(key) || InputHelpers.IsEscapeKey(key))
+                {
+                    return;
+                }
+            }
         }
     }
 }

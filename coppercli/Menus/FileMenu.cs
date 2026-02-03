@@ -14,6 +14,10 @@ namespace coppercli.Menus
     {
         // Lines used by file browser chrome (title, directory, blank, help text)
         private const int FileBrowserChromeLines = 5;
+        // Extra line for filename input in save mode
+        private const int FileBrowserSaveExtraLines = 2;
+        // Marker for "select this directory" option
+        private const string SelectDirMarker = "__SELECT_DIR__";
 
         public static void LoadGCodeFile()
         {
@@ -26,14 +30,83 @@ namespace coppercli.Menus
 
         public static string? BrowseForProbeGridFile()
         {
-            return BrowseForFile(ProbeGridExtensions);
+            return BrowseForFile(ProbeGridExtensions, startDirectory: AppState.Session.LastProbeBrowseDirectory);
         }
+
+        private enum SaveAction { Save, ChangeName, ChangeDir, Cancel }
+
+        /// <summary>
+        /// Simple menu-based save location picker. Shows current path and offers clear actions.
+        /// </summary>
+        public static string? BrowseForSaveLocation(string[] extensions, string? defaultFileName = null, string? startDirectory = null)
+        {
+            var session = AppState.Session;
+
+            string currentDir = !string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory)
+                ? startDirectory
+                : !string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory)
+                    ? session.LastBrowseDirectory
+                    : Environment.CurrentDirectory;
+
+            string filename = defaultFileName ?? "untitled" + (extensions.Length > 0 ? extensions[0] : "");
+
+            while (true)
+            {
+                Console.Clear();
+
+                // Title shows filename and directory
+                var title = $"{FileBrowserSaveTitle}: {filename} ({currentDir})";
+
+                var menu = new MenuDef<SaveAction>(
+                    new MenuItem<SaveAction>(FileBrowserMenuSave, 's', SaveAction.Save),
+                    new MenuItem<SaveAction>(FileBrowserMenuChangeName, 'n', SaveAction.ChangeName),
+                    new MenuItem<SaveAction>(FileBrowserMenuChangeDir, 'd', SaveAction.ChangeDir),
+                    new MenuItem<SaveAction>(MenuCancel, '\0', SaveAction.Cancel)  // Last item for Esc
+                );
+
+                var result = MenuHelpers.ShowMenuWithRefresh(title, menu);
+                if (result == null)
+                {
+                    continue; // Status changed, redraw
+                }
+
+                switch (result.Option)
+                {
+                    case SaveAction.Save:
+                        session.LastBrowseDirectory = currentDir;
+                        Persistence.SaveSession();
+                        return Path.Combine(currentDir, filename);
+
+                    case SaveAction.ChangeName:
+                        var newName = MenuHelpers.AskString(FileBrowserFilenameLabel.TrimEnd(), filename);
+                        if (newName != null)
+                        {
+                            filename = EnsureExtension(newName, extensions);
+                        }
+                        break;
+
+                    case SaveAction.ChangeDir:
+                        var newDir = BrowseForFile(extensions, startDirectory: currentDir, directoryMode: true);
+                        if (newDir != null)
+                        {
+                            currentDir = newDir;
+                        }
+                        break;
+
+                    case SaveAction.Cancel:
+                        return null;
+                }
+            }
+        }
+
 
         /// <summary>
         /// Generic file browser with filter support. Returns selected file path or null if cancelled.
         /// Press / to start filtering, then type to filter. Backspace removes filter chars, Esc clears filter.
+        /// In save mode, press n to edit filename, Enter saves with current filename.
+        /// In directory mode, shows "[Select this directory]" option and returns directory path.
         /// </summary>
-        public static string? BrowseForFile(string[] extensions, string? defaultFileName = null, string? startDirectory = null)
+        public static string? BrowseForFile(string[] extensions, string? defaultFileName = null, string? startDirectory = null, bool saveMode = false, bool directoryMode = false)
         {
             var session = AppState.Session;
 
@@ -47,11 +120,21 @@ namespace coppercli.Menus
             string filter = "";
             bool filterActive = false;
 
+            // Save mode: track filename being edited
+            string filename = defaultFileName ?? "";
+            bool editingFilename = false;
+
             while (true)
             {
                 var items = new List<(string Display, string Name, string FullPath, bool IsDir)>();
 
-                // Add parent directory option first
+                // In directory mode, add option to select current directory
+                if (directoryMode)
+                {
+                    items.Add((FileBrowserSelectDir, SelectDirMarker, currentDir, true));
+                }
+
+                // Add parent directory option
                 var parent = Directory.GetParent(currentDir);
                 if (parent != null)
                 {
@@ -86,7 +169,7 @@ namespace coppercli.Menus
                             var fileName = Path.GetFileName(file);
                             var modTime = File.GetLastWriteTime(file);
                             var timeStr = modTime.ToString("MMM dd HH:mm");
-                            var display = $"{fileName,-30} {timeStr}";
+                            var display = fileName.PadRight(FileBrowserNameColumnWidth) + " " + timeStr;
                             items.Add((display, fileName, file, false));
                         }
                     }
@@ -96,8 +179,8 @@ namespace coppercli.Menus
                     // Skip inaccessible files
                 }
 
-                // Show file browser with filter support
-                var result = ShowFileBrowserMenu(currentDir, items, filter, filterActive);
+                // Show file browser with filter/save support
+                var result = ShowFileBrowserMenu(currentDir, items, filter, filterActive, saveMode, filename, editingFilename, extensions);
 
                 if (result.Action == FileBrowserAction.Cancel)
                 {
@@ -109,10 +192,30 @@ namespace coppercli.Menus
                     filterActive = result.FilterActive;
                     // Re-render with new filter (same directory)
                 }
+                else if (result.Action == FileBrowserAction.FilenameChanged)
+                {
+                    filename = result.Filename ?? "";
+                    editingFilename = result.EditingFilename;
+                    // Re-render with new filename
+                }
+                else if (result.Action == FileBrowserAction.SaveWithFilename)
+                {
+                    // Save mode: return full path with filename
+                    session.LastBrowseDirectory = currentDir;
+                    Persistence.SaveSession();
+                    return Path.Combine(currentDir, result.Filename ?? filename);
+                }
                 else if (result.Action == FileBrowserAction.Selected && result.SelectedItem != null)
                 {
                     var selected = result.SelectedItem.Value;
-                    if (selected.IsDir)
+                    if (selected.Name == SelectDirMarker)
+                    {
+                        // Directory mode: user selected current directory
+                        session.LastBrowseDirectory = currentDir;
+                        Persistence.SaveSession();
+                        return currentDir;
+                    }
+                    else if (selected.IsDir)
                     {
                         currentDir = selected.FullPath;
                         filter = ""; // Clear filter when changing directory
@@ -120,10 +223,18 @@ namespace coppercli.Menus
                     }
                     else
                     {
-                        // Save browse directory for next time
-                        session.LastBrowseDirectory = currentDir;
-                        Persistence.SaveSession();
-                        return selected.FullPath;
+                        if (saveMode)
+                        {
+                            // In save mode, selecting a file pre-fills the filename
+                            filename = selected.Name;
+                        }
+                        else
+                        {
+                            // In select mode, return the selected file
+                            session.LastBrowseDirectory = currentDir;
+                            Persistence.SaveSession();
+                            return selected.FullPath;
+                        }
                     }
                 }
             }
@@ -133,7 +244,9 @@ namespace coppercli.Menus
         {
             Cancel,
             Selected,
-            FilterChanged
+            FilterChanged,
+            FilenameChanged,
+            SaveWithFilename
         }
 
         private struct FileBrowserResult
@@ -142,16 +255,22 @@ namespace coppercli.Menus
             public (string Display, string Name, string FullPath, bool IsDir)? SelectedItem;
             public string? NewFilter;
             public bool FilterActive;
+            public string? Filename;
+            public bool EditingFilename;
         }
 
         /// <summary>
-        /// Shows the file browser menu with filter support.
+        /// Shows the file browser menu with filter and save mode support.
         /// </summary>
         private static FileBrowserResult ShowFileBrowserMenu(
             string currentDir,
             List<(string Display, string Name, string FullPath, bool IsDir)> allItems,
             string filter,
-            bool filterActive)
+            bool filterActive,
+            bool saveMode = false,
+            string filename = "",
+            bool editingFilename = false,
+            string[]? extensions = null)
         {
             // Filter items based on current filter (case-insensitive, matches Name)
             var filteredItems = string.IsNullOrEmpty(filter)
@@ -164,7 +283,8 @@ namespace coppercli.Menus
             {
                 // Calculate viewport size based on terminal height
                 var (termWidth, termHeight) = DisplayHelpers.GetSafeWindowSize();
-                int maxVisibleItems = Math.Max(3, termHeight - FileBrowserChromeLines);
+                int chromeLines = FileBrowserChromeLines + (saveMode ? FileBrowserSaveExtraLines : 0);
+                int maxVisibleItems = Math.Max(3, termHeight - chromeLines);
                 bool needsScrolling = filteredItems.Count > maxVisibleItems;
                 int viewStart = 0;
 
@@ -176,7 +296,8 @@ namespace coppercli.Menus
 
                 // Render
                 Console.Clear();
-                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]Select File[/]").RuleStyle(ColorPrompt));
+                var title = saveMode ? FileBrowserSaveTitle : FileBrowserSelectTitle;
+                AnsiConsole.Write(new Rule($"[{ColorBold} {ColorPrompt}]{title}[/]").RuleStyle(ColorPrompt));
 
                 // Show directory and filter
                 if (filterActive)
@@ -241,14 +362,37 @@ namespace coppercli.Menus
                     MenuHelpers.MarkupLineClear($"[{ColorDim}]  ▼ {filteredItems.Count - viewEnd} more below[/]");
                 }
 
-                // Help text
-                if (!filterActive)
+                // Save mode: show filename input
+                if (saveMode)
                 {
-                    MenuHelpers.MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, / filter, Esc cancel[/]");
+                    AnsiConsole.WriteLine();
+                    var filenameDisplay = string.IsNullOrEmpty(filename) ? "_" : Markup.Escape(filename);
+                    if (editingFilename)
+                    {
+                        MenuHelpers.MarkupLineClear($"[{ColorPrompt}]{FileBrowserFilenameLabel}[/][{ColorWarning}]{filenameDisplay}_[/]");
+                    }
+                    else
+                    {
+                        MenuHelpers.MarkupLineClear($"[{ColorPrompt}]{FileBrowserFilenameLabel}[/]{filenameDisplay}");
+                    }
+                }
+
+                // Help text
+                if (editingFilename)
+                {
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]{FileBrowserHelpEditName}[/]");
+                }
+                else if (filterActive)
+                {
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]{FileBrowserHelpFilter}[/]");
+                }
+                else if (saveMode)
+                {
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]{FileBrowserHelpSave}[/]");
                 }
                 else
                 {
-                    MenuHelpers.MarkupLineClear($"[{ColorDim}]↑↓ navigate, Enter select, type to filter, Esc clear[/]");
+                    MenuHelpers.MarkupLineClear($"[{ColorDim}]{FileBrowserHelpSelect}[/]");
                 }
 
                 // Read key
@@ -270,56 +414,46 @@ namespace coppercli.Menus
                     }
                 }
 
-                // Handle keys differently based on filter state
-                if (!filterActive)
+                // Handle keys based on current mode
+                if (editingFilename)
                 {
-                    // Not filtering - shortcuts select, / starts filter, other keys navigate
-                    char pressedUpper = char.ToUpper(key.KeyChar);
-                    if (shortcuts.TryGetValue(pressedUpper, out int shortcutIdx))
+                    // Editing filename - typing adds to filename, Backspace removes, Esc/Enter exits
+                    if (InputHelpers.IsEscapeKey(key))
                     {
-                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[shortcutIdx] };
+                        // Exit filename edit mode
+                        return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename, EditingFilename = false };
                     }
-                    else if (key.KeyChar == '/')
+                    else if (InputHelpers.IsEnterKey(key))
                     {
-                        return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = true };
+                        // Save with current filename
+                        var finalFilename = EnsureExtension(filename, extensions);
+                        if (!string.IsNullOrWhiteSpace(finalFilename))
+                        {
+                            return new FileBrowserResult { Action = FileBrowserAction.SaveWithFilename, Filename = finalFilename };
+                        }
+                        // Empty filename - just exit edit mode
+                        return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename, EditingFilename = false };
                     }
-                    else if (key.Key == ConsoleKey.Escape)
+                    else if (key.Key == ConsoleKey.Backspace)
                     {
-                        return new FileBrowserResult { Action = FileBrowserAction.Cancel };
+                        if (filename.Length > 0)
+                        {
+                            return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename[..^1], EditingFilename = true };
+                        }
                     }
-                    else if (key.Key == ConsoleKey.Enter && filteredItems.Count > 0)
+                    else if (!char.IsControl(key.KeyChar))
                     {
-                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[selected] };
-                    }
-                    else if (key.Key == ConsoleKey.UpArrow)
-                    {
-                        selected = (selected - 1 + filteredItems.Count) % Math.Max(1, filteredItems.Count);
-                    }
-                    else if (key.Key == ConsoleKey.DownArrow)
-                    {
-                        selected = (selected + 1) % Math.Max(1, filteredItems.Count);
-                    }
-                    else if (key.Key == ConsoleKey.PageUp)
-                    {
-                        selected = Math.Max(0, selected - maxVisibleItems);
-                    }
-                    else if (key.Key == ConsoleKey.PageDown)
-                    {
-                        selected = Math.Min(filteredItems.Count - 1, selected + maxVisibleItems);
-                    }
-                    else if (key.Key == ConsoleKey.Home)
-                    {
-                        selected = 0;
-                    }
-                    else if (key.Key == ConsoleKey.End)
-                    {
-                        selected = Math.Max(0, filteredItems.Count - 1);
+                        // Add character to filename (skip invalid path chars)
+                        if (!Path.GetInvalidFileNameChars().Contains(key.KeyChar))
+                        {
+                            return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename + key.KeyChar, EditingFilename = true };
+                        }
                     }
                 }
-                else
+                else if (filterActive)
                 {
                     // Currently filtering - typing adds to filter, Backspace removes, Esc clears
-                    if (key.Key == ConsoleKey.Escape)
+                    if (InputHelpers.IsEscapeKey(key))
                     {
                         // Clear filter and exit filter mode
                         return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = false };
@@ -336,41 +470,98 @@ namespace coppercli.Menus
                             return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = false };
                         }
                     }
-                    else if (key.Key == ConsoleKey.Enter && filteredItems.Count > 0)
+                    else if (InputHelpers.IsEnterKey(key) && filteredItems.Count > 0)
                     {
                         return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[selected] };
-                    }
-                    else if (key.Key == ConsoleKey.UpArrow)
-                    {
-                        selected = (selected - 1 + filteredItems.Count) % Math.Max(1, filteredItems.Count);
-                    }
-                    else if (key.Key == ConsoleKey.DownArrow)
-                    {
-                        selected = (selected + 1) % Math.Max(1, filteredItems.Count);
-                    }
-                    else if (key.Key == ConsoleKey.PageUp)
-                    {
-                        selected = Math.Max(0, selected - maxVisibleItems);
-                    }
-                    else if (key.Key == ConsoleKey.PageDown)
-                    {
-                        selected = Math.Min(filteredItems.Count - 1, selected + maxVisibleItems);
-                    }
-                    else if (key.Key == ConsoleKey.Home)
-                    {
-                        selected = 0;
-                    }
-                    else if (key.Key == ConsoleKey.End)
-                    {
-                        selected = Math.Max(0, filteredItems.Count - 1);
                     }
                     else if (!char.IsControl(key.KeyChar))
                     {
                         // Add character to filter
                         return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = filter + key.KeyChar, FilterActive = true };
                     }
+                    else
+                    {
+                        selected = HandleNavigationKey(key.Key, selected, filteredItems.Count, maxVisibleItems);
+                    }
+                }
+                else
+                {
+                    // Normal mode - shortcuts select, / starts filter, n starts filename edit (save mode)
+                    char pressedUpper = char.ToUpper(key.KeyChar);
+                    if (saveMode && pressedUpper == 'N')
+                    {
+                        // Start editing filename
+                        return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename, EditingFilename = true };
+                    }
+                    else if (shortcuts.TryGetValue(pressedUpper, out int shortcutIdx))
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[shortcutIdx] };
+                    }
+                    else if (key.KeyChar == '/')
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = true };
+                    }
+                    else if (InputHelpers.IsEscapeKey(key))
+                    {
+                        return new FileBrowserResult { Action = FileBrowserAction.Cancel };
+                    }
+                    else if (InputHelpers.IsEnterKey(key))
+                    {
+                        if (saveMode && !string.IsNullOrWhiteSpace(filename))
+                        {
+                            // Save with current filename
+                            var finalFilename = EnsureExtension(filename, extensions);
+                            return new FileBrowserResult { Action = FileBrowserAction.SaveWithFilename, Filename = finalFilename };
+                        }
+                        else if (filteredItems.Count > 0)
+                        {
+                            return new FileBrowserResult { Action = FileBrowserAction.Selected, SelectedItem = filteredItems[selected] };
+                        }
+                    }
+                    else
+                    {
+                        selected = HandleNavigationKey(key.Key, selected, filteredItems.Count, maxVisibleItems);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// Ensures the filename has the correct extension.
+        /// </summary>
+        private static string EnsureExtension(string filename, string[]? extensions)
+        {
+            if (string.IsNullOrWhiteSpace(filename) || extensions == null || extensions.Length == 0)
+            {
+                return filename;
+            }
+
+            var ext = Path.GetExtension(filename).ToLower();
+            if (extensions.Contains(ext))
+            {
+                return filename;
+            }
+
+            // Append the first valid extension
+            return filename + extensions[0];
+        }
+
+        /// <summary>
+        /// Handles navigation keys (arrows, Page Up/Down, Home/End) for list selection.
+        /// Returns the new selected index.
+        /// </summary>
+        private static int HandleNavigationKey(ConsoleKey key, int selected, int itemCount, int pageSize)
+        {
+            return key switch
+            {
+                ConsoleKey.UpArrow => (selected - 1 + itemCount) % Math.Max(1, itemCount),
+                ConsoleKey.DownArrow => (selected + 1) % Math.Max(1, itemCount),
+                ConsoleKey.PageUp => Math.Max(0, selected - pageSize),
+                ConsoleKey.PageDown => Math.Min(itemCount - 1, selected + pageSize),
+                ConsoleKey.Home => 0,
+                ConsoleKey.End => Math.Max(0, itemCount - 1),
+                _ => selected
+            };
         }
 
         public static void LoadGCodeFromPath(string path)
@@ -379,10 +570,7 @@ namespace coppercli.Menus
             var machine = AppState.Machine;
 
             // Expand ~ for home directory
-            if (path.StartsWith("~"))
-            {
-                path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Substring(2));
-            }
+            path = PathHelpers.ExpandTilde(path);
 
             if (!File.Exists(path))
             {
@@ -394,27 +582,23 @@ namespace coppercli.Menus
             try
             {
                 var currentFile = GCodeFile.Load(path);
-                AppState.CurrentFile = currentFile;
 
                 if (currentFile.Warnings.Count > 0)
                 {
                     AnsiConsole.MarkupLine($"[{ColorWarning}]Warnings ({currentFile.Warnings.Count}):[/]");
-                    foreach (var w in currentFile.Warnings.Take(5))
+                    foreach (var w in currentFile.Warnings.Take(MaxFileLoadWarningsShown))
                     {
                         AnsiConsole.MarkupLine($"  [{ColorWarning}]{Markup.Escape(w)}[/]");
                     }
-                    if (currentFile.Warnings.Count > 5)
+                    if (currentFile.Warnings.Count > MaxFileLoadWarningsShown)
                     {
-                        AnsiConsole.MarkupLine($"  [{ColorWarning}]... and {currentFile.Warnings.Count - 5} more[/]");
+                        AnsiConsole.MarkupLine($"  [{ColorWarning}]... and {currentFile.Warnings.Count - MaxFileLoadWarningsShown} more[/]");
                     }
                     MenuHelpers.WaitEnter();
                 }
 
-                // Load into machine
-                machine.SetFile(currentFile.GetGCode());
-
-                // Reset height map applied state and depth adjustment for new file
-                AppState.ResetProbeApplicationState();
+                // Load into machine (sets CurrentFile, loads to machine, resets probe state)
+                AppState.LoadGCodeIntoMachine(currentFile);
 
                 // Offer to apply existing probe data if complete
                 var probePoints = AppState.ProbePoints;

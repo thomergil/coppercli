@@ -1,10 +1,13 @@
 // Macro execution engine
 
+using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
+using coppercli.Core.Util;
 using coppercli.Helpers;
 using coppercli.Menus;
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Macro
 {
@@ -13,6 +16,11 @@ namespace coppercli.Macro
     /// </summary>
     internal class MacroRunner
     {
+        // Display layout constants
+        private const int HeaderLines = 4;   // Lines for header/title area
+        private const int FooterLines = 3;   // Lines for footer/help text area
+        private const int MinVisibleSteps = 3;  // Minimum steps to show in list
+
         private readonly List<MacroCommand> _commands;
         private readonly string _macroName;
         private int _currentStep;
@@ -101,7 +109,7 @@ namespace coppercli.Macro
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
             // Status line
-            var statusColor = StatusHelpers.IsProblematicState(machine)
+            var statusColor = MachineWait.IsProblematic(machine)
                 ? DisplayHelpers.AnsiError
                 : DisplayHelpers.AnsiSuccess;
             DisplayHelpers.WriteLineTruncated(
@@ -113,10 +121,8 @@ namespace coppercli.Macro
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
             // Calculate how many steps we can show
-            int headerLines = 4;
-            int footerLines = 3;
-            int availableLines = winHeight - headerLines - footerLines;
-            int maxVisibleSteps = Math.Max(3, availableLines);
+            int availableLines = winHeight - HeaderLines - FooterLines;
+            int maxVisibleSteps = Math.Max(MinVisibleSteps, availableLines);
 
             // Calculate viewport to keep current step visible
             int viewStart = 0;
@@ -135,17 +141,17 @@ namespace coppercli.Macro
             int boxLeftPad = 0;
             if (overlayMessage != null)
             {
-                boxWidth = Math.Min(winWidth - 4, Math.Max(40, overlayMessage.Length + 6));
-                boxLeftPad = Math.Max(0, (winWidth - boxWidth) / 2);
+                boxWidth = DisplayHelpers.CalculateOverlayBoxWidth(overlayMessage, overlaySubtext ?? "", winWidth);
+                boxLeftPad = (winWidth - boxWidth) / 2;
 
                 // Center vertically in the step list area
-                int stepAreaStart = headerLines + (viewStart > 0 ? 1 : 0);
+                int stepAreaStart = HeaderLines + (viewStart > 0 ? 1 : 0);
                 int stepAreaHeight = viewEnd - viewStart;
                 boxStartRow = stepAreaStart + Math.Max(0, (stepAreaHeight - DisplayHelpers.OverlayBoxHeight) / 2);
                 boxEndRow = boxStartRow + DisplayHelpers.OverlayBoxHeight - 1;
             }
 
-            int currentRow = headerLines;
+            int currentRow = HeaderLines;
 
             // Show "more above" indicator
             if (viewStart > 0)
@@ -254,7 +260,7 @@ namespace coppercli.Macro
                     return ExecuteHome();
 
                 case MacroCommandType.Safe:
-                    MachineCommands.MoveToSafeHeight(machine, RetractZMm);
+                    MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
                     return WaitForIdle();
 
                 case MacroCommandType.Zero:
@@ -320,9 +326,7 @@ namespace coppercli.Macro
             try
             {
                 var file = GCodeFile.Load(path);
-                AppState.CurrentFile = file;
-                AppState.Machine.SetFile(file.GetGCode());
-                AppState.ResetProbeApplicationState();
+                AppState.LoadGCodeIntoMachine(file);
                 return true;
             }
             catch (Exception ex)
@@ -335,34 +339,12 @@ namespace coppercli.Macro
         private bool ExecuteHome()
         {
             var machine = AppState.Machine;
-            MachineCommands.Home(machine);
-
-            // Wait for homing to complete
-            var deadline = DateTime.Now.AddMilliseconds(HomingTimeoutMs);
-            while (DateTime.Now < deadline)
+            if (!MachineCommands.HomeAndWait(machine))
             {
-                if (CheckAbort())
-                {
-                    return false;
-                }
-
-                if (StatusHelpers.IsIdle(machine))
-                {
-                    AppState.IsHomed = true;
-                    return true;
-                }
-
-                if (StatusHelpers.IsAlarm(machine))
-                {
-                    AnsiConsole.MarkupLine($"[{ColorError}]Homing failed - machine in alarm state[/]");
-                    return false;
-                }
-
-                Thread.Sleep(StatusPollIntervalMs);
+                AnsiConsole.MarkupLine($"[{ColorError}]Homing failed[/]");
+                return false;
             }
-
-            AnsiConsole.MarkupLine($"[{ColorError}]Homing timed out[/]");
-            return false;
+            return true;
         }
 
         private bool ExecuteZero(string[] args)
@@ -393,18 +375,15 @@ namespace coppercli.Macro
                 zeroingZ = true;
             }
 
-            MachineCommands.ZeroWorkOffset(machine, axisCmd);
-            AppState.IsWorkZeroSet = true;
+            MachineCommands.SetWorkZeroAndWait(machine, axisCmd);
 
             // If zeroing Z, move to safe height (matches JogMenu behavior)
             if (zeroingZ)
             {
-                Thread.Sleep(CommandDelayMs);
-                MachineCommands.MoveToSafeHeight(machine, RetractZMm);
+                MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
                 return WaitForIdle();
             }
 
-            Thread.Sleep(CommandDelayMs);
             return true;
         }
 
@@ -455,13 +434,13 @@ namespace coppercli.Macro
 
             if (!probeDone)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Probe timed out[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]{ControllerConstants.ErrorProbeTimeout}[/]");
                 return false;
             }
 
             if (!probeSuccess)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Probe failed - no contact[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]{ControllerConstants.ErrorProbeNoContact}[/]");
                 return false;
             }
 
@@ -490,7 +469,7 @@ namespace coppercli.Macro
 
         private bool ExecutePrompt(string[] args)
         {
-            string message = args.Length > 0 ? args[0] : "Press Enter to continue";
+            string message = args.Length > 0 ? args[0] : PromptEnter;
 
             // Draw progress with overlay
             DrawProgress(message, "Enter=Continue  Escape=Abort");
@@ -498,11 +477,11 @@ namespace coppercli.Macro
             while (true)
             {
                 var key = Console.ReadKey(true);
-                if (key.Key == ConsoleKey.Enter)
+                if (InputHelpers.IsEnterKey(key))
                 {
                     return true;
                 }
-                if (key.Key == ConsoleKey.Escape)
+                if (InputHelpers.IsEscapeKey(key))
                 {
                     _aborted = true;
                     return false;
@@ -520,13 +499,12 @@ namespace coppercli.Macro
             while (true)
             {
                 var key = Console.ReadKey(true);
-                char c = char.ToLower(key.KeyChar);
 
-                if (key.Key == ConsoleKey.Y || c == 'y' || key.Key == ConsoleKey.Enter)
+                if (InputHelpers.IsKey(key, ConsoleKey.Y) || InputHelpers.IsEnterKey(key))
                 {
                     return true;
                 }
-                if (key.Key == ConsoleKey.N || c == 'n' || key.Key == ConsoleKey.Escape)
+                if (InputHelpers.IsKey(key, ConsoleKey.N) || InputHelpers.IsEscapeKey(key))
                 {
                     _aborted = true;
                     return false;
@@ -552,12 +530,12 @@ namespace coppercli.Macro
                     return false;
                 }
 
-                if (StatusHelpers.IsIdle(machine))
+                if (MachineWait.IsIdle(machine))
                 {
                     return true;
                 }
 
-                if (StatusHelpers.IsAlarm(machine))
+                if (MachineWait.IsAlarm(machine))
                 {
                     AnsiConsole.MarkupLine($"[{ColorError}]Machine entered alarm state[/]");
                     return false;
@@ -567,7 +545,7 @@ namespace coppercli.Macro
             }
 
             // If we got here, we timed out but might still be OK
-            return StatusHelpers.IsIdle(machine);
+            return MachineWait.IsIdle(machine);
         }
 
         private bool CheckAbort()
@@ -581,7 +559,7 @@ namespace coppercli.Macro
             if (Console.KeyAvailable)
             {
                 var key = Console.ReadKey(true);
-                if (key.Key == ConsoleKey.Escape)
+                if (InputHelpers.IsEscapeKey(key))
                 {
                     _aborted = true;
                     return true;

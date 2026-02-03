@@ -1,5 +1,6 @@
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
@@ -106,10 +107,10 @@ namespace coppercli.Helpers
                     X = settings.ToolSetterX,
                     // Only set Y if non-zero (0 means "not configured" for manual override)
                     Y = settings.ToolSetterY != 0 ? settings.ToolSetterY : null,
-                    ProbeDepth = CliConstants.ToolSetterProbeDepth,
-                    FastFeed = CliConstants.ToolSetterSeekFeed,
-                    SlowFeed = CliConstants.ToolSetterProbeFeed,
-                    Retract = CliConstants.ToolSetterRetract
+                    ProbeDepth = ToolSetterProbeDepth,
+                    FastFeed = ToolSetterSeekFeed,
+                    SlowFeed = ToolSetterProbeFeed,
+                    Retract = ToolSetterRetract
                 };
             }
 

@@ -2,6 +2,7 @@
 // Program.cs - Application entry point and coordinator
 
 using coppercli.Core.Communication;
+using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
 using coppercli.Helpers;
@@ -9,6 +10,7 @@ using coppercli.Macro;
 using coppercli.Menus;
 using Spectre.Console;
 using static coppercli.CliConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli;
 
@@ -27,13 +29,17 @@ class Program
         Logger.Enabled = AppState.Settings.EnableDebugLogging || debugMode;
         if (Logger.Enabled)
         {
+            Logger.Clear();  // Start fresh each run
             AnsiConsole.MarkupLine($"[{ColorDim}]Log: {Logger.LogFilePath}[/]");
             Logger.Log("=== Startup ===");
         }
 
-        if (TryParseProxyArgs(args, out int? proxyPort, out bool headless))
+        // Wire up controller logging to use Logger
+        ControllerLog.LogAction = Logger.Log;
+
+        if (TryParseServerArgs(args, out int? proxyPort, out int? webPort))
         {
-            RunProxyMode(proxyPort, headless);
+            RunServerMode(proxyPort, webPort);
             return;
         }
 
@@ -56,9 +62,11 @@ class Program
         OfferAutoReconnect();
 
         // Offer to home if connected
+        ExitIfDisconnected();
         ConnectionMenu.OfferToHome();
 
         // Offer to reload files and restore state from previous session
+        ExitIfDisconnected();
         OfferSessionRestore();
 
         // Main application loop
@@ -77,43 +85,71 @@ class Program
     }
 
     /// <summary>
-    /// Parses command-line arguments for proxy mode.
-    /// Returns true if --proxy flag is present.
+    /// Parses command-line arguments for server mode.
+    /// Returns true if --server flag is present.
+    /// Supports --proxy-port and --web-port for configuring individual ports.
     /// </summary>
-    private static bool TryParseProxyArgs(string[] args, out int? port, out bool headless)
+    private static bool TryParseServerArgs(string[] args, out int? proxyPort, out int? webPort)
     {
-        port = null;
-        headless = false;
-        bool proxyMode = false;
+        proxyPort = null;
+        webPort = null;
+        bool serverMode = false;
 
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] == "--proxy" || args[i] == "-p")
+            if (args[i] == "--server" || args[i] == "-s")
             {
-                proxyMode = true;
+                serverMode = true;
             }
-            else if (args[i] == "--headless" || args[i] == "-H")
+            else if (args[i] == "--proxy-port" && i + 1 < args.Length)
             {
-                headless = true;
+                if (int.TryParse(args[i + 1], out int parsedPort))
+                {
+                    proxyPort = parsedPort;
+                }
+                i++;
             }
+            else if (args[i].StartsWith("--proxy-port="))
+            {
+                if (int.TryParse(args[i].Substring(13), out int parsedPort))
+                {
+                    proxyPort = parsedPort;
+                }
+            }
+            else if (args[i] == "--web-port" && i + 1 < args.Length)
+            {
+                if (int.TryParse(args[i + 1], out int parsedPort))
+                {
+                    webPort = parsedPort;
+                }
+                i++;
+            }
+            else if (args[i].StartsWith("--web-port="))
+            {
+                if (int.TryParse(args[i].Substring(11), out int parsedPort))
+                {
+                    webPort = parsedPort;
+                }
+            }
+            // Legacy --port support (applies to web port for backwards compatibility)
             else if (args[i] == "--port" && i + 1 < args.Length)
             {
                 if (int.TryParse(args[i + 1], out int parsedPort))
                 {
-                    port = parsedPort;
+                    webPort = parsedPort;
                 }
-                i++; // Skip the port value
+                i++;
             }
             else if (args[i].StartsWith("--port="))
             {
                 if (int.TryParse(args[i].Substring(7), out int parsedPort))
                 {
-                    port = parsedPort;
+                    webPort = parsedPort;
                 }
             }
         }
 
-        return proxyMode;
+        return serverMode;
     }
 
     /// <summary>
@@ -185,14 +221,8 @@ class Program
     /// </summary>
     private static void RunMacroMode(string macroFile, Dictionary<string, string> macroArgs)
     {
-        // Expand ~ for home directory
-        if (macroFile.StartsWith("~"))
-        {
-            macroFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), macroFile.Substring(2));
-        }
-
-        // Convert to absolute path
-        macroFile = Path.GetFullPath(macroFile);
+        // Expand ~ and convert to absolute path
+        macroFile = Path.GetFullPath(PathHelpers.ExpandTilde(macroFile));
 
         if (!File.Exists(macroFile))
         {
@@ -203,13 +233,7 @@ class Program
         // Expand ~ in macro args that look like file paths
         foreach (var key in macroArgs.Keys.ToList())
         {
-            var value = macroArgs[key];
-            if (value.StartsWith("~"))
-            {
-                macroArgs[key] = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    value.Substring(2));
-            }
+            macroArgs[key] = PathHelpers.ExpandTilde(macroArgs[key]);
         }
 
         // Set macro mode flag (suppresses homing prompt on connect)
@@ -235,10 +259,12 @@ class Program
     }
 
     /// <summary>
-    /// Runs proxy mode with saved serial settings and specified (or default) TCP port.
+    /// Runs server mode: SerialProxy on proxyPort, CncWebServer on webPort.
     /// </summary>
-    private static void RunProxyMode(int? tcpPort, bool headless)
+    private static void RunServerMode(int? proxyPort, int? webPort)
     {
+        Logger.Log("RunServerMode: starting");
+        Logger.Log($"RunServerMode: IsWorkZeroSet={AppState.IsWorkZeroSet}, HasStoredWorkZero={AppState.Session.HasStoredWorkZero}");
         var settings = AppState.Settings;
 
         // Validate we have saved serial settings
@@ -248,16 +274,17 @@ class Program
             Environment.Exit(1);
         }
 
-        int port = tcpPort ?? CliConstants.ProxyDefaultPort;
+        // Create machine instance (needed by web server)
+        Logger.Log("RunServerMode: creating Machine");
+        AppState.Machine = new Machine(settings);
+        SetupEventHandlers();
 
-        if (headless)
-        {
-            ProxyMenu.RunHeadless(settings.SerialPortName, settings.SerialPortBaud, port);
-        }
-        else
-        {
-            ProxyMenu.RunInteractive(settings.SerialPortName, settings.SerialPortBaud, port);
-        }
+        int actualProxyPort = proxyPort ?? ProxyDefaultPort;
+        int actualWebPort = webPort ?? WebDefaultPort;
+
+        // Use unified server implementation
+        Logger.Log("RunServerMode: calling ServerMenu.RunServer");
+        ServerMenu.RunServer(settings.SerialPortName, settings.SerialPortBaud, actualProxyPort, actualWebPort, exitToMenu: false);
     }
 
     /// <summary>
@@ -326,70 +353,96 @@ class Program
             if (result == true)
             {
                 AppState.IsWorkZeroSet = true;
+                Logger.Log("Program startup: IsWorkZeroSet = true (trusted from previous session)");
+            }
+            else
+            {
+                Logger.Log("Program startup: IsWorkZeroSet = false (user declined to trust)");
             }
         }
-
-        // Offer to load saved probe data (only if work zero is trusted - probe data depends on it)
-        if (AppState.IsWorkZeroSet && !string.IsNullOrEmpty(session.LastSavedProbeFile) && File.Exists(session.LastSavedProbeFile))
+        else
         {
-            var fileName = Path.GetFileName(session.LastSavedProbeFile);
-            var result = MenuHelpers.ConfirmOrQuit($"Load probe data {fileName}?", true);
-            if (result == null)
-            {
-                Environment.Exit(0);
-            }
-            if (result == true)
-            {
-                try
-                {
-                    AppState.ProbePoints = ProbeGrid.Load(session.LastSavedProbeFile);
-                    var pp = AppState.ProbePoints;
-
-                    // Auto-apply probe data if G-code is loaded and probe is complete
-                    if (AppState.ApplyProbeData())
-                    {
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded and applied: {pp.TotalPoints} points[/]");
-                    }
-                    else
-                    {
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data loaded: {pp.TotalPoints} points[/]");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
-                }
-            }
+            Logger.Log($"Program startup: Not offering work zero trust (connected={machine.Connected}, hasStoredWorkZero={session.HasStoredWorkZero})");
         }
 
-        // Offer to continue incomplete probing (only if work zero trusted and no complete probe loaded)
-        if (machine.Connected && AppState.IsWorkZeroSet)
+        // Handle unsaved probe data (single source of truth: Persistence.GetProbeState())
+        var probeState = Persistence.GetProbeState();
+        Logger.Log($"Probe state on startup: {probeState}");
+
+        if (probeState == Persistence.ProbeState.Partial)
         {
-            var hasCompleteProbe = AppState.ProbePoints != null && AppState.ProbePoints.NotProbed.Count == 0;
-            if (!hasCompleteProbe && !string.IsNullOrEmpty(session.ProbeAutoSavePath) && File.Exists(session.ProbeAutoSavePath))
+            // Incomplete probing - offer to keep or discard
+            try
             {
-                var result = MenuHelpers.ConfirmOrQuit("Continue incomplete probing session?", true);
+                var autosavePath = Persistence.GetProbeAutoSavePath();
+                var autosaveGrid = ProbeGrid.Load(autosavePath);
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Incomplete probe data: {autosaveGrid.Progress}/{autosaveGrid.TotalPoints} points[/]");
+                var result = MenuHelpers.ConfirmOrQuit("Keep probe data?", true);
                 if (result == null)
                 {
                     Environment.Exit(0);
                 }
                 if (result == true)
                 {
-                    try
+                    // Keep: load data and associated G-Code, then go to Probe menu
+                    AppState.ProbePoints = autosaveGrid;
+                    AppState.ResetProbeApplicationState();
+                    if (!AppState.LoadProbeSourceGCode() && AppState.IsProbeSourceGCodeMissing)
                     {
-                        AppState.ProbePoints = ProbeGrid.Load(session.ProbeAutoSavePath);
-                        AppState.ResetProbeApplicationState();
-                        var hm = AppState.ProbePoints;
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Loaded probe progress: {hm.Progress}/{hm.TotalPoints} points[/]");
-                        // Start probing directly
-                        ProbeMenu.ContinueProbing();
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]Original G-Code file is missing. Load the file to continue probing.[/]");
                     }
-                    catch (Exception ex)
-                    {
-                        AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(ex.Message)}[/]");
-                    }
+                    ProbeMenu.Show();
+                }
+                else
+                {
+                    // Discard: delete data
+                    Persistence.ClearProbeAutoSave();
                 }
             }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to load autosave: {ex.Message}");
+            }
+        }
+        else if (probeState == Persistence.ProbeState.Complete && AppState.IsWorkZeroSet)
+        {
+            // Complete but unsaved probe - offer to save or discard
+            try
+            {
+                var autosavePath = Persistence.GetProbeAutoSavePath();
+                var completeGrid = ProbeGrid.Load(autosavePath);
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Unsaved probe data: {completeGrid.TotalPoints} points[/]");
+                var result = MenuHelpers.ConfirmOrQuit("Save probe data before continuing?", true);
+                if (result == null)
+                {
+                    Environment.Exit(0);
+                }
+                if (result == true)
+                {
+                    AppState.ProbePoints = completeGrid;
+                    AppState.ResetProbeApplicationState();
+                    // Navigate to probe menu for save
+                    ProbeMenu.Show();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to load complete autosave: {ex.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Exits if the machine was disconnected (e.g., by another client force-disconnecting).
+    /// Called between opening questions to detect disconnection.
+    /// </summary>
+    private static void ExitIfDisconnected()
+    {
+        if (!AppState.Machine.Connected)
+        {
+            Logger.Log("ExitIfDisconnected: machine no longer connected, exiting");
+            AnsiConsole.MarkupLine($"[{ColorWarning}]Disconnected.[/]");
+            Environment.Exit(0);
         }
     }
 
@@ -418,7 +471,22 @@ class Program
             }
         };
 
-        // Probe completion handler - delegates to ProbeMenu
-        machine.ProbeFinished += ProbeMenu.OnProbeFinished;
+        // Log pin state changes for debugging
+        machine.PinStateChanged += () =>
+        {
+            Logger.Log($"Pin state: Probe={machine.PinStateProbe}, LimitX={machine.PinStateLimitX}, LimitY={machine.PinStateLimitY}, LimitZ={machine.PinStateLimitZ}");
+        };
+        // Note: ProbeFinished is handled by ProbeController internally
+
+        // Exit if force-disconnected by another client (e.g., web UI taking over)
+        machine.LineReceived += line =>
+        {
+            if (line.StartsWith(ProxyForceDisconnectPrefix))
+            {
+                Logger.Log("Force-disconnected by another client, exiting");
+                AnsiConsole.MarkupLine($"[{ColorWarning}]Disconnected by another client.[/]");
+                Environment.Exit(0);
+            }
+        };
     }
 }

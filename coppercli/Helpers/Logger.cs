@@ -53,7 +53,18 @@ namespace coppercli.Helpers
                 {
                     var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
                     var line = $"[{timestamp}] {message}";
-                    File.AppendAllText(LogPath, line + Environment.NewLine);
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(line + Environment.NewLine);
+
+                    // Use WriteThrough to bypass OS buffering and write directly to disk.
+                    // This ensures logs are available immediately (important for debugging crashes).
+                    using var fs = new FileStream(
+                        LogPath,
+                        FileMode.Append,
+                        FileAccess.Write,
+                        FileShare.Read,
+                        bufferSize: 4096,
+                        FileOptions.WriteThrough);
+                    fs.Write(bytes, 0, bytes.Length);
                 }
             }
             catch
