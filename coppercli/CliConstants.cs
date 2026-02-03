@@ -529,6 +529,9 @@ namespace coppercli
         /// <summary>Status: probe data has been cleared.</summary>
         public const string ProbeStatusCleared = "Probe data cleared";
 
+        /// <summary>Prompt: clear probe data after milling.</summary>
+        public const string ProbePromptClear = "Clear probe data?";
+
         /// <summary>Status: probe data loaded from file.</summary>
         public const string ProbeStatusLoaded = "Probe data loaded";
 

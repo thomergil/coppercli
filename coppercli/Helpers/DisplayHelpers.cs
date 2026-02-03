@@ -451,5 +451,40 @@ namespace coppercli.Helpers
                 }
             }
         }
+
+        /// <summary>
+        /// Draws a centered overlay box with a Y/N confirmation prompt.
+        /// Use this for confirmations in full-screen TUI modes.
+        /// </summary>
+        /// <param name="message">Main message to display.</param>
+        /// <param name="defaultYes">If true, shows [Y/n] and Enter returns true; otherwise [y/N] and Enter returns false.</param>
+        /// <param name="messageColor">ANSI color for main message.</param>
+        /// <returns>true for Yes, false for No, null for Escape/quit.</returns>
+        public static bool? ShowOverlayConfirm(string message, bool defaultYes = false, string? messageColor = null)
+        {
+            string hint = defaultYes ? "[Y/n]" : "[y/N]";
+            DrawCenteredOverlay(message, hint, messageColor ?? AnsiPrompt);
+
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                if (InputHelpers.IsEnterKey(key))
+                {
+                    return defaultYes;
+                }
+                if (InputHelpers.IsKey(key, ConsoleKey.Y))
+                {
+                    return true;
+                }
+                if (InputHelpers.IsKey(key, ConsoleKey.N))
+                {
+                    return false;
+                }
+                if (InputHelpers.IsExitKey(key))
+                {
+                    return null;
+                }
+            }
+        }
     }
 }

@@ -393,12 +393,11 @@ namespace coppercli.Menus
                     // Offer to clear probe data after successful mill
                     if (AppState.ProbePoints != null)
                     {
-                        if (MenuHelpers.ConfirmOrQuit("Clear probe data?", true) == true)
+                        if (ShowOverlayConfirm(ProbePromptClear, true) == true)
                         {
                             AppState.DiscardProbeData();
                             Persistence.ClearProbeAutoSave();
-                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data cleared[/]");
-                            Thread.Sleep(ConfirmationDisplayMs);
+                            ShowOverlayTimed(ProbeStatusCleared, ConfirmationDisplayMs);
                         }
                     }
                 }
