@@ -59,7 +59,7 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to run f
 
 ## Tutorial
 
-For a complete end-to-end guide on milling PCBs, from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://github.com/thomergil/pcb-nomad3).
+For a complete end-to-end guide on milling PCBs, from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://thomer.com/pcb-nomad3).
 
 ## Background
 
