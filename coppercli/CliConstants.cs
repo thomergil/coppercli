@@ -15,7 +15,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>Current version (with 'v' prefix for display).</summary>
-        public const string AppVersion = "v0.4.0a";
+        public const string AppVersion = "v0.4.0b";
 
         // =========================================================================
         // Timing: CLI-specific
