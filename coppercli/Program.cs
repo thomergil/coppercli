@@ -14,6 +14,9 @@ class Program
 {
     static void Main(string[] args)
     {
+        // Enable UTF-8 output for Unicode box-drawing characters (required on Windows)
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+
         // Load persisted settings and session
         AppState.Settings = Persistence.LoadSettings();
         AppState.Session = Persistence.LoadSession();
