@@ -448,10 +448,12 @@ async function saveProbeDataToPath(path) {
     }
 }
 
-// Clear probe grid visualization and info text
+// Reset probe UI to initial setup state (clear grid, show setup view)
 function clearProbeGridUI() {
     $('probe-grid').innerHTML = '';
     $('probe-info').textContent = '';
+    removeClass('probe-setup', CLASS_HIDDEN);
+    addClass('probe-progress', CLASS_HIDDEN);
     state.probeDataDisplayed = false;
 }
 
@@ -461,9 +463,6 @@ export async function discardProbeData() {
     try {
         await fetch(API_PROBE_DISCARD, { method: 'POST' });
         showInfo(TEXT_PROBE_DATA_CLEARED);
-        // Reset UI
-        removeClass('probe-setup', CLASS_HIDDEN);
-        addClass('probe-progress', CLASS_HIDDEN);
         clearProbeGridUI();
         $('probe-start-btn').disabled = true;
         // Update buttons based on new state (should be 'none')
