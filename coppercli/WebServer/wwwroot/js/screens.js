@@ -180,10 +180,13 @@ export function updateStatus(status) {
     const posDisplay = document.getElementById('position-display');
 
     // Update connection indicator
+    // Treat status "Disconnected" as not connected even if serial port is open
+    // (GRBL hasn't responded yet)
+    const statusStr = status.status || '';
+    const effectivelyConnected = state.connected && statusStr !== TEXT_DISCONNECTED;
     indicator.classList.remove(CLASS_CONNECTED, CLASS_ALARM);
     statusText.classList.remove(CLASS_CLICKABLE);
-    if (state.connected) {
-        const statusStr = status.status || '';
+    if (effectivelyConnected) {
         const isAlarm = statusStr.startsWith(STATUS_ALARM_PREFIX) || statusStr === STATUS_DOOR;
         if (isAlarm) {
             indicator.classList.add(CLASS_ALARM);

@@ -82,6 +82,25 @@ namespace coppercli
             }
         }
 
+        // =====================================================================
+        // Settings migrations
+        //
+        // When a settings property is renamed in MachineSettings, add an entry
+        // here so existing users' values are preserved on upgrade. Migrations
+        // run once on load and rewrite the settings file with the new names.
+        //
+        // Format: (OldJsonPropertyName, NewJsonPropertyName)
+        //
+        // Migration history:
+        //   v0.4.0  OutlineTraverseHeight → OutlineTraceHeight
+        //   v0.4.0  OutlineTraverseFeed   → OutlineTraceFeed
+        // =====================================================================
+        private static readonly (string Old, string New)[] SettingsMigrations =
+        {
+            ("OutlineTraverseHeight", "OutlineTraceHeight"),
+            ("OutlineTraverseFeed", "OutlineTraceFeed"),
+        };
+
         public static MachineSettings LoadSettings()
         {
             try
@@ -90,6 +109,7 @@ namespace coppercli
                 if (File.Exists(path))
                 {
                     var json = File.ReadAllText(path);
+                    json = MigrateSettings(json);
                     return JsonSerializer.Deserialize<MachineSettings>(json) ?? new MachineSettings();
                 }
             }
@@ -98,6 +118,42 @@ namespace coppercli
                 // Fall through to return default settings
             }
             return new MachineSettings();
+        }
+
+        /// <summary>
+        /// Applies settings migrations by renaming old JSON property names to their
+        /// current names. This preserves user-configured values across upgrades when
+        /// properties are renamed in MachineSettings. Only migrates when the old name
+        /// exists and the new name doesn't (safe to run repeatedly). Rewrites the
+        /// settings file after migration so it only runs once.
+        /// </summary>
+        private static string MigrateSettings(string json)
+        {
+            bool migrated = false;
+            foreach (var (old, @new) in SettingsMigrations)
+            {
+                if (json.Contains($"\"{old}\"") && !json.Contains($"\"{@new}\""))
+                {
+                    json = json.Replace($"\"{old}\"", $"\"{@new}\"");
+                    Logger.Log($"Settings migration: {old} → {@new}");
+                    migrated = true;
+                }
+            }
+
+            if (migrated)
+            {
+                try
+                {
+                    File.WriteAllText(GetSettingsPath(), json);
+                    Logger.Log("Settings migration: saved migrated file");
+                }
+                catch
+                {
+                    // Non-fatal: will re-migrate on next load
+                }
+            }
+
+            return json;
         }
 
         public static void SaveSettings()

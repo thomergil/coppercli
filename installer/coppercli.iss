@@ -2,7 +2,7 @@
 ; Download Inno Setup from: https://jrsoftware.org/isinfo.php
 
 #define MyAppName "coppercli"
-#define MyAppVersion "0.4.0b"
+#define MyAppVersion "0.4.0d"
 #define MyAppPublisher "coppercli"
 #define MyAppURL "https://github.com/thomergil/coppercli"
 #define MyAppExeName "coppercli.exe"

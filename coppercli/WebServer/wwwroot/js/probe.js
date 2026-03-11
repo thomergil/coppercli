@@ -141,12 +141,14 @@ export async function traceOutline() {
         showError('Trace failed: ' + err.message);
     } finally {
         isTracing = false;
-        // Restore button to normal state
+        // Disable button briefly to prevent accidental tap (finger may still be on STOP)
+        startBtn.disabled = true;
         startBtn.textContent = 'Start Probing';
         startBtn.classList.remove('btn-danger');
         startBtn.classList.add('btn-success');
         startBtn.onclick = startProbing;
         traceBtn.disabled = false;
+        setTimeout(() => { startBtn.disabled = false; }, 500);
     }
 }
 
@@ -446,6 +448,13 @@ async function saveProbeDataToPath(path) {
     }
 }
 
+// Clear probe grid visualization and info text
+function clearProbeGridUI() {
+    $('probe-grid').innerHTML = '';
+    $('probe-info').textContent = '';
+    state.probeDataDisplayed = false;
+}
+
 export async function discardProbeData() {
     if (!await showConfirm('Discard all probe data?', 'Discard Probe Data')) return;
 
@@ -455,11 +464,8 @@ export async function discardProbeData() {
         // Reset UI
         removeClass('probe-setup', CLASS_HIDDEN);
         addClass('probe-progress', CLASS_HIDDEN);
-        $('probe-grid').innerHTML = '';
-        $('probe-info').textContent = '';
+        clearProbeGridUI();
         $('probe-start-btn').disabled = true;
-        // Reset display flag so reconnect can show new data
-        state.probeDataDisplayed = false;
         // Update buttons based on new state (should be 'none')
         await refreshProbeState();
     } catch (err) {
@@ -775,6 +781,10 @@ export async function refreshProbeState() {
         const data = await response.json();
         if (data.state) {
             updateProbeButtonsFromState(data.state, data.hasUnsavedData);
+            // Clear stale grid if server has no probe data (e.g., discarded via zeroing)
+            if (data.state === PROBE_STATE_NONE) {
+                clearProbeGridUI();
+            }
         }
     } catch (err) {
         console.error('Failed to fetch probe state:', err);
@@ -804,6 +814,7 @@ async function handleProbeSaveDiscard() {
         await fetch(API_PROBE_DISCARD, { method: 'POST' });
         showInfo(TEXT_PROBE_DATA_CLEARED);
         hideProbeSaveModal();
+        clearProbeGridUI();
     } catch (err) {
         showError('Discard failed: ' + err.message);
     }

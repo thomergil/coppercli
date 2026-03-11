@@ -1396,10 +1396,11 @@ public static class CncWebServer
         var axes = req?.axes ?? new[] { "X", "Y", "Z" };
         var axesUpper = axes.Select(a => a.ToUpperInvariant()).ToArray();
         var axesStr = string.Join(" ", axesUpper.Select(a => $"{a}0"));
-        Logger.Log($"HandleZero: sending ZeroWorkOffset with axes: {axesStr}");
+        Logger.Log($"HandleZero: axes={axesStr} workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3}) machPos=({_machine.MachinePosition.X:F3},{_machine.MachinePosition.Y:F3},{_machine.MachinePosition.Z:F3})");
 
         // SetWorkZeroAndWait handles probe grid state (re-applies if Z-only, discards if XY)
         MachineCommands.SetWorkZeroAndWait(_machine, axesStr);
+        Logger.Log($"HandleZero: after zero workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3})");
 
         // If zeroing all axes, save to session
         if (axes.Length == 3 || (axes.Contains("X") && axes.Contains("Y") && axes.Contains("Z")))
@@ -2100,7 +2101,8 @@ public static class CncWebServer
         var grid = AppState.ProbePoints;
         var controller = AppState.Probe;
 
-        Logger.Log($"HandleProbeTraceOutline: tracing outline for {grid.SizeX}x{grid.SizeY} grid");
+        Logger.Log($"HandleProbeTraceOutline: tracing outline for {grid.SizeX}x{grid.SizeY} grid, " +
+            $"traceHeight={settings.OutlineTraceHeight:F3}, traceFeed={settings.OutlineTraceFeed:F0}");
 
         // Configure controller with grid and trace options
         controller.LoadGrid(grid);
@@ -2110,6 +2112,13 @@ public static class CncWebServer
             TraceFeed = settings.OutlineTraceFeed
         };
 
+        void OnTraceError(ControllerError error)
+        {
+            Logger.Log($"Trace outline error: {error.Message}");
+            BroadcastMessage(WsMessageTypeProbeError, new { message = error.Message });
+        }
+
+        controller.ErrorOccurred += OnTraceError;
         try
         {
             await controller.TraceOutlineAsync(ct);
@@ -2118,6 +2127,10 @@ public static class CncWebServer
         catch (OperationCanceledException)
         {
             Logger.Log("HandleProbeTraceOutline: cancelled");
+        }
+        finally
+        {
+            controller.ErrorOccurred -= OnTraceError;
         }
     }
 

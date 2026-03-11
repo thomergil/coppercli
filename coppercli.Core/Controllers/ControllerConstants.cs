@@ -26,6 +26,7 @@ namespace coppercli.Core.Controllers
         public const string ErrorProbeNoContact = "Probe failed: max depth reached without contact";
         public const string ErrorProbeTimeout = "Probe timed out";
         public const string ErrorToolSetterNotConfigured = "Tool setter position not configured";
+        public const string ErrorTraceHeightUnsafe = "Trace height must be positive (current: {0:F3}mm)";
 
         // =========================================================================
         // Log messages

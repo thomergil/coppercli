@@ -427,10 +427,24 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
+            // Validate trace height before any movement
+            if (Options.TraceHeight <= 0)
+            {
+                ControllerLog.Log("TraceOutline: REFUSED - trace height {0:F3} is not positive", Options.TraceHeight);
+                EmitError(new ControllerError(
+                    string.Format(ControllerConstants.ErrorTraceHeightUnsafe, Options.TraceHeight),
+                    IsFatal: true));
+                return;
+            }
+
             double minX = _grid.Min.X;
             double minY = _grid.Min.Y;
             double maxX = _grid.Max.X;
             double maxY = _grid.Max.Y;
+
+            ControllerLog.Log("TraceOutline: height={0:F3} feed={1:F0} grid=({2:F3},{3:F3})-({4:F3},{5:F3}) workZ={6:F3} machZ={7:F3}",
+                Options.TraceHeight, Options.TraceFeed, minX, minY, maxX, maxY,
+                _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
             // Safety retract to machine coords first
             ControllerLog.Log("TraceOutline: safety retract to machine Z={0:F1}", Constants.MillStartSafetyZ);
@@ -443,12 +457,15 @@ namespace coppercli.Core.Controllers
             _machine.SendLine($"{CmdRapidMove} X{minX:F3} Y{minY:F3}");
             await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
 
-            // Descend to trace height
-            ControllerLog.Log("TraceOutline: descending to trace height Z={0:F3}", Options.TraceHeight);
+            // Move to trace height (above work surface) and verify Z reached target
+            ControllerLog.Log("TraceOutline: moving to trace height Z={0:F3} (workZ={1:F3} machZ={2:F3})",
+                Options.TraceHeight, _machine.WorkPosition.Z, _machine.MachinePosition.Z);
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine($"{CmdRapidMove} Z{Options.TraceHeight:F3}");
+            await MachineWait.WaitForZHeightAsync(_machine, Options.TraceHeight, Constants.MoveCompleteTimeoutMs, ct);
             await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
-            ControllerLog.Log("TraceOutline: starting trace");
+            ControllerLog.Log("TraceOutline: at trace height (workZ={0:F3} machZ={1:F3}), starting trace",
+                _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
             // Trace remaining corners (skip first since we're already there)
             var corners = new[]
@@ -477,6 +494,7 @@ namespace coppercli.Core.Controllers
         {
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine($"{CmdRapidMove} Z{Options.SafeHeight:F3}");
+            await MachineWait.WaitForZHeightAsync(_machine, Options.SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
             await MachineWait.WaitForIdleAsync(_machine, Constants.ZHeightWaitTimeoutMs, ct);
         }
 

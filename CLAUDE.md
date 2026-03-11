@@ -170,6 +170,17 @@ Periodically audit the codebase for violations:
    # These should match (use diff to compare)
    ```
 
+### Settings Migrations
+
+When renaming a property in `MachineSettings`, add a migration entry in `Persistence.cs` so existing users' values are preserved on upgrade. **Do not rely on backwards compatibility** — just add the migration and use the new name everywhere.
+
+```csharp
+// In Persistence.cs — SettingsMigrations array
+("OldPropertyName", "NewPropertyName"),
+```
+
+Migrations run automatically on `LoadSettings()`, rewrite the file once, and are idempotent. Document each migration with a version comment in the array.
+
 ## Project Structure
 
 - `coppercli/` - Main application (.NET 8)

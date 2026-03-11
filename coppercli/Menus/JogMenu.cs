@@ -206,10 +206,10 @@ namespace coppercli.Menus
             const int prefixPokeLeft = 7;        // How far "prefix" pokes left into gap2
 
             // Header - Status line with right-aligned hints
-            var hints = $"{AnsiDim}?=Help  Esc/Q to exit{AnsiReset}";
+            var hints = $"{AnsiDim}?=Help  Esc to exit{AnsiReset}";
             var statusContent = $" Status: {statusColor}{machine.Status}{AnsiReset}";
             int statusDisplayLen = CalculateDisplayLength(statusContent);
-            int hintsDisplayLen = 21; // "?=Help  Esc/Q to exit"
+            int hintsDisplayLen = 19; // "?=Help  Esc to exit"
             int statusPadding = Math.Max(1, innerWidth - statusDisplayLen - hintsDisplayLen - 1);
             WriteLineTruncated(BoxBorder('╔', '╗', innerWidth), winWidth);
             WriteLineTruncated(BoxLine($"{statusContent}{new string(' ', statusPadding)}{hints}", innerWidth), winWidth);
@@ -301,7 +301,7 @@ namespace coppercli.Menus
             };
 
             WriteLineTruncated($"{AnsiWarning}{sizeHint}{AnsiReset}", winWidth);
-            WriteLineTruncated($"{AnsiDim}Esc/Q to exit{AnsiReset}", winWidth, addNewline: false);
+            WriteLineTruncated($"{AnsiDim}Esc to exit{AnsiReset}", winWidth, addNewline: false);
         }
 
         /// <summary>
@@ -309,7 +309,7 @@ namespace coppercli.Menus
         /// </summary>
         private static bool HandleKey(ConsoleKeyInfo key, Machine machine, JogMode mode)
         {
-            if (InputHelpers.IsExitKey(key))
+            if (InputHelpers.IsEscapeKey(key))
             {
                 return false;
             }
@@ -521,7 +521,7 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine($"  [{ColorInfo}]B[/]  Z0 (work zero)    [{ColorInfo}]T[/]  Z+6mm    [{ColorInfo}]G[/]  Z+1mm");
             AnsiConsole.WriteLine();
 
-            AnsiConsole.MarkupLine($"[{ColorDim}]?=Help  Esc/Q=Exit                      Press any key to return...[/]");
+            AnsiConsole.MarkupLine($"[{ColorDim}]?=Help  Esc=Exit                      Press any key to return...[/]");
             Console.ReadKey(true);
             Console.Clear();
         }
