@@ -75,7 +75,7 @@ namespace coppercli.Tests
             var controller = CreateController(machine);
 
             Assert.NotNull(controller.Options);
-            Assert.Equal(5.0, controller.Options.SafeHeight);
+            Assert.Equal(6.0, controller.Options.SafeHeight);
             Assert.Equal(10.0, controller.Options.MaxDepth);
             Assert.Equal(50.0, controller.Options.ProbeFeed);
         }
@@ -174,11 +174,9 @@ namespace coppercli.Tests
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
             // Simulate some points already probed
-            if (grid.NotProbed.Count > 0)
+            if (grid.TryPeekNext(out var point))
             {
-                var point = grid.NotProbed[0];
-                grid.AddPoint(point.Item1, point.Item2, -0.5);
-                grid.NotProbed.RemoveAt(0);
+                grid.RecordMeasurement(point.X, point.Y, -0.5);
             }
 
             controller.LoadGrid(grid);
@@ -326,13 +324,13 @@ namespace coppercli.Tests
         {
             var options = new ProbeOptions();
 
-            Assert.Equal(5.0, options.SafeHeight);
+            Assert.Equal(6.0, options.SafeHeight);
             Assert.Equal(10.0, options.MaxDepth);
             Assert.Equal(50.0, options.ProbeFeed);
             Assert.Equal(1.0, options.MinimumHeight);
             Assert.True(options.AbortOnFail);
             Assert.Equal(1.0, options.XAxisWeight);
-            Assert.Equal(5.0, options.TraceHeight);
+            Assert.Equal(6.0, options.TraceHeight);
             Assert.Equal(500.0, options.TraceFeed);
             Assert.False(options.TraceOutline);
         }

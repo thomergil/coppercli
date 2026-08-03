@@ -457,13 +457,37 @@ namespace coppercli.Macro
                 return false;
             }
 
-            if (probePoints.NotProbed.Count > 0)
+            if (!probePoints.HasCompleteData)
             {
                 AnsiConsole.MarkupLine($"[{ColorError}]Probe grid is incomplete[/]");
                 return false;
             }
 
-            AppState.ApplyProbeData();
+            // "probe apply" is documented for reusing a grid on the same board. Reusing
+            // it on a different one, or after the origin moved, would cut to heights
+            // measured somewhere else.
+            var applicability = AppState.GetProbeApplicability();
+
+            if (applicability == ProbeApplicability.DifferentFile)
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]The height map was measured for a different file[/]");
+                return false;
+            }
+
+            if (applicability == ProbeApplicability.OriginMoved)
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]The work origin has moved since the height map was measured[/]");
+                return false;
+            }
+
+            // Milling a warped board with no height compensation is exactly what this
+            // command exists to prevent, so a failure here must fail the macro.
+            if (!AppState.ApplyProbeData())
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]Could not apply probe data[/]");
+                return false;
+            }
+
             return true;
         }
 

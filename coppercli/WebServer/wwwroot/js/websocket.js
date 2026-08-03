@@ -1,5 +1,6 @@
 // coppercli Web UI WebSocket
 
+import { withToken } from './auth.js';
 import { state } from './state.js';
 import { showError, showConfirm } from './helpers.js';
 import { updateStatus, showConnectionStatus } from './screens.js';
@@ -45,7 +46,7 @@ export function connectWebSocket() {
         ? `${protocol}//${window.location.host}/ws?clientId=${clientId}`
         : `${protocol}//${window.location.host}/ws`;
 
-    state.ws = new WebSocket(wsUrl);
+    state.ws = new WebSocket(withToken(wsUrl));
 
     state.ws.onopen = () => {
         console.log('WebSocket connected');

@@ -19,6 +19,25 @@ namespace coppercli.Menus
         // Marker for "select this directory" option
         private const string SelectDirMarker = "__SELECT_DIR__";
 
+        /// <summary>
+        /// Resolves the directory a file browser opens in: an explicitly requested directory
+        /// if it exists, else the last directory browsed this session if it exists, else the
+        /// current working directory. Single source for the browser start-location precedence.
+        /// </summary>
+        private static string ResolveStartDirectory(string? startDirectory)
+        {
+            if (!string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory))
+            {
+                return startDirectory;
+            }
+            var session = AppState.Session;
+            if (!string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory))
+            {
+                return session.LastBrowseDirectory;
+            }
+            return Environment.CurrentDirectory;
+        }
+
         public static void LoadGCodeFile()
         {
             var path = BrowseForFile(GCodeExtensions);
@@ -42,11 +61,7 @@ namespace coppercli.Menus
         {
             var session = AppState.Session;
 
-            string currentDir = !string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory)
-                ? startDirectory
-                : !string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory)
-                    ? session.LastBrowseDirectory
-                    : Environment.CurrentDirectory;
+            string currentDir = ResolveStartDirectory(startDirectory);
 
             string filename = defaultFileName ?? "untitled" + (extensions.Length > 0 ? extensions[0] : "");
 
@@ -110,12 +125,7 @@ namespace coppercli.Menus
         {
             var session = AppState.Session;
 
-            // Start at specified directory, last browse directory, or current directory
-            string currentDir = !string.IsNullOrEmpty(startDirectory) && Directory.Exists(startDirectory)
-                ? startDirectory
-                : !string.IsNullOrEmpty(session.LastBrowseDirectory) && Directory.Exists(session.LastBrowseDirectory)
-                    ? session.LastBrowseDirectory
-                    : Environment.CurrentDirectory;
+            string currentDir = ResolveStartDirectory(startDirectory);
 
             string filter = "";
             bool filterActive = false;
@@ -600,25 +610,39 @@ namespace coppercli.Menus
                 // Load into machine (sets CurrentFile, loads to machine, resets probe state)
                 AppState.LoadGCodeIntoMachine(currentFile);
 
-                // Offer to apply existing probe data if complete
-                var probePoints = AppState.ProbePoints;
-                if (probePoints != null && probePoints.NotProbed.Count == 0)
-                {
-                    if (MenuHelpers.Confirm("Apply existing probe data to this file?", true))
-                    {
-                        AppState.ApplyProbeData();
-                        AnsiConsole.MarkupLine($"[{ColorSuccess}]Probe data applied![/]");
-                    }
-                }
-
-                // Save the file path and directory for next time
-                session.LastLoadedGCodeFile = path;
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
                 {
                     session.LastBrowseDirectory = dir;
                 }
                 Persistence.SaveSession();
+
+                // LoadGCodeIntoMachine already decided what this load means for any
+                // height map in hand; this reports that decision.
+                string? whyDropped = AppState.LastDiscardedProbeReason;
+                if (whyDropped != null)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[{ColorWarning}]Discarded the height map - {Markup.Escape(whyDropped)}. " +
+                        $"Probe again before milling.[/]");
+                }
+
+                // Offer to apply probe data that genuinely belongs to this file
+                var probePoints = AppState.ProbePoints;
+                if (probePoints != null && probePoints.HasCompleteData)
+                {
+                    if (MenuHelpers.Confirm("Apply the existing height map to this file?", true))
+                    {
+                        if (AppState.ApplyProbeData())
+                        {
+                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Height map applied.[/]");
+                        }
+                        else
+                        {
+                            MenuHelpers.ShowError("Could not apply the height map.");
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {

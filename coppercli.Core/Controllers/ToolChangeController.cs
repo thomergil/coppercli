@@ -7,6 +7,7 @@ using coppercli.Core.Util;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.Controllers.ControllerConstants;
+using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Core.Controllers
 {
@@ -57,9 +58,9 @@ namespace coppercli.Core.Controllers
         private readonly object _phaseLock = new();
         private ToolChangeInfo? _currentToolChange;
 
-        // Session data (persisted across tool changes)
+        // Carried between tool changes within a run: the reference tool length the new
+        // tool is measured against, and the last tool-setter Z (for a fast approach).
         private double _referenceToolLength;
-        private bool _hasReferenceToolLength;
         private double _lastToolSetterZ;
 
         // Return position after tool change
@@ -128,28 +129,6 @@ namespace coppercli.Core.Controllers
         }
 
         // =========================================================================
-        // Session state management (for persistence)
-        // =========================================================================
-
-        /// <summary>
-        /// Set session state from persisted data.
-        /// </summary>
-        public void SetSessionState(double referenceToolLength, bool hasReferenceToolLength, double lastToolSetterZ)
-        {
-            _referenceToolLength = referenceToolLength;
-            _hasReferenceToolLength = hasReferenceToolLength;
-            _lastToolSetterZ = lastToolSetterZ;
-        }
-
-        /// <summary>
-        /// Get current session state for persistence.
-        /// </summary>
-        public (double ReferenceToolLength, bool HasReferenceToolLength, double LastToolSetterZ) GetSessionState()
-        {
-            return (_referenceToolLength, _hasReferenceToolLength, _lastToolSetterZ);
-        }
-
-        // =========================================================================
         // IToolChangeController implementation
         // =========================================================================
 
@@ -213,12 +192,17 @@ namespace coppercli.Core.Controllers
             }
             catch (OperationCanceledException)
             {
+                // HandleToolChangeAsync is a second entry point alongside StartAsync, so
+                // it has to run the same cleanup the base class would - otherwise an
+                // aborted tool change leaves the tool down at the tool setter.
+                await SafeCleanupAsync();
                 TransitionTo(ControllerState.Cancelled);
                 ControllerLog.Log(LogToolChangeAborted);
                 return false;
             }
             catch (Exception ex)
             {
+                await SafeCleanupAsync();
                 EmitError(ex);
                 TransitionTo(ControllerState.Failed);
                 return false;
@@ -249,11 +233,26 @@ namespace coppercli.Core.Controllers
             throw new NotImplementedException("Use HandleToolChangeAsync instead");
         }
 
+        /// <summary>
+        /// Retracts Z, never letting a cleanup failure mask the error that caused it.
+        /// </summary>
+        private async Task SafeCleanupAsync()
+        {
+            try
+            {
+                await CleanupAsync();
+            }
+            catch (Exception ex)
+            {
+                ControllerLog.Log("ToolChange cleanup failed: {0}", ex.Message);
+            }
+        }
+
         protected override async Task CleanupAsync()
         {
             // Raise Z to safe height
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
             await Task.Delay(CommandDelayMs);
         }
 
@@ -264,44 +263,38 @@ namespace coppercli.Core.Controllers
         private async Task RaiseZToClearanceAsync(CancellationToken ct)
         {
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
         }
 
         private async Task<bool> HandleWithToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
         {
-            // Always reset reference - user may have changed tool manually
-            _hasReferenceToolLength = false;
-            _referenceToolLength = 0;
+            // Always measure the reference tool: the user may have changed it manually
+            // between jobs, so a cached length cannot be trusted (which is also why it is
+            // not persisted across sessions).
+            Phase = ToolChangePhase.MovingToToolSetter;
+            await MoveToToolSetterAsync(setterPos, ct);
 
-            // Measure reference tool if needed
-            if (!_hasReferenceToolLength)
+            Phase = ToolChangePhase.MeasuringReference;
+            var refLength = await ProbeToolSetterAsync(ct);
+            if (refLength == null)
             {
-                Phase = ToolChangePhase.MovingToToolSetter;
-                await MoveToToolSetterAsync(setterPos, ct);
-
-                Phase = ToolChangePhase.MeasuringReference;
-                var refLength = await ProbeToolSetterAsync(ct);
-                if (refLength == null)
-                {
-                    EmitError(new ControllerError(LogToolChangeProbeFailed, null, true));
-                    return false;
-                }
-
-                _referenceToolLength = refLength.Value;
-                _hasReferenceToolLength = true;
-
-                // Raise Z after probing
-                Phase = ToolChangePhase.RaisingZ;
-                await RaiseZToClearanceAsync(ct);
+                EmitError(new ControllerError(LogToolChangeProbeFailed, null, true));
+                return false;
             }
+
+            _referenceToolLength = refLength.Value;
+
+            // Raise Z after probing
+            Phase = ToolChangePhase.RaisingZ;
+            await RaiseZToClearanceAsync(ct);
 
             // Move to work area center for tool swap
             Phase = ToolChangePhase.MovingToWorkArea;
             await MoveToWorkAreaCenterAsync(ct);
 
             // Prompt user to change tool
-            if (!await PromptForToolChangeAsync(ToolChangePromptWithSetter, ct))
+            if (!await PromptForToolChangeAsync(ToolChangePrompt, ct))
             {
                 return false;
             }
@@ -321,10 +314,20 @@ namespace coppercli.Core.Controllers
             // Calculate and apply offset
             Phase = ToolChangePhase.ApplyingOffset;
             double offset = newLength.Value - _referenceToolLength;
-            double currentWcoZ = _machine.MachinePosition.Z - _machine.WorkPosition.Z;
+            // One consistent read. Subtracting WorkPosition from MachinePosition reads
+            // Read G54 itself, not the combined WCO. WorkOffset is G54 + G92 + tool
+            // length offset, but the write below is G10 L2 P1, which sets G54 alone -
+            // so starting from the combined figure would re-datum Z by whatever the
+            // other two contribute, at every tool change.
+            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct))
+            {
+                throw new InvalidOperationException(ErrorWorkOffsetUnknown);
+            }
+
+            double currentWcoZ = _machine.G54Offset.Z;
             double newWcoZ = currentWcoZ + offset;
             ControllerLog.Log(LogToolChangeOffset, _referenceToolLength, newLength.Value, offset);
-            _machine.SendLine($"{CmdSetWorkOffset} Z{newWcoZ:F3}");
+            _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{newWcoZ:F3}"));
             await Task.Delay(CommandDelayMs, ct);
 
             // Return to original position
@@ -337,7 +340,7 @@ namespace coppercli.Core.Controllers
         private async Task<bool> HandleWithoutToolSetterAsync(CancellationToken ct)
         {
             // First prompt: change tool
-            if (!await PromptForToolChangeAsync(ToolChangePromptWithoutSetter, ct))
+            if (!await PromptForToolChangeAsync(ToolChangePrompt, ct))
             {
                 return false;
             }
@@ -409,10 +412,10 @@ namespace coppercli.Core.Controllers
 
         private async Task MoveToToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
         {
-            string cmd = $"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1}";
+            string cmd = Inv($"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1}");
             if (setterPos.Y.HasValue)
             {
-                cmd += $" Y{setterPos.Y.Value:F1}";
+                cmd += Inv($" Y{setterPos.Y.Value:F1}");
             }
             _machine.SendLine(cmd);
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
@@ -427,16 +430,16 @@ namespace coppercli.Core.Controllers
             double targetY = Options.WorkAreaCenter?.Y ?? _returnY;
 
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} X{targetX:F3} Y{targetY:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} X{targetX:F3} Y{targetY:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
         }
 
         private async Task ReturnToPositionAsync(CancellationToken ct)
         {
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
-            _machine.SendLine($"{CmdRapidMove} X{_returnX:F3} Y{_returnY:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} X{_returnX:F3} Y{_returnY:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
         }
 
@@ -457,7 +460,7 @@ namespace coppercli.Core.Controllers
             {
                 double approachZ = _lastToolSetterZ + ToolSetterApproachClearance;
                 _machine.SendLine(CmdAbsolute);
-                _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{approachZ:F3}");
+                _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{approachZ:F3}"));
                 await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
             }
 
@@ -472,7 +475,7 @@ namespace coppercli.Core.Controllers
 
             // Retract
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{seekZ + retract:F3}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{seekZ + retract:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
 
             // Slow precise probe
@@ -484,7 +487,7 @@ namespace coppercli.Core.Controllers
             }
 
             // Retract after probing
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{probeZ + retract:F3}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{probeZ + retract:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
 
             return probeZ;
@@ -505,10 +508,12 @@ namespace coppercli.Core.Controllers
             {
                 _machine.ProbeStart();
                 _machine.SendLine(CmdAbsolute);
-                _machine.SendLine($"{CmdProbeToward} Z{targetWorkZ:F3} F{feed:F1}");
+                _machine.SendLine(Inv($"{CmdProbeToward} Z{targetWorkZ:F3} F{feed:F1}"));
 
                 using var registration = ct.Register(() => tcs.TrySetCanceled());
-                return await tcs.Task;
+
+                return await MachineWait.AwaitReplyOrTimeoutAsync(
+                    tcs.Task, ProbeReplyTimeoutMs, ErrorProbeTimeout, ct);
             }
             finally
             {
@@ -519,7 +524,7 @@ namespace coppercli.Core.Controllers
 
         private async Task<(bool Success, double MachineZ)> ExecuteProbeToMachineZAsync(double targetMachineZ, double feed, CancellationToken ct)
         {
-            double wcoZ = _machine.MachinePosition.Z - _machine.WorkPosition.Z;
+            double wcoZ = _machine.WorkOffset.Z;
             double targetWorkZ = targetMachineZ - wcoZ;
             return await ExecuteProbeAsync(targetWorkZ, feed, ct);
         }

@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Threading;
+using System.Threading.Tasks;
 using coppercli.Core.Communication;
 using coppercli.Core.Util;
 using static coppercli.Core.Communication.Machine;
@@ -24,7 +26,22 @@ namespace coppercli.Tests.Fakes
         public Vector3 WorkPosition { get; set; } = new Vector3();
         public Vector3 MachinePosition { get; set; } = new Vector3();
         public Vector3 WorkOffset { get; set; } = new Vector3();
+        public Vector3 G54Offset { get; set; } = new Vector3();
+
+        /// <summary>Set false to simulate GRBL not answering $#.</summary>
+        public bool WorkOffsetQuerySucceeds { get; set; } = true;
+        public int WorkOffsetQueryCount { get; private set; }
+
+        public Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            WorkOffsetQueryCount++;
+            return Task.FromResult(WorkOffsetQuerySucceeds);
+        }
         public bool Connected { get; set; } = true;
+        public bool IsHomed { get; set; }
+        public bool IsHoming { get; set; }
+
+        public long StatusReportCount { get; set; }
 
         // =========================================================================
         // File state
@@ -60,10 +77,27 @@ namespace coppercli.Tests.Fakes
             SentCommands.Add(line);
         }
 
-        public void FileStart()
+        /// <summary>Set true to simulate a machine that will not begin streaming.</summary>
+        public bool RefuseFileStart { get; set; }
+
+        public bool FileStart()
         {
+            if (RefuseFileStart || Mode != OperatingMode.Manual)
+            {
+                return false;
+            }
+
             Mode = OperatingMode.SendFile;
             OperatingModeChanged?.Invoke();
+            return true;
+        }
+
+        public void EnsureManualMode()
+        {
+            if (Mode == OperatingMode.Probe)
+            {
+                Mode = OperatingMode.Manual;
+            }
         }
 
         public void FileGoto(int line)
@@ -116,6 +150,7 @@ namespace coppercli.Tests.Fakes
         public event Action<string>? StatusReceived;
         public event Action<Vector3, bool>? ProbeFinished;
         public event Action<string>? NonFatalException;
+        public event Action<GrblRejection>? CommandRejected;
         public event Action<string>? Info;
         public event Action? ConnectionStateChanged;
         public event Action? StatusChanged;
@@ -138,6 +173,7 @@ namespace coppercli.Tests.Fakes
         public void SimulateStatusChange(string newStatus)
         {
             Status = newStatus;
+            StatusReportCount++;
             StatusChanged?.Invoke();
             StatusReceived?.Invoke($"<{newStatus}|MPos:0,0,0|WPos:0,0,0>");
         }
@@ -153,6 +189,12 @@ namespace coppercli.Tests.Fakes
         public void SimulateProbeFinished(Vector3 position, bool success)
         {
             ProbeFinished?.Invoke(position, success);
+        }
+
+        /// <summary>Simulate GRBL refusing a command, the way a real controller does.</summary>
+        public void SimulateRejection(int code, string command, string description = "")
+        {
+            CommandRejected?.Invoke(new GrblRejection(code, command, description));
         }
 
         /// <summary>Simulate an error.</summary>

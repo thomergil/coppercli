@@ -94,6 +94,17 @@ Server mode runs both a TCP proxy and a web server, allowing remote access via e
 - **Port 34000**: Raw GRBL over TCP (for TUI clients using Network mode)
 - **Port 34001**: HTTP/WebSocket (for browser-based control)
 
+The **web UI** requires the access link printed when the server starts — it carries a token
+that is regenerated on every run. Open that link (or scan it) rather than typing the bare
+address; without the token the machine-control API and WebSocket refuse the request. That
+stops anyone else on the network, or a page you merely happen to be visiting, from driving
+the machine through the browser interface.
+
+> **The proxy on port 34000 has no such protection.** It is a raw GRBL bridge with no
+> authentication: anything that can reach that port can send arbitrary G-code to your
+> machine. Only open it on a network you trust, and prefer the firewall rule for 34001
+> alone if you just want the browser UI.
+
 ```bash
 # Start server mode
 coppercli --server
@@ -158,7 +169,7 @@ The URL reservation is required for the web server. Without it, you'll get "Acce
 
 ## A note on Claude Code and code quality
 
-This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot). I did much of this with Claude Code. As of the time of this writing (Feb, 2026), Claude Code quickly writes reasonable code. It does not maintain high code quality, write DRY code, or stick to clean coding patterns. I spent most of my time on this project pursuing clean code. All that said, this code is reasonably well tested but does not meet the code quality standards I'd hold myself to if writing it entirely by hand.
+This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot). I did much of this with Claude Code. As of the time of this writing (Aug, 2026), Claude Code, running Claude Opus 5, quickly writes reasonable code. It does not maintain high code quality, write DRY code, or stick to clean coding patterns. I spent most of my time on this project pursuing clean code. All that said, this code is reasonably well tested but does not meet the code quality standards I'd hold myself to if writing it entirely by hand.
 
 That brings me, semi-related, to:
 

@@ -53,8 +53,7 @@ namespace coppercli.Menus
             {
                 if (MenuHelpers.Confirm("Disconnect from machine?"))
                 {
-                    machine.Disconnect();
-                    AppState.IsWorkZeroSet = false;
+                    machine.Disconnect();  // AppState resets IsWorkZeroSet centrally on the disconnect event
                     AnsiConsole.MarkupLine($"[{ColorWarning}]{StatusDisconnected}[/]");
                 }
             }

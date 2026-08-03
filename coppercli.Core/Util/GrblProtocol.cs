@@ -16,6 +16,7 @@ namespace coppercli.Core.Util
         public const string ResponseAlarmPrefix = "ALARM";
         public const string ResponseGrblPrefix = "grbl";
         public const string ResponseTloPrefix = "[TLO:";
+        public const string ResponseG54Prefix = "[G54:";   // $# reports the G54 offset itself
 
         // =========================================================================
         // Status field names (in status report)
@@ -87,7 +88,7 @@ namespace coppercli.Core.Util
         // M-code and T-code patterns (for detection)
         // =========================================================================
         public const string M6Pattern = @"\bM0*6\b";           // M6 or M06 tool change command
-        public const string M0Pattern = @"\bM0{1,2}\b";        // M0 or M00 program pause (not M01 optional stop)
+        public const string M0Pattern = @"\bM0+\b";           // M0, M00, M000 - all program stop
         public const string TCodePattern = @"\bT(\d+)";        // T1, T01, T12 etc. - captures tool number
 
         // =========================================================================

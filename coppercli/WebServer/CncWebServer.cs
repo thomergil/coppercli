@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
 using System.Net.WebSockets;
@@ -24,6 +25,13 @@ namespace coppercli.WebServer;
 public static class CncWebServer
 {
     private static HttpListener? _listener;
+
+    /// <summary>
+    /// Per-run access token. This server can move a spinning cutter, and it listens on
+    /// every interface, so anything that changes machine state has to present it.
+    /// Regenerated each start - there is nothing to remember or revoke.
+    /// </summary>
+    private static string _accessToken = string.Empty;
     private static CancellationTokenSource? _cts;
     private static readonly List<WebSocket> _clients = new();
     private static readonly Dictionary<WebSocket, DateTime> _clientLastActivity = new();
@@ -34,6 +42,16 @@ public static class CncWebServer
     private const int WebSocketTimeoutMs = 30000;  // 30 seconds without activity = stale
     private const string ClientIdCookieName = "coppercli_client_id";
     private static Machine? _machine;
+
+    /// <summary>
+    /// True when a machine object exists and is connected. Single source of truth for the
+    /// "is the machine usable" guard shared across every web handler. The MemberNotNullWhen
+    /// attribute lets callers write <c>if (!MachineConnected) return;</c> and still have the
+    /// compiler treat <c>_machine</c> as non-null afterward.
+    /// </summary>
+    [MemberNotNullWhen(true, nameof(_machine))]
+    private static bool MachineConnected => _machine != null && _machine.Connected;
+
     private static string _serialPort = "";
     private static int _baudRate = Constants.DefaultBaudRate;
     private static bool _isReconnecting = false;
@@ -117,6 +135,7 @@ public static class CncWebServer
         _baudRate = baudRate;
         _machine = AppState.Machine;
         _cts = new CancellationTokenSource();
+        _accessToken = Guid.NewGuid().ToString("N");
 
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://+:{port}/");
@@ -151,13 +170,13 @@ public static class CncWebServer
                 AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
                 foreach (var ip in localIps)
                 {
-                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://{ip}:{port}[/]");
+                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://{ip}:{port}/?token={_accessToken}[/]");
                 }
             }
             else
             {
                 AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
-                AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://localhost:{port}[/]");
+                AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://localhost:{port}/?token={_accessToken}[/]");
             }
 
             AnsiConsole.WriteLine();
@@ -290,7 +309,7 @@ public static class CncWebServer
             clientCount = _clients.Count;
         }
 
-        if (clientCount > 0 || _machine == null || !_machine.Connected)
+        if (clientCount > 0 || !MachineConnected)
         {
             return;
         }
@@ -353,6 +372,14 @@ public static class CncWebServer
             // WebSocket upgrade
             if (request.IsWebSocketRequest && path == "/ws")
             {
+                if (!IsAuthorised(request))
+                {
+                    Logger.Log("Rejected unauthorised WebSocket upgrade from {0}", request.RemoteEndPoint);
+                    response.StatusCode = HttpStatusUnauthorized;
+                    response.Close();
+                    return;
+                }
+
                 await HandleWebSocket(context);
                 return;
             }
@@ -360,6 +387,14 @@ public static class CncWebServer
             // API endpoints
             if (path.StartsWith("/api/"))
             {
+                if (!IsAuthorised(request))
+                {
+                    Logger.Log("Rejected unauthorised {0} {1} from {2}", request.HttpMethod, path, request.RemoteEndPoint);
+                    response.StatusCode = HttpStatusUnauthorized;
+                    await WriteJson(response, new { error = ApiErrorUnauthorized });
+                    return;
+                }
+
                 await HandleApi(context, path);
                 return;
             }
@@ -373,6 +408,75 @@ public static class CncWebServer
             response.StatusCode = HttpStatusServerError;
             await WriteJson(response, new { error = ex.Message });
         }
+    }
+
+    /// <summary>
+    /// True if the caller presented this run's token and did not arrive from another
+    /// site. The token stops anyone else on the network; the Origin check stops a page
+    /// the operator is merely visiting from driving the machine in the background.
+    /// </summary>
+    private static bool IsAuthorised(HttpListenerRequest request)
+    {
+        if (!HasValidToken(request))
+        {
+            return false;
+        }
+
+        var origin = request.Headers["Origin"];
+
+        if (string.IsNullOrEmpty(origin))
+        {
+            // Not a browser cross-site request (curl, the TUI, a script).
+            return true;
+        }
+
+        return Uri.TryCreate(origin, UriKind.Absolute, out var originUri)
+               && request.Url != null
+               && string.Equals(originUri.Host, request.Url.Host, StringComparison.OrdinalIgnoreCase)
+               && originUri.Port == request.Url.Port;
+    }
+
+    private static bool HasValidToken(HttpListenerRequest request)
+    {
+        if (string.IsNullOrEmpty(_accessToken))
+        {
+            return false;
+        }
+
+        var header = request.Headers["Authorization"];
+
+        if (!string.IsNullOrEmpty(header) && header.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return FixedTimeEquals(header.Substring(BearerPrefix.Length).Trim(), _accessToken);
+        }
+
+        // The WebSocket upgrade and the first page load cannot set a header.
+        var queryToken = request.QueryString[QueryParamToken];
+
+        return !string.IsNullOrEmpty(queryToken) && FixedTimeEquals(queryToken, _accessToken);
+    }
+
+    /// <summary>Compares without leaking the answer through how long it took.</summary>
+    private static bool FixedTimeEquals(string a, string b)
+    {
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.UTF8.GetBytes(a),
+            System.Text.Encoding.UTF8.GetBytes(b));
+    }
+
+    /// <summary>True if <paramref name="candidate"/> resolves to somewhere inside
+    /// <paramref name="root"/>, after any ".." segments are collapsed.</summary>
+    private static bool IsContainedIn(string candidate, string root)
+    {
+        string fullCandidate = Path.GetFullPath(candidate);
+        string fullRoot = Path.GetFullPath(root);
+
+        if (!fullRoot.EndsWith(Path.DirectorySeparatorChar))
+        {
+            fullRoot += Path.DirectorySeparatorChar;
+        }
+
+        return fullCandidate.StartsWith(fullRoot, StringComparison.Ordinal);
     }
 
     private static async Task HandleApi(HttpListenerContext context, string path)
@@ -525,7 +629,7 @@ public static class CncWebServer
 
             // File browser
             case ApiFiles:
-                var fileBrowseDir = request.QueryString["path"];
+                var fileBrowseDir = request.QueryString[QueryParamPath];
                 if (string.IsNullOrEmpty(fileBrowseDir))
                 {
                     fileBrowseDir = AppState.Session.LastBrowseDirectory;
@@ -697,7 +801,9 @@ public static class CncWebServer
             case ApiProbeStop:
                 if (method == MethodPost)
                 {
-                    HandleProbeStop();
+                    // Awaited: the previous fire-and-forget told the operator the machine
+                    // had stopped while it was still moving.
+                    await HandleProbeStop();
                     await WriteJson(response, new { success = true });
                 }
                 break;
@@ -738,7 +844,7 @@ public static class CncWebServer
                 break;
 
             case ApiProbeFiles:
-                var probeDir = request.QueryString["path"];
+                var probeDir = request.QueryString[QueryParamPath];
                 if (string.IsNullOrEmpty(probeDir))
                 {
                     probeDir = AppState.Session.LastProbeBrowseDirectory;
@@ -765,12 +871,6 @@ public static class CncWebServer
                 break;
 
             // Tool change
-            case ApiMillToolChangeContinue:
-                if (method == MethodPost)
-                {
-                    await HandleToolChangeContinue(response);
-                }
-                break;
 
             case ApiMillToolChangeAbort:
                 if (method == MethodPost)
@@ -807,8 +907,8 @@ public static class CncWebServer
             case ApiMillGrid:
                 {
                     // Get grid dimensions from query params (client-specified based on screen size)
-                    var widthParam = request.QueryString["width"];
-                    var heightParam = request.QueryString["height"];
+                    var widthParam = request.QueryString[QueryParamWidth];
+                    var heightParam = request.QueryString[QueryParamHeight];
                     int width = WebMillGridDefaultWidth;
                     int height = WebMillGridDefaultHeight;
                     if (!string.IsNullOrEmpty(widthParam))
@@ -849,6 +949,37 @@ public static class CncWebServer
 
             case ApiProfiles:
                 await WriteJson(response, GetMachineProfiles());
+                break;
+
+            case ApiSessionRestore:
+                if (method == MethodGet)
+                {
+                    await WriteJson(response, new
+                    {
+                        steps = SessionRestore.GetPendingSteps().Select(step => new
+                        {
+                            topic = step.Topic.ToString(),
+                            question = step.Question,
+                            detail = step.Detail,
+                            defaultYes = step.DefaultYes
+                        })
+                    });
+                }
+                else if (method == MethodPost)
+                {
+                    var answer = JsonSerializer.Deserialize<SessionRestoreAnswerRequest>(await ReadBody(request));
+
+                    if (answer?.topic == null
+                        || !Enum.TryParse<SessionRestoreTopic>(answer.topic, out var topic))
+                    {
+                        response.StatusCode = HttpStatusBadRequest;
+                        await WriteJson(response, new { error = ErrorInvalidRequest });
+                        break;
+                    }
+
+                    SessionRestore.Answer(topic, answer.yes ?? false);
+                    await WriteJson(response, new { success = true });
+                }
                 break;
 
             case ApiTrustWorkZero:
@@ -931,7 +1062,7 @@ public static class CncWebServer
             millingPhase = controllerPhase.ToString(),
             controllerState = controllerState.ToString(),
             cuttingPathCount = controller.CuttingPath.Count,  // Client uses this to know when to fetch grid
-            probing = AppState.Probing,
+            probing = AppState.IsProbing,
             toolChange = toolChange,
             depthAdjustment = AppState.DepthAdjustment,
             buttons = GetButtonStates(_machine.Connected),
@@ -1005,10 +1136,7 @@ public static class CncWebServer
 
     private static object? GetProbeStatusBrief()
     {
-        var grid = AppState.ProbePoints;
-        var autosaveState = Persistence.GetProbeState();
-        string state = ComputeProbeState(grid);
-        bool hasUnsavedData = autosaveState != Persistence.ProbeState.None;
+        var (grid, state, hasUnsavedData) = ReadProbeStateSnapshot();
 
         if (grid == null)
         {
@@ -1024,7 +1152,7 @@ public static class CncWebServer
 
         return new
         {
-            active = AppState.Probing,
+            active = AppState.IsProbing,
             hasUnsavedData,
             progress = grid.Progress,
             total = grid.TotalPoints,
@@ -1342,7 +1470,7 @@ public static class CncWebServer
     /// </summary>
     private static void HandleJogWithMode(string? axisStr, int direction, int modeIndex)
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
@@ -1387,33 +1515,36 @@ public static class CncWebServer
     {
         Logger.Log($"HandleZero called: axes={string.Join(",", req?.axes ?? Array.Empty<string>())}, retract={req?.retract}");
 
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             Logger.Log("HandleZero: machine null or not connected, returning");
             return;
         }
 
-        var axes = req?.axes ?? new[] { "X", "Y", "Z" };
-        var axesUpper = axes.Select(a => a.ToUpperInvariant()).ToArray();
+        var requested = req?.axes ?? new[] { "X", "Y", "Z" };
+
+        // Whitelist, the way HandleJogWithMode already does. These strings are
+        // interpolated into a G-code line, so anything not X/Y/Z - a newline especially -
+        // would append commands of the caller's choosing to the one we meant to send.
+        var axesUpper = requested
+            .Where(a => a != null)
+            .Select(a => a.Trim().ToUpperInvariant())
+            .Where(a => a == "X" || a == "Y" || a == "Z")
+            .Distinct()
+            .ToArray();
+
+        if (axesUpper.Length == 0)
+        {
+            Logger.Log("HandleZero: refused, no valid axis in request");
+            return;
+        }
+
         var axesStr = string.Join(" ", axesUpper.Select(a => $"{a}0"));
         Logger.Log($"HandleZero: axes={axesStr} workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3}) machPos=({_machine.MachinePosition.X:F3},{_machine.MachinePosition.Y:F3},{_machine.MachinePosition.Z:F3})");
 
         // SetWorkZeroAndWait handles probe grid state (re-applies if Z-only, discards if XY)
         MachineCommands.SetWorkZeroAndWait(_machine, axesStr);
         Logger.Log($"HandleZero: after zero workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3})");
-
-        // If zeroing all axes, save to session
-        if (axes.Length == 3 || (axes.Contains("X") && axes.Contains("Y") && axes.Contains("Z")))
-        {
-            var session = AppState.Session;
-            var pos = _machine.WorkPosition;
-            session.WorkZeroX = pos.X;
-            session.WorkZeroY = pos.Y;
-            session.WorkZeroZ = pos.Z;
-            session.HasStoredWorkZero = true;
-            Persistence.SaveSession();
-            Logger.Log($"HandleZero: saved session with work zero at {pos.X}, {pos.Y}, {pos.Z}");
-        }
 
         // Retract to safe height after zeroing Z or all axes (matches TUI behavior)
         bool includesZ = axesUpper.Contains("Z");
@@ -1435,50 +1566,28 @@ public static class CncWebServer
 
     private static void HandleGotoOrigin()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
-            return;
-        }
-
-        // Block X/Y movement when probe is in contact
-        if (_machine.PinStateProbe)
-        {
-            Logger.Log("Blocked goto origin: probe in contact");
             return;
         }
 
         // Move to X0 Y0 (does NOT change Z - matches TUI behavior)
-        MachineCommands.SetAbsoluteMode(_machine);
-        MachineCommands.RapidMoveXY(_machine, 0, 0);
+        MachineCommands.GotoWorkOriginXY(_machine);
     }
 
     private static void HandleGotoCenter()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
 
-        // Block X/Y movement when probe is in contact
-        if (_machine.PinStateProbe)
-        {
-            Logger.Log("Blocked goto center: probe in contact");
-            return;
-        }
-
-        var currentFile = AppState.CurrentFile;
-        if (currentFile != null)
-        {
-            double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
-            double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
-            MachineCommands.SetAbsoluteMode(_machine);
-            MachineCommands.RapidMoveXY(_machine, centerX, centerY);
-        }
+        MachineCommands.GotoFileCenterXY(_machine, AppState.CurrentFile);
     }
 
     private static void HandleGotoSafeHeight()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
@@ -1489,7 +1598,7 @@ public static class CncWebServer
 
     private static void HandleGotoRefHeight()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
@@ -1500,7 +1609,7 @@ public static class CncWebServer
 
     private static void HandleGotoZ0()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
@@ -1511,7 +1620,7 @@ public static class CncWebServer
 
     private static void HandleProbeZSingle()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             return;
         }
@@ -1520,11 +1629,7 @@ public static class CncWebServer
         var controller = AppState.Probe;
 
         // Configure probe options
-        controller.Options = new ProbeOptions
-        {
-            MaxDepth = settings.ProbeMaxDepth,
-            ProbeFeed = settings.ProbeFeed
-        };
+        controller.Options = ProbeOptions.FromSettings(settings);
 
         // Run probe and handle result
         _ = Task.Run(async () =>
@@ -1681,7 +1786,27 @@ public static class CncWebServer
                 "coppercli-uploads");
             Directory.CreateDirectory(uploadsDir);
 
+            // Take only the leaf name: the header value may contain directory
+            // separators or be rooted, and Path.Combine discards its first argument
+            // entirely when the second is rooted.
+            fileName = Path.GetFileName(fileName);
+
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                response.StatusCode = HttpStatusBadRequest;
+                await WriteJson(response, new { error = ErrorInvalidRequest });
+                return;
+            }
+
             var savePath = Path.Combine(uploadsDir, fileName);
+
+            if (!IsContainedIn(savePath, uploadsDir))
+            {
+                Logger.Log("Upload refused: {0} escapes the uploads directory", savePath);
+                response.StatusCode = HttpStatusBadRequest;
+                await WriteJson(response, new { error = ErrorInvalidRequest });
+                return;
+            }
 
             // Handle duplicate names
             var baseName = Path.GetFileNameWithoutExtension(fileName);
@@ -1700,22 +1825,7 @@ public static class CncWebServer
             AppState.Session.LastLoadedGCodeFile = savePath;
             AppState.Session.LastBrowseDirectory = uploadsDir;
 
-            await WriteJson(response, new
-            {
-                success = true,
-                name = Path.GetFileName(savePath),
-                path = savePath,
-                lines = file.Toolpath.Count,
-                bounds = new
-                {
-                    minX = file.Min.X,
-                    minY = file.Min.Y,
-                    minZ = file.Min.Z,
-                    maxX = file.Max.X,
-                    maxY = file.Max.Y,
-                    maxZ = file.Max.Z
-                }
-            });
+            await WriteJson(response, FileSummary(file));
         }
         catch (Exception ex)
         {
@@ -1758,23 +1868,7 @@ public static class CncWebServer
             AppState.Session.LastLoadedGCodeFile = req.path;
             AppState.Session.LastBrowseDirectory = Path.GetDirectoryName(req.path);
 
-            await WriteJson(response, new
-            {
-                success = true,
-                name = Path.GetFileName(req.path),
-                lines = file.Toolpath.Count,
-                bounds = new
-                {
-                    minX = file.Min.X,
-                    minY = file.Min.Y,
-                    minZ = file.Min.Z,
-                    maxX = file.Max.X,
-                    maxY = file.Max.Y,
-                    maxZ = file.Max.Z
-                },
-                travelDistance = file.TravelDistance,
-                estimatedTime = file.TotalTime.TotalMinutes
-            });
+            await WriteJson(response, FileSummary(file));
         }
         catch (Exception ex)
         {
@@ -1782,6 +1876,30 @@ public static class CncWebServer
             await WriteJson(response, new { error = ex.Message });
         }
     }
+
+    /// <summary>
+    /// Single serialization of a loaded G-code file, shared by every file-related web
+    /// response (upload, load, status). Keeps the wire shape identical across endpoints so
+    /// the client sees one contract instead of three hand-copied anonymous objects.
+    /// </summary>
+    private static object FileSummary(GCodeFile file) => new
+    {
+        success = true,
+        name = file.FileName,
+        path = file.FilePath,
+        lines = file.Toolpath.Count,
+        bounds = new
+        {
+            minX = file.Min.X,
+            minY = file.Min.Y,
+            minZ = file.Min.Z,
+            maxX = file.Max.X,
+            maxY = file.Max.Y,
+            maxZ = file.Max.Z
+        },
+        travelDistance = file.TravelDistance,
+        estimatedTime = file.TotalTime.TotalMinutes
+    };
 
     private static object? GetFileInfo()
     {
@@ -1791,24 +1909,37 @@ public static class CncWebServer
             return null;
         }
 
-        return new
-        {
-            name = Path.GetFileName(file.FileName),
-            path = file.FileName,
-            lines = file.Toolpath.Count,
-            bounds = new
-            {
-                minX = file.Min.X,
-                minY = file.Min.Y,
-                minZ = file.Min.Z,
-                maxX = file.Max.X,
-                maxY = file.Max.Y,
-                maxZ = file.Max.Z
-            },
-            travelDistance = file.TravelDistance,
-            estimatedTime = file.TotalTime.TotalMinutes
-        };
+        return FileSummary(file);
     }
+
+    /// <summary>
+    /// Removes pending web clients whose handshake window (<see cref="PendingClientTimeoutMs"/>)
+    /// has elapsed. Caller MUST hold <see cref="_clientsLock"/>; the purge runs as part of the
+    /// caller's existing critical section.
+    /// </summary>
+    private static void PurgeExpiredPendingClients()
+    {
+        var expired = _pendingClients
+            .Where(kvp => (DateTime.Now - kvp.Value).TotalMilliseconds > PendingClientTimeoutMs)
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var key in expired)
+        {
+            _pendingClients.Remove(key);
+        }
+    }
+
+    /// <summary>Turns a preflight failure into the sentence the operator sees.</summary>
+    private static string DescribePreflightError(MillPreflightResult result) => result.Error switch
+    {
+        MillPreflightError.NotConnected => PreflightErrorNotConnected,
+        MillPreflightError.NoFile => PreflightErrorNoFile,
+        MillPreflightError.ProbeNotApplied => PreflightErrorProbeNotApplied,
+        MillPreflightError.ProbeSetupChanged => PreflightErrorProbeSetupChanged,
+        MillPreflightError.ProbeIncomplete => string.Format(PreflightErrorProbeIncomplete, result.ProbeProgress),
+        MillPreflightError.AlarmState => PreflightErrorAlarm,
+        _ => PreflightErrorUnknown
+    };
 
     private static object HandleMillPreflight()
     {
@@ -1819,16 +1950,7 @@ public static class CncWebServer
         // Map error code to API error message
         if (result.Error != MillPreflightError.None)
         {
-            string errorMsg = result.Error switch
-            {
-                MillPreflightError.NotConnected => PreflightErrorNotConnected,
-                MillPreflightError.NoFile => PreflightErrorNoFile,
-                MillPreflightError.ProbeNotApplied => PreflightErrorProbeNotApplied,
-                MillPreflightError.ProbeIncomplete => string.Format(PreflightErrorProbeIncomplete, result.ProbeProgress),
-                MillPreflightError.AlarmState => PreflightErrorAlarm,
-                _ => PreflightErrorUnknown
-            };
-            errors.Add(errorMsg);
+            errors.Add(DescribePreflightError(result));
         }
 
         // Map warnings to API warning messages
@@ -1857,8 +1979,25 @@ public static class CncWebServer
 
     private static void HandleMillStart()
     {
-        if (_machine == null || !_machine.Connected || AppState.CurrentFile == null)
+        if (!MachineConnected || AppState.CurrentFile == null)
         {
+            return;
+        }
+
+        // === SAFETY PREFLIGHT ===
+        // The same gate the TUI enforces (MillMenu). /api/mill/preflight only reports
+        // this to the browser; enforcing it here too means a direct POST cannot start a
+        // job with an incomplete or unapplied height map, which would cut a warped board
+        // at a depth nobody checked.
+        var preflight = MenuHelpers.ValidateMillPreflight();
+        if (!preflight.CanStart)
+        {
+            Logger.Log("Mill start refused by preflight: {0}", preflight.Error);
+            BroadcastMessage(WsMessageTypeMillError, new
+            {
+                message = DescribePreflightError(preflight),
+                isFatal = true
+            });
             return;
         }
 
@@ -1866,7 +2005,12 @@ public static class CncWebServer
         // Clear Door state, wait for Idle
         if (!MachineCommands.EnsureMachineReady(_machine))
         {
-            Logger.Log("Mill start aborted: machine not ready (Alarm state)");
+            Logger.Log("Mill start aborted: machine did not reach a settled, alarm-free state");
+            BroadcastMessage(WsMessageTypeMillError, new
+            {
+                message = CliConstants.ErrorMachineNotReady,
+                isFatal = true
+            });
             return;
         }
 
@@ -1948,13 +2092,10 @@ public static class CncWebServer
         controller.ToolChangeDetected += onToolChange;
         controller.ErrorOccurred += onError;
 
-        // Configure controller
-        controller.Options = new MillingOptions
-        {
-            FilePath = AppState.CurrentFile?.FileName,
-            DepthAdjustment = (float)AppState.DepthAdjustment,
-            RequireHoming = !_machine!.IsHomed,
-        };
+        // Configure controller. The web UI has no per-start depth confirmation (the TUI does);
+        // the server-side preflight gate above is what protects a web-initiated start.
+        controller.Options = MillingOptions.Create(AppState.CurrentFile?.FileName,
+            (float)AppState.DepthAdjustment, _machine!.IsHomed);
 
         Logger.Log("Starting milling controller: RequireHoming={0}, DepthAdjustment={1:F3}",
             controller.Options.RequireHoming, controller.Options.DepthAdjustment);
@@ -2082,7 +2223,7 @@ public static class CncWebServer
 
     private static async Task HandleProbeTraceOutlineAsync(CancellationToken ct)
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             Logger.Log($"HandleProbeTraceOutline: skipping (machine={_machine != null}, connected={_machine?.Connected})");
             return;
@@ -2106,11 +2247,7 @@ public static class CncWebServer
 
         // Configure controller with grid and trace options
         controller.LoadGrid(grid);
-        controller.Options = new ProbeOptions
-        {
-            TraceHeight = settings.OutlineTraceHeight,
-            TraceFeed = settings.OutlineTraceFeed
-        };
+        controller.Options = ProbeOptions.FromSettings(settings, traceOutline: true);
 
         void OnTraceError(ControllerError error)
         {
@@ -2136,7 +2273,7 @@ public static class CncWebServer
 
     private static void HandleProbeStart()
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             Logger.Log($"HandleProbeStart: skipping (machine={_machine != null}, connected={_machine?.Connected})");
             return;
@@ -2157,20 +2294,9 @@ public static class CncWebServer
 
         Logger.Log($"HandleProbeStart: starting grid probe {grid.SizeX}x{grid.SizeY} = {grid.TotalPoints} points");
 
-        // Set probing flag so WebSocket status reflects active state
-        AppState.Probing = true;
-
         // Configure controller options
-        controller.Options = new ProbeOptions
-        {
-            SafeHeight = settings.ProbeSafeHeight,
-            MaxDepth = settings.ProbeMaxDepth,
-            ProbeFeed = settings.ProbeFeed,
-            MinimumHeight = settings.ProbeMinimumHeight,
-            AbortOnFail = settings.AbortOnProbeFail,
-            XAxisWeight = settings.ProbeXAxisWeight,
-            TraceOutline = false  // Web UI doesn't support outline tracing yet
-        };
+        // Web grid probe uses the same full settings mapping as the TUI.
+        controller.Options = ProbeOptions.FromSettings(settings, traceOutline: false);
 
         // Load the grid into controller (same object reference - updates in place)
         controller.LoadGrid(grid);
@@ -2209,7 +2335,6 @@ public static class CncWebServer
             }
             finally
             {
-                AppState.Probing = false;
                 controller.PointCompleted -= OnProbePointCompleted;
                 controller.ErrorOccurred -= OnProbeError;
                 controller.Reset();
@@ -2237,11 +2362,13 @@ public static class CncWebServer
         Logger.Log($"Probe error: {error.Message}");
     }
 
-    private static async void HandleProbeStop()
+    /// <summary>
+    /// Stops probing. Returns a Task rather than being async void: an exception from an
+    /// async void method is rethrown on the thread pool and terminates the process -
+    /// while the machine is still moving.
+    /// </summary>
+    private static async Task HandleProbeStop()
     {
-        // Clear probing flag immediately so status reflects stopped state
-        AppState.Probing = false;
-
         // Cancel both trace and probe operations first
         _traceCts?.Cancel();
         _probeCts?.Cancel();
@@ -2284,18 +2411,8 @@ public static class CncWebServer
         // Auto-load from autosave if grid not in memory but autosave exists
         AppState.EnsureProbeDataLoaded();
 
-        var grid = AppState.ProbePoints;
-        var autosaveState = Persistence.GetProbeState();
-
-        // 4-state model based on in-memory grid progress:
-        //   none: no grid
-        //   ready: grid exists, progress=0
-        //   partial: 0 < progress < total
-        //   complete: progress = total
-        string state = ComputeProbeState(grid);
-
-        // hasUnsavedData = autosave exists (determines Save vs Clear button)
-        bool hasUnsavedData = autosaveState != Persistence.ProbeState.None;
+        // state = 4-state model (none/ready/partial/complete); hasUnsavedData = autosave exists.
+        var (grid, state, hasUnsavedData) = ReadProbeStateSnapshot();
 
         if (grid == null)
         {
@@ -2310,9 +2427,7 @@ public static class CncWebServer
         // Check if controller is running (include Paused so UI stays in probe progress mode)
         var controller = AppState.Probe;
         var controllerState = controller.State;
-        bool isActive = controllerState == ControllerState.Initializing ||
-                        controllerState == ControllerState.Running ||
-                        controllerState == ControllerState.Paused;
+        bool isActive = AppState.Probe.IsActive;
         bool isPaused = controllerState == ControllerState.Paused;
 
         return new
@@ -2332,13 +2447,24 @@ public static class CncWebServer
         };
     }
 
+    /// <summary>
+    /// The values every probe-status response derives from the current grid, computed once
+    /// so the brief and full status builders can never disagree on state or unsaved-data.
+    /// </summary>
+    private static (ProbeGrid? grid, string state, bool hasUnsavedData) ReadProbeStateSnapshot()
+    {
+        var grid = AppState.ProbePoints;
+        bool hasUnsavedData = Persistence.GetProbeState() != Persistence.ProbeState.None;
+        return (grid, ComputeProbeState(grid), hasUnsavedData);
+    }
+
     private static string ComputeProbeState(ProbeGrid? grid)
     {
         if (grid == null)
         {
             return ProbeStateNone;
         }
-        if (grid.NotProbed.Count == 0)
+        if (grid.HasCompleteData)
         {
             return ProbeStateComplete;
         }
@@ -2370,21 +2496,14 @@ public static class CncWebServer
 
         // Extract client ID from query string (e.g., /ws?clientId=abc123)
         var query = context.Request.QueryString;
-        clientId = query["clientId"];
+        clientId = query[QueryParamClientId];
 
         // Check if another client is already connected (web or TUI via proxy)
         bool hasOtherClient = false;
         lock (_clientsLock)
         {
             // Clean up expired pending clients first
-            var expiredPending = _pendingClients
-                .Where(kvp => (DateTime.Now - kvp.Value).TotalMilliseconds > PendingClientTimeoutMs)
-                .Select(kvp => kvp.Key)
-                .ToList();
-            foreach (var expired in expiredPending)
-            {
-                _pendingClients.Remove(expired);
-            }
+            PurgeExpiredPendingClients();
 
             // Count other web clients (different clientId)
             int otherClients = _clientIds.Count(kvp => kvp.Value != clientId);
@@ -2920,14 +3039,7 @@ public static class CncWebServer
             lock (_clientsLock)
             {
                 // Clean up expired pending clients
-                var expiredPending = _pendingClients
-                    .Where(kvp => (DateTime.Now - kvp.Value).TotalMilliseconds > PendingClientTimeoutMs)
-                    .Select(kvp => kvp.Key)
-                    .ToList();
-                foreach (var expired in expiredPending)
-                {
-                    _pendingClients.Remove(expired);
-                }
+                PurgeExpiredPendingClients();
 
                 int totalClients = _clients.Count;
                 int totalClientIds = _clientIds.Count;
@@ -3092,6 +3204,12 @@ public static class CncWebServer
         public double? toolSetterY { get; init; }
     }
 
+    private record SessionRestoreAnswerRequest
+    {
+        public string? topic { get; init; }
+        public bool? yes { get; init; }
+    }
+
     private record DepthAdjustmentRequest
     {
         public double? depth { get; init; }
@@ -3107,7 +3225,7 @@ public static class CncWebServer
     {
         var probePoints = AppState.ProbePoints;
 
-        if (probePoints == null || probePoints.NotProbed.Count > 0)
+        if (probePoints == null || !probePoints.HasCompleteData)
         {
             response.StatusCode = HttpStatusBadRequest;
             await WriteJson(response, new { error = ErrorNoCompleteProbeData });
@@ -3187,17 +3305,9 @@ public static class CncWebServer
                 return;
             }
 
-            // If probe data was already applied, reload original G-code first
-            if (AppState.AreProbePointsApplied && !string.IsNullOrEmpty(AppState.Session.LastLoadedGCodeFile) &&
-                File.Exists(AppState.Session.LastLoadedGCodeFile))
-            {
-                var originalFile = GCodeFile.Load(AppState.Session.LastLoadedGCodeFile);
-                AppState.LoadGCodeIntoMachine(originalFile);
-                Logger.Log("HandleProbeLoad: Reloaded G-code before loading new probe");
-            }
-
-            AppState.ProbePoints = ProbeGrid.Load(path);
-            AppState.ResetProbeApplicationState();
+            // Single source for the load ritual (reloads original G-code first if a grid was
+            // already applied, so this grid is not applied on top of the old one).
+            var grid = AppState.LoadProbeGridFromFile(path);
 
             // Don't copy to autosave - loaded data is already saved (came from a file).
             // Autosave is only for data from active probing that hasn't been saved yet.
@@ -3205,7 +3315,7 @@ public static class CncWebServer
             Persistence.ClearProbeAutoSave();
 
             // Auto-apply if probe is complete
-            var complete = AppState.ProbePoints.NotProbed.Count == 0;
+            bool complete = grid.HasCompleteData;
             if (complete)
             {
                 AppState.ApplyProbeData();
@@ -3219,7 +3329,6 @@ public static class CncWebServer
             }
             Persistence.SaveSession();
 
-            var grid = AppState.ProbePoints;
             await WriteJson(response, new
             {
                 success = true,
@@ -3336,7 +3445,7 @@ public static class CncWebServer
     /// </summary>
     private static async Task StartToolChangeControllerAsync(ToolChangeInfo info, MillingController millingController)
     {
-        if (_machine == null || !_machine.Connected)
+        if (!MachineConnected)
         {
             Logger.Log("StartToolChangeControllerAsync: machine not connected");
             return;
@@ -3356,18 +3465,7 @@ public static class CncWebServer
         // Set options from user settings and file bounds
         var settings = AppState.Settings;
         var currentFile = AppState.CurrentFile;
-        toolChangeController.Options = new ToolChangeOptions
-        {
-            ProbeMaxDepth = settings.ProbeMaxDepth,
-            ProbeFeed = settings.ProbeFeed,
-            RetractHeight = Constants.RetractZMm,
-            WorkAreaCenter = currentFile != null && currentFile.ContainsMotion
-                ? new Vector3(
-                    (currentFile.Min.X + currentFile.Max.X) / 2,
-                    (currentFile.Min.Y + currentFile.Max.Y) / 2,
-                    0)
-                : null
-        };
+        toolChangeController.Options = ToolChangeOptions.FromSettings(settings, currentFile);
 
         // Start tool change controller workflow
         _toolChangeCts = new CancellationTokenSource();
@@ -3454,36 +3552,6 @@ public static class CncWebServer
         }
     }
 
-    /// <summary>
-    /// Handle tool change continue (DEPRECATED - tool change now auto-starts).
-    /// Kept for backward compatibility - returns status of current tool change.
-    /// </summary>
-    private static async Task HandleToolChangeContinue(HttpListenerResponse response)
-    {
-        var toolChangeController = AppState.ToolChange;
-
-        // Check if tool change is in progress
-        bool isActive = toolChangeController.State != ControllerState.Idle &&
-                        toolChangeController.State != ControllerState.Completed &&
-                        toolChangeController.State != ControllerState.Failed &&
-                        toolChangeController.State != ControllerState.Cancelled;
-
-        if (!isActive)
-        {
-            response.StatusCode = HttpStatusBadRequest;
-            await WriteJson(response, new { error = ErrorNoToolChangeInProgress });
-            return;
-        }
-
-        // Tool change is already running (auto-started) - return status
-        await WriteJson(response, new
-        {
-            success = true,
-            message = "Tool change already in progress (auto-started)",
-            usingToolSetter = toolChangeController.HasToolSetter,
-            phase = toolChangeController.Phase.ToString()
-        });
-    }
 
     /// <summary>
     /// Handle user input response during tool change workflow.
@@ -3713,7 +3781,7 @@ public static class CncWebServer
                 total = grid.TotalPoints,
                 sizeX = grid.SizeX,
                 sizeY = grid.SizeY,
-                complete = grid.NotProbed.Count == 0,
+                complete = grid.HasCompleteData,
                 sourceGCodeLoaded = AppState.CurrentFile != null
             });
         }

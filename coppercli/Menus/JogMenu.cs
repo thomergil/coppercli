@@ -2,6 +2,7 @@
 
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using coppercli.Helpers;
 using Spectre.Console;
@@ -409,16 +410,6 @@ namespace coppercli.Menus
                 // SetWorkZeroAndWait discards probe data when XY is zeroed
                 MachineCommands.SetWorkZeroAndWait(machine, "X0 Y0 Z0");
 
-                // Store work zero in session
-                var session = AppState.Session;
-                var pos = machine.WorkPosition;
-                session.WorkZeroX = pos.X;
-                session.WorkZeroY = pos.Y;
-                session.WorkZeroZ = pos.Z;
-                session.HasStoredWorkZero = true;
-                Persistence.SaveSession();
-                Logger.Log($"JogMenu: Work zero saved at ({pos.X}, {pos.Y}, {pos.Z})");
-
                 ShowOverlayTimed("All axes zeroed", ConfirmationDisplayMs);
                 MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
                 return false; // Exit after zeroing
@@ -440,30 +431,12 @@ namespace coppercli.Menus
             }
             if (key.KeyChar == '.')
             {
-                // Block X/Y movement when probe is in contact
-                if (machine.PinStateProbe)
-                {
-                    return true;
-                }
-                MachineCommands.SetAbsoluteMode(machine);
-                MachineCommands.RapidMoveXY(machine, 0, 0);
+                MachineCommands.GotoWorkOriginXY(machine);
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.C))
             {
-                // Block X/Y movement when probe is in contact
-                if (machine.PinStateProbe)
-                {
-                    return true;
-                }
-                var currentFile = AppState.CurrentFile;
-                if (currentFile != null)
-                {
-                    double centerX = (currentFile.Min.X + currentFile.Max.X) / 2;
-                    double centerY = (currentFile.Min.Y + currentFile.Max.Y) / 2;
-                    MachineCommands.SetAbsoluteMode(machine);
-                    MachineCommands.RapidMoveXY(machine, centerX, centerY);
-                }
+                MachineCommands.GotoFileCenterXY(machine, AppState.CurrentFile);
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.P))
@@ -532,15 +505,27 @@ namespace coppercli.Menus
         /// </summary>
         private static bool ConfirmZeroWithProbeData(string axisDescription)
         {
-            var probeState = Persistence.GetProbeState();
-            if (probeState == Persistence.ProbeState.None)
+            // Only a map that describes the job in hand is worth warning about. The
+            // warning used to fire for any leftover file on disk, including one measured
+            // on another board - which is not the operator's data to lose.
+            if (AppState.ProbePoints == null
+                || AppState.GetProbeApplicability() != ProbeApplicability.Applicable)
             {
-                return true; // No probe data, proceed
+                return true;
             }
 
-            var stateDesc = probeState == Persistence.ProbeState.Partial ? "partial" : "complete";
+            var probeState = Persistence.GetProbeState();
+            string what = probeState == Persistence.ProbeState.Partial
+                ? "an unfinished height map"
+                : "a height map";
+
+            // Say what actually happens: it is deleted, including the saved copy, and
+            // re-probing is the longest part of the job. And say what does not cost
+            // anything, because the operator may only need Z.
             return MenuHelpers.Confirm(
-                $"You have {stateDesc} probe data. Zeroing {axisDescription} will invalidate it. Continue?",
+                $"You have {what} for this board. It was measured from the current X/Y origin, " +
+                $"so zeroing {axisDescription} discards it - including the saved copy - and you " +
+                $"will need to probe again. Zeroing only Z keeps it. Continue?",
                 false);
         }
 

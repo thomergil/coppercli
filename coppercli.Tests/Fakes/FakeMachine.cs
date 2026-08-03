@@ -71,10 +71,14 @@ namespace coppercli.Tests.Fakes
             private set { lock (_stateLock) _machinePosition = value; }
         }
 
+        /// <summary>
+        /// The combined work offset, as GRBL reports it in a status line: G54 plus any
+        /// G92 or tool-length offset. Derived, so it is never accidentally identical to
+        /// G54 - the distinction is the whole point of tracking both.
+        /// </summary>
         public Vector3 WorkOffset
         {
-            get { lock (_stateLock) return _workOffset; }
-            private set { lock (_stateLock) _workOffset = value; }
+            get { lock (_stateLock) return _workOffset + ExtraOffset; }
         }
 
         public Vector3 WorkPosition => MachinePosition - WorkOffset;
@@ -101,6 +105,22 @@ namespace coppercli.Tests.Fakes
             set { lock (_stateLock) _isHoming = value; }
         }
 
+        private long _statusReportCount;
+        public long StatusReportCount => Interlocked.Read(ref _statusReportCount);
+
+        // Tracked separately from WorkOffset on purpose: collapsing the two would make
+        // the G54-vs-combined-WCO distinction untestable, which is the bug this models.
+        public Vector3 G54Offset { get; private set; } = new Vector3();
+
+        /// <summary>Simulates a live G92 or tool-length offset, so WorkOffset and G54
+        /// differ the way they do on a real machine.</summary>
+        public Vector3 ExtraOffset { get; set; } = new Vector3();
+
+        public Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            return Task.FromResult(true);
+        }
+
         public Vector3 LastProbePosMachine { get; private set; } = new Vector3();
 
         // =========================================================================
@@ -111,6 +131,7 @@ namespace coppercli.Tests.Fakes
         public event Action<string>? StatusReceived;
         public event Action<Vector3, bool>? ProbeFinished;
         public event Action<string>? NonFatalException;
+        public event Action<GrblRejection>? CommandRejected;
         public event Action<string>? Info;
         public event Action? ConnectionStateChanged;
         public event Action? StatusChanged;
@@ -122,16 +143,41 @@ namespace coppercli.Tests.Fakes
         // IMachine implementation
         // =========================================================================
 
+        private readonly List<string> _sentCommands = new();
+
+        /// <summary>
+        /// Every line handed to the machine, in order. Returns a snapshot: commands are
+        /// appended from the simulated worker, so handing out the live list would let a
+        /// test enumerate it while it is being written.
+        /// </summary>
+        public IReadOnlyList<string> SentCommands
+        {
+            get { lock (_stateLock) { return _sentCommands.ToArray(); } }
+        }
+
+        /// <summary>Forgets recorded commands, for tests that measure one phase.</summary>
+        public void ClearSentCommands()
+        {
+            lock (_stateLock)
+            {
+                _sentCommands.Clear();
+            }
+        }
+
         public void SendLine(string line)
         {
+            lock (_stateLock)
+            {
+                _sentCommands.Add(line);
+            }
             _ = ProcessCommandAsync(line);
         }
 
-        public void FileStart()
+        public bool FileStart()
         {
             if (Mode != OperatingMode.Manual)
             {
-                return;
+                return false;
             }
 
             _runCts = new CancellationTokenSource();
@@ -139,6 +185,22 @@ namespace coppercli.Tests.Fakes
             OperatingModeChanged?.Invoke();
 
             _runTask = Task.Run(() => RunFileAsync(_runCts.Token));
+            return true;
+        }
+
+        /// <summary>Forces the operating mode, for tests that model leftover state.</summary>
+        public void SimulateModeChange(OperatingMode newMode)
+        {
+            Mode = newMode;
+            OperatingModeChanged?.Invoke();
+        }
+
+        public void EnsureManualMode()
+        {
+            if (Mode == OperatingMode.Probe)
+            {
+                Mode = OperatingMode.Manual;
+            }
         }
 
         public void FileGoto(int line)
@@ -206,20 +268,26 @@ namespace coppercli.Tests.Fakes
                 return;
             }
 
-            // G-code commands
-            if (line.StartsWith("G0") || line.StartsWith("G00"))
+            // G-code commands.
+            // The motion word may be preceded by G53 ("this block is in machine
+            // coordinates"), so dispatch on the word after any such prefix while still
+            // passing the whole line down - ProcessMoveAsync reads G53 from it.
+            string dispatch = line.StartsWith("G53") ? line.Substring(3).TrimStart() : line;
+
+            // G10 must be tested before G1, or "G10 L2 P1 Z..." dispatches as a move.
+            if (dispatch.StartsWith("G10"))
+            {
+                ProcessWorkOffsetCommand(dispatch);
+            }
+            else if (dispatch.StartsWith("G0") || dispatch.StartsWith("G00"))
             {
                 await ProcessMoveAsync(line, isRapid: true);
             }
-            else if (line.StartsWith("G1") || line.StartsWith("G01"))
+            else if (dispatch.StartsWith("G1") || dispatch.StartsWith("G01"))
             {
                 await ProcessMoveAsync(line, isRapid: false);
             }
-            else if (line.StartsWith("G10"))
-            {
-                ProcessWorkOffsetCommand(line);
-            }
-            else if (line.StartsWith("G38"))
+            else if (dispatch.StartsWith("G38"))
             {
                 await ProcessProbeAsync(line);
             }
@@ -310,28 +378,44 @@ namespace coppercli.Tests.Fakes
             ProbeFinished?.Invoke(WorkPosition, true);
         }
 
+        /// <summary>Keeps G54 in step with the work offset. This fake models no G92 or
+        /// tool-length offset, so the two are equal - but they are stored separately so a
+        /// test can set ExtraOffset and make them differ, the way a real machine can.</summary>
+        private void SetWorkOffset(Vector3 offset)
+        {
+            lock (_stateLock)
+            {
+                _workOffset = offset;
+            }
+            G54Offset = offset;
+        }
+
         private void ProcessWorkOffsetCommand(string line)
         {
             // G10 L2 P1 Zvalue - set work offset
             if (line.Contains("L2") && TryParseAxis(line, "Z", out double z))
             {
-                WorkOffset = new Vector3(WorkOffset.X, WorkOffset.Y, z);
+                SetWorkOffset(new Vector3(G54Offset.X, G54Offset.Y, z));
             }
             // G10 L20 P0 - zero work offset at current position
             else if (line.Contains("L20"))
             {
+                var updated = G54Offset;
+
                 if (line.Contains("X"))
                 {
-                    WorkOffset = new Vector3(MachinePosition.X, WorkOffset.Y, WorkOffset.Z);
+                    updated = new Vector3(MachinePosition.X, updated.Y, updated.Z);
                 }
                 if (line.Contains("Y"))
                 {
-                    WorkOffset = new Vector3(WorkOffset.X, MachinePosition.Y, WorkOffset.Z);
+                    updated = new Vector3(updated.X, MachinePosition.Y, updated.Z);
                 }
                 if (line.Contains("Z"))
                 {
-                    WorkOffset = new Vector3(WorkOffset.X, WorkOffset.Y, MachinePosition.Z);
+                    updated = new Vector3(updated.X, updated.Y, MachinePosition.Z);
                 }
+
+                SetWorkOffset(updated);
             }
         }
 
@@ -389,6 +473,7 @@ namespace coppercli.Tests.Fakes
         private void SetStatus(string status)
         {
             Status = status;
+            Interlocked.Increment(ref _statusReportCount);
             StatusChanged?.Invoke();
             StatusReceived?.Invoke($"<{status}|MPos:{MachinePosition.X:F3},{MachinePosition.Y:F3},{MachinePosition.Z:F3}>");
         }
@@ -432,7 +517,7 @@ namespace coppercli.Tests.Fakes
         /// <summary>Set work offset directly (for test setup).</summary>
         public void SetWorkOffset(double x, double y, double z)
         {
-            WorkOffset = new Vector3(x, y, z);
+            SetWorkOffset(new Vector3(x, y, z));
         }
 
         /// <summary>Set machine position directly (for test setup).</summary>

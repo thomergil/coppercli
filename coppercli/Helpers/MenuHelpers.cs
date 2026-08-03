@@ -3,6 +3,7 @@
 using System.Linq;
 using System.Text.RegularExpressions;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.Constants;
@@ -23,6 +24,9 @@ namespace coppercli.Helpers
         NotConnected,
         NoFile,
         ProbeNotApplied,
+
+        /// <summary>The applied height map no longer describes this file or origin.</summary>
+        ProbeSetupChanged,
         ProbeIncomplete,
         AlarmState
     }
@@ -180,12 +184,27 @@ namespace coppercli.Helpers
             // Check probe data applied (if probe points exist)
             if (AppState.ProbePoints != null && !AppState.AreProbePointsApplied)
             {
-                if (AppState.ProbePoints.NotProbed.Count > 0)
+                if (!AppState.ProbePoints.HasCompleteData)
                 {
                     probeProgress = $"{AppState.ProbePoints.Progress}/{AppState.ProbePoints.TotalPoints}";
                     return new MillPreflightResult(false, MillPreflightError.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
                 }
                 return new MillPreflightResult(false, MillPreflightError.ProbeNotApplied, warnings, null, dangerousWarnings);
+            }
+
+            // A map that has been baked into the toolpath is the most dangerous one to
+            // get wrong: every cutting move already carries its corrections. If the
+            // setup has moved since it was measured, those corrections are for
+            // somewhere else, and the whole job cuts at the wrong depth.
+            if (AppState.ProbePoints != null && AppState.AreProbePointsApplied)
+            {
+                var applicability = AppState.GetProbeApplicability();
+
+                if (applicability == ProbeApplicability.DifferentFile
+                    || applicability == ProbeApplicability.OriginMoved)
+                {
+                    return new MillPreflightResult(false, MillPreflightError.ProbeSetupChanged, warnings, null, dangerousWarnings);
+                }
             }
 
             // Check machine state (alarm)
@@ -214,22 +233,25 @@ namespace coppercli.Helpers
         /// Wrapper around ValidateMillPreflight() for simple menu disabled state.
         /// Note: AlarmState is NOT checked here (handled by EnsureMachineReady in MillMenu).
         /// </summary>
-        public static string? GetMillDisabledReason()
-        {
-            var result = ValidateMillPreflight();
+        public static string? GetMillDisabledReason() => DescribeMillBlockingError(ValidateMillPreflight());
 
-            // Map errors to disabled reasons (AlarmState handled separately in MillMenu)
-            return result.Error switch
-            {
-                MillPreflightError.None => null,
-                MillPreflightError.NotConnected => DisabledConnect,
-                MillPreflightError.NoFile => DisabledNoFile,
-                MillPreflightError.ProbeNotApplied => DisabledProbeNotApplied,
-                MillPreflightError.ProbeIncomplete => string.Format(DisabledProbeIncomplete, result.ProbeProgress),
-                MillPreflightError.AlarmState => null,  // Not a menu blocker (handled in MillMenu)
-                _ => DisabledUnknown
-            };
-        }
+        /// <summary>
+        /// The reason milling is blocked, or null when the result is not a blocker (all
+        /// clear, or an alarm that the ready-check handles). One mapping, so the menu and
+        /// the disabled-reason display cannot enumerate the cases differently - the menu
+        /// used to inline four of them and had already fallen behind on ProbeSetupChanged.
+        /// </summary>
+        public static string? DescribeMillBlockingError(MillPreflightResult result) => result.Error switch
+        {
+            MillPreflightError.None => null,
+            MillPreflightError.NotConnected => DisabledConnect,
+            MillPreflightError.NoFile => DisabledNoFile,
+            MillPreflightError.ProbeNotApplied => DisabledProbeNotApplied,
+            MillPreflightError.ProbeSetupChanged => DisabledProbeSetupChanged,
+            MillPreflightError.ProbeIncomplete => string.Format(DisabledProbeIncomplete, result.ProbeProgress),
+            MillPreflightError.AlarmState => null,  // handled by the ready-check
+            _ => DisabledUnknown
+        };
 
         /// <summary>
         /// Checks if the machine is connected. Shows error and waits for keypress if not.

@@ -72,8 +72,17 @@ namespace coppercli.Core.GCode
         /// </summary>
         public static bool IgnoreAdditionalAxes { get; set; } = true;
 
+        /// <summary>
+        /// Held for a whole Reset-parse-read cycle. The parser accumulates into static
+        /// State/Commands/Warnings, so two loads at once (the web server serves file
+        /// loads from concurrent request threads) would otherwise interleave and produce
+        /// a toolpath spliced from both files, with no error.
+        /// </summary>
+        public static readonly object ParseLock = new object();
+
         public static void Reset()
         {
+            _startUntrusted = false;
             State = new ParserState();
             Commands = new List<Command>();
             Warnings = new List<string>();
@@ -93,8 +102,10 @@ namespace coppercli.Core.GCode
         // M-code detection utilities (for tool change, pause, etc.)
         // =========================================================================
 
-        private static readonly Regex M6Pattern = new Regex(@"\bM0*6\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex M0Pattern = new Regex(@"\bM0+\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Same pattern the serial layer uses to intercept M6 - keep it one definition so
+        // "line is a tool change" cannot mean two different things.
+        private static readonly Regex M6Pattern = new Regex(GrblProtocol.M6Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex M0Pattern = new Regex(GrblProtocol.M0Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ToolNumberPattern = new Regex(@"\bT(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ToolNamePattern = new Regex(@"\(([^)]+)\)", RegexOptions.Compiled);
 
@@ -256,11 +267,35 @@ namespace coppercli.Core.GCode
                     throw new ParseException("mismatched parentheses", lineNumber);
                 }
 
-                line = line.Remove(start, end - start);
+                // +1 so the closing paren goes too. Leaving it behind made the next
+                // comment on the same line look like a mismatched paren and threw.
+                line = line.Remove(start, end - start + 1);
             }
 
             return line;
         }
+
+        /// <summary>
+        /// Marks the modelled position unknown after a block we could not model.
+        ///
+        /// The machine has moved (or re-datumed) somewhere we cannot compute, so every
+        /// axis word of the next move must be emitted rather than elided as "already
+        /// there". Without this, a file that retracts with G53 and then says "G0 Z5" to
+        /// come back has that recovery move deleted as zero-length, and the following
+        /// cut runs at the retract depth.
+        /// </summary>
+        private static void InvalidatePositionAfterUnmodelledMove()
+        {
+            State.PositionValid = new bool[] { false, false, false };
+            _startUntrusted = true;
+        }
+
+        /// <summary>
+        /// Set by <see cref="InvalidatePositionAfterUnmodelledMove"/>, cleared onto the
+        /// next motion it produces. Carries "we do not know where this move begins" from
+        /// the unmodelled block to the move that follows it.
+        /// </summary>
+        private static bool _startUntrusted;
 
         static void Parse(string line, int lineNumber)
         {
@@ -271,6 +306,57 @@ namespace coppercli.Core.GCode
             foreach (Match match in matches)
             {
                 Words.Add(new Word() { Command = match.Groups[1].Value[0], Parameter = double.Parse(match.Groups[2].Value, Constants.DecimalParseFormat) });
+            }
+
+            // Decide the fate of the whole block before anything is extracted from it.
+            // Doing this first is what keeps an M or S word in the same block from being
+            // emitted once as its own command and again inside the preserved line.
+            bool refuseBlock = false;
+            bool preserveBlock = false;
+
+            foreach (Word w in Words)
+            {
+                if (w.Command != 'G')
+                {
+                    continue;
+                }
+
+                double g = w.Parameter;
+
+                // Homing from a file is refused outright. We cannot model where it goes,
+                // and passing it through would send the machine to its G28/G30 position
+                // at rapid - across whatever is clamped to the bed. Checked across the
+                // whole block, so "G53 G28 Z0" cannot slip through as a preserved line.
+                if (g == GCodeNumbers.Home || g == GCodeNumbers.HomeSecondary)
+                {
+                    Warnings.Add($"{Constants.WarningPrefixDanger}: G{(int)g} (Home) command found and ignored - it would rapid across the workpiece. (line {lineNumber})");
+                    refuseBlock = true;
+                }
+
+                // Blocks whose axis words belong to the command, not to a move. Preserved
+                // verbatim so the machine does exactly what the file asked, and so those
+                // words can never be re-read as work-coordinate motion.
+                if (g == GCodeNumbers.MachineCoordinates ||
+                    g == GCodeNumbers.SetWorkOffset ||
+                    g == GCodeNumbers.SetPositionOffset ||
+                    g == GCodeNumbers.ToolLengthOffsetDynamic ||
+                    (g >= GCodeNumbers.ProbeToward && g <= GCodeNumbers.ProbeAwayNoError))
+                {
+                    preserveBlock = true;
+                }
+            }
+
+            if (refuseBlock)
+            {
+                InvalidatePositionAfterUnmodelledMove();
+                return;
+            }
+
+            if (preserveBlock)
+            {
+                Commands.Add(new PassThrough() { Line = line.Trim(), LineNumber = lineNumber });
+                InvalidatePositionAfterUnmodelledMove();
+                return;
             }
 
             for (int i = 0; i < Words.Count; i++)
@@ -314,6 +400,10 @@ namespace coppercli.Core.GCode
                 Words.RemoveAt(i--);
                 continue;
             }
+
+            // Set when the block held a G-code we do not understand. Its words go with
+            // it rather than being reinterpreted as motion.
+            bool dropBlock = false;
 
             for (int i = 0; i < Words.Count; i++)
             {
@@ -395,20 +485,6 @@ namespace coppercli.Core.GCode
                         i--;
                         continue;
                     }
-                    if (param == GCodeNumbers.Home)
-                    {
-                        Warnings.Add($"{Constants.WarningPrefixDanger}: G{GCodeNumbers.Home} (Home) command found - may crash into workpiece! (line {lineNumber})");
-                        Words.RemoveAt(i);
-                        i--;
-                        continue;
-                    }
-                    if (param == GCodeNumbers.HomeSecondary)
-                    {
-                        Warnings.Add($"{Constants.WarningPrefixDanger}: G{GCodeNumbers.HomeSecondary} (Secondary home) command found - may crash into workpiece! (line {lineNumber})");
-                        Words.RemoveAt(i);
-                        i--;
-                        continue;
-                    }
                     if (param == GCodeNumbers.PlaneXY)
                     {
                         State.Plane = ArcPlane.XY;
@@ -462,22 +538,22 @@ namespace coppercli.Core.GCode
                         i--;
                         continue;
                     }
-                    // These are valid GRBL commands - pass through without warning
-                    if (param == GCodeNumbers.MachineCoordinates ||
-                        param == GCodeNumbers.SetWorkOffset ||
-                        param == GCodeNumbers.Home ||
-                        param == GCodeNumbers.HomeSecondary ||
-                        (param >= GCodeNumbers.ProbeToward && param <= GCodeNumbers.ProbeAwayNoError) ||
-                        param == GCodeNumbers.ToolLengthOffsetDynamic)
-                    {
-                        Words.RemoveAt(i);
-                        i--;
-                        continue;
-                    }
-
+                    // An unrecognised G-code takes its parameter words with it. Leaving
+                    // them behind meant they fell through to the motion handler: a
+                    // header line like "G64 P0.01" (pcb2gcode path tolerance) arrives
+                    // before any motion mode is set and aborted the whole file load.
                     Warnings.Add($"ignoring unknown command G{param}. (line {lineNumber})");
+                    dropBlock = true;
                     Words.RemoveAt(i--);
                 }
+            }
+
+            // Only discard the block if nothing in it actually moves. A line that pairs
+            // an unknown code with real coordinates ("G1 X10 G64") still has a cut to
+            // make, and dropping it would silently leave that cut out of the job.
+            if (dropBlock && !Words.Any(w => w.Command == 'X' || w.Command == 'Y' || w.Command == 'Z'))
+            {
+                return;
             }
 
             if (Words.Count == 0)
@@ -574,6 +650,8 @@ namespace coppercli.Core.GCode
 
                 Line motion = new Line();
                 motion.Start = State.Position;
+                motion.StartTrusted = !_startUntrusted;
+                _startUntrusted = false;
                 motion.End = EndPos;
                 motion.Feed = State.Feed;
                 motion.Rapid = MotionMode == 0;
@@ -756,6 +834,8 @@ namespace coppercli.Core.GCode
 
             Arc arc = new Arc();
             arc.Start = State.Position;
+            arc.StartTrusted = !_startUntrusted;
+            _startUntrusted = false;
             arc.End = EndPos;
             arc.Feed = State.Feed;
             arc.Direction = (MotionMode == 2) ? ArcDirection.CW : ArcDirection.CCW;

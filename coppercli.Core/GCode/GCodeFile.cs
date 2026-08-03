@@ -14,6 +14,13 @@ namespace coppercli.Core.GCode
         public ReadOnlyCollection<Command> Toolpath;
         public string FileName = string.Empty;
 
+        /// <summary>
+        /// Full path this file was loaded from, or empty for a generated toolpath.
+        /// Carried on the file so anything that needs to know which board is loaded can
+        /// ask the file rather than depend on a separately-maintained session field.
+        /// </summary>
+        public string FilePath = string.Empty;
+
         public Vector3 Min { get; private set; }
         public Vector3 Max { get; private set; }
         public Vector3 Size { get; private set; }
@@ -23,6 +30,13 @@ namespace coppercli.Core.GCode
         public Vector3 SizeFeed { get; private set; }
 
         public bool ContainsMotion { get; private set; } = false;
+
+        /// <summary>
+        /// Midpoint of the toolpath bounds in X and Y (Z left at 0). The natural place to
+        /// park the spindle for an accessible tool swap. Computed from Min/Max, which the
+        /// file already owns - callers used to recompute (Min+Max)/2 in four places.
+        /// </summary>
+        public Vector3 Center => new Vector3((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2, 0);
 
         public double TravelDistance { get; private set; } = 0;
         public TimeSpan TotalTime { get; private set; } = TimeSpan.Zero;
@@ -46,7 +60,11 @@ namespace coppercli.Core.GCode
                 {
                     Motion m = (Motion)c;
 
-                    if (m.Start == m.End)
+                    // An arc that ends where it starts is a full circle - a real cut, and
+                    // exactly how a drilled hole or a circular isolation contour is
+                    // written. Only straight moves are no-ops at zero length, and only
+                    // when we actually know where they started.
+                    if (m.Start == m.End && !(m is Arc) && m.StartTrusted)
                     {
                         // Silently remove zero-length moves (common in CAM output, not actionable)
                         toolpath.RemoveAt(i--);
@@ -131,23 +149,33 @@ namespace coppercli.Core.GCode
 
         public static GCodeFile Load(string path)
         {
-            GCodeParser.Reset();
-            GCodeParser.ParseFile(path);
+            lock (GCodeParser.ParseLock)
+            {
+                GCodeParser.Reset();
+                GCodeParser.ParseFile(path);
 
-            string fileName = Path.GetFileName(path);
-            GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands) { FileName = fileName };
-            gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
-            return gcodeFile;
+                string fileName = Path.GetFileName(path);
+                GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands)
+                {
+                    FileName = fileName,
+                    FilePath = Path.GetFullPath(path)
+                };
+                gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
+                return gcodeFile;
+            }
         }
 
         public static GCodeFile FromList(IEnumerable<string> file)
         {
-            GCodeParser.Reset();
-            GCodeParser.Parse(file);
+            lock (GCodeParser.ParseLock)
+            {
+                GCodeParser.Reset();
+                GCodeParser.Parse(file);
 
-            GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands) { FileName = "output.nc" };
-            gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
-            return gcodeFile;
+                GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands) { FileName = "output.nc" };
+                gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
+                return gcodeFile;
+            }
         }
 
         public static GCodeFile Empty
@@ -192,6 +220,14 @@ namespace coppercli.Core.GCode
 
             foreach (Command c in Toolpath)
             {
+                // Blocks the parser could not model as geometry are re-emitted exactly
+                // as the file wrote them - see PassThrough.
+                if (c is PassThrough)
+                {
+                    GCode.Add(((PassThrough)c).Line);
+                    continue;
+                }
+
                 if (c is Motion)
                 {
                     Motion m = c as Motion;

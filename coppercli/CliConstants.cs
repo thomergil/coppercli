@@ -215,11 +215,8 @@ namespace coppercli
         // Mill progress display: ETA calculation
         // =========================================================================
 
-        /// <summary>Minimum lines processed before showing ETA (avoids wild estimates).</summary>
-        public const int MillMinLinesForEta = 10;
-
-        /// <summary>Minimum elapsed seconds before showing ETA.</summary>
-        public const double MillMinSecondsForEta = 1.0;
+        /// <summary>Shown for the ETA before milling has begun and a figure exists.</summary>
+        public const string EtaUnknown = "--:--:--";
 
         // =========================================================================
         // Mill progress display: Visual markers
@@ -490,6 +487,8 @@ namespace coppercli
         public const string DisabledNoZero = "set work zero first";
 
         /// <summary>Generic reason: probe data not applied.</summary>
+        public const string DisabledProbeSetupChanged =
+            "height map is for a different file or origin";
         public const string DisabledProbeNotApplied = "apply probe data first";
 
         /// <summary>Generic reason: probe data incomplete.</summary>
@@ -503,6 +502,7 @@ namespace coppercli
 
         /// <summary>Error shown when machine is in alarm during mill start.</summary>
         public const string ErrorMachineAlarm = "Machine is in ALARM state. Please home the machine and try again.";
+        public const string ErrorMachineNotReady = "Machine did not settle. Wait for it to stop moving, clear any alarm, then try again.";
 
         // =========================================================================
         // Probe menu: Status messages

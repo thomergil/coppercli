@@ -174,7 +174,7 @@ namespace coppercli.Menus
                 return MainAction.Move;
             }
 
-            if (probePoints == null || probePoints.NotProbed.Count > 0 || !AppState.AreProbePointsApplied)
+            if (probePoints == null || !probePoints.HasCompleteData || !AppState.AreProbePointsApplied)
             {
                 return MainAction.Probe;
             }

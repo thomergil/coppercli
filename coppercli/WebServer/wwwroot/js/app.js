@@ -1,5 +1,9 @@
 // coppercli Web UI - Main Entry Point
 
+// First import: installs the access-token wrapper around fetch before any other
+// module is evaluated, so nothing can issue an unauthenticated request.
+import './auth.js';
+
 import { $, validateConstants } from './helpers.js';
 import { showScreen, restoreScreenFromHash, initHeader } from './screens.js';
 import { connectWebSocket } from './websocket.js';

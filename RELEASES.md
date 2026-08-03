@@ -1,5 +1,149 @@
 # Release Notes
 
+## Unreleased
+
+### Safety Fixes
+
+- **Machine-coordinate blocks are no longer turned into work-coordinate moves**: `G53`, `G10`, `G92`, `G43.1`, `G38.x`, `G28` and `G30` had their command word stripped while their axis words were left behind, so a line like `G53 G0 Z-1` — a retract to near the top of machine travel — was re-emitted as `G0 Z-1` in work coordinates: a rapid 1mm *below* the copper surface. These blocks are now preserved and sent exactly as written.
+- **G-code is always written with a `.` decimal separator**: on a locale that uses a decimal comma (German, French, Dutch, Spanish and most of Europe and Latin America), every coordinate the controllers sent was formatted as e.g. `Z-1,000`. GRBL rejects that, and because nothing checked for a rejection the safety retract silently did nothing and milling continued.
+- **A failed safety retract now stops the job**: retracting Z reported success whether or not the tool actually lifted. Milling and probing now refuse to make the following XY move unless the retract is confirmed.
+- **Depth adjustment no longer accumulates**: re-milling the same file applied the adjustment on top of the previous run's, so two passes at −0.05mm cut 0.10mm deep while the display still read −0.05. The Z origin is now restored when a job ends.
+- **Homing is no longer assumed across a reconnect**: the "machine is homed" flag was never cleared, so after a power cycle or replug milling would skip homing and run every machine-coordinate move against a coordinate system that no longer existed.
+- **The enclosure door no longer auto-resumes the machine**: when GRBL reported the safety interlock open, coppercli automatically sent Cycle Start, restarting the spindle and resuming motion. Resuming after the door has been opened is now the operator's decision.
+- **A tool change's length compensation survives to the end of the job**: the depth adjustment was taken back out by rewriting the Z origin to the value captured before the job started. A tool change part-way through legitimately rewrites that same origin to compensate the new tool's length, and the end-of-job restore discarded it — so the next plunge was off by the difference between the two tools. The adjustment is now taken back out relative to whatever the origin has become.
+- **A move the machine made but coppercli could not model no longer deletes the file's own recovery move**: after a `G53` retract the toolpath model still believed Z was where it had been, so a following `G0 Z5` looked like a move to where the tool already was and was dropped — leaving the next cut to run at the retract depth.
+- **`G28`/`G30` in a file are refused instead of run**: the parser warned "may crash into workpiece" and then let the command through to the machine, which would rapid to its stored home position across whatever is clamped to the bed. The warning stands; the block no longer reaches GRBL, and its axis words no longer become an ordinary move either.
+- **Milling homes through the same code as everything else**: it had its own copy that accepted a rejected `$H` as success — the machine never moved, but the job proceeded to run `G53` moves against an origin that was never established. `CLAUDE.md` names homing as the worked example of a single source of truth; there were two.
+- **A soft reset clears the homed flag**: aborting resets GRBL while motion is in flight, which is exactly when it loses the position it was tracking. The next job now homes again rather than trusting a stale origin.
+- **Aborting a job commands spindle off**: the abort path relied on the reset alone. (The explicit `M5` now goes out after the reset, because ordinary commands are silently discarded while a file is streaming — which is precisely the situation an abort happens in.)
+- **An open enclosure door blocks a job from starting**: readiness used to clear a Door by sending Cycle Start, resuming motion because the software decided to rather than because the operator confirmed the machine was clear.
+- **Probing cannot hang with the tool down**: a probe waited forever for a reply that a rejected probe command never sends. Probes now time out.
+- **Incomplete probe grids are refused**: a skipped probe point left a hole in the height map while the grid still reported 100% complete, so the map was applied and either crashed or silently used a wrong height. Completeness is now measured by what was actually probed.
+- **Tool changes are detected consistently**: the serial layer and the milling controller used different rules for what counts as an `M6` line. A line like `T1 M6` was withheld from the machine but never paused the job, so it kept cutting with the previous tool.
+- **Full circles are no longer dropped**: an arc that ends where it starts was deleted as a "zero-length move", silently removing drilled holes and circular isolation contours.
+- **Files with two comments on a line load again**: comment stripping left the closing parenthesis behind, and the leftover made the next comment look like mismatched parentheses, failing the whole file.
+- **Concurrent file loads no longer corrupt each other**: the parser accumulated into shared state, so two loads at once could produce a toolpath spliced from both files.
+- **An unrecognised G-code no longer fails the whole file**: its parameter words were left behind and fell through to the motion handler. A `G64 P0.01` path-tolerance line in a pcb2gcode header — which appears before any motion command — aborted the entire load with "no motion mode active".
+- **Aborting a probe or a tool change lifts the tool**: both had exit paths that returned without retracting Z, leaving the tool resting on the board or the tool setter.
+- **Milling stops when the machine alarms**: the monitor loop had no alarm check and kept reporting normal progress on a machine that had already stopped.
+- **The web API enforces the same pre-mill checks as the TUI**: `/api/mill/start` validated only connection and file, so a direct request could start a job with an incomplete or unapplied height map, skipping the checks the terminal UI blocks on.
+- **Loading a replacement height map no longer stacks corrections**: applying a height map adds the interpolated surface to every cutting Z. Loading a second map over an already-applied one without first restoring the un-corrected G-code added both surfaces together, cutting roughly twice as deep. The web path reloaded the original file first; the terminal path did not, so the same action cut correctly from the browser and too deep from the terminal. Both now go through one loader that restores the original before the new map is applied. (Covered by a regression test.)
+- **A disconnect clears the stored work zero on every path, not just one**: only the terminal's Connect/Disconnect screen reset "work zero is set" when you disconnected. Disconnecting from the main menu or the web UI left it set, so after reconnecting — where the machine may have been moved or power-cycled — milling and probing treated an origin the machine no longer holds as trusted. The reset is now centralized to the disconnect itself, mirroring how the homed flag is already cleared.
+
+### Milling start and progress
+
+- **Milling no longer hangs at "Idle" when a job cannot start streaming.** Completion was
+  inferred from "reached the end of the file", which a job that never started never does -
+  so if the file failed to begin (for instance because a probe run left the machine in
+  probe mode), the controller sat idle for ever with nothing reported. The controller now
+  returns the machine to a known mode before starting, confirms the stream actually began,
+  and fails with a clear message if it did not.
+
+- **The estimated time remaining is stable and sensible.** It used to be computed from
+  time-elapsed-since-you-pressed-go divided by lines done - but "elapsed" included homing
+  and setup, so the first figure was wildly inflated and then lurched downward. It now
+  starts from the toolpath's own duration estimate, holds near that guess while the job
+  gets going, and eases toward the measured pace as it progresses, landing on the truth by
+  the end. The clock counts milling only, excluding setup and pauses.
+
+### Probing crash
+
+- **Probing no longer dies partway through a run** with "Collection was modified;
+  enumeration operation may not execute". The list of points still to measure was public
+  and mutable: the display enumerated it on the terminal thread while probing reordered
+  and removed from it on another. Whenever a redraw coincided with a point being
+  recorded — in practice after a few dozen points — the run was lost. The grid now owns
+  that queue and hands out a copy, so no caller can enumerate the live list.
+
+- **A failure during probing no longer takes the whole program down.** Cleanup called
+  `Reset()` on the controller from a `finally` block; when the failure came from the
+  display thread the controller was legitimately still running, so `Reset()` threw
+  "Cannot reset: controller is Running" — replacing the real error with its own and
+  crashing. Cleanup now stops the controller first and never throws over the original
+  problem.
+
+### Height map correctness
+
+- **A height map now knows what it describes.** It records the file it was measured for
+  and the work origin it was measured from, and that record is saved with it. Everything
+  that asks "do I have probe data?" now asks the map itself, instead of inferring an
+  answer from whether an autosave file happens to exist on disk.
+
+  This fixes a family of problems with one cause. Previously: declining to trust the
+  stored work origin at startup skipped the height-map question entirely, so leftover
+  data stayed on disk undecided and was later announced as current; answering "no" to
+  keeping a finished map did not actually discard it; loading a different file offered to
+  apply the previous board's map, defaulting to yes; and a map that had already been
+  applied to the toolpath was never re-checked, so moving the work origin afterwards left
+  every cutting move carrying corrections measured somewhere else.
+
+- **Milling refuses when the applied height map no longer matches** the loaded file or
+  the current work origin — the most dangerous case, because the corrections are already
+  baked into every move.
+
+- **The warning when zeroing says what actually happens**: the map is deleted, including
+  the saved copy, you will need to probe again, and zeroing only Z keeps it. It also only
+  appears when the map genuinely describes the board in hand.
+
+- **Startup questions come from one place.** The sequence carried over from a previous
+  session — reload the file, trust the work origin, resolve a stored height map — was
+  written twice, once in the terminal startup and once in the browser client, and the two
+  had drifted apart. That divergence is what produced the bug above. Both interfaces now
+  ask the same questions, in the same order, with the same consequences.
+
+### Behaviour changes to be aware of
+
+- **A machine that cannot home can no longer start a job.** Homing used to be treated as
+  successful even when GRBL rejected the `$H` — which is what happens when homing is
+  disabled (`$22=0`) or there are no limit switches. Milling then went ahead with machine
+  coordinates that were never established, which is what every safety retract is measured
+  against. That is now refused. The message names the cause the machine reported, so a
+  controller with homing switched off says so and tells you which setting to change,
+  rather than reporting a generic failure. There is deliberately no way to skip homing:
+  without it, `G53` retracts have no reference to retract to.
+- **An open enclosure door blocks a job and no longer clears itself.** Previously the
+  software sent Cycle Start and carried on. Close the door and start again.
+- **Tool-setter defaults changed for profiles that did not specify them**: retract
+  3 → 10 mm, slow probe feed 200 → 50 mm/min, fast feed 800 → 500 mm/min. These now come
+  from the same constants the code falls back to elsewhere; the two sets had drifted
+  apart. Profiles that set these values explicitly (including the bundled Nomad 3) are
+  unaffected.
+- **Numbers and dates display in the invariant format** regardless of system locale. This
+  follows from forcing G-code to use a `.` decimal separator process-wide.
+
+### Reliability
+
+- **The serial link no longer drops when you hit Reset mid-job**: the send queues made each operation atomic but not the check-then-take sequence around it, so a Reset arriving from the UI or web at the wrong instant threw inside the serial worker and tore down the connection — leaving GRBL to finish its buffered moves with nothing attached. The queues are now genuinely concurrent, and the byte accounting that keeps GRBL's receive buffer from overflowing is updated as one unit with the record of what was sent.
+- **A failure while shutting the connection down can no longer take the whole program with it**: the teardown ran outside its own error handling on a foreground thread, so an exception there ended the process while the machine was still running.
+- **Position readings are consistent**: machine position is three numbers written together but read separately, so another thread could catch X and Y from one status report and Z from the previous one. Those readings decide where the tool is told to go, and one of them was being written straight back as the Z work origin.
+- **Timeouts use a monotonic clock**: the machine waits in the controller layer measured against wall-clock time, so a daylight-saving change or a clock correction could stretch a wait by an hour or expire all of them at once.
+- **Settings, session and probe files are written whole**: they were written in place, so an interruption left a truncated file. The probe autosave is rewritten after every probed point, so that window came up constantly. A file that cannot be read is now set aside and reported rather than silently replaced by defaults.
+- **Removed the unreachable macro-sending subsystem** inherited from OpenCNCPilot — about 180 lines in the serial worker, including an unguarded queue read, that nothing could reach.
+
+### Code quality
+
+- **The "don't move XY while the probe is touching the board" guard has one home.** It was written out at four call sites across the terminal and web front ends; a fifth mover could easily have been added without it, dragging the probe tip sideways across the copper. Both front ends now call a single guarded move in the command layer.
+- **The web server checks "is the machine connected" one way.** The same `machine != null && connected` test was hand-copied into a dozen request handlers; consolidating it into one predicate removes the chance of a handler acting on a half-connected machine because it spelled the check differently.
+- **File information reaches the browser through one serializer.** The upload, load and status responses each built the same object by hand, with the fields already drifting (the same `path` field meant the full path in one and just the filename in another). They now share one shape.
+- Query-string parameter keys are named constants alongside the existing API-path and command constants, rather than string literals scattered through the request router.
+- The two probe-status responses (brief and full) derive their state from one shared snapshot, so they can no longer disagree on whether a map exists or has unsaved data.
+- The file browser's "where do I open" precedence (requested directory, else last used, else current) lives in one helper instead of being copied between the browse and save-location entry points.
+- Removed a write-only `SkipConfirmation` option that implied the milling controller honoured a "skip the depth confirmation" flag; nothing read it. The per-start depth confirmation is a terminal-only presentation step, and the web start is gated by the server-side preflight instead — the dead flag was removed so the code no longer suggests otherwise.
+- Deleted ~200 lines of unused 3-D vector geometry (cross/dot product, rotations, normalisation, angle, interpolation) inherited from OpenCNCPilot; a PCB height-map tool only ever uses the component-wise min/max and magnitude, and the compiler confirms nothing else referenced the rest.
+
+### Security
+
+- **The web UI now requires the access link printed at startup.** The server listens on every network interface, so previously anyone on the same network — or any web page the operator happened to visit — could start a job, jog the machine, or upload G-code. Requests without the token, and cross-site requests, are refused. Machine control over the network still works exactly as before; open the printed link. **The raw GRBL proxy on port 34000 is unchanged and still has no authentication** — see the warning in the README.
+- **Zeroing accepts only X, Y and Z.** The axis list was interpolated straight into a G-code line, so a newline in it appended commands of the caller's choosing.
+- **Nothing can smuggle a second command into one line**: commands built from user input and sent through `SendLine` are refused if they contain control characters or GRBL real-time bytes. (G-code streamed from a loaded file is not filtered — it is the operator's own file.)
+- **Uploaded filenames cannot escape the uploads folder.**
+
+### Testing
+
+- **The test suite compiles and runs again.** It had not built since 2026-02-03 — the test doubles were missing three interface members added when the controller layer landed, and nothing ran `dotnet test`, so none of its ~169 tests had executed since. Added a CI workflow that builds with warnings-as-errors and runs the tests on every push, plus a test step to the release build.
+- Fixed test doubles that silently discarded every `G53` command and never modelled work offsets, so retracts and offset writes appeared to succeed without being simulated.
+- Added regression tests covering each safety fix above.
+
 ## v0.3.1
 
 ### New Features

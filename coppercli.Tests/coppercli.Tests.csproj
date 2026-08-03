@@ -24,6 +24,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\coppercli.Core\coppercli.Core.csproj" />
+    <!-- The app project holds AppState, whose probe/work-zero state logic is safety-relevant. -->
+    <ProjectReference Include="..\coppercli\coppercli.csproj" />
   </ItemGroup>
 
 </Project>

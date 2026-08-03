@@ -230,7 +230,6 @@ export const API_MILL_START = '/api/mill/start';
 export const API_MILL_PAUSE = '/api/mill/pause';
 export const API_MILL_RESUME = '/api/mill/resume';
 export const API_MILL_STOP = '/api/mill/stop';
-export const API_MILL_TOOLCHANGE_CONTINUE = '/api/mill/toolchange/continue';
 export const API_MILL_TOOLCHANGE_ABORT = '/api/mill/toolchange/abort';
 export const API_MILL_TOOLCHANGE_INPUT = '/api/mill/toolchange/input';
 export const API_MILL_DEPTH = '/api/mill/depth';

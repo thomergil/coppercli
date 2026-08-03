@@ -117,7 +117,6 @@ public static class WebConstants
     public const string ApiMillPause = "/api/mill/pause";
     public const string ApiMillResume = "/api/mill/resume";
     public const string ApiMillStop = "/api/mill/stop";
-    public const string ApiMillToolChangeContinue = "/api/mill/toolchange/continue";
     public const string ApiMillToolChangeAbort = "/api/mill/toolchange/abort";
     public const string ApiMillToolChangeUserInput = "/api/mill/toolchange/input";
     public const string ApiMillDepth = "/api/mill/depth";
@@ -143,6 +142,10 @@ public static class WebConstants
     public const string ApiProfiles = "/api/profiles";
     public const string ApiForceDisconnect = "/api/force-disconnect";
     public const string ApiTrustWorkZero = "/api/trust-work-zero";
+
+    /// <summary>Questions carried over from the previous session, and answers to them.
+    /// Same source as the terminal startup, so the two cannot drift apart.</summary>
+    public const string ApiSessionRestore = "/api/session/restore";
     public const string ApiProbeRecoverAutosave = "/api/probe/recover-autosave";
 
     // --- WebSocket Commands (message types from browser) ---
@@ -160,12 +163,23 @@ public static class WebConstants
     public const string WsCmdGotoZ0 = "goto-z0";
     public const string WsCmdProbeZ = "probe-z";
 
+    // --- Query String Parameter Keys ---
+    // Protocol wire values (like ApiXxx/WsCmdXxx). The JS side reads ?token= directly from
+    // window.location because auth precedes any /api/constants fetch, so QueryParamToken is a
+    // C#-only constant by necessity; the rest are consumed only server-side.
+    public const string QueryParamToken = "token";
+    public const string QueryParamPath = "path";
+    public const string QueryParamWidth = "width";
+    public const string QueryParamHeight = "height";
+    public const string QueryParamClientId = "clientId";
+
     // --- HTTP Methods ---
     public const string MethodPost = "POST";
     public const string MethodGet = "GET";
 
     // --- HTTP Status Codes ---
     public const int HttpStatusBadRequest = 400;
+    public const int HttpStatusUnauthorized = 401;
     public const int HttpStatusNotFound = 404;
     public const int HttpStatusMethodNotAllowed = 405;
     public const int HttpStatusServerError = 500;
@@ -177,6 +191,10 @@ public static class WebConstants
     public const string ErrorNotFound = "Not found";
     public const string ErrorInvalidRequest = "Invalid request";
     public const string ErrorMethodNotAllowed = "Method not allowed";
+    public const string ApiErrorUnauthorized = "Not authorised. Open the link shown when the server started.";
+
+    /// <summary>Prefix of the Authorization header value carrying the access token.</summary>
+    public const string BearerPrefix = "Bearer ";
     public const string ErrorMachineNotConnected = "Machine not connected";
     public const string ErrorCannotPauseNotRunning = "Cannot pause: not running";
     public const string ErrorCannotResumeNotPaused = "Cannot resume: not paused";
@@ -209,6 +227,8 @@ public static class WebConstants
     public const string PreflightErrorNotConnected = "Machine not connected";
     public const string PreflightErrorNoFile = "No G-Code file loaded";
     public const string PreflightErrorProbeNotApplied = "Probe data exists but not applied";
+    public const string PreflightErrorProbeSetupChanged =
+        "The applied height map was measured for a different file or work origin. Probe again before milling.";
     public const string PreflightErrorProbeIncomplete = "Probe incomplete ({0})";
     public const string PreflightErrorAlarm = "Machine is in ALARM state - home or unlock first";
     public const string PreflightWarningNotHomed = "Machine not homed - will home before milling";

@@ -1,6 +1,7 @@
 // coppercli - A CLI tool for PCB milling with GRBL
 // Program.cs - Application entry point and coordinator
 
+using System.Globalization;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
@@ -20,6 +21,17 @@ class Program
     {
         // Enable UTF-8 output for Unicode box-drawing characters (required on Windows)
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+
+        // G-code requires a '.' decimal separator. GCodeFormat.Inv() enforces that at
+        // every emission site; pinning the process as well means a site that is ever
+        // added without it still cannot emit "Z-1,000" for GRBL to reject.
+        //
+        // The cost is deliberate and worth naming: operators in comma-decimal locales
+        // see numbers and dates in the TUI and web UI formatted the invariant way. A
+        // wrong separator in a coordinate moves the cutter; a dot in a displayed date
+        // does not.
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
         // Load persisted settings and session
         AppState.Settings = Persistence.LoadSettings();
@@ -318,120 +330,34 @@ class Program
     /// <summary>
     /// Offers to reload files and restore state from previous session.
     /// </summary>
+    /// <summary>
+    /// Asks the questions carried over from the previous session.
+    ///
+    /// Which questions apply, and what each answer does, is decided in SessionRestore -
+    /// shared with the browser interface. This method only asks them. The two used to
+    /// each implement the sequence, and drifted: the terminal grew a condition that
+    /// skipped the height-map question whenever the work zero was not trusted, leaving
+    /// that data undecided on disk to resurface later as though it were current.
+    /// </summary>
     private static void OfferSessionRestore()
     {
-        var session = AppState.Session;
-        var machine = AppState.Machine;
-
-        // Offer to reload last G-code file
-        if (!string.IsNullOrEmpty(session.LastLoadedGCodeFile) && File.Exists(session.LastLoadedGCodeFile))
+        foreach (var step in SessionRestore.GetPendingSteps())
         {
-            var fileName = Path.GetFileName(session.LastLoadedGCodeFile);
-            var result = MenuHelpers.ConfirmOrQuit($"Reload last G-code file ({fileName})?", true);
-            if (result == null)
+            ExitIfDisconnected();
+
+            if (!string.IsNullOrEmpty(step.Detail))
+            {
+                AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(step.Detail)}[/]");
+            }
+
+            var answer = MenuHelpers.ConfirmOrQuit(step.Question, step.DefaultYes);
+
+            if (answer == null)
             {
                 Environment.Exit(0);
             }
-            if (result == true)
-            {
-                FileMenu.LoadGCodeFromPath(session.LastLoadedGCodeFile);
-            }
-            else
-            {
-                // User rejected - clear the file so we don't keep asking
-                // (LastBrowseDirectory is preserved so file browser starts in the right place)
-                session.LastLoadedGCodeFile = "";
-                Persistence.SaveSession();
-            }
-        }
 
-        // Offer to trust stored work zero (must be decided before probe data, which depends on it)
-        if (machine.Connected && session.HasStoredWorkZero)
-        {
-            var result = MenuHelpers.ConfirmOrQuit("Trust work zero from previous session?", true);
-            if (result == null)
-            {
-                Environment.Exit(0);
-            }
-            if (result == true)
-            {
-                AppState.IsWorkZeroSet = true;
-                Logger.Log("Program startup: IsWorkZeroSet = true (trusted from previous session)");
-            }
-            else
-            {
-                Logger.Log("Program startup: IsWorkZeroSet = false (user declined to trust)");
-            }
-        }
-        else
-        {
-            Logger.Log($"Program startup: Not offering work zero trust (connected={machine.Connected}, hasStoredWorkZero={session.HasStoredWorkZero})");
-        }
-
-        // Handle unsaved probe data (single source of truth: Persistence.GetProbeState())
-        var probeState = Persistence.GetProbeState();
-        Logger.Log($"Probe state on startup: {probeState}");
-
-        if (probeState == Persistence.ProbeState.Partial)
-        {
-            // Incomplete probing - offer to keep or discard
-            try
-            {
-                var autosavePath = Persistence.GetProbeAutoSavePath();
-                var autosaveGrid = ProbeGrid.Load(autosavePath);
-                AnsiConsole.MarkupLine($"[{ColorWarning}]Incomplete probe data: {autosaveGrid.Progress}/{autosaveGrid.TotalPoints} points[/]");
-                var result = MenuHelpers.ConfirmOrQuit("Keep probe data?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    // Keep: load data and associated G-Code, then go to Probe menu
-                    AppState.ProbePoints = autosaveGrid;
-                    AppState.ResetProbeApplicationState();
-                    if (!AppState.LoadProbeSourceGCode() && AppState.IsProbeSourceGCodeMissing)
-                    {
-                        AnsiConsole.MarkupLine($"[{ColorWarning}]Original G-Code file is missing. Load the file to continue probing.[/]");
-                    }
-                    ProbeMenu.Show();
-                }
-                else
-                {
-                    // Discard: delete data
-                    Persistence.ClearProbeAutoSave();
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"Failed to load autosave: {ex.Message}");
-            }
-        }
-        else if (probeState == Persistence.ProbeState.Complete && AppState.IsWorkZeroSet)
-        {
-            // Complete but unsaved probe - offer to save or discard
-            try
-            {
-                var autosavePath = Persistence.GetProbeAutoSavePath();
-                var completeGrid = ProbeGrid.Load(autosavePath);
-                AnsiConsole.MarkupLine($"[{ColorWarning}]Unsaved probe data: {completeGrid.TotalPoints} points[/]");
-                var result = MenuHelpers.ConfirmOrQuit("Save probe data before continuing?", true);
-                if (result == null)
-                {
-                    Environment.Exit(0);
-                }
-                if (result == true)
-                {
-                    AppState.ProbePoints = completeGrid;
-                    AppState.ResetProbeApplicationState();
-                    // Navigate to probe menu for save
-                    ProbeMenu.Show();
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"Failed to load complete autosave: {ex.Message}");
-            }
+            SessionRestore.Answer(step.Topic, answer == true);
         }
     }
 
@@ -460,7 +386,7 @@ class Program
         // or auto-state clearing (background errors from $X or ~ shouldn't interrupt user)
         machine.NonFatalException += msg =>
         {
-            if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
+            if (!AppState.IsProbing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
                 AnsiConsole.MarkupLine($"[{ColorError}]Error: {Markup.Escape(msg)}[/]");
             }
@@ -468,7 +394,7 @@ class Program
 
         machine.Info += msg =>
         {
-            if (!AppState.Probing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
+            if (!AppState.IsProbing && !AppState.SuppressErrors && !machine.EnableAutoStateClear)
             {
                 AnsiConsole.MarkupLine($"[{ColorPrompt}]Info: {Markup.Escape(msg)}[/]");
             }

@@ -2,6 +2,7 @@
 using System;
 using System.Threading.Tasks;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
 using Xunit;
@@ -81,10 +82,15 @@ namespace coppercli.Tests
 
             foreach (var (line, shouldMatch, expectedTool) in testCases)
             {
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    line, @"^\s*M0*6\s*T?(\d*)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                // Against production, not a copy of it: the copy kept passing while the
+                // real recogniser was wrong about "T1 M6".
+                Assert.Equal(shouldMatch, GCodeParser.IsM6Line(line));
 
-                Assert.Equal(shouldMatch, match.Success);
+                if (shouldMatch)
+                {
+                    var (toolNumber, _) = GCodeParser.FindToolInfo(new[] { line }, 0);
+                    Assert.Equal(expectedTool, toolNumber ?? 0);
+                }
             }
         }
 

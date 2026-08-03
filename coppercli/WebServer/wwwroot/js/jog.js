@@ -30,6 +30,7 @@ import {
     STATUS_RUN,
     STATUS_HOLD,
     PROBE_STATE_NONE,
+    PROBE_STATE_PARTIAL,
     SCREEN_MILL
 } from './constants.js';
 
@@ -99,7 +100,7 @@ async function zeroWithWarning(axes, retract) {
             const data = await response.json();
 
             if (data.state && data.state !== PROBE_STATE_NONE) {
-                const stateDesc = data.state === 'partial' ? 'partial' : 'complete';
+                const stateDesc = data.state === PROBE_STATE_PARTIAL ? 'partial' : 'complete';
                 if (!await showConfirm(`You have ${stateDesc} probe data. Zeroing X/Y will invalidate it. Continue?`, 'Zero')) {
                     return;
                 }

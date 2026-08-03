@@ -37,6 +37,10 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Test
+        shell: bash
+        run: dotnet test coppercli.Tests/coppercli.Tests.csproj
+
       - name: Get version from tag
         id: version
         shell: bash

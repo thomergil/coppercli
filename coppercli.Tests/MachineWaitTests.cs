@@ -245,21 +245,41 @@ namespace coppercli.Tests
             Assert.False(result);
         }
 
+        /// <summary>
+        /// Readiness must never resume the machine on its own. Sending CycleStart to
+        /// clear a Door restarts the spindle and resumes motion because the software
+        /// decided to, while the enclosure is open and the operator may be reaching in.
+        /// An open door blocks the start instead.
+        /// </summary>
         [Fact]
-        public async Task EnsureMachineReadyAsync_ClearsDoorFirst()
+        public async Task EnsureMachineReadyAsync_DoesNotResumeAnOpenDoor()
         {
             var machine = new MockMachine { Status = "Door:0" };
 
-            // Simulate door clearing leads to Idle
-            var task = Task.Run(async () =>
-            {
-                await Task.Delay(100);
-                machine.SimulateStatusChange("Idle");
-            });
+            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
 
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 2000);
+            Assert.Equal(0, machine.CycleStartCount);
+            Assert.False(result);
+        }
 
-            Assert.Equal(1, machine.CycleStartCount);
+        [Fact]
+        public async Task EnsureMachineReadyAsync_IsNotReadyWhileStillMoving()
+        {
+            var machine = new MockMachine { Status = "Run" };
+
+            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
+
+            Assert.False(result);
+        }
+
+        [Fact]
+        public async Task EnsureMachineReadyAsync_IsReadyWhenIdle()
+        {
+            var machine = new MockMachine { Status = "Idle" };
+
+            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
+
+            Assert.True(result);
         }
 
         // =========================================================================

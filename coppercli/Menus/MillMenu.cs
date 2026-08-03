@@ -10,6 +10,7 @@ using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Core.Controllers.ControllerConstants;
 using static coppercli.Helpers.DisplayHelpers;
 
 namespace coppercli.Menus
@@ -25,6 +26,12 @@ namespace coppercli.Menus
         private static ControllerState _latestState;
         private static ToolChangeInfo? _pendingToolChange;
         private static ControllerError? _latestError;
+
+        // ETA is estimated only while actually milling. The clock starts when streaming
+        // begins - not before, or the setup phases (settle, home, retract) would pollute
+        // the pace the estimate is built from.
+        private static EtaEstimator? _etaEstimator;
+        private static DateTime? _millStreamStart;
 
         // Tool change display state (replaces ToolChangeHelpers static properties)
         private static string? _toolChangeOverlayMessage;
@@ -43,28 +50,14 @@ namespace coppercli.Menus
                 // Validate preflight (shared with WebServer)
                 var preflight = MenuHelpers.ValidateMillPreflight();
 
-                // Handle blocking errors first
-                if (preflight.Error == MillPreflightError.NotConnected)
+                // Blocking errors, mapped in one place shared with the disabled-reason
+                // display (AlarmState falls through to the ready-check below).
+                string? blockingReason = MenuHelpers.DescribeMillBlockingError(preflight);
+                if (blockingReason != null)
                 {
-                    MenuHelpers.ShowError(DisabledConnect);
+                    MenuHelpers.ShowError(blockingReason);
                     return;
                 }
-                if (preflight.Error == MillPreflightError.NoFile)
-                {
-                    MenuHelpers.ShowError(DisabledNoFile);
-                    return;
-                }
-                if (preflight.Error == MillPreflightError.ProbeNotApplied)
-                {
-                    MenuHelpers.ShowError(DisabledProbeNotApplied);
-                    return;
-                }
-                if (preflight.Error == MillPreflightError.ProbeIncomplete)
-                {
-                    MenuHelpers.ShowError(string.Format(DisabledProbeIncomplete, preflight.ProbeProgress));
-                    return;
-                }
-                // AlarmState will be handled by EnsureMachineReady below
 
                 // Handle dangerous command warnings (prompt user)
                 if (preflight.Warnings.Contains(MillPreflightWarning.DangerousCommands) &&
@@ -106,7 +99,9 @@ namespace coppercli.Menus
 
                 if (!MachineCommands.EnsureMachineReady(machine))
                 {
-                    MenuHelpers.ShowError(ErrorMachineAlarm);
+                    // Not-ready now covers "still moving or held" as well as alarmed,
+                    // so say what the operator actually needs to do.
+                    MenuHelpers.ShowError(MachineWait.IsAlarm(machine) ? ErrorMachineAlarm : ErrorMachineNotReady);
                     return;
                 }
 
@@ -130,6 +125,8 @@ namespace coppercli.Menus
             _latestState = ControllerState.Idle;
             _pendingToolChange = null;
             _latestError = null;
+            _etaEstimator = null;
+            _millStreamStart = null;
 
             // TUI state for display
             bool paused = false;
@@ -137,7 +134,6 @@ namespace coppercli.Menus
             var startTime = DateTime.Now;
             var pauseStartTime = DateTime.Now;
             var totalPausedTime = TimeSpan.Zero;
-            int startLine = machine.FilePosition;
             var (lastWidth, lastHeight) = GetSafeWindowSize();
 
             // Cancellation token for stopping the controller
@@ -202,7 +198,7 @@ namespace coppercli.Menus
                 {
                     string depthStr = AppState.DepthAdjustment == 0 ? "0" : $"{AppState.DepthAdjustment:+0.00;-0.00}";
                     string safetyMsg = $"{SafetyChecklistMessage}  Depth: {depthStr}mm";
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, 0, safetyMsg, SafetyDepthSubMessage);
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, EtaUnknown, safetyMsg, SafetyDepthSubMessage);
 
                     if (Console.KeyAvailable)
                     {
@@ -237,12 +233,8 @@ namespace coppercli.Menus
                 SleepPrevention.Start();
 
                 // === CONFIGURE AND START CONTROLLER ===
-                controller.Options = new MillingOptions
-                {
-                    FilePath = currentFile?.FileName,
-                    DepthAdjustment = (float)AppState.DepthAdjustment,
-                    RequireHoming = !AppState.Machine.IsHomed,
-                };
+                controller.Options = MillingOptions.Create(currentFile?.FileName,
+                    (float)AppState.DepthAdjustment, AppState.Machine.IsHomed);
 
                 Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
                     controller.Options.RequireHoming, controller.Options.DepthAdjustment);
@@ -256,9 +248,8 @@ namespace coppercli.Menus
                 // Start controller (fire and forget - we monitor via events)
                 _ = controller.StartAsync(cts.Token);
 
-                // Record start time for ETA calculation
+                // Record start time (drives the elapsed display).
                 startTime = DateTime.Now;
-                startLine = 0;
 
                 Console.Clear();
 
@@ -285,7 +276,7 @@ namespace coppercli.Menus
                         pauseStartTime = DateTime.Now;
 
                         // Run tool change using ToolChangeController
-                        bool success = RunToolChangeController(tcInfo, visitedCells, startTime, totalPausedTime, startLine);
+                        bool success = RunToolChangeController(tcInfo, visitedCells, startTime, totalPausedTime);
 
                         if (success)
                         {
@@ -358,9 +349,30 @@ namespace coppercli.Menus
                     // Update paused state from controller
                     paused = (state == ControllerState.Paused);
 
-                    // Calculate elapsed time
+                    // Start the ETA clock the moment milling actually begins streaming,
+                    // so setup time does not distort the pace it learns from.
+                    if (_millStreamStart == null &&
+                        _latestProgress?.Phase == PhaseMilling &&
+                        AppState.CurrentFile != null)
+                    {
+                        _millStreamStart = DateTime.Now;
+                        _etaEstimator = new EtaEstimator(AppState.CurrentFile.TotalTime, machine.File.Count);
+                    }
+
+                    // One pause accounting, used for both clocks. The display elapsed
+                    // runs from the moment the user hit go; the ETA's clock runs from
+                    // when milling actually began streaming - but both exclude the same
+                    // paused time.
                     var currentPausedTime = paused ? (DateTime.Now - pauseStartTime) : TimeSpan.Zero;
                     var elapsed = DateTime.Now - startTime - totalPausedTime - currentPausedTime;
+
+                    string etaStr = EtaUnknown;
+                    if (_etaEstimator != null && _millStreamStart != null)
+                    {
+                        var millingElapsed = DateTime.Now - _millStreamStart.Value - totalPausedTime - currentPausedTime;
+                        var remaining = _etaEstimator.Update(machine.FilePosition, millingElapsed);
+                        etaStr = remaining.HasValue ? FormatTimeSpan(remaining.Value) : EtaUnknown;
+                    }
 
                     // Handle window resize
                     var (curWidth, curHeight) = GetSafeWindowSize();
@@ -373,12 +385,12 @@ namespace coppercli.Menus
 
                     // Draw progress with current phase message if in setup phases
                     string? statusMessage = null;
-                    if (_latestProgress != null && _latestProgress.Phase != "Milling")
+                    if (_latestProgress != null && _latestProgress.Phase != PhaseMilling)
                     {
                         statusMessage = _latestProgress.Message;
                     }
 
-                    DrawMillProgress(paused, visitedCells, elapsed, startLine, statusMessage);
+                    DrawMillProgress(paused, visitedCells, elapsed, etaStr, statusMessage);
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
@@ -388,7 +400,7 @@ namespace coppercli.Menus
 
                 if (finalState == ControllerState.Completed)
                 {
-                    DrawMillProgress(false, visitedCells, finalElapsed, startLine);
+                    DrawMillProgress(false, visitedCells, finalElapsed, EtaUnknown);
 
                     // Offer to clear probe data after successful mill
                     if (AppState.ProbePoints != null)
@@ -437,7 +449,7 @@ namespace coppercli.Menus
             }
         }
 
-        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, int startLine, string? statusMessage = null, string? statusSubMessage = null)
+        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, string etaStr, string? statusMessage = null, string? statusSubMessage = null)
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
@@ -461,7 +473,6 @@ namespace coppercli.Menus
             int fileLine = machine.FilePosition;
             int totalLines = machine.File.Count;
             double pct = totalLines > 0 ? (100.0 * fileLine / totalLines) : 0;
-            string etaStr = CalculateEta(elapsed, fileLine - startLine, totalLines - fileLine);
 
             // Show machine status prominently when not running normally
             string status = machine.Status;
@@ -583,16 +594,6 @@ namespace coppercli.Menus
             return Math.Clamp(index, 0, gridSize - 1);
         }
 
-        private static string CalculateEta(TimeSpan elapsed, int linesCompleted, int linesRemaining)
-        {
-            if (linesCompleted <= MillMinLinesForEta || elapsed.TotalSeconds <= MillMinSecondsForEta)
-            {
-                return "--:--:--";
-            }
-            double secondsPerLine = elapsed.TotalSeconds / linesCompleted;
-            var eta = TimeSpan.FromSeconds(secondsPerLine * linesRemaining);
-            return FormatTimeSpan(eta);
-        }
 
         private static void DrawPositionGrid(int width, int height, int posX, int posY,
             HashSet<(int, int)> visited, int winWidth, double minX, double maxX, double minY, double maxY,
@@ -771,8 +772,7 @@ namespace coppercli.Menus
             ToolChangeInfo tcInfo,
             HashSet<(int, int)> visitedCells,
             DateTime startTime,
-            TimeSpan totalPausedTime,
-            int startLine)
+            TimeSpan totalPausedTime)
         {
             var toolChangeController = AppState.ToolChange;
 
@@ -785,18 +785,7 @@ namespace coppercli.Menus
             // Set options from user settings and file bounds
             var settings = AppState.Settings;
             var currentFile = AppState.CurrentFile;
-            toolChangeController.Options = new ToolChangeOptions
-            {
-                ProbeMaxDepth = settings.ProbeMaxDepth,
-                ProbeFeed = settings.ProbeFeed,
-                RetractHeight = RetractZMm,
-                WorkAreaCenter = currentFile != null && currentFile.ContainsMotion
-                    ? new Vector3(
-                        (currentFile.Min.X + currentFile.Max.X) / 2,
-                        (currentFile.Min.Y + currentFile.Max.Y) / 2,
-                        0)
-                    : null
-            };
+            toolChangeController.Options = ToolChangeOptions.FromSettings(settings, currentFile);
 
             // State for tracking tool change progress
             bool completed = false;
@@ -812,7 +801,7 @@ namespace coppercli.Menus
                 var elapsed = startTime != DateTime.MinValue
                     ? DateTime.Now - startTime - totalPausedTime - currentPausedTime
                     : TimeSpan.Zero;
-                DrawMillProgress(false, visitedCells, elapsed, startLine);
+                DrawMillProgress(false, visitedCells, elapsed, EtaUnknown);
             }
 
             // Subscribe to controller events
@@ -910,12 +899,12 @@ namespace coppercli.Menus
                                 if (InputHelpers.IsKey(key, ConsoleKey.Y))
                                 {
                                     Logger.Log("ToolChange: Y pressed, continuing");
-                                    userResponse = "Continue";
+                                    userResponse = OptionContinue;
                                 }
                                 else if (InputHelpers.IsExitKey(key))
                                 {
                                     Logger.Log("ToolChange: Escape pressed, aborting");
-                                    userResponse = "Abort";
+                                    userResponse = OptionAbort;
                                 }
                                 else if (isWaitingForZeroZ && InputHelpers.IsKey(key, ConsoleKey.J))
                                 {

@@ -116,6 +116,18 @@ namespace coppercli.Core.Util
         /// <summary>Timeout waiting for motion to start after sending command (ms).</summary>
         public const int MotionStartTimeoutMs = 1000;
 
+        /// <summary>How long to wait for GRBL's reply to $# (its stored offsets).</summary>
+        public const int WorkOffsetQueryTimeoutMs = 2000;
+
+        /// <summary>
+        /// How long to wait for GRBL's [PRB:] reply before giving up on a probe.
+        /// Generous compared with any real probe move (a 50mm/min seek over 50mm is
+        /// about a minute); the point is that a reply which never arrives - because the
+        /// command was rejected, or the machine alarmed - cannot hang the workflow with
+        /// the tool resting on the work.
+        /// </summary>
+        public const int ProbeReplyTimeoutMs = 180000;
+
         /// <summary>Timeout waiting for Z axis to reach target height (ms). 30 seconds.</summary>
         public const int ZHeightWaitTimeoutMs = 30000;
 
@@ -136,6 +148,14 @@ namespace coppercli.Core.Util
         /// Allows user to verify setup before motion begins.
         /// </summary>
         public const int PostIdleSettleMs = 5000;
+
+        /// <summary>Longest the settling phase may wait for a machine that never becomes
+        /// ready (an open door, a standing alarm) before telling the operator why.</summary>
+        public const int SettleTimeoutMs = 60000;
+
+        /// <summary>How long the lift-on-cancel may take before the stop returns anyway.
+        /// The tool still needs to come up, but a Stop must not appear to hang.</summary>
+        public const int CancelRetractTimeoutMs = 5000;
 
         /// <summary>One second in milliseconds. Used for countdown calculations.</summary>
         public const int OneSecondMs = 1000;

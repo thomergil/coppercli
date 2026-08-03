@@ -2,8 +2,10 @@
 
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Helpers
 {
@@ -20,7 +22,7 @@ namespace coppercli.Helpers
         {
             Logger.Log($"MoveToSafeHeight: sending {CmdAbsolute} then {CmdRapidMove} Z{height:F3}");
             machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdRapidMove} Z{height:F3}");
+            machine.SendLine(Inv($"{CmdRapidMove} Z{height:F3}"));
         }
 
         /// <summary>
@@ -41,7 +43,7 @@ namespace coppercli.Helpers
         public static bool HomeAndWait(Machine machine, int timeoutMs = HomingTimeoutMs)
         {
             Logger.Log("HomeAndWait: calling MachineWait.HomeAsync");
-            return MachineWait.HomeAsync(machine, timeoutMs).GetAwaiter().GetResult();
+            return MachineWait.HomeAsync(machine, timeoutMs).GetAwaiter().GetResult().Success;
         }
 
         /// <summary>
@@ -58,7 +60,7 @@ namespace coppercli.Helpers
         public static void ZeroWorkOffset(Machine machine, string axes)
         {
             Logger.Log($"ZeroWorkOffset: sending {CmdZeroWorkOffset} {axes}");
-            machine.SendLine($"{CmdZeroWorkOffset} {axes}");
+            machine.SendLine(Inv($"{CmdZeroWorkOffset} {axes}"));
         }
 
         /// <summary>
@@ -71,6 +73,17 @@ namespace coppercli.Helpers
             MachineWait.ZeroWorkOffsetAsync(machine, axes).GetAwaiter().GetResult();
             AppState.IsWorkZeroSet = true;
             AppState.HandleWorkZeroChange(axes);
+
+            // Zeroing all three axes establishes a full origin worth offering to trust on
+            // the next launch. Persisting it here means neither front end has to remember
+            // to - both used to do it by hand afterwards.
+            string upper = axes.ToUpperInvariant();
+            if (upper.Contains('X') && upper.Contains('Y') && upper.Contains('Z'))
+            {
+                AppState.Session.HasStoredWorkZero = true;
+                Persistence.SaveSession();
+            }
+
             Logger.Log($"SetWorkZeroAndWait: IsWorkZeroSet = true (axes={axes})");
         }
 
@@ -79,7 +92,46 @@ namespace coppercli.Helpers
         /// </summary>
         public static void RapidMoveXY(Machine machine, double x, double y)
         {
-            machine.SendLine($"{CmdRapidMove} X{x:F3} Y{y:F3}");
+            machine.SendLine(Inv($"{CmdRapidMove} X{x:F3} Y{y:F3}"));
+        }
+
+        /// <summary>
+        /// Rapid move to an absolute XY target, guarded against moving while the probe
+        /// is in contact (which would drag the probe tip sideways across the workpiece).
+        /// Returns false without moving if the probe is in contact. Single source of truth
+        /// for the guarded "goto XY" workflow shared by the TUI and web front ends.
+        /// </summary>
+        public static bool GotoAbsoluteXY(Machine machine, double x, double y)
+        {
+            if (machine.PinStateProbe)
+            {
+                Logger.Log($"Blocked goto XY ({x:F3},{y:F3}): probe in contact");
+                return false;
+            }
+            SetAbsoluteMode(machine);
+            RapidMoveXY(machine, x, y);
+            return true;
+        }
+
+        /// <summary>
+        /// Guarded rapid move to work origin (X0 Y0). Does not change Z.
+        /// </summary>
+        public static bool GotoWorkOriginXY(Machine machine)
+        {
+            return GotoAbsoluteXY(machine, 0, 0);
+        }
+
+        /// <summary>
+        /// Guarded rapid move to the centre of the loaded file. No-op (returns false)
+        /// when no file is loaded. Does not change Z.
+        /// </summary>
+        public static bool GotoFileCenterXY(Machine machine, GCodeFile? file)
+        {
+            if (file == null)
+            {
+                return false;
+            }
+            return GotoAbsoluteXY(machine, file.Center.X, file.Center.Y);
         }
 
         /// <summary>
@@ -87,7 +139,7 @@ namespace coppercli.Helpers
         /// </summary>
         public static void ProbeZ(Machine machine, double maxDepth, double feed)
         {
-            machine.SendLine($"{CmdProbeToward} Z-{maxDepth:F3} F{feed:F1}");
+            machine.SendLine(Inv($"{CmdProbeToward} Z-{maxDepth:F3} F{feed:F1}"));
         }
 
         /// <summary>
@@ -110,7 +162,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Prepares machine for an operation by clearing Door state, waiting for Idle,
+        /// Prepares machine for an operation by waiting for the machine to settle, waiting for Idle,
         /// and checking for Alarm. Returns true if machine is ready, false if in Alarm state.
         /// Use at the start of milling, probing, or other operations that require a clean state.
         /// Wraps MachineWait.EnsureMachineReadyAsync for sync callers.

@@ -178,9 +178,14 @@ namespace coppercli.Helpers
         /// have moving beds where only X matters to reach the tool setter.
         /// </summary>
         public double? Y { get; set; }
-        public double ProbeDepth { get; set; } = 50.0;
-        public double FastFeed { get; set; } = 800.0;
-        public double SlowFeed { get; set; } = 200.0;
-        public double Retract { get; set; } = 3.0;
+
+        // Defaults come from the same constants the tool-change controller falls back to
+        // when a profile has no tool setter. They had drifted - a profile that omitted
+        // retract got 3mm where the fallback path used 10mm, and slow feed 200 where the
+        // fallback used 50, which is the feed that sets tool-length measurement accuracy.
+        public double ProbeDepth { get; set; } = Core.Util.Constants.ToolSetterProbeDepth;
+        public double FastFeed { get; set; } = Core.Util.Constants.ToolSetterSeekFeed;
+        public double SlowFeed { get; set; } = Core.Util.Constants.ToolSetterProbeFeed;
+        public double Retract { get; set; } = Core.Util.Constants.ToolSetterRetract;
     }
 }

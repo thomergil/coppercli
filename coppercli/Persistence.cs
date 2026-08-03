@@ -2,7 +2,9 @@
 
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
+using coppercli.Core.Util;
 using coppercli.Helpers;
+using Spectre.Console;
 using System.Text.Json;
 using static coppercli.CliConstants;
 
@@ -47,9 +49,9 @@ namespace coppercli
         {
             /// <summary>No autosave file exists.</summary>
             None,
-            /// <summary>Autosave exists with incomplete data (NotProbed.Count > 0).</summary>
+            /// <summary>Autosave exists but some nodes were never measured.</summary>
             Partial,
-            /// <summary>Autosave exists with complete data (NotProbed.Count == 0).</summary>
+            /// <summary>Autosave exists and every node holds a measured height.</summary>
             Complete
         }
 
@@ -69,9 +71,9 @@ namespace coppercli
             try
             {
                 var grid = ProbeGrid.Load(path);
-                var state = grid.NotProbed.Count > 0 ? ProbeState.Partial : ProbeState.Complete;
+                var state = grid.HasCompleteData ? ProbeState.Complete : ProbeState.Partial;
                 Logger.Log("GetProbeState: {0} at {1} ({2}/{3} probed, NotProbed.Count={4})",
-                    state, path, grid.Progress, grid.TotalPoints, grid.NotProbed.Count);
+                    state, path, grid.Progress, grid.TotalPoints, grid.RemainingCount);
                 return state;
             }
             catch (Exception ex)
@@ -113,9 +115,9 @@ namespace coppercli
                     return JsonSerializer.Deserialize<MachineSettings>(json) ?? new MachineSettings();
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall through to return default settings
+                QuarantineUnreadableFile(GetSettingsPath(), ex);
             }
             return new MachineSettings();
         }
@@ -144,7 +146,7 @@ namespace coppercli
             {
                 try
                 {
-                    File.WriteAllText(GetSettingsPath(), json);
+                    AtomicFile.WriteAllText(GetSettingsPath(), json);
                     Logger.Log("Settings migration: saved migrated file");
                 }
                 catch
@@ -162,11 +164,12 @@ namespace coppercli
             {
                 var path = GetSettingsPath();
                 var json = JsonSerializer.Serialize(AppState.Settings, AppState.JsonOptions);
-                File.WriteAllText(path, json);
+                AtomicFile.WriteAllText(path, json);
             }
-            catch
+            catch (Exception ex)
             {
-                // Silent failure for settings save
+                // The user believes their settings were kept; say so if they were not.
+                Logger.Log("SaveSettings failed: {0}", ex.Message);
             }
         }
 
@@ -181,9 +184,9 @@ namespace coppercli
                     return JsonSerializer.Deserialize<SessionState>(json) ?? new SessionState();
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall through to return default session
+                QuarantineUnreadableFile(GetSessionPath(), ex);
             }
             return new SessionState();
         }
@@ -194,11 +197,41 @@ namespace coppercli
             {
                 var path = GetSessionPath();
                 var json = JsonSerializer.Serialize(AppState.Session, AppState.JsonOptions);
-                File.WriteAllText(path, json);
+                AtomicFile.WriteAllText(path, json);
             }
-            catch
+            catch (Exception ex)
             {
-                // Silent failure for session save
+                Logger.Log("SaveSession failed: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Moves a file we could not read aside so the next save does not overwrite it,
+        /// and records why. Silently falling back to defaults would reset probe feeds,
+        /// depths and the tool-setter position with nothing said.
+        /// </summary>
+        private static void QuarantineUnreadableFile(string path, Exception ex)
+        {
+            Logger.Log("Could not read {0} ({1}); using defaults", path, ex.Message);
+
+            // Said out loud, not only to a log that is off unless --debug: the operator
+            // is about to run with default probe feeds, depths and tool-setter position
+            // instead of their own.
+            AnsiConsole.MarkupLine(
+                $"[{ColorWarning}]Could not read {Markup.Escape(Path.GetFileName(path))} - " +
+                $"using default settings. The unreadable file has been kept alongside it.[/]");
+
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Move(path, path + ".unreadable", overwrite: true);
+                    Logger.Log("Moved unreadable file to {0}.unreadable", path);
+                }
+            }
+            catch (Exception moveEx)
+            {
+                Logger.Log("Could not set aside {0}: {1}", path, moveEx.Message);
             }
         }
 

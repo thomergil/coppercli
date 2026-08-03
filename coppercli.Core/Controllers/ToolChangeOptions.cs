@@ -9,6 +9,19 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public class ToolChangeOptions
     {
+        /// <summary>Builds tool-change options from settings and the loaded file's bounds.</summary>
+        public static ToolChangeOptions FromSettings(Settings.MachineSettings settings, GCode.GCodeFile? file)
+        {
+            return new ToolChangeOptions
+            {
+                ProbeMaxDepth = settings.ProbeMaxDepth,
+                ProbeFeed = settings.ProbeFeed,
+                RetractHeight = Constants.RetractZMm,
+                WorkAreaCenter = file != null && file.ContainsMotion ? file.Center : null,
+            };
+        }
+
+
         /// <summary>
         /// Maximum probe depth for PCB surface probing (mm, positive value).
         /// Used in non-tool-setter mode when probing the PCB surface.

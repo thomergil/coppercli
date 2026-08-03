@@ -22,9 +22,12 @@ namespace coppercli.Core.Controllers
             [ControllerState.Idle] = new[] { ControllerState.Initializing },
             [ControllerState.Initializing] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
             [ControllerState.Running] = new[] { ControllerState.Paused, ControllerState.WaitingForUserInput, ControllerState.Completing, ControllerState.Failed, ControllerState.Cancelled },
-            [ControllerState.Paused] = new[] { ControllerState.Running, ControllerState.Cancelled },
-            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Running, ControllerState.Cancelled },
-            [ControllerState.Completing] = new[] { ControllerState.Completed, ControllerState.Failed },
+            // Paused and WaitingForUserInput can fail: cleanup runs from there too.
+            [ControllerState.Paused] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
+            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
+            // Completing can still be cancelled - Stop during the final retract is a
+            // normal thing for an operator to do, and it used to throw out of a finally.
+            [ControllerState.Completing] = new[] { ControllerState.Completed, ControllerState.Failed, ControllerState.Cancelled },
             [ControllerState.Completed] = new[] { ControllerState.Idle },
             [ControllerState.Failed] = new[] { ControllerState.Idle },
             [ControllerState.Cancelled] = new[] { ControllerState.Idle },
@@ -45,6 +48,21 @@ namespace coppercli.Core.Controllers
                 {
                     return _state;
                 }
+            }
+        }
+
+        /// <summary>
+        /// True while a run is under way. The single definition of "active", so the
+        /// probe/tool-change/mill status handlers stop each spelling it out.
+        /// </summary>
+        public bool IsActive
+        {
+            get
+            {
+                var s = State;
+                return s == ControllerState.Initializing
+                    || s == ControllerState.Running
+                    || s == ControllerState.Paused;
             }
         }
 

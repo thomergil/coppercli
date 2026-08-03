@@ -74,6 +74,12 @@ namespace coppercli.Core.GCode
         /// <summary>G53: Move in machine coordinates (non-modal, applies to one line only).</summary>
         public const int MachineCoordinates = 53;
 
+        /// <summary>
+        /// G92: Set coordinate offset from the current position. Its axis words name a
+        /// coordinate to adopt, not a destination - it commands no motion.
+        /// </summary>
+        public const int SetPositionOffset = 92;
+
         // =========================================================================
         // Distance mode (G90-G91)
         // =========================================================================

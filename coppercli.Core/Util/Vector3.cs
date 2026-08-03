@@ -180,176 +180,6 @@ namespace coppercli.Core.Util
             return !(v1 == v2);
         }
 
-        public static Vector3 CrossProduct(Vector3 v1, Vector3 v2)
-        {
-            return new Vector3(
-                v1.Y * v2.Z - v1.Z * v2.Y,
-                v1.Z * v2.X - v1.X * v2.Z,
-                v1.X * v2.Y - v1.Y * v2.X
-            );
-        }
-
-        public Vector3 CrossProduct(Vector3 other)
-        {
-            return CrossProduct(this, other);
-        }
-
-        public static double DotProduct(Vector3 v1, Vector3 v2)
-        {
-            return v1.X * v2.X + v1.Y * v2.Y + v1.Z * v2.Z;
-        }
-
-        public double DotProduct(Vector3 other)
-        {
-            return DotProduct(this, other);
-        }
-
-        public static double MixedProduct(Vector3 v1, Vector3 v2, Vector3 v3)
-        {
-            return DotProduct(CrossProduct(v1, v2), v3);
-        }
-
-        public double MixedProduct(Vector3 other_v1, Vector3 other_v2)
-        {
-            return DotProduct(CrossProduct(this, other_v1), other_v2);
-        }
-
-        public static Vector3 Normalize(Vector3 v1)
-        {
-            if (v1.Magnitude == 0)
-            {
-                throw new DivideByZeroException(NORMALIZE_0);
-            }
-
-            double inverse = 1 / v1.Magnitude;
-            return new Vector3(v1.X * inverse, v1.Y * inverse, v1.Z * inverse);
-        }
-
-        public void Normalize()
-        {
-            this = Normalize(this);
-        }
-
-        public static Vector3 Interpolate(Vector3 v1, Vector3 v2, double control, bool allowExtrapolation)
-        {
-            if (!allowExtrapolation && (control > 1 || control < 0))
-            {
-                throw new ArgumentOutOfRangeException("control", control,
-                    INTERPOLATION_RANGE + "\n" + ARGUMENT_VALUE + control);
-            }
-            return new Vector3(
-                v1.X * (1 - control) + v2.X * control,
-                v1.Y * (1 - control) + v2.Y * control,
-                v1.Z * (1 - control) + v2.Z * control
-            );
-        }
-
-        public static Vector3 Interpolate(Vector3 v1, Vector3 v2, double control)
-        {
-            return Interpolate(v1, v2, control, false);
-        }
-
-        public Vector3 Interpolate(Vector3 other, double control)
-        {
-            return Interpolate(this, other, control);
-        }
-
-        public Vector3 Interpolate(Vector3 other, double control, bool allowExtrapolation)
-        {
-            return Interpolate(this, other, control, allowExtrapolation);
-        }
-
-        public static double Distance(Vector3 v1, Vector3 v2)
-        {
-            return (double)Math.Sqrt(
-                (v1.X - v2.X) * (v1.X - v2.X) +
-                (v1.Y - v2.Y) * (v1.Y - v2.Y) +
-                (v1.Z - v2.Z) * (v1.Z - v2.Z)
-            );
-        }
-
-        public double Distance(Vector3 other)
-        {
-            return Distance(this, other);
-        }
-
-        public static double Angle(Vector3 v1, Vector3 v2)
-        {
-            return (double)Math.Acos(Normalize(v1).DotProduct(Normalize(v2)));
-        }
-
-        public double Angle(Vector3 other)
-        {
-            return Angle(this, other);
-        }
-
-        public static Vector3 Max(Vector3 v1, Vector3 v2)
-        {
-            if (v1 >= v2)
-            {
-                return v1;
-            }
-            return v2;
-        }
-
-        public Vector3 Max(Vector3 other)
-        {
-            return Max(this, other);
-        }
-
-        public static Vector3 Min(Vector3 v1, Vector3 v2)
-        {
-            if (v1 <= v2)
-            {
-                return v1;
-            }
-            return v2;
-        }
-
-        public Vector3 Min(Vector3 other)
-        {
-            return Min(this, other);
-        }
-
-        public static Vector3 Yaw(Vector3 v1, double degree)
-        {
-            double x = (v1.Z * (double)Math.Sin(degree)) + (v1.X * (double)Math.Cos(degree));
-            double y = v1.Y;
-            double z = (v1.Z * (double)Math.Cos(degree)) - (v1.X * (double)Math.Sin(degree));
-            return new Vector3(x, y, z);
-        }
-
-        public void Yaw(double degree)
-        {
-            this = Yaw(this, degree);
-        }
-
-        public static Vector3 Pitch(Vector3 v1, double degree)
-        {
-            double x = v1.X;
-            double y = (v1.Y * (double)Math.Cos(degree)) - (v1.Z * (double)Math.Sin(degree));
-            double z = (v1.Y * (double)Math.Sin(degree)) + (v1.Z * (double)Math.Cos(degree));
-            return new Vector3(x, y, z);
-        }
-
-        public void Pitch(double degree)
-        {
-            this = Pitch(this, degree);
-        }
-
-        public static Vector3 Roll(Vector3 v1, double degree)
-        {
-            double x = (v1.X * (double)Math.Cos(degree)) - (v1.Y * (double)Math.Sin(degree));
-            double y = (v1.X * (double)Math.Sin(degree)) + (v1.Y * (double)Math.Cos(degree));
-            double z = v1.Z;
-            return new Vector3(x, y, z);
-        }
-
-        public void Roll(double degree)
-        {
-            this = Roll(this, degree);
-        }
-
         public static double Abs(Vector3 v1)
         {
             return v1.Magnitude;
@@ -381,66 +211,14 @@ namespace coppercli.Core.Util
             return SumComponentSqrs(this);
         }
 
-        public static Vector3 PowComponents(Vector3 v1, double power)
-        {
-            return new Vector3(
-                (double)Math.Pow(v1.X, power),
-                (double)Math.Pow(v1.Y, power),
-                (double)Math.Pow(v1.Z, power)
-            );
-        }
-
-        public void PowComponents(double power)
-        {
-            this = PowComponents(this, power);
-        }
-
-        public static Vector3 SqrtComponents(Vector3 v1)
-        {
-            return new Vector3(
-                (double)Math.Sqrt(v1.X),
-                (double)Math.Sqrt(v1.Y),
-                (double)Math.Sqrt(v1.Z)
-            );
-        }
-
-        public void SqrtComponents()
-        {
-            this = SqrtComponents(this);
-        }
-
         public static Vector3 SqrComponents(Vector3 v1)
         {
             return new Vector3(v1.X * v1.X, v1.Y * v1.Y, v1.Z * v1.Z);
         }
 
-        public void SqrComponents()
-        {
-            this = SqrComponents(this);
-        }
-
         public override string ToString()
         {
             return ToString(null, null);
-        }
-
-        public string ToVerbString()
-        {
-            string output = null;
-
-            if (IsUnitVector())
-            {
-                output += UNIT_VECTOR;
-            }
-            else
-            {
-                output += POSITIONAL_VECTOR;
-            }
-
-            output += string.Format("( x={0}, y={1}, z={2} )", X, Y, Z);
-            output += MAGNITUDE + Magnitude;
-
-            return output;
         }
 
         public string ToString(string format, IFormatProvider formatProvider)
@@ -518,53 +296,16 @@ namespace coppercli.Core.Util
             );
         }
 
-        public static bool IsUnitVector(Vector3 v1)
-        {
-            return Math.Abs(v1.Magnitude - 1) <= EqualityTolerance;
-        }
-
-        public bool IsUnitVector()
-        {
-            return IsUnitVector(this);
-        }
-
-        public static bool IsBackFace(Vector3 normal, Vector3 lineOfSight)
-        {
-            return normal.DotProduct(lineOfSight) < 0;
-        }
-
-        public bool IsBackFace(Vector3 lineOfSight)
-        {
-            return IsBackFace(this, lineOfSight);
-        }
-
-        public static bool IsPerpendicular(Vector3 v1, Vector3 v2)
-        {
-            return v1.DotProduct(v2) == 0;
-        }
-
-        public bool IsPerpendicular(Vector3 other)
-        {
-            return IsPerpendicular(this, other);
-        }
-
         public static readonly Vector3 origin = new Vector3(0, 0, 0);
         public static readonly Vector3 xAxis = new Vector3(1, 0, 0);
         public static readonly Vector3 yAxis = new Vector3(0, 1, 0);
         public static readonly Vector3 zAxis = new Vector3(0, 0, 1);
 
         private const string THREE_COMPONENTS = "Array must contain exactly three components, (x,y,z)";
-        private const string NORMALIZE_0 = "Cannot normalize a vector when its magnitude is zero";
-        private const string INTERPOLATION_RANGE = "Control parameter must be a value between 0 & 1";
         private const string NON_VECTOR_COMPARISON = "Cannot compare a Vector3 to a non-Vector3";
         private const string ARGUMENT_TYPE = "The argument provided is a type of ";
-        private const string ARGUMENT_VALUE = "The argument provided has a value of ";
-        private const string ARGUMENT_LENGTH = "The argument provided has a length of ";
         private const string NEGATIVE_MAGNITUDE = "The magnitude of a Vector3 must be a positive value";
         private const string ORAGIN_VECTOR_MAGNITUDE = "Cannot change the magnitude of Vector3(0,0,0)";
-        private const string UNIT_VECTOR = "Unit vector composing of ";
-        private const string POSITIONAL_VECTOR = "Positional vector composing of ";
-        private const string MAGNITUDE = " of magnitude ";
 
         // Tolerance for floating-point equality comparison.
         // Using 1e-9 (one billionth) rather than double.Epsilon (~5e-324) because

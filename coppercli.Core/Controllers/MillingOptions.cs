@@ -7,6 +7,20 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public class MillingOptions
     {
+        /// <summary>Builds milling options. The RequireHoming = not-yet-homed rule lives
+        /// here so both front ends enforce it identically.</summary>
+        public static MillingOptions Create(string? filePath, float depthAdjustment,
+            bool machineIsHomed)
+        {
+            return new MillingOptions
+            {
+                FilePath = filePath,
+                DepthAdjustment = depthAdjustment,
+                RequireHoming = !machineIsHomed,
+            };
+        }
+
+
         /// <summary>Path to the G-code file to mill.</summary>
         public string? FilePath { get; set; }
 
@@ -21,11 +35,5 @@ namespace coppercli.Core.Controllers
         /// Default: true.
         /// </summary>
         public bool RequireHoming { get; set; } = true;
-
-        /// <summary>
-        /// Whether to skip user confirmations (for Web UI).
-        /// Default: false (TUI shows confirmations).
-        /// </summary>
-        public bool SkipConfirmation { get; set; }
     }
 }

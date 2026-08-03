@@ -5,7 +5,7 @@ using coppercli.Core.Util;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.GCode.GCodeNumbers;
 using System;
-using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
@@ -24,12 +24,18 @@ namespace coppercli.Core.Communication
             Manual,
             SendFile,
             Probe,
-            Disconnected,
-            SendMacro
+            Disconnected
         }
 
         public event Action<Vector3, bool> ProbeFinished;
         public event Action<string> NonFatalException;
+
+        /// <summary>
+        /// Raised when GRBL refuses a command, with the code and the command it refused.
+        /// Lets a caller distinguish "rejected" from "still running" - waiting for Idle
+        /// cannot, because a refused command never leaves Idle.
+        /// </summary>
+        public event Action<GrblRejection> CommandRejected;
         public event Action<string> Info;
         public event Action<string> LineReceived;
         public event Action<string> StatusReceived;
@@ -55,12 +61,46 @@ namespace coppercli.Core.Communication
         private static readonly Regex ProbeEx = new Regex(@"\[PRB:(?'Pos'\-?[0-9\.]*(?:,\-?[0-9\.]*)+):(?'Success'0|1)\]", RegexOptions.Compiled);
         private static readonly Regex StartupRegex = new Regex("grbl v([0-9])\\.([0-9])([a-z])", RegexOptions.Compiled);
 
-        public Vector3 MachinePosition { get; private set; } = new Vector3();
-        public Vector3 WorkOffset { get; private set; } = new Vector3();
-        public Vector3 WorkPosition { get { return MachinePosition - WorkOffset; } }
+        // Vector3 is a 24-byte struct, so assigning one is several machine words and a
+        // reader on another thread can catch it half-updated - X and Y from the new
+        // status report, Z from the old. These values decide where the tool is told to
+        // go, so every read of them is made whole.
+        private readonly object _positionLock = new object();
+        private Vector3 _machinePosition = new Vector3();
+        private Vector3 _workOffset = new Vector3();
+        private Vector3 _lastProbePosMachine;
+        private Vector3 _lastProbePosWork;
 
-        public Vector3 LastProbePosMachine { get; private set; }
-        public Vector3 LastProbePosWork { get; private set; }
+        public Vector3 MachinePosition
+        {
+            get { lock (_positionLock) { return _machinePosition; } }
+            private set { lock (_positionLock) { _machinePosition = value; } }
+        }
+
+        public Vector3 WorkOffset
+        {
+            get { lock (_positionLock) { return _workOffset; } }
+            private set { lock (_positionLock) { _workOffset = value; } }
+        }
+
+        /// <summary>Work position, derived from a single consistent snapshot of both
+        /// machine position and work offset rather than two separate reads.</summary>
+        public Vector3 WorkPosition
+        {
+            get { lock (_positionLock) { return _machinePosition - _workOffset; } }
+        }
+
+        public Vector3 LastProbePosMachine
+        {
+            get { lock (_positionLock) { return _lastProbePosMachine; } }
+            private set { lock (_positionLock) { _lastProbePosMachine = value; } }
+        }
+
+        public Vector3 LastProbePosWork
+        {
+            get { lock (_positionLock) { return _lastProbePosWork; } }
+            private set { lock (_positionLock) { _lastProbePosWork = value; } }
+        }
 
         public int FeedOverride { get; private set; } = Constants.OverrideDefaultPercent;
         public int RapidOverride { get; private set; } = Constants.OverrideDefaultPercent;
@@ -83,19 +123,35 @@ namespace coppercli.Core.Communication
         /// </summary>
         public bool IsHoming { get; set; } = false;
 
+        private long _statusReportCount;
+
         /// <summary>
-        /// Timestamp of last received status response from GRBL.
-        /// Used to detect when GRBL stops/starts responding (e.g., during homing).
+        /// How many status reports have arrived. Monotonic, so callers can tell "GRBL is
+        /// still answering" from "GRBL has gone quiet" without trusting the wall clock.
         /// </summary>
-        public DateTime LastStatusReceived { get; private set; } = DateTime.MinValue;
+        public long StatusReportCount => Interlocked.Read(ref _statusReportCount);
 
         public double FeedRateRealtime { get; private set; } = 0;
         public double SpindleSpeedRealtime { get; private set; } = 0;
 
         public double CurrentTLO { get; private set; } = 0;
 
-        private Calculator _calculator;
-        public Calculator Calculator { get { return _calculator; } }
+        private Vector3 _g54Offset;
+        private TaskCompletionSource<bool> _g54Waiter;
+
+        /// <summary>
+        /// The G54 offset as GRBL last reported it for $#.
+        ///
+        /// Distinct from <see cref="WorkOffset"/>, which is the combined WCO the status
+        /// report carries (G54 plus G92 plus tool length offset). Anything that writes
+        /// G54 back with G10 L2 P1 has to start from this, or it re-datums by whatever
+        /// the other two contribute.
+        /// </summary>
+        public Vector3 G54Offset
+        {
+            get { lock (_positionLock) { return _g54Offset; } }
+            private set { lock (_positionLock) { _g54Offset = value; } }
+        }
 
         private ReadOnlyCollection<bool> _pauselines = new ReadOnlyCollection<bool>(new bool[0]);
         public ReadOnlyCollection<bool> PauseLines
@@ -262,29 +318,45 @@ namespace coppercli.Core.Communication
 
         private void RecordLog(string message)
         {
-            if (Log != null)
+            // Snapshot: Disconnect closes and nulls this from another thread, and
+            // writing to the closed writer would kill the serial worker.
+            var log = Log;
+
+            if (log == null)
             {
-                try
-                {
-                    Log.WriteLine(message);
-                }
-                catch
-                {
-                    throw;
-                }
+                return;
+            }
+
+            try
+            {
+                log.WriteLine(message);
+            }
+            catch (ObjectDisposedException)
+            {
+                // Raced with Disconnect. The traffic log is a diagnostic; losing a
+                // line from it must never take the connection down.
+            }
+            catch (IOException)
+            {
             }
         }
 
         public Machine(MachineSettings settings = null)
         {
             _settings = settings ?? new MachineSettings();
-            _calculator = new Calculator(this);
         }
 
-        Queue Sent = Queue.Synchronized(new Queue());
-        Queue ToSend = Queue.Synchronized(new Queue());
-        Queue ToSendPriority = Queue.Synchronized(new Queue());
-        Queue ToSendMacro = Queue.Synchronized(new Queue());
+        // ConcurrentQueue rather than Queue.Synchronized: the latter makes each call
+        // atomic but not a Count/Peek-then-Dequeue sequence, so a Clear() from a UI or
+        // web thread landing between them threw and killed the serial worker - taking
+        // the connection down mid-cut, at exactly the moment someone hit Reset.
+        private readonly ConcurrentQueue<string> Sent = new();
+        private readonly ConcurrentQueue<string> ToSend = new();
+        private readonly ConcurrentQueue<char> ToSendPriority = new();
+
+        // Guards the pairing of BufferState with Sent. They describe one thing - how
+        // many bytes GRBL is holding - and must not be updated independently.
+        private readonly object _bufferLock = new object();
 
         private void Work()
         {
@@ -298,13 +370,13 @@ namespace coppercli.Core.Communication
                 BufferState = 0;
 
                 TimeSpan WaitTime = TimeSpan.FromMilliseconds(0.5);
-                DateTime LastStatusPoll = DateTime.Now + TimeSpan.FromSeconds(0.5);
-                DateTime StartTime = DateTime.Now;
 
-                DateTime LastFilePosUpdate = DateTime.Now;
+                // Monotonic: a DST shift or NTP step must not stall status polling for
+                // an hour, nor expire every deadline at once.
+                var RunTime = System.Diagnostics.Stopwatch.StartNew();
+                long LastStatusPollMs = 500;
+                long LastFilePosUpdateMs = 0;
                 bool filePosChanged = false;
-
-                bool SendMacroStatusReceived = false;
 
                 // Local function to send a line to GRBL and update state
                 void SendLineToGrbl(string line)
@@ -323,9 +395,11 @@ namespace coppercli.Core.Communication
                     RaiseEvent(UpdateStatus, line);
                     RaiseEvent(LineSent, line);
 
-                    BufferState += line.Length + 1;
-
-                    Sent.Enqueue(line);
+                    lock (_bufferLock)
+                    {
+                        BufferState += line.Length + 1;
+                        Sent.Enqueue(line);
+                    }
                 }
 
                 writer.Write($"\n{CmdViewGCodeState}\n");
@@ -343,9 +417,9 @@ namespace coppercli.Core.Communication
                             return;
                         }
 
-                        while (ToSendPriority.Count > 0)
+                        while (ToSendPriority.TryDequeue(out char priorityChar))
                         {
-                            writer.Write((char)ToSendPriority.Dequeue());
+                            writer.Write(priorityChar);
                             writer.Flush();
                         }
 
@@ -384,64 +458,26 @@ namespace coppercli.Core.Communication
                                 filePosChanged = true;
                             }
                         }
-                        else if (Mode == OperatingMode.SendMacro)
+                        else if (ToSend.TryPeek(out string pending)
+                                 && (pending.Length + 1) < (ControllerBufferSize - BufferState)
+                                 && ToSend.TryDequeue(out string sendLine))
                         {
-                            switch (Status)
-                            {
-                                case StatusIdle:
-                                    if (BufferState == 0 && SendMacroStatusReceived)
-                                    {
-                                        SendMacroStatusReceived = false;
-
-                                        string sendLine = (string)ToSendMacro.Dequeue();
-
-                                        sendLine = Calculator.Evaluate(sendLine, out bool success);
-
-                                        if (!success)
-                                        {
-                                            ReportError("Error while evaluating macro!");
-                                            ReportError(sendLine);
-
-                                            ToSendMacro.Clear();
-                                        }
-                                        else
-                                        {
-                                            SendLineToGrbl(sendLine);
-                                        }
-                                    }
-                                    break;
-                                case StatusRun:
-                                case StatusHold:
-                                    break;
-                                default:
-                                    ToSendMacro.Clear();
-                                    break;
-                            }
-
-                            if (ToSendMacro.Count == 0)
-                            {
-                                Mode = OperatingMode.Manual;
-                            }
-                        }
-                        else if (ToSend.Count > 0 && (((string)ToSend.Peek()).Length + 1) < (ControllerBufferSize - BufferState))
-                        {
-                            string sendLine = (string)ToSend.Dequeue();
                             SendLineToGrbl(sendLine);
                         }
 
-                        DateTime Now = DateTime.Now;
+                        long nowMs = RunTime.ElapsedMilliseconds;
 
-                        if ((Now - LastStatusPoll).TotalMilliseconds > StatusPollInterval)
+                        if (nowMs - LastStatusPollMs > StatusPollInterval)
                         {
                             writer.Write(StatusQuery);
                             writer.Flush();
-                            LastStatusPoll = Now;
+                            LastStatusPollMs = nowMs;
                         }
 
-                        if (filePosChanged && (Now - LastFilePosUpdate).TotalMilliseconds > Constants.FilePosUpdateIntervalMs)
+                        if (filePosChanged && nowMs - LastFilePosUpdateMs > Constants.FilePosUpdateIntervalMs)
                         {
                             RaiseEvent(FilePositionChanged);
-                            LastFilePosUpdate = Now;
+                            LastFilePosUpdateMs = nowMs;
                             filePosChanged = false;
                         }
 
@@ -467,39 +503,53 @@ namespace coppercli.Core.Communication
 
                     if (line == ResponseOk)
                     {
-                        if (Sent.Count != 0)
+                        lock (_bufferLock)
                         {
-                            var acked = (string)Sent.Dequeue();
-                            // Controllers.ControllerLog.Log($"GRBL_OK: acked \"{acked}\"");
-                            BufferState -= acked.Length + 1;
-                        }
-                        else
-                        {
-                            // This can happen during startup (initial $G/$# aren't queued)
-                            // or if buffer state gets out of sync - just reset it
-                            // Controllers.ControllerLog.Log("GRBL_OK: nothing in Sent queue, resetting BufferState");
-                            BufferState = 0;
+                            if (Sent.TryDequeue(out string acked))
+                            {
+                                BufferState -= acked.Length + 1;
+                            }
+                            else
+                            {
+                                // This can happen during startup (initial $G/$# aren't queued)
+                                // or if buffer state gets out of sync - just reset it
+                                BufferState = 0;
+                            }
                         }
                     }
                     else
                     {
                         if (line.StartsWith(ResponseErrorPrefix))
                         {
-                            if (Sent.Count != 0)
-                            {
-                                string errorline = (string)Sent.Dequeue();
+                            string errorline = null;
 
-                                // Controllers.ControllerLog.Log($"GRBL_ERROR: \"{line}\" for command \"{errorline}\"");
+                            lock (_bufferLock)
+                            {
+                                if (Sent.TryDequeue(out errorline))
+                                {
+                                    BufferState -= errorline.Length + 1;
+                                }
+                                else
+                                {
+                                    BufferState = 0;
+                                }
+                            }
+
+                            if (errorline != null)
+                            {
                                 RaiseEvent(ReportError, $"{line}: {errorline}");
-                                BufferState -= errorline.Length + 1;
+
+                                CommandRejected?.Invoke(new GrblRejection(
+                                    ParseErrorCode(line),
+                                    errorline,
+                                    GrblCodeTranslator.ExpandError(line, _settings.FirmwareType)));
                             }
                             else
                             {
-                                // Controllers.ControllerLog.Log($"GRBL_ERROR: \"{line}\" but Sent queue empty!");
-                                if ((DateTime.Now - StartTime).TotalMilliseconds > Constants.ErrorGracePeriodMs)
+                                if (RunTime.ElapsedMilliseconds > Constants.ErrorGracePeriodMs)
+                                {
                                     RaiseEvent(ReportError, $"Received <{line}> without anything in the Sent Buffer");
-
-                                BufferState = 0;
+                                }
                             }
 
                             Mode = OperatingMode.Manual;
@@ -507,7 +557,6 @@ namespace coppercli.Core.Communication
                         else if (line.StartsWith("<"))
                         {
                             RaiseEvent(ParseStatus, line);
-                            SendMacroStatusReceived = true;
                         }
                         else if (line.StartsWith(ResponseProbePrefix))
                         {
@@ -525,7 +574,6 @@ namespace coppercli.Core.Communication
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
                             ToSend.Clear();
-                            ToSendMacro.Clear();
                         }
                         else if (line.StartsWith(ResponseGrblPrefix))
                         {
@@ -545,10 +593,19 @@ namespace coppercli.Core.Communication
             }
             finally
             {
-                // Ensure cleanup happens whether we exit via break, return, or exception
-                if (Connected)
+                // This runs outside the catch above, on a foreground thread. An escape
+                // here would terminate the process while GRBL still holds buffered
+                // motion, so nothing is allowed out.
+                try
                 {
-                    RaiseEvent(() => Disconnect());
+                    if (Connected)
+                    {
+                        RaiseEvent(() => Disconnect());
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Controllers.ControllerLog.Log("Disconnect during work-loop teardown failed: {0}", ex.Message);
                 }
             }
         }
@@ -626,7 +683,12 @@ namespace coppercli.Core.Communication
             ToSend.Clear();
             ToSendPriority.Clear();
             Sent.Clear();
-            ToSendMacro.Clear();
+            
+            // A fresh connection knows nothing about where the machine is. Carrying a
+            // stale IsHomed across a reconnect would let milling skip homing and run
+            // every G53 move against a coordinate system that no longer exists.
+            IsHomed = false;
+            IsHoming = false;
 
             Mode = OperatingMode.Manual;
 
@@ -668,12 +730,17 @@ namespace coppercli.Core.Communication
                     Connection = null;
                     break;
                 case ConnectionType.Ethernet:
-                    if (Connection != null)
+                    try
                     {
-                        Connection.Close();
+                        Connection?.Close();
                         ClientEthernet?.Close();
                     }
+                    catch
+                    {
+                        // Ignore close errors during disconnect - we're cleaning up anyway
+                    }
                     Connection = null;
+                    ClientEthernet = null;
                     break;
                 default:
                     throw new Exception("Invalid Connection Type");
@@ -681,8 +748,12 @@ namespace coppercli.Core.Communication
 
             Mode = OperatingMode.Disconnected;
 
+            IsHomed = false;
+            IsHoming = false;
+
             MachinePosition = new Vector3();
             WorkOffset = new Vector3();
+            G54Offset = new Vector3();
             FeedRateRealtime = 0;
             CurrentTLO = 0;
 
@@ -692,7 +763,6 @@ namespace coppercli.Core.Communication
             DistanceMode = ParseDistanceMode.Absolute;
             Unit = ParseUnit.Metric;
             Plane = ArcPlane.XY;
-            BufferState = 0;
 
             FeedOverride = Constants.OverrideDefaultPercent;
             RapidOverride = Constants.OverrideDefaultPercent;
@@ -709,8 +779,25 @@ namespace coppercli.Core.Communication
 
             ToSend.Clear();
             ToSendPriority.Clear();
-            Sent.Clear();
-            ToSendMacro.Clear();
+
+            lock (_bufferLock)
+            {
+                Sent.Clear();
+                BufferState = 0;
+            }
+        }
+
+        /// <summary>
+        /// Returns to Manual mode if the machine is idling in Probe mode. Used before a
+        /// job so a leftover Probe mode from the previous operation cannot silently stop
+        /// the file from streaming. Does nothing while a file is actively sending.
+        /// </summary>
+        public void EnsureManualMode()
+        {
+            if (Mode == OperatingMode.Probe)
+            {
+                Mode = OperatingMode.Manual;
+            }
         }
 
         public void SendLine(string line)
@@ -727,7 +814,78 @@ namespace coppercli.Core.Communication
                 return;
             }
 
+            // One call must put exactly one line on the wire. An embedded newline or a
+            // GRBL real-time byte reaching here would let anything that builds a command
+            // from user input append commands of its own.
+            if (ContainsControlCharacter(line))
+            {
+                RaiseEvent(NonFatalException, "Refused a command containing control characters.");
+                return;
+            }
+
             ToSend.Enqueue(line);
+        }
+
+        /// <summary>
+        /// True if the line holds anything that would break it into more than one
+        /// command, or that GRBL would read as a real-time instruction.
+        /// </summary>
+        public static bool ContainsControlCharacter(string line)
+        {
+            foreach (char c in line)
+            {
+                // C0 controls and DEL split the line or are protocol bytes. Tab is
+                // legal G-code whitespace, so it is allowed through.
+                if ((c < ' ' && c != '\t') || c == (char)0x7F)
+                {
+                    return true;
+                }
+
+                // GRBL's extended real-time commands live at 0x80-0xA0: jog cancel,
+                // door, feed and spindle overrides. They act immediately, ahead of
+                // anything queued, so they must never ride inside a command.
+                if (c >= (char)0x80 && c <= (char)0xA0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Asks GRBL for its stored coordinate offsets and waits for the reply.
+        ///
+        /// <see cref="G54Offset"/> is otherwise only as fresh as the last $# - which,
+        /// in the usual connect-probe-zero-mill sequence, predates the operator setting
+        /// their Z zero. Anything that writes G54 back has to start from a current
+        /// value, or it moves the origin instead of restoring it.
+        /// </summary>
+        /// <returns>False if GRBL did not answer in time; the caller must not rely on
+        /// <see cref="G54Offset"/> in that case.</returns>
+        public async Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            if (!Connected)
+            {
+                return false;
+            }
+
+            var waiter = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Interlocked.Exchange(ref _g54Waiter, waiter);
+
+            SendLine(CmdViewParameters);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            var completed = await Task.WhenAny(waiter.Task, Task.Delay(timeoutMs, timeout.Token)).ConfigureAwait(false);
+            timeout.Cancel();
+
+            if (completed != waiter.Task)
+            {
+                Interlocked.CompareExchange(ref _g54Waiter, null, waiter);
+                return false;
+            }
+
+            return true;
         }
 
         public void SoftReset()
@@ -740,13 +898,26 @@ namespace coppercli.Core.Communication
 
             Mode = OperatingMode.Manual;
 
+            // A soft reset while the machine is moving loses the position GRBL was
+            // tracking, so the homed origin no longer means anything. Saying so here
+            // makes the next job home again instead of trusting a stale reference for
+            // its G53 safety moves.
+            IsHomed = false;
+
             ToSend.Clear();
             ToSendPriority.Clear();
-            Sent.Clear();
-            ToSendMacro.Clear();
-            ToSendPriority.Enqueue(GrblProtocol.SoftReset);
 
-            BufferState = 0;
+            // Cleared together with the byte count they describe: the worker's
+            // read-modify-write of BufferState would otherwise race this to a negative
+            // value, and a negative count makes the send gate more permissive - which
+            // overruns GRBL's receive buffer and mangles a line mid-cut.
+            lock (_bufferLock)
+            {
+                Sent.Clear();
+                BufferState = 0;
+            }
+
+            ToSendPriority.Enqueue(GrblProtocol.SoftReset);
 
             FeedOverride = Constants.OverrideDefaultPercent;
             RapidOverride = Constants.OverrideDefaultPercent;
@@ -769,22 +940,6 @@ namespace coppercli.Core.Communication
             //    - MachineWait.StopAndResetAsync: Waits AFTER this returns, too late
             // SendLine(CmdViewGCodeState);
             // SendLine(CmdViewParameters);
-        }
-
-        public void SendMacroLines(params string[] lines)
-        {
-            if (Mode != OperatingMode.Manual)
-            {
-                RaiseEvent(Info, "Not in Manual Mode");
-                return;
-            }
-
-            foreach (string line in lines)
-            {
-                ToSendMacro.Enqueue(line.Trim());
-            }
-
-            Mode = OperatingMode.SendMacro;
         }
 
         public void SendControl(byte controlchar)
@@ -925,18 +1080,23 @@ namespace coppercli.Core.Communication
             RaiseEvent(FilePositionChanged);
         }
 
-        public void FileStart()
+        /// <summary>
+        /// Begins streaming the loaded file. Returns false if it could not start - not
+        /// connected, or not in Manual mode - so the caller can react instead of waiting
+        /// for a stream that never began.
+        /// </summary>
+        public bool FileStart()
         {
             if (!Connected)
             {
                 RaiseEvent(Info, "Not Connected");
-                return;
+                return false;
             }
 
             if (Mode != OperatingMode.Manual)
             {
                 RaiseEvent(Info, "Not in Manual Mode");
-                return;
+                return false;
             }
 
             // // Log machine state and first 20 lines of file for debugging
@@ -953,6 +1113,7 @@ namespace coppercli.Core.Communication
             // }
 
             Mode = OperatingMode.SendFile;
+            return true;
         }
 
         public void FilePause()
@@ -1043,6 +1204,21 @@ namespace coppercli.Core.Communication
 
             if (line.Contains("$J="))
             {
+                return;
+            }
+
+            if (line.StartsWith(ResponseG54Prefix))
+            {
+                try
+                {
+                    G54Offset = Vector3.Parse(TrimToThreeAxes(
+                        line.Substring(ResponseG54Prefix.Length).TrimEnd(']')));
+                    Interlocked.Exchange(ref _g54Waiter, null)?.TrySetResult(true);
+                }
+                catch
+                {
+                    RaiseEvent(NonFatalException, "Error while Parsing Status Message");
+                }
                 return;
             }
 
@@ -1140,7 +1316,7 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            LastStatusReceived = DateTime.Now;
+            Interlocked.Increment(ref _statusReportCount);
 
             bool posUpdate = false;
             bool overrideUpdate = false;
@@ -1200,7 +1376,10 @@ namespace coppercli.Core.Communication
                             used = 0;
                         }
 
-                        BufferState = used;
+                        lock (_bufferLock)
+                        {
+                            BufferState = used;
+                        }
                         RaiseEvent(Info, $"Buffer State Synced ({availableBytes} bytes free)");
                     }
                     catch { NonFatalException?.Invoke(string.Format("Received Bad Status: '{0}'", line)); }
@@ -1320,18 +1499,18 @@ namespace coppercli.Core.Communication
                 StatusReceived?.Invoke(line);
             }
 
-            // Auto-clear Door/Alarm state (only in Manual mode, rate-limited, when enabled)
+            // Auto-clear Alarm (only in Manual mode, rate-limited, when enabled).
+            //
+            // Door is deliberately NOT auto-cleared. GRBL reports Door when the safety
+            // interlock opens; sending CycleStart there restarts the spindle and resumes
+            // motion while someone has their hands in the machine. Resuming after the
+            // enclosure has been opened is the operator's decision to make, not ours.
             if (Mode == OperatingMode.Manual && EnableAutoStateClear)
             {
                 var now = DateTime.Now;
                 if ((now - _lastStateClearAttempt).TotalMilliseconds > StateClearIntervalMs)
                 {
-                    if (Status.StartsWith(StatusDoor))
-                    {
-                        _lastStateClearAttempt = now;
-                        ToSendPriority.Enqueue(GrblProtocol.CycleStart);
-                    }
-                    else if (Status.StartsWith(StatusAlarm))
+                    if (Status.StartsWith(StatusAlarm))
                     {
                         _lastStateClearAttempt = now;
                         ToSend.Enqueue(CmdUnlock);
@@ -1342,7 +1521,9 @@ namespace coppercli.Core.Communication
 
         private void ParseProbe(string line)
         {
-            if (ProbeFinished == null)
+            var probeFinished = ProbeFinished;
+
+            if (probeFinished == null)
             {
                 return;
             }
@@ -1368,7 +1549,7 @@ namespace coppercli.Core.Communication
 
             bool ProbeSuccess = success.Value == "1";
 
-            ProbeFinished.Invoke(ProbePos, ProbeSuccess);
+            probeFinished.Invoke(ProbePos, ProbeSuccess);
         }
 
         private void ParseStartup(string line)
@@ -1393,6 +1574,19 @@ namespace coppercli.Core.Communication
                 ReportError("Outdated version of grbl detected!");
                 ReportError($"Please upgrade to at least grbl v{Constants.MinimumGrblVersion.Major}.{Constants.MinimumGrblVersion.Minor}{(char)Constants.MinimumGrblVersion.Build}");
             }
+        }
+
+        /// <summary>Reads N out of "error:N", or -1 if the reply is not shaped that way.</summary>
+        private static int ParseErrorCode(string line)
+        {
+            if (!line.StartsWith(ResponseErrorPrefix))
+            {
+                return -1;
+            }
+
+            return int.TryParse(line.Substring(ResponseErrorPrefix.Length).Trim(), out int code)
+                ? code
+                : -1;
         }
 
         private void ReportError(string error)

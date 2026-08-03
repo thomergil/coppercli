@@ -1,5 +1,6 @@
 #nullable enable
 using System;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Communication;
@@ -7,6 +8,7 @@ using static coppercli.Core.Communication.Machine;
 using coppercli.Core.Util;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
+using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Core.Controllers
 {
@@ -45,9 +47,10 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
-            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long budgetMs = timeoutMs;
 
-            while (DateTime.Now < deadline && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 if (machine.Status == StatusIdle)
                 {
@@ -69,11 +72,12 @@ namespace coppercli.Core.Controllers
         /// <param name="onPoll">Optional callback invoked each poll iteration (for progress updates).</param>
         public static async Task<bool> WaitForStableIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default, Action? onPoll = null)
         {
-            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long budgetMs = timeoutMs;
             int requiredCount = IdleSettleMs / StatusPollIntervalMs;
             int stableCount = 0;
 
-            while (DateTime.Now < deadline && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 onPoll?.Invoke();
 
@@ -114,9 +118,10 @@ namespace coppercli.Core.Controllers
                 timeoutMs = ZHeightWaitTimeoutMs;
             }
 
-            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long budgetMs = timeoutMs;
 
-            while (DateTime.Now < deadline && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 if (Math.Abs(getZ(machine) - targetZ) < PositionToleranceMm)
                 {
@@ -134,9 +139,10 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task<bool> WaitForMoveStartAsync(IMachine machine, double startZ, int timeoutMs, CancellationToken ct = default)
         {
-            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long budgetMs = timeoutMs;
 
-            while (DateTime.Now < deadline && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 // Move started if position changed or status is Run
                 if (Math.Abs(machine.MachinePosition.Z - startZ) > PositionToleranceMm)
@@ -159,9 +165,10 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task<string?> WaitForStatusChangeAsync(IMachine machine, string currentStatus, int timeoutMs, CancellationToken ct = default)
         {
-            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long budgetMs = timeoutMs;
 
-            while (DateTime.Now < deadline && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 if (machine.Connected && machine.Status != StatusDisconnected && machine.Status != currentStatus)
                 {
@@ -171,6 +178,36 @@ namespace coppercli.Core.Controllers
             }
 
             return null;
+        }
+
+        // =========================================================================
+        // Reply awaiting
+        // =========================================================================
+
+        /// <summary>
+        /// Awaits a reply task, but never past a timeout. On cancellation the reply's own
+        /// cancellation surfaces (rather than being mislabelled a timeout); on a genuine
+        /// timeout, throws with the given message. Used for GRBL replies that may never
+        /// arrive because the command was rejected.
+        /// </summary>
+        public static async Task<T> AwaitReplyOrTimeoutAsync<T>(
+            Task<T> reply, int timeoutMs, string timeoutMessage, CancellationToken ct)
+        {
+            // Linked source so the timer is cancelled the instant the reply lands - a long
+            // grid probe must not accumulate one live timer per point.
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+
+            var finished = await Task.WhenAny(
+                reply, Task.Delay(timeoutMs, timeoutCts.Token)).ConfigureAwait(false);
+
+            timeoutCts.Cancel();
+
+            if (finished != reply && !ct.IsCancellationRequested)
+            {
+                throw new TimeoutException(timeoutMessage);
+            }
+
+            return await reply.ConfigureAwait(false);
         }
 
         // =========================================================================
@@ -193,9 +230,13 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Prepare machine for operation: clear Door, wait for Idle, check for Alarm.
-        /// Returns true if machine is ready, false if in Alarm state.
+        /// Prepare machine for operation: wait for Idle and confirm nothing is wrong.
         /// </summary>
+        /// <returns>
+        /// True only if the machine actually reached Idle and is not alarmed. A machine
+        /// still running or held is NOT ready - motion sent to it would queue behind
+        /// whatever it is already doing.
+        /// </returns>
         public static async Task<bool> EnsureMachineReadyAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
             if (timeoutMs <= 0)
@@ -203,18 +244,27 @@ namespace coppercli.Core.Controllers
                 timeoutMs = IdleWaitTimeoutMs;
             }
 
-            await ClearDoorStateAsync(machine, ct);
-            await WaitForIdleAsync(machine, timeoutMs, ct);
-            return !IsAlarm(machine);
+            // Door is NOT cleared here. This runs before a job starts, and clearing it
+            // sends CycleStart - resuming motion because the software decided to, not
+            // because the operator said the enclosure was clear. An open door blocks the
+            // start instead; the operator closes it and starts again.
+            bool idle = await WaitForIdleAsync(machine, timeoutMs, ct);
+            return idle && !IsProblematic(machine);
         }
 
         /// <summary>
         /// Stop machine motion and clear command buffer.
-        /// Sends FeedHold, SoftReset, and clears Alarm if needed.
+        /// Sends FeedHold and SoftReset, clears any resulting Alarm, then commands
+        /// spindle off.
         /// Use when cancelling operations to prevent buffered commands from resuming.
         /// </summary>
         public static async Task StopAndResetAsync(IMachine machine)
         {
+            // FeedHold and SoftReset are real-time bytes, delivered whatever mode the
+            // machine is in, and the reset is what actually stops the spindle. The
+            // explicit M5 comes after them, once the reset has returned us to Manual
+            // mode - sent before, it would be dropped, because ordinary commands are
+            // discarded while a file is streaming.
             machine.FeedHold();
             await Task.Delay(CommandDelayMs).ConfigureAwait(false);
 
@@ -227,6 +277,10 @@ namespace coppercli.Core.Controllers
                 await Task.Delay(CommandDelayMs).ConfigureAwait(false);
             }
 
+            // Belt and braces, now that the reset has put us back in Manual mode and any
+            // alarm is cleared, so this one will actually be sent.
+            machine.SendLine(CmdSpindleOff);
+
             await WaitForIdleAsync(machine, IdleWaitTimeoutMs, CancellationToken.None);
         }
 
@@ -238,7 +292,7 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task ZeroWorkOffsetAsync(IMachine machine, string axes, CancellationToken ct = default)
         {
-            machine.SendLine($"{CmdZeroWorkOffset} {axes}");
+            machine.SendLine(Inv($"{CmdZeroWorkOffset} {axes}"));
             // G10 L20 doesn't cause a state change, so wait for command to be processed
             await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
             await WaitForIdleAsync(machine, IdleSettleMs, ct).ConfigureAwait(false);
@@ -249,32 +303,79 @@ namespace coppercli.Core.Controllers
         /// This is the SINGLE SOURCE OF TRUTH for homing - all code paths use this.
         /// Sets machine.IsHoming during operation, machine.IsHomed = true on success.
         /// </summary>
-        public static async Task<bool> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
+        public static async Task<HomingOutcome> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
+            // Listen for a refusal while we wait. Without this the only evidence of a
+            // rejected $H is that the machine stayed Idle - indistinguishable from a
+            // machine that simply has not started yet, and useless to explain.
+            GrblRejection? refusal = null;
+
+            void OnRejected(GrblRejection rejection)
+            {
+                if (rejection.Command.Contains(CmdHome, StringComparison.OrdinalIgnoreCase))
+                {
+                    refusal = rejection;
+                }
+            }
+
+            machine.CommandRejected += OnRejected;
             machine.IsHoming = true;
+
             try
             {
+                long reportsBefore = machine.StatusReportCount;
                 machine.SendLine(CmdHome);
 
-                // Wait for machine to leave Idle state (enter "Home" status).
-                // This prevents a race condition where we check IsIdle before the
-                // machine has processed the $H command.
-                await WaitForStatusChangeAsync(machine, StatusIdle, MotionStartTimeoutMs, ct);
+                // We must not certify a machine that never moved: a rejected or dropped
+                // $H leaves the status at Idle, and the idle wait below would then
+                // succeed on its first poll. Every later G53 move trusts this flag.
+                string? started = await WaitForStatusChangeAsync(machine, StatusIdle, MotionStartTimeoutMs, ct);
 
-                // Now wait for homing to complete (machine returns to Idle)
-                bool success = await WaitForIdleAsync(machine, timeoutMs, ct);
+                if (started == null)
+                {
+                    // No state change seen. Distinguish the two reasons: if GRBL is
+                    // still answering status queries and still says Idle, the $H did not
+                    // take. If it has gone quiet, homing is under way (some builds stop
+                    // answering during the cycle) and we wait it out below.
+                    // Counted, not timed: a clock step must not decide whether a $H
+                    // took. More reports since we asked means GRBL is answering and
+                    // still Idle, so the command did not take.
+                    bool grblStillAnswering = machine.StatusReportCount > reportsBefore;
+
+                    if (grblStillAnswering)
+                    {
+                        return HomingOutcome.Refused(refusal);
+                    }
+                }
+
+                // Idle is only believable once GRBL is talking to us again: while it is
+                // quiet mid-cycle the last status we hold still says Idle, and taking
+                // that at face value would certify a machine part-way through homing.
+                long quietAt = machine.StatusReportCount;
+                var talking = Stopwatch.StartNew();
+
+                while (machine.StatusReportCount == quietAt
+                       && talking.ElapsedMilliseconds < timeoutMs
+                       && !ct.IsCancellationRequested)
+                {
+                    await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
+                }
+
+                // Sustained idle, not a single sample - homing ends with a pull-off move.
+                bool success = await WaitForStableIdleAsync(machine, timeoutMs, ct);
 
                 if (!success || !IsIdle(machine))
                 {
-                    return false;
+                    return HomingOutcome.Refused(refusal);
                 }
 
                 machine.IsHomed = true;
-                return true;
+                return HomingOutcome.Homed;
             }
             finally
             {
                 machine.IsHoming = false;
+                machine.CommandRejected -= OnRejected;
             }
         }
 
@@ -285,39 +386,25 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task SafeCompletionAsync(IMachine machine, bool homeAfter = false, CancellationToken ct = default)
         {
-            // 1. Spindle off (safety first)
-            machine.SendLine(CmdSpindleOff);
+            // Same stop sequence as an abort - kept as one routine so the two cannot
+            // drift apart. They already had: only one of them stopped the spindle.
+            await StopAndResetAsync(machine).ConfigureAwait(false);
 
-            // 2. FeedHold to stop any motion (also stops file streaming)
-            machine.FeedHold();
-            await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
-
-            // 3. SoftReset to clear GRBL's command buffer
-            machine.SoftReset();
-            await Task.Delay(ResetWaitMs, ct).ConfigureAwait(false);
-
-            // 4. Clear Alarm state if needed (SoftReset causes Alarm)
-            if (IsAlarm(machine))
+            if (homeAfter && !(await HomeAsync(machine, HomingTimeoutMs, ct).ConfigureAwait(false)).Success)
             {
-                machine.SendLine(CmdUnlock);
-                await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
-            }
-
-            // 5. Wait for idle
-            await WaitForIdleAsync(machine, IdleWaitTimeoutMs, ct).ConfigureAwait(false);
-
-            // 6. Optionally home to known safe position
-            if (homeAfter)
-            {
-                await HomeAsync(machine, HomingTimeoutMs, ct).ConfigureAwait(false);
+                ControllerLog.Log("SafeCompletion: post-job homing did not complete");
             }
         }
 
         /// <summary>
-        /// Safety retract Z to machine coordinate position and wait for completion.
-        /// Uses G53 for machine coordinates. Guarantees Z is up before returning.
+        /// Safety retract Z to a machine coordinate using G53.
         /// </summary>
-        public static async Task SafetyRetractZAsync(IMachine machine, double targetMachineZ, int timeoutMs, CancellationToken ct = default)
+        /// <returns>
+        /// True only if Z is confirmed at the target. False means the retract did NOT
+        /// happen - the command may have been rejected or the move timed out - and the
+        /// caller must not proceed with any XY motion, because the tool is still down.
+        /// </returns>
+        public static async Task<bool> SafetyRetractZAsync(IMachine machine, double targetMachineZ, int timeoutMs, CancellationToken ct = default)
         {
             if (timeoutMs <= 0)
             {
@@ -328,21 +415,21 @@ namespace coppercli.Core.Controllers
 
             // Enforce absolute mode and send retract command
             machine.SendLine(CmdAbsolute);
-            machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{targetMachineZ:F3}");
+            machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{targetMachineZ:F3}"));
 
             // If already at target, just wait briefly for command to process
             if (Math.Abs(startZ - targetMachineZ) < PositionToleranceMm)
             {
                 await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
                 await WaitForIdleAsync(machine, IdleWaitTimeoutMs, ct);
-                return;
+                return Math.Abs(machine.MachinePosition.Z - targetMachineZ) < PositionToleranceMm;
             }
 
-            // Wait for move to start
+            // Wait for move to start, then for Z to arrive. Arrival is what we report -
+            // a move that never started still fails the height check below.
             await WaitForMoveStartAsync(machine, startZ, timeoutMs, ct);
 
-            // Wait for Z to reach target
-            await WaitForMachineZHeightAsync(machine, targetMachineZ, timeoutMs, ct);
+            return await WaitForMachineZHeightAsync(machine, targetMachineZ, timeoutMs, ct);
         }
     }
 }

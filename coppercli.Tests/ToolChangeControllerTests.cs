@@ -154,32 +154,7 @@ namespace coppercli.Tests
         // Session state tests
         // =========================================================================
 
-        [Fact]
-        public void SetSessionState_StoresValues()
-        {
-            var machine = CreateMockMachine();
-            var controller = CreateController(machine);
 
-            controller.SetSessionState(referenceToolLength: 25.5, hasReferenceToolLength: true, lastToolSetterZ: -10.0);
-
-            var (refLength, hasRef, lastZ) = controller.GetSessionState();
-            Assert.Equal(25.5, refLength);
-            Assert.True(hasRef);
-            Assert.Equal(-10.0, lastZ);
-        }
-
-        [Fact]
-        public void GetSessionState_ReturnsDefaultsInitially()
-        {
-            var machine = CreateMockMachine();
-            var controller = CreateController(machine);
-
-            var (refLength, hasRef, lastZ) = controller.GetSessionState();
-
-            Assert.Equal(0, refLength);
-            Assert.False(hasRef);
-            Assert.Equal(0, lastZ);
-        }
 
         // =========================================================================
         // Phase progression tests (synchronous verification)

@@ -11,6 +11,7 @@ using coppercli.Core.Util;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.Controllers.ControllerConstants;
+using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Core.Controllers
 {
@@ -22,13 +23,6 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public class MillingController : ControllerBase, IMillingController
     {
-        // =========================================================================
-        // M6 detection patterns
-        // =========================================================================
-
-        private static readonly Regex M6Pattern = new(@"^\s*M0*6\s*T?(\d*)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-        private static readonly Regex M0Pattern = new(@"^\s*M0*0\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
         // =========================================================================
         // Dependencies
         // =========================================================================
@@ -46,6 +40,11 @@ namespace coppercli.Core.Controllers
 
         // Snapshot of options at start (immutable during operation)
         private float _depthAdjustment;
+
+        // Z origin as it stood before this run applied the depth adjustment, so the
+        // adjustment can be undone instead of accumulating across runs.
+        private double _baselineWorkOffsetZ;
+        private bool _depthAdjustmentApplied;
 
         // Cutting path tracking for visualization (rounded to avoid explosion of points)
         private readonly HashSet<(double X, double Y)> _cuttingPathSet = new();
@@ -125,6 +124,12 @@ namespace coppercli.Core.Controllers
 
             ControllerLog.Log(LogMillingStart, _depthAdjustment);
 
+            // Start from a known mode. A probe run that ended just before this can leave
+            // the machine in Probe mode, in which every setup command still goes through
+            // but FileStart later refuses - so put it back to Manual up front rather than
+            // discover the problem at the point of streaming.
+            _machine.EnsureManualMode();
+
             // === SETTLING PHASE ===
             await SettleAsync(ct);
 
@@ -141,7 +146,7 @@ namespace coppercli.Core.Controllers
             await InitializeMachineAsync(ct);
 
             // === APPLY DEPTH ADJUSTMENT ===
-            ApplyDepthAdjustment();
+            await ApplyDepthAdjustmentAsync(ct);
 
             // === START MILLING ===
             TransitionTo(ControllerState.Running);
@@ -159,10 +164,14 @@ namespace coppercli.Core.Controllers
             // (Mode may already be Manual if error occurred mid-file)
             await MachineWait.StopAndResetAsync(_machine);
 
+            // Undo the depth adjustment now that motion has stopped, so an aborted run
+            // does not leave the Z origin shifted for the next one.
+            await RestoreDepthAdjustmentAsync();
+
             // Stop spindle and retract Z
             _machine.SendLine(CmdSpindleOff);
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
 
             ResetPhase();
         }
@@ -222,7 +231,7 @@ namespace coppercli.Core.Controllers
                 int currentLine = _machine.FilePosition;
                 if (currentLine >= 0 && currentLine < _machine.File.Count)
                 {
-                    if (M0Pattern.IsMatch(_machine.File[currentLine]))
+                    if (GCodeParser.IsM0Line(_machine.File[currentLine]))
                     {
                         ControllerLog.Log(LogSkippingM0, currentLine);
                         _machine.FileGoto(currentLine + 1);
@@ -259,10 +268,20 @@ namespace coppercli.Core.Controllers
             int settleSeconds = PostIdleSettleMs / OneSecondMs;
             int stableCount = 0;
 
+            // Bounded: readiness can now stay false indefinitely (an open door, a
+            // standing alarm), and without a deadline this loop would sit in "Settling"
+            // for ever with nothing reported to the operator.
+            var settleDeadline = System.Diagnostics.Stopwatch.StartNew();
+
             ControllerLog.Log(LogSettlingPhase, settleSeconds);
 
             while (stableCount < settleSeconds && !ct.IsCancellationRequested)
             {
+                if (settleDeadline.ElapsedMilliseconds > SettleTimeoutMs)
+                {
+                    throw new InvalidOperationException(DescribeNotReady(_machine));
+                }
+
                 string statusBefore = _machine.Status;
 
                 EmitProgress(new ProgressInfo(
@@ -278,7 +297,11 @@ namespace coppercli.Core.Controllers
                 if (_machine.Status != statusBefore || !MachineWait.IsIdle(_machine))
                 {
                     ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
-                    await MachineWait.EnsureMachineReadyAsync(_machine, IdleWaitTimeoutMs, ct);
+                    if (!await MachineWait.EnsureMachineReadyAsync(_machine, IdleWaitTimeoutMs, ct))
+                    {
+                        // Door open, alarmed, or still moving - settling cannot proceed.
+                        ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
+                    }
                     stableCount = 0;
                 }
                 else
@@ -290,59 +313,47 @@ namespace coppercli.Core.Controllers
             ControllerLog.Log(LogSettlingComplete);
         }
 
+        /// <summary>
+        /// Names the actual reason the machine is not ready. "Clear any alarm" is wrong
+        /// and confusing when what is really holding things up is an open enclosure.
+        /// </summary>
+        private static string DescribeNotReady(IMachine machine)
+        {
+            if (MachineWait.IsDoor(machine))
+            {
+                return ErrorMachineDoorOpen;
+            }
+
+            return MachineWait.IsAlarm(machine) ? ErrorMillingAlarm : ErrorMachineNotSettled;
+        }
+
         private async Task HomeIfNeededAsync(CancellationToken ct)
         {
             Phase = MillingPhase.Homing;
 
             ControllerLog.Log(LogHomingStart);
 
-            // Start homing command
-            _machine.IsHoming = true;
-            _machine.SendLine(CmdHome);
+            EmitProgress(new ProgressInfo(PhaseHoming, 0, MessageHoming));
 
-            try
+            // Homing goes through MachineWait.HomeAsync - the single place that decides
+            // whether the machine really homed and sets IsHomed. A second copy here used
+            // to accept a rejected $H as success, and every G53 safety move afterwards
+            // trusted that answer.
+            var outcome = await MachineWait.HomeAsync(_machine, HomingTimeoutMs, ct);
+
+            ControllerLog.Log("Homing: result={0}, status={1}, reason={2}",
+                outcome.Success, _machine.Status, outcome.Reason ?? "(none given)");
+
+            if (!outcome.Success)
             {
-                EmitProgress(new ProgressInfo(PhaseHoming, 0, MessageHoming));
-
-                // GRBL doesn't respond to status queries during homing.
-                // Wait for GRBL to start responding again (LastStatusReceived updates).
-                var beforeHoming = DateTime.Now;
-                ControllerLog.Log("Homing: waiting for GRBL to respond (lastStatus={0:HH:mm:ss.fff})", _machine.LastStatusReceived);
-
-                var deadline = DateTime.Now.AddMilliseconds(HomingTimeoutMs);
-                while (DateTime.Now < deadline && !ct.IsCancellationRequested)
-                {
-                    EmitProgress(new ProgressInfo(PhaseHoming, 0, MessageHoming));
-
-                    if (_machine.LastStatusReceived > beforeHoming)
-                    {
-                        ControllerLog.Log("Homing: GRBL responding again (lastStatus={0:HH:mm:ss.fff})", _machine.LastStatusReceived);
-                        break;
-                    }
-                    await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-                }
-
-                // Wait for homing to complete: machine must be Idle for 1 second straight.
-                ControllerLog.Log("Homing: waiting for stable idle, current={0}", _machine.Status);
-                bool success = await MachineWait.WaitForStableIdleAsync(
-                    _machine,
-                    HomingTimeoutMs,
-                    ct,
-                    onPoll: () => EmitProgress(new ProgressInfo(PhaseHoming, 0, MessageHoming)));
-                ControllerLog.Log("Homing: stable idle result={0}, current={1}", success, _machine.Status);
-
-                if (!success)
-                {
-                    throw new InvalidOperationException(ErrorHomingFailed);
-                }
-
-                _machine.IsHomed = true;
-                ControllerLog.Log(LogHomingComplete);
+                // Say what the machine actually reported. "Homing failed" alone sends the
+                // operator hunting for a fault that may not exist.
+                throw new InvalidOperationException(outcome.Reason == null
+                    ? ErrorHomingFailed
+                    : string.Format(ErrorHomingFailedBecause, outcome.Reason));
             }
-            finally
-            {
-                _machine.IsHoming = false;
-            }
+
+            ControllerLog.Log(LogHomingComplete);
         }
 
         private async Task SafetyRetractAsync(CancellationToken ct)
@@ -352,7 +363,18 @@ namespace coppercli.Core.Controllers
             EmitProgress(new ProgressInfo(PhaseRetracting, 0, MessageRetracting));
 
             ControllerLog.Log(LogSafetyRetract, MillStartSafetyZ);
-            await MachineWait.SafetyRetractZAsync(_machine, MillStartSafetyZ, ZHeightWaitTimeoutMs, ct);
+            bool retracted = await MachineWait.SafetyRetractZAsync(_machine, MillStartSafetyZ, ZHeightWaitTimeoutMs, ct);
+
+            // A stop request is not a failure - let it surface as cancellation so the
+            // operator is not told the retract went wrong when they pressed Stop.
+            ct.ThrowIfCancellationRequested();
+
+            if (!retracted)
+            {
+                // Everything after this is XY motion. If Z is not confirmed up, that
+                // motion would drag the cutter across the workpiece.
+                throw new InvalidOperationException(ErrorSafetyRetractFailed);
+            }
         }
 
         private async Task InitializeMachineAsync(CancellationToken ct)
@@ -370,7 +392,7 @@ namespace coppercli.Core.Controllers
             await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
         }
 
-        private void ApplyDepthAdjustment()
+        private async Task ApplyDepthAdjustmentAsync(CancellationToken ct)
         {
             if (_depthAdjustment == 0)
             {
@@ -378,21 +400,129 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // Get current work offset Z and add adjustment
-            double currentOffsetZ = _machine.WorkOffset.Z;
-            double newOffsetZ = currentOffsetZ + _depthAdjustment;
+            // Ask GRBL for its stored offsets and read G54 specifically. WorkOffset is
+            // the combined WCO (G54 + G92 + tool length offset), but we write back with
+            // G10 L2 P1, which sets G54 alone - so restoring the combined figure into
+            // the G54 slot would move the Z origin rather than put it back.
+            bool offsetsKnown = await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct).ConfigureAwait(false);
 
-            _machine.SendLine($"{CmdSetWorkOffset} Z{newOffsetZ:F3}");
+            ct.ThrowIfCancellationRequested();
 
-            ControllerLog.Log(LogDepthAdjustment, currentOffsetZ, newOffsetZ, _depthAdjustment);
+            if (!offsetsKnown)
+            {
+                // Without a current G54 we would shift an origin we cannot see.
+                throw new InvalidOperationException(ErrorWorkOffsetUnknown);
+            }
+
+            // Remember where the Z origin was so RestoreDepthAdjustmentAsync can put it
+            // back. Without that, a second run would read the already-shifted offset and
+            // shift it again, cutting twice as deep as the operator asked for.
+            _baselineWorkOffsetZ = _machine.G54Offset.Z;
+            _depthAdjustmentApplied = true;
+
+            double newOffsetZ = _baselineWorkOffsetZ + _depthAdjustment;
+
+            _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{newOffsetZ:F3}"));
+            await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
+
+            ControllerLog.Log(LogDepthAdjustment, _baselineWorkOffsetZ, newOffsetZ, _depthAdjustment);
+        }
+
+        /// <summary>
+        /// Takes the depth adjustment back out of the Z origin. Idempotent, and safe to
+        /// call from both the success and the cleanup path.
+        ///
+        /// Subtracts from the CURRENT G54 rather than writing back the value captured at
+        /// the start: a tool change during the job legitimately rewrites that same offset
+        /// to compensate the new tool's length, and restoring an absolute snapshot would
+        /// discard that compensation while reporting the job finished normally.
+        /// </summary>
+        private async Task RestoreDepthAdjustmentAsync()
+        {
+            if (!_depthAdjustmentApplied)
+            {
+                return;
+            }
+
+            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs).ConfigureAwait(false))
+            {
+                // Leave the flag set: the adjustment is still in the origin, and saying
+                // otherwise would let the next run stack another one on top.
+                ControllerLog.Log("Depth adjustment NOT restored: machine did not report its offsets");
+                return;
+            }
+
+            double restoredZ = _machine.G54Offset.Z - _depthAdjustment;
+
+            _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{restoredZ:F3}"));
+            await Task.Delay(CommandDelayMs).ConfigureAwait(false);
+
+            // Confirm it landed before believing it. On the abort path GRBL has just been
+            // soft-reset and may still be alarmed, in which case it rejects the write -
+            // and clearing the flag anyway would let the next run stack another
+            // adjustment on top of one that was never taken out.
+            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs).ConfigureAwait(false)
+                || Math.Abs(_machine.G54Offset.Z - restoredZ) > PositionToleranceMm)
+            {
+                ControllerLog.Log("Depth adjustment NOT restored: machine did not accept the new Z origin");
+                return;
+            }
+
+            _depthAdjustmentApplied = false;
+            ControllerLog.Log(LogDepthAdjustmentRestored, restoredZ);
+        }
+
+        /// <summary>
+        /// Waits for the machine to actually enter file-streaming, or the file to prove
+        /// empty. Either is a legitimate start; sitting in neither is the hang this
+        /// guards against.
+        /// </summary>
+        private async Task<bool> WaitForStreamingAsync(CancellationToken ct)
+        {
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+
+            while (elapsed.ElapsedMilliseconds < MotionStartTimeoutMs)
+            {
+                if (_machine.Mode == OperatingMode.SendFile)
+                {
+                    return true;
+                }
+
+                // An empty or fully-consumed file never enters SendFile - it is simply
+                // already done, which is a valid outcome, not a hang.
+                if (_machine.FilePosition >= _machine.File.Count)
+                {
+                    return true;
+                }
+
+                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
+            }
+
+            return false;
         }
 
         private async Task MonitorMillingAsync(CancellationToken ct)
         {
-            // Start file sending
+            // Start file sending. If it does not begin - the machine is not in Manual
+            // mode, for instance, because a prior operation left it in Probe mode - say
+            // so and stop. The completion check below cannot tell "never started" from
+            // "finished" (both look like idle-and-not-running), so an unstarted stream
+            // used to sit at Idle for ever with nothing reported.
             _machine.FileGoto(0);
-            _machine.FileStart();
+
+            if (!_machine.FileStart())
+            {
+                throw new InvalidOperationException(ErrorMillingDidNotStart);
+            }
+
             await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
+
+            // Confirm GRBL actually entered the streaming state. FileStart returning true
+            // means we asked; this is the machine agreeing.
+            if (!await WaitForStreamingAsync(ct).ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(ErrorMillingDidNotStart);
+            }
 
             ControllerLog.Log(LogFileStarted, _machine.Mode, _machine.FilePosition);
 
@@ -401,6 +531,15 @@ namespace coppercli.Core.Controllers
 
             while (!ct.IsCancellationRequested)
             {
+                // An alarm means GRBL has stopped executing - a limit was tripped, or a
+                // command was rejected. Without this the loop kept reporting progress on
+                // a machine that had already stopped, and the job looked healthy.
+                if (MachineWait.IsAlarm(_machine))
+                {
+                    ControllerLog.Log(LogMillingAlarm, _machine.Status);
+                    throw new InvalidOperationException(ErrorMillingAlarm);
+                }
+
                 // Check for completion
                 bool reachedEnd = _machine.FilePosition >= _machine.File.Count;
                 bool isRunning = _machine.Mode == OperatingMode.SendFile;
@@ -506,8 +645,12 @@ namespace coppercli.Core.Controllers
             }
 
             string line = _machine.File[prevLine];
-            var match = M6Pattern.Match(line);
-            if (!match.Success)
+
+            // Must agree with the recogniser Machine uses to intercept M6 on the way out
+            // (GrblProtocol.M6Pattern, via GCodeParser). An anchored copy here used to
+            // miss "T1 M6": Machine swallowed the line but this never paused, so the job
+            // carried on cutting with the previous tool.
+            if (!GCodeParser.IsM6Line(line))
             {
                 return;
             }
@@ -542,13 +685,17 @@ namespace coppercli.Core.Controllers
             Phase = MillingPhase.Completing;
 
             // Retract Z to safe height
-            _machine.SendLine($"{CmdMachineCoords} {CmdRapidMove} Z{MillCompleteZ:F1}");
+            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{MillCompleteZ:F1}"));
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
 
             // DEFENSE IN DEPTH: Stop all motion, clear GRBL buffer, and home to ensure
             // machine cannot continue executing commands even if there's a bug elsewhere.
             // This is critical safety - prevents runaway milling after completion.
             await MachineWait.SafeCompletionAsync(_machine, homeAfter: true, ct);
+
+            // After the soft reset, not before it: a command queued beforehand would be
+            // discarded by that reset and the Z origin would stay shifted.
+            await RestoreDepthAdjustmentAsync();
 
             EmitProgress(new ProgressInfo(
                 PhaseCompleting,

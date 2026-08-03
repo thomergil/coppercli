@@ -54,7 +54,7 @@ namespace coppercli.Menus
                 var currentFile = AppState.CurrentFile;
 
                 bool hasIncomplete = HasIncompleteProbeData();
-                bool hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
+                bool hasComplete = probePoints != null && probePoints.HasCompleteData;
                 bool hasUnsaved = HasUnsavedCompleteProbe();
 
                 if (probePoints != null)
@@ -187,7 +187,7 @@ namespace coppercli.Menus
 
             // Re-check hasComplete after potential menu state changes
             var probePoints = AppState.ProbePoints;
-            hasComplete = probePoints != null && probePoints.NotProbed.Count == 0;
+            hasComplete = probePoints != null && probePoints.HasCompleteData;
 
             // Show Save option (if not already shown as prominent unsaved option)
             if (hasComplete && !hasUnsaved)
@@ -244,7 +244,9 @@ namespace coppercli.Menus
 
             try
             {
-                AppState.ProbePoints = ProbeGrid.Load(path);
+                // Single source for the load ritual (also reloads original G-code if a grid
+                // was already applied, so this grid is not applied on top of the old one).
+                var grid = AppState.LoadProbeGridFromFile(path);
 
                 // Don't copy to autosave - loaded data is already saved (came from a file).
                 // Autosave is only for data from active probing that hasn't been saved yet.
@@ -259,14 +261,18 @@ namespace coppercli.Menus
                 }
                 Persistence.SaveSession();
 
-                AppState.ResetProbeApplicationState();
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusLoaded}[/]");
-                AnsiConsole.WriteLine(AppState.ProbePoints.GetInfo());
+                AnsiConsole.WriteLine(grid.GetInfo());
 
                 // If complete, auto-apply and return to main menu
-                if (AppState.ProbePoints.NotProbed.Count == 0)
+                if (grid.HasCompleteData)
                 {
-                    AppState.ApplyProbeData();
+                    if (!AppState.ApplyProbeData())
+                    {
+                        MenuHelpers.ShowError(ProbeErrorIncomplete);
+                        return false;
+                    }
+
                     AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusAppliedSuccess}[/]");
                     return true;
                 }
@@ -313,7 +319,7 @@ namespace coppercli.Menus
                 return;
             }
 
-            if (AppState.ProbePoints == null || AppState.ProbePoints.NotProbed.Count > 0)
+            if (AppState.ProbePoints == null || !AppState.ProbePoints.HasCompleteData)
             {
                 MenuHelpers.ShowError(ProbeErrorIncomplete);
                 return;
@@ -358,7 +364,7 @@ namespace coppercli.Menus
                 return false;
             }
 
-            if (probePoints.NotProbed.Count == 0)
+            if (probePoints.HasCompleteData)
             {
                 AnsiConsole.MarkupLine($"[{ColorWarning}]{ProbeStatusComplete}[/]");
                 MenuHelpers.WaitEnter();
@@ -443,18 +449,7 @@ namespace coppercli.Menus
             var settings = AppState.Settings;
 
             // Configure controller options
-            controller.Options = new ProbeOptions
-            {
-                SafeHeight = settings.ProbeSafeHeight,
-                MaxDepth = settings.ProbeMaxDepth,
-                ProbeFeed = settings.ProbeFeed,
-                MinimumHeight = settings.ProbeMinimumHeight,
-                AbortOnFail = settings.AbortOnProbeFail,
-                XAxisWeight = settings.ProbeXAxisWeight,
-                TraceOutline = traceOutline,
-                TraceHeight = settings.OutlineTraceHeight,
-                TraceFeed = settings.OutlineTraceFeed
-            };
+            controller.Options = ProbeOptions.FromSettings(settings, traceOutline);
 
             // Load the grid into controller (same object reference - updates in place)
             controller.LoadGrid(grid);
@@ -506,8 +501,23 @@ namespace coppercli.Menus
                 _probeCts = null;
                 _probeTask = null;
 
-                // Reset controller for next use
-                controller.Reset();
+                // Stop it before resetting. The failure that brought us here may have
+                // come from this thread - the display loop - leaving the controller
+                // legitimately still running, and Reset() throws on a running controller.
+                // Thrown from a finally it replaced the real error and took the app down.
+                try
+                {
+                    if (controller.State != ControllerState.Idle)
+                    {
+                        controller.StopAsync().GetAwaiter().GetResult();
+                    }
+
+                    controller.Reset();
+                }
+                catch (Exception resetEx)
+                {
+                    Logger.Log("ProbeMenu: could not reset the probe controller - {0}", resetEx.Message);
+                }
             }
 
             Console.WriteLine();
@@ -599,7 +609,7 @@ namespace coppercli.Menus
             }
 
             // Final draw
-            if (grid.NotProbed.Count == 0)
+            if (grid.HasCompleteData)
             {
                 DrawProbeMatrix(grid);
             }
@@ -688,11 +698,10 @@ namespace coppercli.Menus
 
         private static void DrawProbeMatrix(ProbeGrid probePoints)
         {
-            var unprobed = new HashSet<(int, int)>();
-            foreach (var p in probePoints.NotProbed)
-            {
-                unprobed.Add((p.Item1, p.Item2));
-            }
+            // A snapshot, not the live queue: this runs on the UI thread while probing
+            // continues on another, and enumerating the queue it was removing from is
+            // what used to abandon a run partway through.
+            var unprobed = new HashSet<(int, int)>(probePoints.SnapshotRemaining());
 
             var (winWidth, winHeight) = GetSafeWindowSize();
             int maxWidth = Math.Min((winWidth - ProbeGridConsolePadding) / 2, ProbeGridMaxDisplayWidth);
@@ -820,7 +829,7 @@ namespace coppercli.Menus
             var session = AppState.Session;
             var currentFile = AppState.CurrentFile;
 
-            if (probePoints == null || probePoints.NotProbed.Count > 0)
+            if (probePoints == null || !probePoints.HasCompleteData)
             {
                 MenuHelpers.ShowError(ProbeErrorNoComplete);
                 return;

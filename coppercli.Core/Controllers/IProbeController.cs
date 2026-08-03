@@ -84,6 +84,30 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public class ProbeOptions
     {
+        /// <summary>
+        /// Builds the full set of probe options from settings. Every call site uses this,
+        /// so a single-point probe, a grid probe and an outline trace all carry the same
+        /// values and cannot drift - the controller reads only the fields it needs.
+        /// </summary>
+        public static ProbeOptions FromSettings(Settings.MachineSettings settings,
+            bool traceOutline = false, string? sourceFile = null)
+        {
+            return new ProbeOptions
+            {
+                SafeHeight = settings.ProbeSafeHeight,
+                MaxDepth = settings.ProbeMaxDepth,
+                ProbeFeed = settings.ProbeFeed,
+                MinimumHeight = settings.ProbeMinimumHeight,
+                AbortOnFail = settings.AbortOnProbeFail,
+                XAxisWeight = settings.ProbeXAxisWeight,
+                TraceHeight = settings.OutlineTraceHeight,
+                TraceFeed = settings.OutlineTraceFeed,
+                TraceOutline = traceOutline,
+                SourceFile = sourceFile,
+            };
+        }
+
+
         /// <summary>Safe height for Z travel between points (mm in work coords).</summary>
         public double SafeHeight { get; set; } = Constants.RetractZMm;
 
@@ -109,7 +133,13 @@ namespace coppercli.Core.Controllers
         public double TraceFeed { get; set; } = 500.0;
 
         /// <summary>If true, trace the outline before probing.</summary>
-        public bool TraceOutline { get; set; } = false;
+        public bool TraceOutline { get; set; }
+
+        /// <summary>
+        /// The G-code file this grid is being probed for. Recorded on the map so it can
+        /// never be mistaken for one measured on another board.
+        /// </summary>
+        public string? SourceFile { get; set; }
 
         /// <summary>
         /// Threshold multiplier for slow probe detection.

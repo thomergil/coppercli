@@ -9,6 +9,14 @@ namespace coppercli.Core.GCode.GCodeCommands
         public Vector3 End;
         public double Feed;
 
+        /// <summary>
+        /// False when the machine had moved somewhere the parser could not model (a G53
+        /// or G92 block) before this motion, so Start is only a guess. A move with an
+        /// untrusted start must never be discarded for "going nowhere" - the file is
+        /// recovering to a known height and that recovery is the point.
+        /// </summary>
+        public bool StartTrusted = true;
+
         public Vector3 Delta
         {
             get { return End - Start; }

@@ -26,14 +26,18 @@ namespace coppercli.Core.Communication
         Vector3 MachinePosition { get; }
         Vector3 WorkOffset { get; }
 
+        /// <summary>The G54 offset alone, as reported by $# - not the combined WCO.</summary>
+        Vector3 G54Offset { get; }
+
         /// <summary>Whether the machine has been homed since connection.</summary>
         bool IsHomed { get; set; }
 
         /// <summary>Whether homing is currently in progress.</summary>
         bool IsHoming { get; set; }
 
-        /// <summary>Timestamp of last received status response from GRBL.</summary>
-        DateTime LastStatusReceived { get; }
+
+        /// <summary>Monotonic count of status reports received.</summary>
+        long StatusReportCount { get; }
 
         // =========================================================================
         // Probing
@@ -54,7 +58,11 @@ namespace coppercli.Core.Communication
 
         ReadOnlyCollection<string> File { get; }
         int FilePosition { get; }
-        void FileStart();
+        /// <summary>Begins streaming the loaded file. False if it could not start.</summary>
+        bool FileStart();
+
+        /// <summary>Returns to Manual mode if idling in Probe mode.</summary>
+        void EnsureManualMode();
         void FileGoto(int line);
 
         // =========================================================================
@@ -62,6 +70,10 @@ namespace coppercli.Core.Communication
         // =========================================================================
 
         void SendLine(string line);
+
+        /// <summary>Requests GRBL's stored coordinate offsets and waits for the reply.
+        /// False means <see cref="G54Offset"/> must not be relied on.</summary>
+        System.Threading.Tasks.Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, System.Threading.CancellationToken ct = default);
         void FeedHold();
         void CycleStart();
         void SoftReset();
@@ -73,6 +85,9 @@ namespace coppercli.Core.Communication
         event Action<string> StatusReceived;
         event Action<Vector3, bool> ProbeFinished;
         event Action<string> NonFatalException;
+
+        /// <summary>Raised when GRBL refuses a command, with the reason.</summary>
+        event Action<GrblRejection> CommandRejected;
         event Action<string> Info;
         event Action ConnectionStateChanged;
         event Action StatusChanged;

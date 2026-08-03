@@ -14,6 +14,9 @@ namespace coppercli.Core.Controllers
         /// <summary>Current state in the FSM.</summary>
         ControllerState State { get; }
 
+        /// <summary>True while a run is under way (initializing, running or paused).</summary>
+        bool IsActive { get; }
+
         /// <summary>Fired on every state transition.</summary>
         event Action<ControllerState>? StateChanged;
 

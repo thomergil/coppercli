@@ -9,6 +9,7 @@ using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.Controllers.ControllerConstants;
+using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Core.Controllers
 {
@@ -173,7 +174,12 @@ namespace coppercli.Core.Controllers
             var min = new Vector2(fileMin.X - margin, fileMin.Y - margin);
             var max = new Vector2(fileMax.X + margin, fileMax.Y + margin);
 
-            _grid = new ProbeGrid(gridSize, min, max);
+            _grid = new ProbeGrid(gridSize, min, max)
+            {
+                // Stamp the setup now: a map measured later cannot reconstruct which
+                // board it was for, or where the origin was when it started.
+                Context = new ProbeContext(Options.SourceFile ?? string.Empty, _machine.G54Offset)
+            };
             _currentPointIndex = 0;
             _probeTimes.Clear();
 
@@ -207,7 +213,14 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(ErrorNoProbeGrid);
             }
 
-            if (_grid.NotProbed.Count == 0)
+            // A previous run may have skipped failed points, emptying the queue while
+            // leaving holes in the map. Put those nodes back so this run can fill them.
+            if (!_grid.HasCompleteData)
+            {
+                _grid.RequeueUnmeasuredPoints();
+            }
+
+            if (_grid.HasCompleteData)
             {
                 ControllerLog.Log(LogProbeGridAlreadyComplete);
                 Phase = ProbePhase.Complete;
@@ -230,16 +243,29 @@ namespace coppercli.Core.Controllers
 
                 // Safety retract to machine coords (truly safe height)
                 Phase = ProbePhase.SafetyRetracting;
-                await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
+                bool retracted = await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
                     Constants.ZHeightWaitTimeoutMs, ct);
+
+                ct.ThrowIfCancellationRequested();
+
+                if (!retracted)
+                {
+                    // The next move is an XY rapid; without a confirmed retract it would
+                    // drag the probe across the board.
+                    throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
+                }
 
                 // Move to first probe point at safe height
                 SortPointsByDistance();
-                var firstPoint = _grid.NotProbed[0];
-                var firstCoords = _grid.GetCoordinates(firstPoint);
+                if (!_grid.TryPeekNext(out var firstPoint))
+                {
+                    return;
+                }
+
+                var firstCoords = _grid.GetCoordinates(firstPoint.X, firstPoint.Y);
                 Phase = ProbePhase.MovingToStart;
                 _machine.SendLine(CmdAbsolute);
-                _machine.SendLine($"{CmdRapidMove} X{firstCoords.X:F3} Y{firstCoords.Y:F3}");
+                _machine.SendLine(Inv($"{CmdRapidMove} X{firstCoords.X:F3} Y{firstCoords.Y:F3}"));
                 await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
 
                 // Descend to safe height (work coords)
@@ -249,7 +275,7 @@ namespace coppercli.Core.Controllers
                 TransitionTo(ControllerState.Running);
 
                 // Probe all remaining points
-                while (_grid.NotProbed.Count > 0 && !ct.IsCancellationRequested)
+                while (_grid.RemainingCount > 0 && !ct.IsCancellationRequested)
                 {
                     // Check for pause
                     while (State == ControllerState.Paused && !ct.IsCancellationRequested)
@@ -265,8 +291,12 @@ namespace coppercli.Core.Controllers
                     // Sort points by distance for optimal path
                     SortPointsByDistance();
 
-                    var point = _grid.NotProbed[0];
-                    var coords = _grid.GetCoordinates(point);
+                    if (!_grid.TryPeekNext(out var point))
+                    {
+                        break;
+                    }
+
+                    var coords = _grid.GetCoordinates(point.X, point.Y);
                     _currentPointIndex = _grid.Progress;
 
                     // Emit progress
@@ -331,8 +361,7 @@ namespace coppercli.Core.Controllers
                     Phase = ProbePhase.RecordingResult;
                     if (success)
                     {
-                        _grid.AddPoint(point.Item1, point.Item2, position.Z);
-                        _grid.NotProbed.RemoveAt(0);
+                        _grid.RecordMeasurement(point.X, point.Y, position.Z);
                         PointCompleted?.Invoke(_currentPointIndex, coords, position.Z);
                         ControllerLog.Log(LogProbePointComplete, _currentPointIndex + 1, _grid.TotalPoints, position.Z);
 
@@ -345,21 +374,34 @@ namespace coppercli.Core.Controllers
 
                         if (Options.AbortOnFail)
                         {
+                            // Lift before giving up. Returning normally here skips
+                            // ControllerBase's cleanup (it only runs on an exception),
+                            // which would leave the tool resting on the board.
+                            await RaiseZToSafeHeightAsync(ct);
+
                             EmitError(new ControllerError(ControllerConstants.ErrorProbeNoContact, null, true));
                             Phase = ProbePhase.Failed;
                             TransitionTo(ControllerState.Failed);
                             return;
                         }
 
-                        // Skip this point
-                        _grid.NotProbed.RemoveAt(0);
+                        // Skip this point: it stays unmeasured, so the map remains
+                        // incomplete and says so, and a later pass can retry it.
+                        _grid.SkipPoint(point.X, point.Y);
                         await RaiseZToSafeHeightAsync(ct);
                     }
                 }
 
                 if (ct.IsCancellationRequested)
                 {
+                    // Cancellation observed at the loop condition returns normally, so
+                    // cleanup would not run - lift here too. StopAsync/CleanupAsync will
+                    // also retract; both paths are safe to take.
                     Phase = ProbePhase.Cancelled;
+                    // Bounded and separate from ct, which is already cancelled: lifting
+                    // must still happen, but must not hold the caller for a minute.
+                    using var lift = new CancellationTokenSource(Constants.CancelRetractTimeoutMs);
+                    await RaiseZToSafeHeightAsync(lift.Token);
                     return;
                 }
 
@@ -388,7 +430,7 @@ namespace coppercli.Core.Controllers
 
             // Raise Z to safe height
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} Z{Options.SafeHeight:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.SafeHeight:F3}"));
             await Task.Delay(Constants.CommandDelayMs);
             ControllerLog.Log("ProbeController.CleanupAsync: done");
         }
@@ -448,20 +490,25 @@ namespace coppercli.Core.Controllers
 
             // Safety retract to machine coords first
             ControllerLog.Log("TraceOutline: safety retract to machine Z={0:F1}", Constants.MillStartSafetyZ);
-            await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
-                Constants.ZHeightWaitTimeoutMs, ct);
+            if (!await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
+                    Constants.ZHeightWaitTimeoutMs, ct))
+            {
+                ControllerLog.Log("TraceOutline: REFUSED - safety retract not confirmed");
+                EmitError(new ControllerError(ControllerConstants.ErrorSafetyRetractFailed, null, IsFatal: true));
+                return;
+            }
 
             // Move to first corner at safe height
             ControllerLog.Log("TraceOutline: moving to first corner ({0:F3}, {1:F3})", minX, minY);
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} X{minX:F3} Y{minY:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} X{minX:F3} Y{minY:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
 
             // Move to trace height (above work surface) and verify Z reached target
             ControllerLog.Log("TraceOutline: moving to trace height Z={0:F3} (workZ={1:F3} machZ={2:F3})",
                 Options.TraceHeight, _machine.WorkPosition.Z, _machine.MachinePosition.Z);
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} Z{Options.TraceHeight:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.TraceHeight:F3}"));
             await MachineWait.WaitForZHeightAsync(_machine, Options.TraceHeight, Constants.MoveCompleteTimeoutMs, ct);
             await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
             ControllerLog.Log("TraceOutline: at trace height (workZ={0:F3} machZ={1:F3}), starting trace",
@@ -482,7 +529,7 @@ namespace coppercli.Core.Controllers
 
                 ControllerLog.Log("TraceOutline: moving to ({0:F3}, {1:F3})", x, y);
                 _machine.SendLine(CmdAbsolute);
-                _machine.SendLine($"{CmdLinearMove} X{x:F3} Y{y:F3} F{Options.TraceFeed:F0}");
+                _machine.SendLine(Inv($"{CmdLinearMove} X{x:F3} Y{y:F3} F{Options.TraceFeed:F0}"));
 
                 // Wait for status to change from Idle (motion started), then wait for Idle (motion complete)
                 await MachineWait.WaitForStatusChangeAsync(_machine, StatusIdle, Constants.MotionStartTimeoutMs, ct);
@@ -493,7 +540,7 @@ namespace coppercli.Core.Controllers
         private async Task RaiseZToSafeHeightAsync(CancellationToken ct)
         {
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} Z{Options.SafeHeight:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.SafeHeight:F3}"));
             await MachineWait.WaitForZHeightAsync(_machine, Options.SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
             await MachineWait.WaitForIdleAsync(_machine, Constants.ZHeightWaitTimeoutMs, ct);
         }
@@ -503,7 +550,7 @@ namespace coppercli.Core.Controllers
             // Don't wait for idle - let GRBL buffer the retract with the next move for smooth motion
             double targetZ = Math.Max(currentZ + Options.MinimumHeight, Options.MinimumHeight);
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} Z{targetZ:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} Z{targetZ:F3}"));
             return Task.CompletedTask;
         }
 
@@ -511,7 +558,7 @@ namespace coppercli.Core.Controllers
         {
             // Don't wait - let GRBL buffer this with the probe command for smooth motion
             _machine.SendLine(CmdAbsolute);
-            _machine.SendLine($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}");
+            _machine.SendLine(Inv($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}"));
             return Task.CompletedTask;
         }
 
@@ -526,9 +573,10 @@ namespace coppercli.Core.Controllers
             try
             {
                 _machine.SendLine(CmdAbsolute);
-                _machine.SendLine($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}");
+                _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
 
-                return await _probeTcs.Task;
+                return await MachineWait.AwaitReplyOrTimeoutAsync(_probeTcs.Task,
+                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct);
             }
             finally
             {
@@ -540,6 +588,7 @@ namespace coppercli.Core.Controllers
         {
             _probeTcs?.TrySetResult((success, position));
         }
+
 
         // =========================================================================
         // Single point probing (standalone operation)
@@ -567,10 +616,11 @@ namespace coppercli.Core.Controllers
 
                 // Use relative mode so we probe DOWN from current position
                 _machine.SendLine(CmdRelative);
-                _machine.SendLine($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}");
+                _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
                 _machine.SendLine(CmdAbsolute);
 
-                var (success, position) = await tcs.Task;
+                var (success, position) = await MachineWait.AwaitReplyOrTimeoutAsync(tcs.Task,
+                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct);
 
                 ControllerLog.Log(LogProbeZSingle, success, position.Z);
 
@@ -597,13 +647,11 @@ namespace coppercli.Core.Controllers
             var currentPos = _machine.WorkPosition.GetXY();
             double xWeight = Options.XAxisWeight;
 
-            _grid.NotProbed.Sort((a, b) =>
+            _grid.OrderRemainingBy(p =>
             {
-                var va = _grid.GetCoordinates(a) - currentPos;
-                var vb = _grid.GetCoordinates(b) - currentPos;
-                va.X *= xWeight;
-                vb.X *= xWeight;
-                return va.Magnitude.CompareTo(vb.Magnitude);
+                var offset = _grid.GetCoordinates(p.X, p.Y) - currentPos;
+                offset.X *= xWeight;
+                return offset.Magnitude;
             });
         }
 

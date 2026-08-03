@@ -22,7 +22,24 @@ namespace coppercli.Core.Controllers
         public const string ErrorCannotPause = "Cannot pause: controller is {0}";
         public const string ErrorCannotResume = "Cannot resume: controller is {0}";
         public const string ErrorCannotReset = "Cannot reset: controller is {0}";
-        public const string ErrorHomingFailed = "Homing failed. Cannot mill without homing.";
+        public const string ErrorHomingFailed = "Homing did not complete, so milling cannot start.";
+
+        /// <summary>Shown when the machine itself reports that homing is switched off.</summary>
+        public const string ErrorHomingDisabledOnMachine =
+            "This machine reports that homing is disabled in its own settings ($22), so it cannot establish " +
+            "the reference position that every safety retract depends on. Enable homing on the controller " +
+            "(and check the limit switches are wired) before milling.";
+
+        /// <summary>Homing failed and the machine explained why.</summary>
+        public const string ErrorHomingFailedBecause = "Homing did not complete, so milling cannot start. {0}";
+        public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted to a safe height. Stopped before moving.";
+        public const string ErrorWorkOffsetUnknown = "The machine did not report its work offsets. Stopped rather than guess the Z origin.";
+        public const string ErrorMachineDoorOpen = "The enclosure door is open. Close it, then start the job again.";
+        public const string ErrorMachineNotSettled = "The machine did not stop moving. Wait for it to finish, then start the job again.";
+        public const string ErrorMillingDidNotStart =
+            "The job did not start streaming to the machine. This usually means the machine was left in probe mode - reconnect or reset, then try again.";
+        public const string ErrorMillingAlarm = "The machine raised an alarm during the job. Milling stopped.";
+        public const string LogMillingAlarm = "Milling aborted: machine in alarm state ({0})";
         public const string ErrorProbeNoContact = "Probe failed: max depth reached without contact";
         public const string ErrorProbeTimeout = "Probe timed out";
         public const string ErrorToolSetterNotConfigured = "Tool setter position not configured";
@@ -43,6 +60,7 @@ namespace coppercli.Core.Controllers
         public const string LogSafetyRetract = "Safety retract to Z={0} (machine coords)";
         public const string LogStateInit = "State initialization: G90 G17";
         public const string LogNoDepthAdjustment = "No depth adjustment (0mm)";
+        public const string LogDepthAdjustmentRestored = "Depth adjustment restored: Z offset back to {0:F3}";
         public const string LogDepthAdjustment = "Depth adjustment: Z offset {0:F3} → {1:F3} (adj: {2:F3})";
         public const string LogFileStarted = "File started: Mode={0}, Position={1}";
         public const string LogMillingComplete = "Milling complete (stable idle)";
@@ -79,20 +97,6 @@ namespace coppercli.Core.Controllers
         public const string OptionContinue = "Continue";
         public const string OptionAbort = "Abort";
 
-        // =========================================================================
-        // Tool change phase names
-        // =========================================================================
-
-        public const string PhaseToolChangeRaisingZ = "RaisingZ";
-        public const string PhaseToolChangeMovingToSetter = "MovingToToolSetter";
-        public const string PhaseToolChangeMeasuringRef = "MeasuringReference";
-        public const string PhaseToolChangeMovingToWork = "MovingToWorkArea";
-        public const string PhaseToolChangeWaitingForUser = "WaitingForUserChange";
-        public const string PhaseToolChangeMeasuringNew = "MeasuringNewTool";
-        public const string PhaseToolChangeProbingPCB = "ProbingPCBSurface";
-        public const string PhaseToolChangeApplyingOffset = "ApplyingOffset";
-        public const string PhaseToolChangeReturning = "Returning";
-        public const string PhaseToolChangeComplete = "Complete";
 
         // =========================================================================
         // Tool change log messages
@@ -126,8 +130,7 @@ namespace coppercli.Core.Controllers
         // =========================================================================
 
         public const string ToolChangePromptTitle = "Tool Change";
-        public const string ToolChangePromptWithSetter = "Change to tool T{0} and press Continue";
-        public const string ToolChangePromptWithoutSetter = "Change to tool T{0} and press Continue";
+        public const string ToolChangePrompt = "Change to tool T{0} and press Continue";
         public const string ToolChangePromptZeroZ = "Jog to PCB surface, set Z0, then press Continue";
         public const string ToolChangeZeroZTitle = "Set Z Zero";
     }
