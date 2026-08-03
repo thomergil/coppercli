@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.4.1
 
 ### Safety Fixes
 
