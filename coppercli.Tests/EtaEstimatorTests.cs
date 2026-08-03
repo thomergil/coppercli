@@ -5,17 +5,30 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The ETA must start from an up-front guess, stay near it early, and ease toward the
-    /// measured pace - not swing wildly the way the old elapsed / lines-done estimate did.
+    /// The ETA has to track the pace the machine is actually keeping, in both directions.
+    /// An estimate that can only count down tells the operator a job is nearly finished
+    /// while it is in fact running late, which is worse than no estimate at all.
     /// </summary>
     public class EtaEstimatorTests
     {
+        /// <summary>Feeds a steady pace and returns the estimate at each sampled line.</summary>
+        private static double[] RunAtSteadyPace(EtaEstimator eta, int totalLines,
+                                                double secondsPerLine, int step)
+        {
+            var series = new System.Collections.Generic.List<double>();
+            for (int line = step; line <= totalLines; line += step)
+            {
+                var remaining = eta.Update(line, TimeSpan.FromSeconds(line * secondsPerLine));
+                series.Add(remaining!.Value.TotalSeconds);
+            }
+            return series.ToArray();
+        }
+
         [Fact]
         public void BeforeAnyProgress_ReportsTheModelGuess()
         {
             var eta = new EtaEstimator(TimeSpan.FromMinutes(10), totalLines: 1000);
 
-            // No lines done, no time elapsed: the whole model estimate remains.
             var remaining = eta.Update(linesCompleted: 0, elapsed: TimeSpan.Zero);
 
             Assert.Equal(TimeSpan.FromMinutes(10), remaining);
@@ -30,53 +43,87 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The first real measurement, if it disagrees with the guess, moves the estimate
-        /// only a little - it does not jump straight to the measured projection.
+        /// The regression this pins. A machine running steadily slower than the model must
+        /// produce an estimate that reflects the real finish time, not the guess. The old
+        /// blend answered with the model guess here and never recovered.
         /// </summary>
-        [Fact]
-        public void EarlyMeasurement_NudgesRatherThanJumps()
+        [Theory]
+        [InlineData(1.5)]
+        [InlineData(2.0)]
+        [InlineData(3.0)]
+        public void RunningSlowerThanTheModel_EstimateReflectsRealityNotTheGuess(double slowdown)
         {
-            // Guess: 10 min total over 1000 lines. Reality so far: running at half pace
-            // (100 lines took 2 min, which projects to 20 min total).
-            var eta = new EtaEstimator(TimeSpan.FromMinutes(10), totalLines: 1000);
+            const int totalLines = 1000;
+            var modelTotal = TimeSpan.FromSeconds(600);
+            double secondsPerLine = 600.0 / totalLines * slowdown;
+            double trueTotal = totalLines * secondsPerLine;
 
-            var remaining = eta.Update(linesCompleted: 100, elapsed: TimeSpan.FromMinutes(2));
+            var eta = new EtaEstimator(modelTotal, totalLines);
+            var series = RunAtSteadyPace(eta, totalLines, secondsPerLine, step: 10);
 
-            // A raw elapsed/lines estimate would project 20 min total -> 18 min remaining.
-            // The smoothed estimate must sit far closer to the guess than to that.
-            double minutes = remaining!.Value.TotalMinutes;
-            Assert.InRange(minutes, 8.0, 11.0);
+            // A tenth of the way in, the estimate must already be near the truth.
+            double atTenPercent = series[9];
+            double trueRemainingAtTenPercent = trueTotal * 0.9;
+            Assert.InRange(atTenPercent, trueRemainingAtTenPercent * 0.85, trueRemainingAtTenPercent * 1.15);
+
+            // And it must land on zero by the end rather than still promising time.
+            Assert.InRange(series[^1], 0.0, secondsPerLine * 2);
         }
 
         /// <summary>
-        /// The guess dominates early and the measured pace dominates late, so the total-
-        /// duration estimate moves monotonically from the guess toward the truth and
-        /// lands on it by the end.
+        /// The complaint that prompted the rewrite: the estimate was only ever willing to
+        /// go down. When the machine slows mid-job the time remaining must go UP.
         /// </summary>
         [Fact]
-        public void EstimateShiftsFromGuessTowardTruthAsTheJobProgresses()
+        public void WhenTheMachineSlowsMidJob_TheEstimateRises()
         {
-            // Model guessed 150 s; the job actually runs at 120 s (a realistic ~25% miss).
-            const double trueTotal = 120.0;
-            var eta = new EtaEstimator(TimeSpan.FromSeconds(150), totalLines: 1000);
+            const int totalLines = 1000;
+            var eta = new EtaEstimator(TimeSpan.FromSeconds(600), totalLines);
 
-            double EstimatedTotalAt(int line)
+            double elapsed = 0;
+            double? beforeSlowdown = null;
+            double peakAfter = 0;
+
+            for (int line = 10; line <= totalLines; line += 10)
             {
-                var elapsed = TimeSpan.FromSeconds(line * trueTotal / 1000.0);
-                var remaining = eta.Update(line, elapsed);
-                return remaining!.Value.TotalSeconds + elapsed.TotalSeconds;   // reconstruct the total
+                // Second half runs at half speed.
+                double secondsPerLine = line <= totalLines / 2 ? 0.6 : 1.2;
+                elapsed += 10 * secondsPerLine;
+                double remaining = eta.Update(line, TimeSpan.FromSeconds(elapsed))!.Value.TotalSeconds;
+
+                if (line == totalLines / 2)
+                {
+                    beforeSlowdown = remaining;
+                }
+                else if (beforeSlowdown != null && line <= totalLines * 0.8)
+                {
+                    peakAfter = Math.Max(peakAfter, remaining);
+                }
             }
 
-            double early = EstimatedTotalAt(50);    // 5% in
-            double mid = EstimatedTotalAt(500);      // halfway
-            double late = EstimatedTotalAt(990);     // nearly done
+            Assert.NotNull(beforeSlowdown);
+            Assert.True(peakAfter > beforeSlowdown!.Value,
+                $"estimate must rise when the machine slows: was {beforeSlowdown:F0}s, peaked at {peakAfter:F0}s");
+        }
 
-            // Early: close to the 150 s guess. Late: close to the 120 s truth.
-            Assert.InRange(early, 147.0, 150.0);
-            Assert.InRange(late, 120.0, 122.0);
+        /// <summary>
+        /// Steady pace matching the model: the estimate should simply count down, without
+        /// the measurement introducing wobble.
+        /// </summary>
+        [Fact]
+        public void AtTheModelledPace_TheEstimateCountsDownSmoothly()
+        {
+            const int totalLines = 1000;
+            var eta = new EtaEstimator(TimeSpan.FromSeconds(600), totalLines);
 
-            // Monotonic march from guess toward truth.
-            Assert.True(early > mid && mid > late);
+            var series = RunAtSteadyPace(eta, totalLines, secondsPerLine: 0.6, step: 10);
+
+            for (int i = 1; i < series.Length; i++)
+            {
+                Assert.True(series[i] <= series[i - 1] + 1.0,
+                    $"estimate jumped up at sample {i}: {series[i - 1]:F1} -> {series[i]:F1}");
+            }
+            Assert.InRange(series[0], 570.0, 600.0);
         }
 
         [Fact]
@@ -84,27 +131,27 @@ namespace coppercli.Tests
         {
             var eta = new EtaEstimator(TimeSpan.FromSeconds(10), totalLines: 100);
 
-            // Elapsed already past the whole guess.
             var remaining = eta.Update(linesCompleted: 50, elapsed: TimeSpan.FromSeconds(60));
 
             Assert.True(remaining!.Value >= TimeSpan.Zero);
         }
 
         /// <summary>
-        /// Dwelling on the same line means running slower than expected, so the estimate
-        /// drifts up - but gradually, a few seconds over several frames, never a jump.
+        /// Sitting on one line means the job is running behind, so the estimate drifts up -
+        /// but by roughly the time actually spent waiting, not by that time multiplied
+        /// across every line still to come.
         /// </summary>
         [Fact]
-        public void DwellingOnOneLine_DriftsGraduallyNotAbruptly()
+        public void DwellingOnOneLine_DriftsUpByTheTimeSpentWaiting()
         {
             var eta = new EtaEstimator(TimeSpan.FromMinutes(10), totalLines: 1000);
 
             var first = eta.Update(200, TimeSpan.FromMinutes(4));
-            var second = eta.Update(200, TimeSpan.FromMinutes(4.1));    // same line, 6 s later
-            var third = eta.Update(200, TimeSpan.FromMinutes(4.2));     // and 6 s more
+            var second = eta.Update(200, TimeSpan.FromMinutes(4) + TimeSpan.FromSeconds(6));
+            var third = eta.Update(200, TimeSpan.FromMinutes(4) + TimeSpan.FromSeconds(12));
 
-            // Monotonic and gentle: each 6 s of dwelling nudges the estimate a little.
             Assert.True(third >= second && second >= first);
+            // 12 s of dwelling must not balloon the estimate across the remaining 800 lines.
             Assert.InRange((third!.Value - first!.Value).TotalSeconds, 0, 30);
         }
 
@@ -118,6 +165,28 @@ namespace coppercli.Tests
             // 100 lines in 1 min projects 10 min total -> ~9 min remaining.
             Assert.NotNull(remaining);
             Assert.InRange(remaining!.Value.TotalMinutes, 8.0, 10.0);
+        }
+
+        /// <summary>
+        /// Reaction speed must come from progress through the job, not from how often the
+        /// caller happens to redraw. Polling ten times more often must not change the curve.
+        /// </summary>
+        [Fact]
+        public void ReactionSpeedDoesNotDependOnPollRate()
+        {
+            const int totalLines = 1000;
+            const double secondsPerLine = 1.2;
+
+            var coarse = new EtaEstimator(TimeSpan.FromSeconds(600), totalLines);
+            var fine = new EtaEstimator(TimeSpan.FromSeconds(600), totalLines);
+
+            RunAtSteadyPace(coarse, totalLines, secondsPerLine, step: 50);
+            RunAtSteadyPace(fine, totalLines, secondsPerLine, step: 5);
+
+            var atCoarse = coarse.Update(500, TimeSpan.FromSeconds(500 * secondsPerLine))!.Value.TotalSeconds;
+            var atFine = fine.Update(500, TimeSpan.FromSeconds(500 * secondsPerLine))!.Value.TotalSeconds;
+
+            Assert.InRange(Math.Abs(atCoarse - atFine), 0.0, 30.0);
         }
     }
 }

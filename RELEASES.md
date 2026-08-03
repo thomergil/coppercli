@@ -1,5 +1,21 @@
 # Release Notes
 
+## Unreleased
+
+- **The estimated time remaining can go up as well as down.** It could only ever count
+  down: a job running behind showed a shrinking ETA all the way to zero and then carried
+  on cutting. The estimate leaned on the toolpath's own duration guess in proportion to
+  how much of the job was left, and the arithmetic of that meant the measured pace could
+  only raise the figure if the machine was running more than twice as slow as predicted —
+  anything less, and the guess simply counted itself down. It now measures the pace the
+  machine is actually keeping and projects that, so an ETA that starts at ten minutes will
+  say fifteen if that is what the job is going to take, and rises if the machine slows
+  part-way through. Time spent waiting on the current line is added on its own rather than
+  multiplied across every line still to come, so one long cut no longer inflates the whole
+  estimate.
+- Build workflow: updated the GitHub Actions in use, which were pinned to versions running
+  on a deprecated Node runtime.
+
 ## v0.4.1
 
 ### Safety Fixes
