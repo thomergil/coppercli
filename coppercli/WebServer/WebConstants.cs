@@ -54,6 +54,7 @@ public static class WebConstants
     public const string ContentTypeHtml = "text/html";
     public const string ContentTypeCss = "text/css";
     public const string ContentTypeJs = "application/javascript";
+    public const string ContentTypeText = "text/plain";
 
     // --- WebSocket Message Types ---
     public const string WsMessageTypeStatus = "status";
@@ -164,14 +165,36 @@ public static class WebConstants
     public const string WsCmdProbeZ = "probe-z";
 
     // --- Query String Parameter Keys ---
-    // Protocol wire values (like ApiXxx/WsCmdXxx). The JS side reads ?token= directly from
-    // window.location because auth precedes any /api/constants fetch, so QueryParamToken is a
-    // C#-only constant by necessity; the rest are consumed only server-side.
-    public const string QueryParamToken = "token";
+    // Protocol wire values (like ApiXxx/WsCmdXxx), consumed only server-side.
     public const string QueryParamPath = "path";
     public const string QueryParamWidth = "width";
     public const string QueryParamHeight = "height";
     public const string QueryParamClientId = "clientId";
+
+    // --- Request Headers (see RequestGuard) ---
+    public const string HeaderOrigin = "Origin";
+    public const string HeaderSecFetchSite = "Sec-Fetch-Site";
+
+    /// <summary>Sec-Fetch-Site values naming an origin other than ours.</summary>
+    public const string SecFetchSiteCrossSite = "cross-site";
+    public const string SecFetchSiteSameSite = "same-site";
+
+    /// <summary>The mDNS namespace, which only the local network can answer for.</summary>
+    public const string HostMdnsSuffix = ".local";
+
+    // --- Request Path Prefixes ---
+    public const string WsPath = "/ws";
+    public const string ApiPathPrefix = "/api/";
+
+    // --- Response Security Headers (see ApplySecurityHeaders) ---
+    public const string HeaderFrameOptions = "X-Frame-Options";
+    public const string HeaderContentSecurityPolicy = "Content-Security-Policy";
+    public const string HeaderContentTypeOptions = "X-Content-Type-Options";
+    public const string HeaderReferrerPolicy = "Referrer-Policy";
+    public const string FrameOptionsDeny = "DENY";
+    public const string CspFrameAncestorsNone = "frame-ancestors 'none'";
+    public const string ContentTypeOptionsNoSniff = "nosniff";
+    public const string ReferrerPolicyNone = "no-referrer";
 
     // --- HTTP Methods ---
     public const string MethodPost = "POST";
@@ -179,7 +202,7 @@ public static class WebConstants
 
     // --- HTTP Status Codes ---
     public const int HttpStatusBadRequest = 400;
-    public const int HttpStatusUnauthorized = 401;
+    public const int HttpStatusForbidden = 403;
     public const int HttpStatusNotFound = 404;
     public const int HttpStatusMethodNotAllowed = 405;
     public const int HttpStatusServerError = 500;
@@ -191,10 +214,11 @@ public static class WebConstants
     public const string ErrorNotFound = "Not found";
     public const string ErrorInvalidRequest = "Invalid request";
     public const string ErrorMethodNotAllowed = "Method not allowed";
-    public const string ApiErrorUnauthorized = "Not authorised. Open the link shown when the server started.";
-
-    /// <summary>Prefix of the Authorization header value carrying the access token.</summary>
-    public const string BearerPrefix = "Bearer ";
+    public const string ErrorForbidden =
+        "Refused. Open coppercli at the numeric address it printed at startup, from a browser "
+        + "on the same network. A domain name will not work unless it is a plain machine name "
+        + "such as mill or mill.local.";
+    public const string ErrorServerFailure = "Something went wrong. Run coppercli with --debug and check coppercli.log.";
     public const string ErrorMachineNotConnected = "Machine not connected";
     public const string ErrorCannotPauseNotRunning = "Cannot pause: not running";
     public const string ErrorCannotResumeNotPaused = "Cannot resume: not paused";

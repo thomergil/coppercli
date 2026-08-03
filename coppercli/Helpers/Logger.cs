@@ -70,7 +70,23 @@ namespace coppercli.Helpers
 
         public static void Log(string format, params object[] args)
         {
-            Log(string.Format(format, args));
+            if (!Enabled)
+            {
+                return;
+            }
+
+            try
+            {
+                Log(string.Format(format, args));
+            }
+            catch (Exception)
+            {
+                // A placeholder that does not match its arguments must not take down the
+                // caller: this overload formats before Log(string) can catch anything.
+                // A bare null argument binds to the array itself, so this is not only
+                // FormatException.
+                Log(format);
+            }
         }
 
         public static void Clear()

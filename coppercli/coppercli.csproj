@@ -30,7 +30,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Expose internal state (AppState) to the test project for safety-logic regression tests. -->
+    <!-- Expose internals (AppState, RequestGuard, NetworkHelpers) to the test project for
+         safety- and access-logic regression tests. -->
     <InternalsVisibleTo Include="coppercli.Tests" />
   </ItemGroup>
 

@@ -1,7 +1,29 @@
 # Release Notes
 
-## Unreleased
+## v0.4.1a
 
+- **Typing the machine's address opens the web UI again.** v0.4.1 put a per-run token in
+  the link printed at startup and refused any request without it. That worked on a
+  desktop, where the link is there to click, and failed on a phone, where the address is
+  typed by hand and nobody types 32 hex characters: the page loaded and then sat there
+  dead, because the token guard covered the API and the WebSocket but not the page
+  itself. The token is gone, and `http://192.168.1.5:34001` works from any browser on the
+  network.
+  What replaces it costs no keystrokes. A request is refused unless it comes from an
+  address on a private network or one this machine shares a subnet with, so a forwarded
+  port no longer exposes the mill to the internet. Anything that can move the machine,
+  start a job, or write a file is refused unless it was issued by the UI's own page, and
+  any request addressed to a domain that merely resolves to your machine is refused
+  outright — that being the trick a remote page would otherwise use to slip past the
+  first check. The UI also refuses to be displayed inside a frame, so no page can hide it
+  under your thumb.
+  Anyone sharing your network can still drive the machine — as they could before v0.4.1,
+  and as the port 34000 bridge has always allowed.
+- **Reach the web UI by its numeric address, or by a plain machine name.** `mill` and
+  `mill.local` work; a dotted domain such as `mill.lan` or one from your router's search
+  domain is now refused, because accepting those is exactly what would let a remote site
+  aim a domain of its own at your machine. If you reached the UI by such a name, use the
+  address printed at startup instead.
 - **The estimated time remaining can go up as well as down.** It could only ever count
   down: a job running behind showed a shrinking ETA all the way to zero and then carried
   on cutting. The estimate leaned on the toolpath's own duration guess in proportion to

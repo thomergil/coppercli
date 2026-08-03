@@ -94,16 +94,28 @@ Server mode runs both a TCP proxy and a web server, allowing remote access via e
 - **Port 34000**: Raw GRBL over TCP (for TUI clients using Network mode)
 - **Port 34001**: HTTP/WebSocket (for browser-based control)
 
-The **web UI** requires the access link printed when the server starts — it carries a token
-that is regenerated on every run. Open that link (or scan it) rather than typing the bare
-address; without the token the machine-control API and WebSocket refuse the request. That
-stops anyone else on the network, or a page you merely happen to be visiting, from driving
-the machine through the browser interface.
+Open the **web UI** by typing the address printed at startup — `http://192.168.1.5:34001`
+or similar — into any browser on the same network. There is no password to enter.
 
-> **The proxy on port 34000 has no such protection.** It is a raw GRBL bridge with no
-> authentication: anything that can reach that port can send arbitrary G-code to your
-> machine. Only open it on a network you trust, and prefer the firewall rule for 34001
-> alone if you just want the browser UI.
+Use the numeric address, or a plain machine name such as `mill` or `mill.local`. A dotted
+domain name — `mill.lan`, `mill.home.arpa`, anything from your router's search domain — is
+refused on purpose: accepting those is what would let a remote site point a domain of its
+own at your machine and drive it through your browser.
+
+Two things are refused, neither of which costs you a keystroke:
+
+- A request whose source address is not on a private network and does not share a subnet
+  with this machine. Plain port-forwarding therefore does not expose the mill.
+- A page you happen to be visiting calling the machine in the background, and a domain
+  that re-resolves to your machine's address to pose as the UI.
+
+> **It does not protect against other people on your own network.** Anyone who shares it
+> can drive the machine, and the raw GRBL bridge on port 34000 is wide open in the same
+> way. Only run either on a network you trust.
+>
+> It also cannot help if you deliberately publish the port through something that
+> terminates locally — an `ssh -R` tunnel, `ngrok`, or a reverse proxy — because the
+> request then arrives from this machine itself. Do not expose either port that way.
 
 ```bash
 # Start server mode

@@ -25,13 +25,6 @@ namespace coppercli.WebServer;
 public static class CncWebServer
 {
     private static HttpListener? _listener;
-
-    /// <summary>
-    /// Per-run access token. This server can move a spinning cutter, and it listens on
-    /// every interface, so anything that changes machine state has to present it.
-    /// Regenerated each start - there is nothing to remember or revoke.
-    /// </summary>
-    private static string _accessToken = string.Empty;
     private static CancellationTokenSource? _cts;
     private static readonly List<WebSocket> _clients = new();
     private static readonly Dictionary<WebSocket, DateTime> _clientLastActivity = new();
@@ -135,7 +128,6 @@ public static class CncWebServer
         _baudRate = baudRate;
         _machine = AppState.Machine;
         _cts = new CancellationTokenSource();
-        _accessToken = Guid.NewGuid().ToString("N");
 
         _listener = new HttpListener();
         _listener.Prefixes.Add($"http://+:{port}/");
@@ -170,13 +162,13 @@ public static class CncWebServer
                 AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
                 foreach (var ip in localIps)
                 {
-                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://{ip}:{port}/?token={_accessToken}[/]");
+                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://{ip}:{port}[/]");
                 }
             }
             else
             {
                 AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
-                AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://localhost:{port}/?token={_accessToken}[/]");
+                AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://localhost:{port}[/]");
             }
 
             AnsiConsole.WriteLine();
@@ -368,100 +360,90 @@ public static class CncWebServer
         try
         {
             var path = request.Url?.AbsolutePath ?? "/";
+            bool isWebSocket = request.IsWebSocketRequest && path == WsPath;
+            bool isApi = path.StartsWith(ApiPathPrefix);
 
-            // WebSocket upgrade
-            if (request.IsWebSocketRequest && path == "/ws")
+            ApplySecurityHeaders(response);
+
+            if (!RequestGuard.IsAllowed(request))
             {
-                if (!IsAuthorised(request))
+                Logger.Log("Refused {0} {1} from {2}: host={3} origin={4} site={5}",
+                    request.HttpMethod, path, request.RemoteEndPoint?.ToString() ?? "unknown",
+                    request.UserHostName ?? "none",
+                    request.Headers[HeaderOrigin] ?? "none",
+                    request.Headers[HeaderSecFetchSite] ?? "none");
+                response.StatusCode = HttpStatusForbidden;
+
+                // Answer in the channel the caller used: a refused page load is read by a
+                // person, who should see the sentence rather than a JSON envelope.
+                if (isWebSocket || isApi)
                 {
-                    Logger.Log("Rejected unauthorised WebSocket upgrade from {0}", request.RemoteEndPoint);
-                    response.StatusCode = HttpStatusUnauthorized;
-                    response.Close();
-                    return;
+                    await WriteJson(response, new { error = ErrorForbidden });
+                }
+                else
+                {
+                    await WriteText(response, ErrorForbidden);
                 }
 
+                return;
+            }
+
+            if (isWebSocket)
+            {
+                // The upgrade takes ownership of the connection; nothing may touch it after.
                 await HandleWebSocket(context);
                 return;
             }
 
-            // API endpoints
-            if (path.StartsWith("/api/"))
+            try
             {
-                if (!IsAuthorised(request))
+                if (isApi)
                 {
-                    Logger.Log("Rejected unauthorised {0} {1} from {2}", request.HttpMethod, path, request.RemoteEndPoint);
-                    response.StatusCode = HttpStatusUnauthorized;
-                    await WriteJson(response, new { error = ApiErrorUnauthorized });
-                    return;
+                    await HandleApi(context, path);
                 }
-
-                await HandleApi(context, path);
-                return;
+                else
+                {
+                    await ServeStaticFile(context, path);
+                }
             }
-
-            // Static files
-            await ServeStaticFile(context, path);
+            catch (Exception ex)
+            {
+                // Answered here rather than in the outer catch: the close below would
+                // otherwise run first on the way out, and writing the failure to a closed
+                // response silently turns it into an empty 200 that the UI cannot read.
+                Logger.Log("Request handler failed for {0}: {1}", path, ex);
+                response.StatusCode = HttpStatusServerError;
+                await WriteJson(response, new { error = ErrorServerFailure });
+            }
+            finally
+            {
+                // An endpoint reached by a method it does not answer writes nothing at all.
+                // Without this the caller waits on a connection that never closes, and a
+                // handful of those exhaust a browser's connections to this origin.
+                response.Close();
+            }
         }
         catch (Exception ex)
         {
-            Logger.Log($"Request error: {ex.Message}");
-            response.StatusCode = HttpStatusServerError;
-            await WriteJson(response, new { error = ex.Message });
+            // Nothing was written yet, or writing the failure itself failed. Either way the
+            // connection is unusable, so drop it rather than half-answer.
+            Logger.Log("Request failed before it could be answered: {0}", ex);
+            response.Abort();
         }
     }
 
     /// <summary>
-    /// True if the caller presented this run's token and did not arrive from another
-    /// site. The token stops anyone else on the network; the Origin check stops a page
-    /// the operator is merely visiting from driving the machine in the background.
+    /// Headers applied to every response. The web UI drives a machine from large on-screen
+    /// buttons, so a page that framed it could sit an invisible copy under the operator's
+    /// thumb: inside the frame the UI runs at our own origin, and every request it makes is
+    /// genuinely same-origin. Refusing to be framed at all is the only reliable answer.
     /// </summary>
-    private static bool IsAuthorised(HttpListenerRequest request)
+    private static void ApplySecurityHeaders(HttpListenerResponse response)
     {
-        if (!HasValidToken(request))
-        {
-            return false;
-        }
-
-        var origin = request.Headers["Origin"];
-
-        if (string.IsNullOrEmpty(origin))
-        {
-            // Not a browser cross-site request (curl, the TUI, a script).
-            return true;
-        }
-
-        return Uri.TryCreate(origin, UriKind.Absolute, out var originUri)
-               && request.Url != null
-               && string.Equals(originUri.Host, request.Url.Host, StringComparison.OrdinalIgnoreCase)
-               && originUri.Port == request.Url.Port;
-    }
-
-    private static bool HasValidToken(HttpListenerRequest request)
-    {
-        if (string.IsNullOrEmpty(_accessToken))
-        {
-            return false;
-        }
-
-        var header = request.Headers["Authorization"];
-
-        if (!string.IsNullOrEmpty(header) && header.StartsWith(BearerPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            return FixedTimeEquals(header.Substring(BearerPrefix.Length).Trim(), _accessToken);
-        }
-
-        // The WebSocket upgrade and the first page load cannot set a header.
-        var queryToken = request.QueryString[QueryParamToken];
-
-        return !string.IsNullOrEmpty(queryToken) && FixedTimeEquals(queryToken, _accessToken);
-    }
-
-    /// <summary>Compares without leaking the answer through how long it took.</summary>
-    private static bool FixedTimeEquals(string a, string b)
-    {
-        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(a),
-            System.Text.Encoding.UTF8.GetBytes(b));
+        response.Headers[HeaderFrameOptions] = FrameOptionsDeny;
+        response.Headers[HeaderContentSecurityPolicy] = CspFrameAncestorsNone;
+        response.Headers[HeaderContentTypeOptions] = ContentTypeOptionsNoSniff;
+        response.Headers[HeaderReferrerPolicy] = ReferrerPolicyNone;
     }
 
     /// <summary>True if <paramref name="candidate"/> resolves to somewhere inside
@@ -3033,56 +3015,30 @@ public static class CncWebServer
                 requestClientId = cookies[ClientIdCookieName]?.Value;
             }
 
-            bool isOnlyClient = false;
-            int otherClientCount = 0;
-
             lock (_clientsLock)
             {
-                // Clean up expired pending clients
                 PurgeExpiredPendingClients();
 
-                int totalClients = _clients.Count;
-                int totalClientIds = _clientIds.Count;
-                int pendingCount = _pendingClients.Count;
-
-                // Check if this client ID already has an active connection or is pending
-                bool isSameClient = false;
-                if (requestClientId != null)
-                {
-                    isSameClient = _clientIds.ContainsValue(requestClientId) ||
-                                   _pendingClients.ContainsKey(requestClientId);
-                }
-
-                // Count other connected clients (WebSocket) and pending clients
-                otherClientCount = _clientIds.Count(kvp => kvp.Value != requestClientId);
-                otherClientCount += _pendingClients.Count(kvp => kvp.Key != requestClientId);
-
-                // Also count anonymous clients (WebSocket without clientId)
-                int anonymousClients = totalClients - totalClientIds;
-                otherClientCount += anonymousClients;
-
-                // This client is the "only client" if they're connected/pending AND no others exist
-                isOnlyClient = isSameClient && otherClientCount == 0;
-
-                Logger.Log("ServeStaticFile: path={0}, requestClientId={1}, totalClients={2}, totalClientIds={3}, pendingCount={4}, otherClientCount={5}, isSameClient={6}, isOnlyClient={7}",
-                    path, requestClientId ?? "null", totalClients, totalClientIds, pendingCount, otherClientCount, isSameClient, isOnlyClient);
+                Logger.Log("ServeStaticFile: path={0}, requestClientId={1}, clients={2}, clientIds={3}, pending={4}",
+                    path, requestClientId ?? "null", _clients.Count, _clientIds.Count, _pendingClients.Count);
             }
 
-            // Note: We always serve index.html even if other clients exist.
-            // The WebSocket handler will detect the conflict and send an error,
-            // allowing the web UI to show a unified force-disconnect modal.
+            // The page is served whatever else is connected; the WebSocket handler detects
+            // the conflict and the UI shows one force-disconnect modal.
 
-            // Generate a new client ID if this browser doesn't have one
+            // Generate a client ID if this browser does not have one yet.
             if (requestClientId == null)
             {
                 requestClientId = Guid.NewGuid().ToString("N");
             }
 
-            // Mark this client as pending (served page, waiting for WebSocket)
-            lock (_clientsLock)
-            {
-                _pendingClients[requestClientId] = DateTime.Now;
-            }
+            // Deliberately no pending-client reservation here. Serving a page is a GET, and
+            // a GET arrives from anywhere a browser can be pointed - an <img> on another
+            // site reaches this line with no Origin to check. Reserving a slot per page
+            // fetch let such a page fill the single client slot from a distance, so the
+            // operator's own UI then found the machine "already connected" and offered a
+            // force-disconnect mid-job. HandleWebSocket makes the reservation instead: the
+            // upgrade always carries an Origin, so it is the first point that can be trusted.
 
             // Set/refresh the cookie
             response.SetCookie(new Cookie(ClientIdCookieName, requestClientId)
@@ -3101,7 +3057,7 @@ public static class CncWebServer
                 using var indexStream = assembly.GetManifestResourceStream(resourcePath);
                 if (indexStream != null)
                 {
-                    response.ContentType = "text/html";
+                    response.ContentType = ContentTypeHtml;
                     await indexStream.CopyToAsync(response.OutputStream);
                     response.Close();
                     return;
@@ -3109,10 +3065,7 @@ public static class CncWebServer
             }
 
             response.StatusCode = HttpStatusNotFound;
-            response.ContentType = "text/plain";
-            var notFound = Encoding.UTF8.GetBytes("Not Found");
-            await response.OutputStream.WriteAsync(notFound);
-            response.Close();
+            await WriteText(response, ErrorNotFound);
             return;
         }
 
@@ -3130,10 +3083,10 @@ public static class CncWebServer
         var ext = Path.GetExtension(path).ToLowerInvariant();
         return ext switch
         {
-            ".html" => "text/html",
-            ".css" => "text/css",
-            ".js" => "application/javascript",
-            ".json" => "application/json",
+            ".html" => ContentTypeHtml,
+            ".css" => ContentTypeCss,
+            ".js" => ContentTypeJs,
+            ".json" => ContentTypeJson,
             ".png" => "image/png",
             ".jpg" or ".jpeg" => "image/jpeg",
             ".svg" => "image/svg+xml",
@@ -3144,9 +3097,18 @@ public static class CncWebServer
 
     private static async Task WriteJson(HttpListenerResponse response, object data)
     {
-        response.ContentType = "application/json";
+        response.ContentType = ContentTypeJson;
         var json = JsonSerializer.Serialize(data);
         var bytes = Encoding.UTF8.GetBytes(json);
+        await response.OutputStream.WriteAsync(bytes);
+        response.Close();
+    }
+
+    /// <summary>Writes a bare sentence, for a response a person reads rather than the UI.</summary>
+    private static async Task WriteText(HttpListenerResponse response, string text)
+    {
+        response.ContentType = ContentTypeText;
+        var bytes = Encoding.UTF8.GetBytes(text);
         await response.OutputStream.WriteAsync(bytes);
         response.Close();
     }
