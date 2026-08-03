@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Reflection;
 
 namespace coppercli.Helpers
 {
@@ -26,15 +25,11 @@ namespace coppercli.Helpers
             {
                 if (_logPath == null)
                 {
-                    // Use the directory where the executable is located
-                    var exePath = Assembly.GetExecutingAssembly().Location;
-                    var exeDir = Path.GetDirectoryName(exePath);
-                    // Fall back to current directory if we can't get exe path (e.g., single-file publish)
-                    if (string.IsNullOrEmpty(exeDir))
-                    {
-                        exeDir = AppContext.BaseDirectory;
-                    }
-                    _logPath = Path.Combine(exeDir!, LogFileName);
+                    // The log sits next to the executable. AppContext.BaseDirectory gives
+                    // that directory for both ordinary and single-file builds, whereas
+                    // Assembly.Location returns an empty string from a single-file app -
+                    // which is exactly how releases are published.
+                    _logPath = Path.Combine(AppContext.BaseDirectory, LogFileName);
                 }
                 return _logPath;
             }

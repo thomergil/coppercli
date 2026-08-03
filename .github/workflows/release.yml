@@ -74,34 +74,47 @@ jobs:
         if: matrix.installer
         shell: pwsh
         run: |
-          # Inno Setup 6, pinned to the real release asset. The previous
-          # https://jrsoftware.org/download.php/is.exe now redirects to an HTML
-          # download page, so a 10 KB web page was saved as is-setup.exe and the
-          # failure surfaced only when Start-Process tried to run it. Stay on 6.x:
-          # Inno Setup 7 exists and installs to a different directory.
-          $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
-          Invoke-WebRequest -Uri $innoUrl -OutFile is-setup.exe -UseBasicParsing
-
-          # Refuse anything that is not a Windows executable, so a future URL change
-          # fails here with a clear message instead of somewhere further down.
-          $sig = -join ([char[]](Get-Content .\is-setup.exe -AsByteStream -TotalCount 2))
-          if ($sig -ne 'MZ') {
-            throw "Downloaded Inno Setup installer is not an executable ($((Get-Item .\is-setup.exe).Length) bytes from $innoUrl)"
+          # The runner image already ships Inno Setup (6.7.x), so use that copy and
+          # only download as a fallback. Note the wildcard has to be in the file path:
+          # "-Path <dir-wildcard> -Filter ISCC.exe" matches the filter against the
+          # directories, never their contents, and so always comes back empty.
+          function Find-Iscc {
+            $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($cmd) { return $cmd.Source }
+            return Get-ChildItem -Path "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" `
+                     -ErrorAction SilentlyContinue |
+                   Select-Object -First 1 -ExpandProperty FullName
           }
 
-          Start-Process -Wait -FilePath .\is-setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
+          $iscc = Find-Iscc
+          if (-not $iscc) {
+            # Pinned to the real release asset: jrsoftware.org/download.php/is.exe now
+            # serves an HTML download page, which silently lands as a 10 KB "exe".
+            # Stay on 6.x - Inno Setup 7 exists and installs elsewhere.
+            $innoUrl = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+            Write-Host "Inno Setup not present on the image; installing from $innoUrl"
+            Invoke-WebRequest -Uri $innoUrl -OutFile is-setup.exe -UseBasicParsing
+
+            $sig = -join ([char[]](Get-Content .\is-setup.exe -AsByteStream -TotalCount 2))
+            if ($sig -ne 'MZ') {
+              throw "Downloaded Inno Setup installer is not an executable ($((Get-Item .\is-setup.exe).Length) bytes from $innoUrl)"
+            }
+
+            Start-Process -Wait -FilePath .\is-setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- /ALLUSERS"
+            $iscc = Find-Iscc
+          }
+
+          if (-not $iscc) {
+            Write-Host "ISCC.exe not found. Inno Setup directories present:"
+            Get-ChildItem -Path "${env:ProgramFiles(x86)}\Inno*", "$env:ProgramFiles\Inno*" -ErrorAction SilentlyContinue |
+              ForEach-Object { Write-Host "  $($_.FullName)" }
+            throw "ISCC.exe not found"
+          }
+          Write-Host "Using $iscc"
 
           # Copy published files to installer directory
-          New-Item -ItemType Directory -Force -Path installer\publish
+          New-Item -ItemType Directory -Force -Path installer\publish | Out-Null
           Copy-Item -Path publish\* -Destination installer\publish\ -Recurse -Force
-
-          # Find ISCC instead of hardcoding one version's path, so an Inno Setup
-          # upgrade fails loudly here rather than as a missing-file error.
-          $iscc = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Inno Setup*", "$env:ProgramFiles\Inno Setup*" `
-                    -Filter ISCC.exe -ErrorAction SilentlyContinue |
-                  Select-Object -First 1 -ExpandProperty FullName
-          if (-not $iscc) { throw "ISCC.exe not found after installing Inno Setup" }
-          Write-Host "Using $iscc"
 
           # Build installer
           & $iscc installer\coppercli.iss
