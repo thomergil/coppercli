@@ -14,6 +14,9 @@ namespace coppercli.Core.Controllers
         public static readonly HomingOutcome Homed = new(true, null);
 
         /// <summary>Builds the failure, naming the cause when GRBL gave one.</summary>
+        /// <summary>Homing stopped for a reason the operator can see and act on.</summary>
+        public static HomingOutcome Interrupted(string reason) => new(false, reason);
+
         public static HomingOutcome Refused(GrblRejection? rejection)
         {
             if (rejection == null)

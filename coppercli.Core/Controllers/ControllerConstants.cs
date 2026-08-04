@@ -34,6 +34,26 @@ namespace coppercli.Core.Controllers
         public const string ErrorHomingFailedBecause = "Homing did not complete, so milling cannot start. {0}";
         public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted to a safe height. Stopped before moving.";
         public const string ErrorWorkOffsetUnknown = "The machine did not report its work offsets. Stopped rather than guess the Z origin.";
+        /// <summary>
+        /// The door was opened and shut again while the machine was homing. GRBL holds
+        /// until it is resumed, and clearing that gate is the operator's to do.
+        /// </summary>
+        /// <summary>Title of the prompt that holds a job until the enclosure is shut.</summary>
+        public const string DoorPromptTitle = "Enclosure Door";
+
+        /// <summary>Shown while GRBL still reports the door open.</summary>
+        public const string DoorOpenPrompt =
+            "The enclosure is open. Take the magnet off the switch if it is there, close "
+            + "the door, then continue.";
+
+        /// <summary>Shown once it is shut but the machine is still holding.</summary>
+        public const string DoorHoldingPrompt =
+            "The door is closed and the machine is holding. Continue to release it.";
+
+        public const string ErrorDoorClosedDuringHoming =
+            "The door was opened while the machine was homing, so it stopped. The door is "
+            + "closed now - start the job again.";
+
         public const string ErrorMachineDoorOpen = "The enclosure door is open. Close it, then start the job again.";
         public const string ErrorMachineNotSettled = "The machine did not stop moving. Wait for it to finish, then start the job again.";
         public const string ErrorMillingDidNotStart =
@@ -168,5 +188,8 @@ namespace coppercli.Core.Controllers
 
         /// <summary>How far back to look for a comment explaining a pause.</summary>
         public const int PauseNoteSearchLines = 4;
+
+        /// <summary>How long to give GRBL to leave the door hold after a resume.</summary>
+        public const int DoorResumeTimeoutMs = 5000;
     }
 }

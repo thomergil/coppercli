@@ -123,6 +123,9 @@ namespace coppercli.Core.Controllers
             // discover the problem at the point of streaming.
             _machine.EnsureManualMode();
 
+            // === ENCLOSURE ===
+            await EnsureDoorClosedAsync(ct);
+
             // === SETTLING PHASE ===
             await SettleAsync(ct);
 
@@ -317,6 +320,49 @@ namespace coppercli.Core.Controllers
         // =========================================================================
         // Workflow phases
         // =========================================================================
+
+        /// <summary>
+        /// Holds the job at a prompt until the enclosure is shut. GRBL refuses to home or
+        /// move while the door is open, and it keeps holding after the door closes until
+        /// something resumes it - so a job started against an open door would otherwise
+        /// sit in a silent wait and then fail on a timeout that never named the door.
+        ///
+        /// The cycle start here is not software clearing a safety gate. The operator
+        /// answered a prompt saying the door is shut; this carries out what they asked.
+        /// Nothing resumes on its own, and the loop asks again if GRBL still disagrees.
+        /// </summary>
+        private async Task EnsureDoorClosedAsync(CancellationToken ct)
+        {
+            while (MachineWait.IsDoor(_machine))
+            {
+                Phase = MillingPhase.WaitingForOperator;
+
+                string message = MachineWait.IsDoorOpen(_machine)
+                    ? DoorOpenPrompt
+                    : DoorHoldingPrompt;
+
+                EmitProgress(new ProgressInfo(PhaseWaitingForOperator, 0, message));
+
+                string response = await RequestUserInputAsync(
+                    DoorPromptTitle,
+                    message,
+                    new[] { OptionContinue, OptionAbort },
+                    ct).ConfigureAwait(false);
+
+                if (response != OptionContinue)
+                {
+                    throw new OperationCanceledException();
+                }
+
+                if (MachineWait.IsDoorAwaitingResume(_machine))
+                {
+                    ControllerLog.Log("Door: operator confirmed closed, releasing the hold");
+                    _machine.CycleStart();
+                    await MachineWait.WaitForIdleAsync(_machine, DoorResumeTimeoutMs, ct)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
 
         private async Task SettleAsync(CancellationToken ct)
         {

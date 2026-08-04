@@ -9,6 +9,7 @@ using coppercli.Core.Util;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.Util.GCodeFormat;
+using static coppercli.Core.Controllers.ControllerConstants;
 
 namespace coppercli.Core.Controllers
 {
@@ -75,6 +76,13 @@ namespace coppercli.Core.Controllers
                 {
                     return true;
                 }
+
+                // Same reasoning as WaitForStableIdleAsync: only a person clears these.
+                if (IsProblematic(machine))
+                {
+                    return false;
+                }
+
                 await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
             }
 
@@ -99,6 +107,14 @@ namespace coppercli.Core.Controllers
             while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
             {
                 onPoll?.Invoke();
+
+                // An alarmed or door-held machine will not reach Idle until a person
+                // acts, so waiting out the timeout buys nothing and costs the operator a
+                // minute of a frozen screen that already knows what is wrong.
+                if (IsProblematic(machine))
+                {
+                    return false;
+                }
 
                 if (machine.Status == StatusIdle)
                 {
@@ -146,6 +162,16 @@ namespace coppercli.Core.Controllers
                 {
                     return true;
                 }
+
+                // A held or alarmed machine will not move Z until a person clears it, so
+                // the height being waited for can never arrive. Report that now rather
+                // than after the timeout: the caller treats a failed retract as a reason
+                // to stop, and the operator is standing there watching nothing happen.
+                if (IsProblematic(machine))
+                {
+                    return false;
+                }
+
                 await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
             }
 
@@ -171,6 +197,12 @@ namespace coppercli.Core.Controllers
                 if (machine.Status.StartsWith(StatusRun))
                 {
                     return true;
+                }
+
+                // Nothing will start moving while the machine is held or alarmed.
+                if (IsProblematic(machine))
+                {
+                    return false;
                 }
                 await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
             }
@@ -385,6 +417,16 @@ namespace coppercli.Core.Controllers
 
                 if (!success || !IsIdle(machine))
                 {
+                    // The door is the likeliest interruption and the only one the
+                    // operator can act on, so say so rather than reporting the generic
+                    // refusal a dropped $H would give.
+                    if (IsDoor(machine))
+                    {
+                        return HomingOutcome.Interrupted(IsDoorOpen(machine)
+                            ? ErrorMachineDoorOpen
+                            : ErrorDoorClosedDuringHoming);
+                    }
+
                     return HomingOutcome.Refused(refusal);
                 }
 

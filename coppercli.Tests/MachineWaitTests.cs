@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Diagnostics;
 using coppercli.Core.Controllers;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
@@ -13,6 +14,11 @@ namespace coppercli.Tests
     /// </summary>
     public class MachineWaitTests
     {
+        /// <summary>Long enough that sitting it out would be an obvious failure.</summary>
+        private const int HangDetectTimeoutMs = 4000;
+        private const double RetractStartZ = -10.0;
+        private const double RetractTargetZ = -1.0;
+
         // =========================================================================
         // Status check tests
         // =========================================================================
@@ -389,6 +395,67 @@ namespace coppercli.Tests
 
             Assert.False(MachineWait.IsDoorOpen(machine));
             Assert.False(MachineWait.IsDoorAwaitingResume(machine));
+        }
+        // =========================================================================
+        // Waits must not sit on a state only a person can clear
+        //
+        // A door opened mid-cycle leaves GRBL holding. It will not reach Idle, will not
+        // move Z, and will not start a move until the operator acts - so a wait that
+        // only watches the clock leaves them in front of a frozen screen for the whole
+        // timeout and then reports something that never mentions the door.
+        // =========================================================================
+
+        [Fact]
+        public async Task WaitingForIdleGivesUpAsSoonAsTheDoorHolds()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusDoor,
+                StatusSubState = GrblProtocol.DoorSubStateClosed
+            };
+
+            var elapsed = Stopwatch.StartNew();
+            bool idle = await MachineWait.WaitForIdleAsync(machine, HangDetectTimeoutMs);
+            elapsed.Stop();
+
+            Assert.False(idle);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2,
+                $"waited {elapsed.ElapsedMilliseconds}ms on a door hold that can never clear itself");
+        }
+
+        [Fact]
+        public async Task WaitingForAStableIdleGivesUpAsSoonAsTheMachineAlarms()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusAlarm };
+
+            var elapsed = Stopwatch.StartNew();
+            bool idle = await MachineWait.WaitForStableIdleAsync(machine, HangDetectTimeoutMs);
+            elapsed.Stop();
+
+            Assert.False(idle);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2,
+                $"waited {elapsed.ElapsedMilliseconds}ms on an alarm that can never clear itself");
+        }
+
+        [Fact]
+        public async Task WaitingForAZHeightGivesUpAsSoonAsTheDoorHolds()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusDoor,
+                StatusSubState = GrblProtocol.DoorSubStateAjar,
+                MachinePosition = new Vector3(0, 0, RetractStartZ)
+            };
+
+            var elapsed = Stopwatch.StartNew();
+            bool reached = await MachineWait.SafetyRetractZAsync(machine, RetractTargetZ, HangDetectTimeoutMs);
+            elapsed.Stop();
+
+            // A retract that cannot be confirmed must fail, and fail promptly: everything
+            // after it is XY motion that would drag the tool across the work.
+            Assert.False(reached);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2,
+                $"waited {elapsed.ElapsedMilliseconds}ms for a Z move a held machine will never make");
         }
     }
 }

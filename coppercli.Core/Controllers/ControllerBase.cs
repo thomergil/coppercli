@@ -26,11 +26,13 @@ namespace coppercli.Core.Controllers
         private static readonly Dictionary<ControllerState, ControllerState[]> ValidTransitions = new()
         {
             [ControllerState.Idle] = new[] { ControllerState.Initializing },
-            [ControllerState.Initializing] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
+            // Initializing can wait on a person: the enclosure has to be shut before the
+            // machine will home, and asking is better than timing out against a door.
+            [ControllerState.Initializing] = new[] { ControllerState.Running, ControllerState.WaitingForUserInput, ControllerState.Failed, ControllerState.Cancelled },
             [ControllerState.Running] = new[] { ControllerState.Paused, ControllerState.WaitingForUserInput, ControllerState.Completing, ControllerState.Failed, ControllerState.Cancelled },
             // Paused and WaitingForUserInput can fail: cleanup runs from there too.
             [ControllerState.Paused] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
-            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
+            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Initializing, ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
             // Completing can still be cancelled - Stop during the final retract is a
             // normal thing for an operator to do, and it used to throw out of a finally.
             [ControllerState.Completing] = new[] { ControllerState.Completed, ControllerState.Failed, ControllerState.Cancelled },
@@ -179,7 +181,8 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Request user input and wait for response.
-        /// Transitions to WaitingForUserInput, emits request, waits, transitions back to Running.
+        /// Transitions to WaitingForUserInput, emits the request, waits, then returns to
+        /// whatever state it interrupted.
         /// Returns the user's selection.
         /// </summary>
         protected async Task<string> RequestUserInputAsync(
@@ -188,6 +191,11 @@ namespace coppercli.Core.Controllers
             string[] options,
             CancellationToken ct)
         {
+            // Return to whatever we interrupted, not always Running: a prompt can come
+            // up while the run is still Initializing, and forcing Running there would
+            // skip the rest of setup and make the later transition illegal.
+            var resumeTo = State;
+
             var tcs = new TaskCompletionSource<string>();
 
             var request = new UserInputRequest
@@ -205,7 +213,7 @@ namespace coppercli.Core.Controllers
             using var registration = ct.Register(() => tcs.TrySetCanceled());
             var response = await tcs.Task;
 
-            TransitionTo(ControllerState.Running);
+            TransitionTo(resumeTo);
             return response;
         }
 
