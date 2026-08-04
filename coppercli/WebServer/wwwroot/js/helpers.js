@@ -10,6 +10,7 @@ import {
     TOAST_INFO_DURATION_MS,
     CLASS_SHOW,
     API_CONSTANTS,
+    MILL_PHASE_WAITING_FOR_OPERATOR,
     // Duplicated constants (validated against server)
     PROBE_STATE_NONE,
     PROBE_STATE_READY,
@@ -355,6 +356,11 @@ export async function validateConstants() {
             check(CONTROLLER_STATE_COMPLETED, server.controllerStates.completed, 'CONTROLLER_STATE_COMPLETED');
             check(CONTROLLER_STATE_FAILED, server.controllerStates.failed, 'CONTROLLER_STATE_FAILED');
             check(CONTROLLER_STATE_CANCELLED, server.controllerStates.cancelled, 'CONTROLLER_STATE_CANCELLED');
+        }
+
+        if (server.millPhases) {
+            check(MILL_PHASE_WAITING_FOR_OPERATOR, server.millPhases.waitingForOperator,
+                'MILL_PHASE_WAITING_FOR_OPERATOR');
         }
 
         // WebSocket message types

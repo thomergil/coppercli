@@ -151,8 +151,22 @@ namespace coppercli.Core.Controllers
 
         /// <summary>{0} is the 1-based line number, so it matches what an operator
         /// editing the file would call "line N", not the 0-based index the code uses.</summary>
+        /// <summary>
+        /// Shown when the program pauses and carries no note saying why. Deliberately
+        /// carries no line number: the streamed program is regenerated from the parsed
+        /// toolpath, so its line numbering does not match the file the operator has open.
+        /// The progress line reports how far in they are.
+        /// </summary>
         public const string OperatorPausePrompt =
-            "Paused at line {0}. The tool is still down and the spindle is still running. "
+            "The program paused. The tool is still down and the spindle is still running. "
             + "Continue milling, or stop the job?";
+
+        /// <summary>As above, quoting the note the program left ({0}).</summary>
+        public const string OperatorPausePromptWithNote =
+            "The program paused: {0}. The tool is still down and the spindle is still "
+            + "running. Continue milling, or stop the job?";
+
+        /// <summary>How far back to look for a comment explaining a pause.</summary>
+        public const int PauseNoteSearchLines = 4;
     }
 }

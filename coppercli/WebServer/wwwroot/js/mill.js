@@ -4,6 +4,7 @@ import { state } from './state.js';
 import { $, showError, showInfo, showConfirm, updatePauseButton } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
+    MILL_PHASE_WAITING_FOR_OPERATOR,
     API_FILE_INFO,
     API_MILL_PREFLIGHT,
     API_MILL_START,
@@ -202,8 +203,6 @@ async function stopMill() {
 const PHASE_WAITING_FOR_TOOL_CHANGE = 'WaitingForToolChange';
 const PHASE_WAITING_FOR_ZERO_Z = 'WaitingForZeroZ';
 
-// Marks a bare M0/M1 prompt within status.toolChange (must match MillingPhase.WaitingForOperator).
-const PHASE_WAITING_FOR_OPERATOR = 'WaitingForOperator';
 
 // True from the moment a toolchange:input prompt is shown (tool change or a bare
 // M0/M1) until it is answered or the run ends. A bare M0/M1 has no ToolChangeController
@@ -261,7 +260,7 @@ export function updateToolChangeDisplay(toolChange) {
     // broadcast that announced it live is one-shot and already missed. The id check
     // makes this idempotent once shown, the same way pendingUserInputPrompt does for
     // the live path above.
-    if (toolChange && toolChange.phase === PHASE_WAITING_FOR_OPERATOR) {
+    if (toolChange && toolChange.phase === MILL_PHASE_WAITING_FOR_OPERATOR) {
         if (toolChange.id !== lastPromptId) {
             lastPromptId = toolChange.id;
             pendingUserInputPrompt = true;

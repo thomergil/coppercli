@@ -360,7 +360,7 @@ namespace coppercli.Menus
                         }
                         else if (InputHelpers.IsKey(key, ConsoleKey.R))
                         {
-                            if (state == ControllerState.Paused)
+                            if (ControllerBase.IsPausedState(state))
                             {
                                 Logger.Log("Resuming");
                                 controller.Resume();
@@ -392,7 +392,7 @@ namespace coppercli.Menus
                     }
 
                     // Update paused state from controller
-                    paused = (state == ControllerState.Paused);
+                    paused = ControllerBase.IsPausedState(state);
 
                     // Start the ETA clock the moment milling actually begins streaming,
                     // so setup time does not distort the pace it learns from.
@@ -478,13 +478,25 @@ namespace coppercli.Menus
                 // operator abort can never hang the TUI; a cancelled run's Wait can
                 // throw AggregateException, and nothing on a machine-abort path may
                 // escape this finally.
+                bool stopped = true;
                 try
                 {
-                    millTask?.Wait(TimeSpan.FromMilliseconds(ControllerCancelTimeoutMs));
+                    stopped = millTask == null
+                        || millTask.Wait(TimeSpan.FromMilliseconds(ControllerCancelTimeoutMs));
                 }
                 catch
                 {
-                    // Ignore
+                    // A cancelled run faults its task; that is the abort working, not a
+                    // failure to stop.
+                }
+
+                if (!stopped)
+                {
+                    // Wait() reports a timeout by returning false rather than throwing,
+                    // so without this the operator walks away from a machine that may
+                    // still be finishing a move.
+                    Logger.Log("Milling teardown timed out after {0}ms", ControllerCancelTimeoutMs);
+                    MenuHelpers.ShowError(StopTimedOutWarning);
                 }
 
                 // Reset controller for next use, guarded by the same precondition

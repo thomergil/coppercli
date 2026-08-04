@@ -159,6 +159,10 @@ export const CONTROLLER_STATE_INITIALIZING = 'Initializing';
 export const CONTROLLER_STATE_RUNNING = 'Running';
 export const CONTROLLER_STATE_PAUSED = 'Paused';
 export const CONTROLLER_STATE_COMPLETING = 'Completing';
+
+// MillingPhase.WaitingForOperator - marks a bare M0/M1 prompt inside status.toolChange.
+// Validated against the server's own value at startup; see validateConstants.
+export const MILL_PHASE_WAITING_FOR_OPERATOR = 'WaitingForOperator';
 export const CONTROLLER_STATE_COMPLETED = 'Completed';
 export const CONTROLLER_STATE_FAILED = 'Failed';
 export const CONTROLLER_STATE_CANCELLED = 'Cancelled';

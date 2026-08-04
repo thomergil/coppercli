@@ -18,6 +18,32 @@ find . -name "*conflicted*" -delete      # then delete
 
 ## Code Style
 
+**ONE PLACE FOR EVERY FACT.** This outranks every other rule here. Any fact — a piece
+of state, a rule, a constant, a predicate — is owned by exactly one place, and everything
+else *derives* from it. Never store a second copy, never compute the same answer from a
+second definition. There are three UIs; that is three renderers of one truth, never three
+truths.
+
+The tests are always the same two questions:
+- *Who owns this?* If two places can answer, one of them is wrong.
+- *Can these ever disagree?* If yes, they eventually will, silently, and the machine acts
+  on the stale one.
+
+What this forbids, with the shapes it actually takes here:
+- A flag beside the state it describes. `_isPaused` next to `ControllerState.Paused`
+  disabled tool-change detection for a whole session. `IsPaused`/`IsActive`/`HasFinished`
+  are *derived* from `State`; `AppState.IsProbing` is derived from the controller.
+- A boolean saying "X is outstanding" next to a field saying "how much X". That is one
+  fact wearing two faces, and it baked a stale Z offset into G54. One field.
+- The same predicate spelled out at each call site. A second copy of "is this an M6 line"
+  let the machine swallow a tool change without pausing for it.
+- A constant duplicated between C# and JavaScript. Expose it via `/api/constants` —
+  see `GetSharedConstants()`.
+- A comment restating a value the code owns. It disagrees the moment the code changes.
+
+Deriving a value once into a local for a consistent snapshot is not a second copy — that
+is one read, deliberately held still. Two independent *definitions* are the violation.
+
 **OBSESSIVE DRYness.** Never duplicate code. If you write similar code twice, extract it immediately. Search for existing helpers before writing new code. Three similar lines are worse than one abstraction. This applies to: logic, constants, patterns, error handling, and validation.
 
 **Assume it exists.** Before adding any constant, utility function, or helper, search extensively - it almost certainly already exists. Check `Constants.cs`, `CliConstants.cs`, `GrblProtocol.cs`, `WebConstants.cs`, `constants.js`, and the `Helpers/` directory. When in doubt, grep first.

@@ -61,15 +61,18 @@ namespace coppercli.Core.Controllers
         /// True while a run is under way. The single definition of "active", so the
         /// probe/tool-change/mill status handlers stop each spelling it out.
         /// </summary>
-        public bool IsActive
+        public bool IsActive => IsActiveState(State);
+
+        /// <summary>
+        /// <see cref="IsActive"/> for a state already in hand. Callers holding a snapshot
+        /// ask this rather than spelling the states out again, so "active" keeps one
+        /// definition however it is reached.
+        /// </summary>
+        public static bool IsActiveState(ControllerState state)
         {
-            get
-            {
-                var s = State;
-                return s == ControllerState.Initializing
-                    || s == ControllerState.Running
-                    || s == ControllerState.Paused;
-            }
+            return state == ControllerState.Initializing
+                || state == ControllerState.Running
+                || state == ControllerState.Paused;
         }
 
         /// <summary>
@@ -78,7 +81,10 @@ namespace coppercli.Core.Controllers
         /// and not the other, and the run that inherits the stale copy reads it as a
         /// guard rather than as a question.
         /// </summary>
-        public bool IsPaused => State == ControllerState.Paused;
+        public bool IsPaused => IsPausedState(State);
+
+        /// <summary><see cref="IsPaused"/> for a state already in hand.</summary>
+        public static bool IsPausedState(ControllerState state) => state == ControllerState.Paused;
 
         /// <summary>
         /// True for the states a run can end in. These are exactly the states
@@ -94,6 +100,13 @@ namespace coppercli.Core.Controllers
 
         /// <summary>True once this run has ended, however it ended.</summary>
         public bool HasFinished => IsFinishedState(State);
+
+        /// <summary>
+        /// True while a run is waiting on a person - a tool change, or a pause the
+        /// program asked for. Not active: nothing is moving, but the job is not over.
+        /// </summary>
+        public static bool IsWaitingForOperatorState(ControllerState state) =>
+            state == ControllerState.WaitingForUserInput;
 
         // =========================================================================
         // Events

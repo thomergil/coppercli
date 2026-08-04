@@ -246,6 +246,27 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
+        /// Finds the note explaining a pause - pcb2gcode writes one as a comment on or
+        /// just above the M0 - so the operator is told why they are being asked rather
+        /// than only that they are. Returns null when the program left no explanation.
+        /// </summary>
+        private string? FindPauseNote(int pauseLine)
+        {
+            int from = Math.Max(0, pauseLine - PauseNoteSearchLines);
+
+            for (int i = pauseLine; i >= from; i--)
+            {
+                string? comment = GCodeParser.ExtractToolName(_machine.File[i]);
+                if (!string.IsNullOrWhiteSpace(comment))
+                {
+                    return comment.Trim();
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
         /// Finds the M0 that pcb2gcode emits just after an M6, looking past the comment
         /// and blank lines it puts in between. The tool change has already asked the
         /// operator to act, so that M0 would ask a second time for the same thing.
@@ -796,7 +817,10 @@ namespace coppercli.Core.Controllers
             // machine is standing when it resumes. Lifting here and coming back would
             // have to land on the same point to the micron or cut the rest of the pass
             // from the wrong place, so the tool stays put and the prompt says so.
-            string message = string.Format(OperatorPausePrompt, prevLine + 1);
+            string? note = FindPauseNote(prevLine);
+            string message = note == null
+                ? OperatorPausePrompt
+                : string.Format(OperatorPausePromptWithNote, note);
 
             // Say so on the progress line too. Without this the last thing either UI was
             // told is "Milling", and a job waiting on a person looks like one that stalled.

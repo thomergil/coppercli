@@ -549,9 +549,7 @@ namespace coppercli.Menus
             int lastProgress = -1;
             bool wasPaused = false;
 
-            while (controller.State == ControllerState.Initializing ||
-                   controller.State == ControllerState.Running ||
-                   controller.IsPaused)
+            while (controller.IsActive)
             {
                 // Check for key presses
                 if (Console.KeyAvailable)

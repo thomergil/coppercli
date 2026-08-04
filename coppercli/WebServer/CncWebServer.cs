@@ -1049,8 +1049,8 @@ public static class CncWebServer
         // (the M0/M1 prompt), and the job is not over just because the spindle is
         // parked waiting on the operator - reporting otherwise sends the browser
         // to the dashboard mid-cut with the tool still down.
-        var isMilling = controller.IsActive || controllerState == ControllerState.WaitingForUserInput;
-        var isPaused = controllerState == ControllerState.Paused;
+        var isMilling = controller.IsActive || ControllerBase.IsWaitingForOperatorState(controllerState);
+        var isPaused = ControllerBase.IsPausedState(controllerState);
 
         // Tool change state from AppState (set by controller event), falling back to a
         // pending bare M0/M1 prompt when there is no tool change. Both flow through the
@@ -1278,6 +1278,11 @@ public static class CncWebServer
                 completed = nameof(ControllerState.Completed),
                 failed = nameof(ControllerState.Failed),
                 cancelled = nameof(ControllerState.Cancelled)
+            },
+            // Milling phases the client keys behavior off - must match MillingPhase
+            millPhases = new
+            {
+                waitingForOperator = nameof(MillingPhase.WaitingForOperator)
             },
             // WebSocket message types
             wsMessageTypes = new
@@ -2234,34 +2239,39 @@ public static class CncWebServer
             }
             finally
             {
-                // Unsubscribe from events
+                // These handlers belong to this run's closure, so detaching them is
+                // right whatever else is happening.
                 controller.StateChanged -= onStateChanged;
                 controller.ProgressChanged -= onProgressChanged;
                 controller.ToolChangeDetected -= onToolChange;
                 controller.UserInputRequired -= onUserInputRequired;
                 controller.ErrorOccurred -= onError;
-                _pendingMillUserInput = null;
 
-                // Compare-and-clear: only release the shared handles if they still
-                // belong to this run.
+                // Everything below is shared with whichever run owns the machine now.
+                // A run that outlives its successor's start must not take any of it
+                // back: clearing the prompt strands the operator answering one, and
+                // re-arming the door auto-clear hands a safety gate back to software
+                // in the middle of a cut.
                 if (ReferenceEquals(_millCts, millCts))
                 {
                     _millCts = null;
                     _millRunTask = null;
+                    _pendingMillUserInput = null;
+
+                    SleepPrevention.Stop();
+
+                    if (_machine != null)
+                    {
+                        _machine.EnableAutoStateClear = true;
+                    }
+
+                    Logger.Log("Milling controller finished");
+                    StartIdleDisconnectTimer();
                 }
-
-                // Stop sleep prevention
-                SleepPrevention.Stop();
-                Logger.Log("Milling controller finished");
-
-                // Re-enable auto state clear now that milling is done
-                if (_machine != null)
+                else
                 {
-                    _machine.EnableAutoStateClear = true;
+                    Logger.Log("Milling controller finished; a newer run owns the machine");
                 }
-
-                // Start idle disconnect timer if no clients connected
-                StartIdleDisconnectTimer();
             }
         });
 
@@ -2694,7 +2704,7 @@ public static class CncWebServer
         var controller = AppState.Probe;
         var controllerState = controller.State;
         bool isActive = AppState.Probe.IsActive;
-        bool isPaused = controllerState == ControllerState.Paused;
+        bool isPaused = ControllerBase.IsPausedState(controllerState);
 
         return new
         {
@@ -3816,7 +3826,7 @@ public static class CncWebServer
                 // stranding the tool-change controller non-Idle for the rest of the
                 // session - so only resume if the milling controller is actually
                 // still parked waiting for this tool change.
-                if (millingController.State == ControllerState.Paused)
+                if (millingController.IsPaused)
                 {
                     millingController.Resume();
                 }

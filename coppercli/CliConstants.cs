@@ -252,6 +252,10 @@ namespace coppercli
         /// <summary>Warning message when sleep prevention unavailable in network mode.</summary>
         public const string SleepPreventionWarning = "Sleep prevention unavailable";
 
+        /// <summary>Shown when a job does not finish stopping within the time allowed.</summary>
+        public const string StopTimedOutWarning =
+            "Stop did not finish in time. The machine may still be moving - check it directly before doing anything else.";
+
         /// <summary>Sub-message for sleep prevention warning.</summary>
         public const string SleepPreventionSubMessage = "System may sleep during job. Y=Continue  Esc=Cancel";
 
