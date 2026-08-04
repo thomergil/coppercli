@@ -253,6 +253,16 @@ namespace coppercli
         public const string SleepPreventionWarning = "Sleep prevention unavailable";
 
         /// <summary>Shown when a job does not finish stopping within the time allowed.</summary>
+        /// <summary>Status shown once an operator asks to abort a moving tool change.</summary>
+        public const string ToolChangeAbortingMessage = "Stopping the tool change...";
+
+        /// <summary>
+        /// Appended to the tool-change status while the spindle moves itself. Escape works
+        /// throughout, and an operator watching an unattended machine move has to be told
+        /// so rather than left guessing whether anything will answer.
+        /// </summary>
+        public const string ToolChangeAbortHint = "{0}  (Esc=Stop)";
+
         public const string StopTimedOutWarning =
             "Stop did not finish in time. The machine may still be moving - check it directly before doing anything else.";
 

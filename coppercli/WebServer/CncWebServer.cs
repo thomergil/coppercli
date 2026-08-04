@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Net;
@@ -2305,7 +2306,9 @@ public static class CncWebServer
     /// operator the machine has stopped.</returns>
     private static async Task<bool> HandleMillStopAsync()
     {
-        bool acquiredAbortLock = await _toolChangeAbortLock.WaitAsync(ControllerCancelTimeoutMs);
+        var budget = Stopwatch.StartNew();
+
+        bool acquiredAbortLock = await _toolChangeAbortLock.WaitAsync(RemainingStopBudgetMs(budget));
         if (!acquiredAbortLock)
         {
             Logger.Log("Mill stop: timed out waiting for a previous stop/abort to finish");
@@ -2320,9 +2323,9 @@ public static class CncWebServer
             _toolChangeCts?.Cancel();
 
             bool toolChangeStopped = toolChangeRunTask == null
-                || await AwaitRunTeardownAsync(toolChangeRunTask, "Tool change");
+                || await AwaitRunTeardownAsync(toolChangeRunTask, "Tool change", budget);
 
-            bool millStopped = await StopMillingAsync();
+            bool millStopped = await StopMillingAsync(budget);
 
             Logger.Log("Mill stop complete");
             return toolChangeStopped && millStopped;
@@ -2351,14 +2354,16 @@ public static class CncWebServer
     /// </summary>
     /// <returns>False if the lock, or the run's unwind, did not complete within
     /// <see cref="ControllerCancelTimeoutMs"/>.</returns>
-    private static async Task<bool> StopMillingAsync()
+    private static async Task<bool> StopMillingAsync(Stopwatch? budget = null)
     {
+        budget ??= Stopwatch.StartNew();
+
         if (_machine == null)
         {
             return true;
         }
 
-        bool acquiredStopLock = await _millStopLock.WaitAsync(ControllerCancelTimeoutMs);
+        bool acquiredStopLock = await _millStopLock.WaitAsync(RemainingStopBudgetMs(budget));
         if (!acquiredStopLock)
         {
             Logger.Log("Mill stop: timed out waiting for a previous stop to finish");
@@ -2388,7 +2393,7 @@ public static class CncWebServer
             {
                 // A run is in flight: let its own cancellation unwind drive cleanup and
                 // the terminal-state transition (see remarks above) instead of racing it.
-                stopped = await AwaitRunTeardownAsync(runTask, "Mill");
+                stopped = await AwaitRunTeardownAsync(runTask, "Mill", budget);
             }
             else if (controller.State != ControllerState.Idle)
             {
@@ -2425,12 +2430,28 @@ public static class CncWebServer
     /// skip it.
     /// </summary>
     /// <returns>True if the run task unwound within <see cref="ControllerCancelTimeoutMs"/>.</returns>
-    private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label)
+    /// <summary>
+    /// What is left of a stop's time budget. A stop takes a lock, then another lock,
+    /// then waits for the run to unwind; giving each step its own full timeout lets a
+    /// Stop sit unanswered for three times as long as the operator was promised and
+    /// then report the machine may still be moving when it has in fact stopped. One
+    /// budget, spent down, keeps the warning worth believing.
+    /// </summary>
+    private static int RemainingStopBudgetMs(Stopwatch budget)
     {
-        var completed = await Task.WhenAny(runTask, Task.Delay(ControllerCancelTimeoutMs));
+        long left = ControllerCancelTimeoutMs - budget.ElapsedMilliseconds;
+        return left > 0 ? (int)left : 0;
+    }
+
+    private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label, Stopwatch? budget = null)
+    {
+        budget ??= Stopwatch.StartNew();
+        int remaining = RemainingStopBudgetMs(budget);
+
+        var completed = await Task.WhenAny(runTask, Task.Delay(remaining));
         if (completed != runTask)
         {
-            Logger.Log("{0}: run task did not unwind within {1}ms", label, ControllerCancelTimeoutMs);
+            Logger.Log("{0}: run task did not unwind within {1}ms of the stop budget", label, remaining);
             return false;
         }
 

@@ -917,7 +917,7 @@ namespace coppercli.Menus
             Action<ProgressInfo> onProgressChanged = progress =>
             {
                 // Update status action for display
-                _toolChangeStatusAction = progress.Message;
+                _toolChangeStatusAction = string.Format(ToolChangeAbortHint, progress.Message);
                 _toolChangeOverlayMessage = null;
                 _toolChangeOverlaySubMessage = null;
                 RefreshDisplay();
@@ -945,10 +945,13 @@ namespace coppercli.Menus
 
             try
             {
-                // Start tool change controller asynchronously
+                // Not disposed: the bounded wait below can time out with the controller
+                // still holding this token, and disposing under it throws on that thread.
+                var toolChangeCts = new CancellationTokenSource();
+
                 var toolChangeTask = Task.Run(async () =>
                 {
-                    return await toolChangeController.HandleToolChangeAsync(tcInfo);
+                    return await toolChangeController.HandleToolChangeAsync(tcInfo, toolChangeCts.Token);
                 });
 
                 // Main loop - handle input and refresh display
@@ -1023,6 +1026,22 @@ namespace coppercli.Menus
                         // Clear overlay
                         _toolChangeOverlayMessage = null;
                         _toolChangeOverlaySubMessage = null;
+                    }
+
+                    // Escape has to work while the spindle is taking itself to the tool
+                    // setter and probing, not only while a prompt is up: those phases are
+                    // the long part of a tool change, and the browser can already stop
+                    // them. Read only when no prompt is pending, so this cannot swallow
+                    // the keystroke that prompt is waiting for.
+                    if (pendingInput == null && Console.KeyAvailable)
+                    {
+                        var key = Console.ReadKey(true);
+                        if (InputHelpers.IsExitKey(key))
+                        {
+                            Logger.Log("ToolChange: abort requested mid-motion");
+                            _toolChangeStatusAction = ToolChangeAbortingMessage;
+                            toolChangeCts.Cancel();
+                        }
                     }
 
                     RefreshDisplay();
