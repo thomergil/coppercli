@@ -1069,6 +1069,10 @@ public static class CncWebServer
         {
             connected = _machine.Connected,
             status = _machine.Status,
+            // Derived in Core so the browser and the terminal answer "is the door open"
+            // the same way: GRBL reports Door either side of the operator closing it.
+            doorOpen = MachineWait.IsDoorOpen(_machine),
+            doorAwaitingResume = MachineWait.IsDoorAwaitingResume(_machine),
             machineProfile = profile?.Name,
             workPos = new
             {

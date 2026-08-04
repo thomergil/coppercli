@@ -254,6 +254,12 @@ namespace coppercli
 
         /// <summary>Shown when a job does not finish stopping within the time allowed.</summary>
         /// <summary>Status shown once an operator asks to abort a moving tool change.</summary>
+        /// <summary>Shown while GRBL reports the enclosure open.</summary>
+        public const string DoorOpenMessage = "DOOR OPEN";
+
+        /// <summary>Shown once the door is shut and the machine is waiting to be resumed.</summary>
+        public const string DoorClosedMessage = "DOOR CLOSED - press resume";
+
         public const string ToolChangeAbortingMessage = "Stopping the tool change...";
 
         /// <summary>

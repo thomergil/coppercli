@@ -67,6 +67,9 @@ namespace coppercli.Tests.Fakes
             private set { lock (_stateLock) _mode = value; }
         }
 
+        /// <inheritdoc/>
+        public string StatusSubState { get; set; } = string.Empty;
+
         public string Status
         {
             get { lock (_stateLock) return _status; }

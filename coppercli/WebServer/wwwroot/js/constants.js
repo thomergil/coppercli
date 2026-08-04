@@ -164,6 +164,12 @@ export const CONTROLLER_STATE_COMPLETING = 'Completing';
 // Validated against the server's own value at startup; see validateConstants.
 export const MILL_PHASE_WAITING_FOR_OPERATOR = 'WaitingForOperator';
 
+// GRBL reports Door both while the enclosure is open and after it is closed, waiting to
+// be resumed. The server tells us which; showing the raw state would leave the operator
+// looking at "Door" having already shut it.
+export const DOOR_OPEN_TEXT = 'Door open';
+export const DOOR_CLOSED_TEXT = 'Door closed - press resume';
+
 // Shown when a request never reaches coppercli. The browser's own exception text names
 // nothing an operator standing at the machine can act on, and the machine may still be
 // moving, so these say what to do instead.

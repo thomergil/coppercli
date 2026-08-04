@@ -330,5 +330,65 @@ namespace coppercli.Tests
             // Should return quickly (less than 1 second)
             Assert.True(elapsed.TotalSeconds < 1);
         }
+        // =========================================================================
+        // Door substates
+        //
+        // GRBL stays in Door after the operator closes the enclosure, waiting to be
+        // resumed. Only the substate separates "still open" from "closed, waiting on
+        // you", and every UI derives its wording from these two predicates - so a
+        // machinist who has shut the door is told so rather than left reading "Door".
+        // =========================================================================
+
+        [Theory]
+        [InlineData(GrblProtocol.DoorSubStateAjar)]
+        [InlineData(GrblProtocol.DoorSubStateOpening)]
+        public void ADoorReportedAjarReadsAsOpen(string subState)
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusDoor,
+                StatusSubState = subState
+            };
+
+            Assert.True(MachineWait.IsDoorOpen(machine));
+            Assert.False(MachineWait.IsDoorAwaitingResume(machine));
+        }
+
+        [Theory]
+        [InlineData(GrblProtocol.DoorSubStateClosed)]
+        [InlineData(GrblProtocol.DoorSubStateResuming)]
+        public void ADoorReportedShutReadsAsWaitingToResume(string subState)
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusDoor,
+                StatusSubState = subState
+            };
+
+            Assert.False(MachineWait.IsDoorOpen(machine));
+            Assert.True(MachineWait.IsDoorAwaitingResume(machine));
+        }
+
+        [Fact]
+        public void ADoorWithNoSubStateIsTreatedAsOpen()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusDoor,
+                StatusSubState = string.Empty
+            };
+
+            // Fail safe: being told to close a door that is already shut costs a moment.
+            Assert.True(MachineWait.IsDoorOpen(machine));
+        }
+
+        [Fact]
+        public void AMachineThatIsNotAtTheDoorIsNeitherOpenNorWaiting()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusIdle };
+
+            Assert.False(MachineWait.IsDoorOpen(machine));
+            Assert.False(MachineWait.IsDoorAwaitingResume(machine));
+        }
     }
 }

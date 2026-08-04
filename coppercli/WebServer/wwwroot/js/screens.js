@@ -28,6 +28,8 @@ import {
     STATUS_RUN,
     STATUS_HOLD,
     STATUS_IDLE,
+    DOOR_OPEN_TEXT,
+    DOOR_CLOSED_TEXT,
     TEXT_DISCONNECTED,
     TEXT_CONNECTED,
     TEXT_RECONNECTING,
@@ -343,6 +345,12 @@ export function updateStatus(status) {
             if (status.status === STATUS_RUN) {
                 millStatus.textContent = 'Running';
                 millStatus.className = 'mill-status ' + CLASS_RUNNING;
+            } else if (status.doorOpen) {
+                millStatus.textContent = DOOR_OPEN_TEXT;
+                millStatus.className = 'mill-status ' + CLASS_HOLD;
+            } else if (status.doorAwaitingResume) {
+                millStatus.textContent = DOOR_CLOSED_TEXT;
+                millStatus.className = 'mill-status ' + CLASS_HOLD;
             } else if (status.status === STATUS_HOLD) {
                 millStatus.textContent = 'Paused';
                 millStatus.className = 'mill-status ' + CLASS_HOLD;

@@ -22,6 +22,13 @@ namespace coppercli.Core.Communication
 
         Machine.OperatingMode Mode { get; }
         string Status { get; }
+
+        /// <summary>
+        /// The number GRBL appends to a state, e.g. the "1" in "Door:1"; empty when the
+        /// state carries none. Kept because it is the only thing distinguishing an open
+        /// door from a closed one - see GrblProtocol.DoorSubState*.
+        /// </summary>
+        string StatusSubState { get; }
         Vector3 WorkPosition { get; }
         Vector3 MachinePosition { get; }
         Vector3 WorkOffset { get; }

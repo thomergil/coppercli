@@ -571,7 +571,16 @@ namespace coppercli.Menus
             // Show machine status prominently when not running normally
             string status = machine.Status;
             string statusDisplay;
-            if (status.StartsWith(StatusHold))
+            if (MachineWait.IsDoor(machine))
+            {
+                // GRBL keeps reporting Door after the operator closes it, so the raw
+                // status alone would leave them staring at "Door" having already done
+                // what it asked.
+                statusDisplay = MachineWait.IsDoorOpen(machine)
+                    ? $"{AnsiCritical}{DoorOpenMessage}{AnsiReset}"
+                    : $"{AnsiWarning}{DoorClosedMessage}{AnsiReset}";
+            }
+            else if (status.StartsWith(StatusHold))
             {
                 statusDisplay = $"{AnsiWarning}{OverlayHoldMessage}{AnsiReset}";
             }

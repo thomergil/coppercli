@@ -38,6 +38,15 @@ namespace coppercli.Core.Util
         public const string StatusHold = "Hold";
         public const string StatusAlarm = "Alarm";
         public const string StatusDoor = "Door";
+
+        // GRBL reports the door as Door:<n>. 0 = closed and ready to resume, 1 = ajar,
+        // 2 = opened with a parking retract under way, 3 = closed and resuming. Without
+        // the number "Door" cannot tell an open door from a closed one waiting on the
+        // operator, and the display sits on "Door" after they have already closed it.
+        public const string DoorSubStateClosed = "0";
+        public const string DoorSubStateAjar = "1";
+        public const string DoorSubStateOpening = "2";
+        public const string DoorSubStateResuming = "3";
         public const string StatusDisconnected = "Disconnected";
 
         // =========================================================================

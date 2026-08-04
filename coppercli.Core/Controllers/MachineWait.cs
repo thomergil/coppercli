@@ -35,6 +35,25 @@ namespace coppercli.Core.Controllers
         /// <summary>Checks if the machine is in Door state.</summary>
         public static bool IsDoor(IMachine machine) => machine.Status.StartsWith(StatusDoor);
 
+        /// <summary>
+        /// True while the enclosure is actually open. GRBL stays in Door after the
+        /// operator closes it, waiting to be resumed, so "the status says Door" and "the
+        /// door is open" are different questions and only the substate separates them.
+        /// An unrecognised substate counts as open: telling someone to close a door that
+        /// is already shut costs a moment, and the opposite mistake costs a hand.
+        /// </summary>
+        public static bool IsDoorOpen(IMachine machine) =>
+            IsDoor(machine)
+            && machine.StatusSubState != DoorSubStateClosed
+            && machine.StatusSubState != DoorSubStateResuming;
+
+        /// <summary>
+        /// True once the door is shut but GRBL is still holding, waiting to be resumed.
+        /// The operator has done their part and needs telling so.
+        /// </summary>
+        public static bool IsDoorAwaitingResume(IMachine machine) =>
+            IsDoor(machine) && !IsDoorOpen(machine);
+
         /// <summary>Checks if the machine is in any problematic state (Alarm or Door).</summary>
         public static bool IsProblematic(IMachine machine) => IsAlarm(machine) || IsDoor(machine);
 

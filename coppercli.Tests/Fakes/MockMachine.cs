@@ -22,6 +22,9 @@ namespace coppercli.Tests.Fakes
         // =========================================================================
 
         public OperatingMode Mode { get; set; } = OperatingMode.Manual;
+        /// <inheritdoc/>
+        public string StatusSubState { get; set; } = string.Empty;
+
         public string Status { get; set; } = "Idle";
         public Vector3 WorkPosition { get; set; } = new Vector3();
         public Vector3 MachinePosition { get; set; } = new Vector3();

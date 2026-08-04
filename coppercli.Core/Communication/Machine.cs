@@ -208,15 +208,29 @@ namespace coppercli.Core.Communication
         public string Status
         {
             get { return _status; }
-            private set
+            private set { SetStatus(value, string.Empty); }
+        }
+
+        private string _statusSubState = string.Empty;
+
+        /// <inheritdoc/>
+        public string StatusSubState => _statusSubState;
+
+        /// <summary>
+        /// Records the state and its substate together, announcing a change to either.
+        /// Closing the door moves GRBL from Door:1 to Door:0 without changing the word,
+        /// so comparing the word alone would leave every UI showing an open door.
+        /// </summary>
+        private void SetStatus(string state, string subState)
+        {
+            if (_status == state && _statusSubState == subState)
             {
-                if (_status == value)
-                {
-                    return;
-                }
-                _status = value;
-                RaiseEvent(StatusChanged);
+                return;
             }
+
+            _status = state;
+            _statusSubState = subState;
+            RaiseEvent(StatusChanged);
         }
 
         private ParseDistanceMode _distanceMode = ParseDistanceMode.Absolute;
@@ -1317,7 +1331,7 @@ namespace coppercli.Core.Communication
             {
                 if (m.Index == 1)
                 {
-                    Status = m.Groups[1].Value;
+                    SetStatus(m.Groups[1].Value, m.Groups[2].Value);
                     continue;
                 }
 
