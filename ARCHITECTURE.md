@@ -75,7 +75,7 @@ contract; do not restate it here. It exists so controllers are testable without 
   `BufferStateChanged` is raised while `_bufferLock` is held — a deadlock that is latent
   only because nothing listens.
 
-### ui → controllers · v1 · kind: function + event · contract: `coppercli.Core/Controllers/IController.cs` (law)
+### ui → controllers · v2 · kind: function + event · contract: `coppercli.Core/Controllers/IController.cs` (law)
 Both UIs start a workflow by configuring a controller, subscribing to its four events
 (`StateChanged`, `ProgressChanged`, `UserInputRequired`, `ErrorOccurred`), and awaiting
 `StartAsync`. Events are **synchronous** — the handler runs inline and the controller waits,
@@ -83,6 +83,14 @@ so a handler must not block on the UI thread's own input loop.
 - The FSM's legal transitions are the `ValidTransitions` table at the top of
   `ControllerBase.cs`; that table is law. An illegal transition throws.
   Per-workflow phases are documented on each `*Phase` enum.
+- **v2:** a controller instance serves the whole session, so `ControllerBase` declares
+  `protected abstract void ResetRunState()` and calls it at the start of every run as well
+  as from `Reset()`. Implementing it is how a new controller states what belongs to a run —
+  see rule `per-run-state-cleared-at-run-start`.
+- **GAP:** the M0/M1 operator pause landed incomplete. The client never names
+  `WaitingForUserInput`, so a job parked mid-cut reports "Milling complete!"; the prompt
+  overlay is erased by the next status broadcast; and the pause neither retracts nor stops
+  the spindle. See `2026-08-a-fake-that-answered-idle-to-every-pause`.
 - **GAP (sharp target):** the "configure options from settings, load the grid/file,
   subscribe, run, unsubscribe" ritual is written out separately in
   `CncWebServer.cs` and in `Menus/ProbeMenu.cs` / `Menus/MillMenu.cs`
@@ -288,6 +296,25 @@ document and `MacroParser` together.
   it into `Machine`. _Check: reader judgment; grep for assignments._
   _History: 2026-08-stale-work-zero-and-height-map, 2026-08-work-zero-deliberately-stays-in-appstate._
 
+- **per-run-state-cleared-at-run-start** *(error)* — controllers are session-lifetime
+  singletons, so every field describing the current run is declared in
+  `ControllerBase.ResetRunState()` and cleared when a run *starts*, not only on `Reset()`:
+  abort paths do not all reach a reset. The method is `abstract` so a new controller must
+  answer the question. Anything derivable from `State` is not stored — `IsPaused` is
+  `State == Paused`, as `IsActive` already was. **Scope:** what the machine or the operator
+  owns outlives the run and must survive the reset — the shift still sitting in GRBL's G54
+  (`_outstandingDepthAdjustment`), the probe grid and its progress index, which let an
+  interrupted board resume. Ask which of the two a new field is before adding it.
+  _Check: `coppercli.Tests/ControllerBaseTests.cs`._
+  _History: 2026-08-a-pause-flag-that-outlived-its-job._
+
+- **one-field-per-fact** *(error)* — a boolean saying "X is outstanding" and a separate field
+  saying "how much X" are one fact and must be one field, 0 meaning none. Held apart, they
+  drift: a later run with adjustment 0 passed the restore's tolerance check and cleared
+  `_depthAdjustmentApplied` while the earlier shift stayed baked into G54.
+  _Check: `coppercli.Tests/DepthAdjustmentTests.cs`._
+  _History: 2026-08-a-pause-flag-that-outlived-its-job._
+
 - **never-auto-clear-a-safety-gate** *(error)* — software never clears a state that exists
   to require human confirmation. The enclosure door blocks a job and only the operator
   resumes it. Homing is deliberately impossible to skip: without it, `G53` retracts have
@@ -296,8 +323,13 @@ document and `MacroParser` together.
 
 - **no-cached-physical-measurement** *(error)* — never cache a measurement of a physical
   thing across a boundary where a human can silently change it. The tool-setter reference
-  length is measured every time, never persisted. _Check: reader judgment._
-  _History: 2026-08-cached-reference-tool-length._
+  length is measured every time, never persisted. The boundary is not the session: the
+  setter's trigger height was cached to rapid toward, but it is probed once with the old tool
+  and once with the new, so the rapid always aimed one tool at another tool's height. Ask what
+  the number describes and whether it still describes the thing about to move — not whether
+  the line is reachable. _Check: reader judgment._
+  _History: 2026-08-cached-reference-tool-length,
+  2026-08-a-rapid-aimed-at-the-other-tools-trigger-height._
 
 - **derived-artifact-records-its-context** *(error)* — an artifact computed from a setup
   carries that setup with it and is re-validated against it before use. A height map stores
@@ -375,6 +407,16 @@ document and `MacroParser` together.
   (a retract that GRBL rejected, a probe that did not report contact, a status that never
   arrived), the job stops rather than continuing. A rejected safety retract must never be
   swallowed. _Check: reader judgment; `coppercli.Tests/SafetyGuardTests.cs`._
+
+- **fake-answers-like-the-machine** *(error)* — a test double reproduces the machine's
+  observable answer to each command under test. `FakeMachine` reporting `Idle` after every
+  pause line hid that GRBL answers M0/M1 with `Hold:0` while M6 never reaches it, so a gate
+  that could not fire on hardware passed 338 green tests. One status
+  hardcoded across a family of commands erases the distinction the code is deciding on, and
+  the suite then agrees with the code because both read the same invention.
+  _Check: reader judgment of `coppercli.Tests/Fakes/`._
+  _History: 2026-08-a-fake-that-answered-idle-to-every-pause,
+  2026-08-a-test-suite-that-had-not-compiled-since-february._
 
 - **no-magic-values** *(error)* — every literal with semantic meaning is a named constant
   in the file that owns it: `coppercli.Core/Util/Constants.cs` (Core-wide),

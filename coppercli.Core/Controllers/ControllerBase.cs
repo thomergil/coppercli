@@ -10,6 +10,12 @@ namespace coppercli.Core.Controllers
     /// <summary>
     /// Abstract base class for workflow controllers implementing FSM logic.
     /// Enforces valid state transitions and provides common event infrastructure.
+    ///
+    /// Controllers are session-lifetime singletons (see AppState), so one instance runs
+    /// many jobs. Everything describing the current run is therefore declared in
+    /// <see cref="ResetRunState"/> and cleared before each run starts; anything asking
+    /// "is this run paused/active?" is derived from <see cref="State"/> rather than
+    /// tracked alongside it.
     /// </summary>
     public abstract class ControllerBase : IController
     {
@@ -65,6 +71,29 @@ namespace coppercli.Core.Controllers
                     || s == ControllerState.Paused;
             }
         }
+
+        /// <summary>
+        /// True while a run is paused. Derived from <see cref="State"/> so "paused" has
+        /// one definition: a flag kept alongside it drifts the moment a path clears one
+        /// and not the other, and the run that inherits the stale copy reads it as a
+        /// guard rather than as a question.
+        /// </summary>
+        public bool IsPaused => State == ControllerState.Paused;
+
+        /// <summary>
+        /// True for the states a run can end in. These are exactly the states
+        /// <see cref="Reset"/> accepts besides Idle, so a caller guarding a reset asks
+        /// the same question Reset does rather than keeping its own copy of the answer.
+        /// </summary>
+        public static bool IsFinishedState(ControllerState state)
+        {
+            return state == ControllerState.Completed
+                || state == ControllerState.Failed
+                || state == ControllerState.Cancelled;
+        }
+
+        /// <summary>True once this run has ended, however it ended.</summary>
+        public bool HasFinished => IsFinishedState(State);
 
         // =========================================================================
         // Events
@@ -177,6 +206,26 @@ namespace coppercli.Core.Controllers
         /// <summary>Cleanup when stopping. Called by StopAsync.</summary>
         protected abstract Task CleanupAsync();
 
+        /// <summary>
+        /// Clear every field that describes the run rather than the machine, so the next
+        /// run starts from a known state. Called at the top of <see cref="StartAsync"/>
+        /// and from <see cref="Reset"/>.
+        ///
+        /// Abstract rather than virtual: controllers are session-lifetime singletons, so
+        /// a field left behind by one run is read by the next, and this is where a
+        /// controller declares what belongs to a run.
+        ///
+        /// State the machine or the operator owns does NOT belong here - a work offset
+        /// still shifted in GRBL, or a probe grid the operator expects to survive, is a
+        /// fact about the world that outlives the run that established it. Clearing those
+        /// loses the very thing the next run needs.
+        ///
+        /// Implementations assign backing fields directly rather than through the
+        /// event-raising Phase properties. A reset is not a phase the operator lived
+        /// through, and announcing it puts a raw enum name on their screen.
+        /// </summary>
+        protected abstract void ResetRunState();
+
         // =========================================================================
         // IController implementation
         // =========================================================================
@@ -188,6 +237,11 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(
                     string.Format(ErrorCannotStart, State));
             }
+
+            // Here as well as in Reset(), so a run starts clean whether or not anything
+            // reset the controller after the last one. Relying on the caller to reset
+            // makes correctness depend on every abort path remembering to.
+            ResetRunState();
 
             try
             {
@@ -286,6 +340,8 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(
                     string.Format(ErrorCannotReset, State));
             }
+
+            ResetRunState();
         }
     }
 }

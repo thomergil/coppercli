@@ -1,5 +1,51 @@
 # Release Notes
 
+## Unreleased
+
+- **Abandoning a tool change no longer breaks every job after it.** Stopping at a tool
+  change instead of completing it left the job still believing it was paused, and the same
+  job runner serves the whole session. Every run afterwards had two of its own checks
+  quietly switched off: it could no longer notice a tool change, and it could no longer
+  notice that it had finished. Milling the same two-tool board again stopped at the tool
+  change with no prompt and sat there; a single-tool board would have cut every line and
+  then never reported itself done. Nothing announced a problem, because as far as the
+  software was concerned there wasn't one. Whether a job is paused is now read from the
+  job's own state rather than tracked separately alongside it, and everything describing a
+  run is cleared before the next one starts, however the last one ended.
+- **A tool change no longer trusts the previous one's measurements.** The height the tool
+  setter was last found at was kept for the rest of the session and used to drive a rapid
+  approach. Re-home the machine, move the setter, or fit a longer tool, and that approach
+  aimed at a height that no longer existed. Worse, within a single tool change that
+  remembered height came from the tool being replaced, so fitting a longer one drove it
+  into the setter at rapid speed. The shortcut is gone; every probe now seeks from where
+  the tool actually is.
+- **Stopping at a tool change is reported as stopped, not failed.** Whether abandoning one
+  was reported as an ordinary stop or as a failure with an error came down to the moment
+  the keypress landed.
+- **A job whose tool change comes early now starts.** A job that reached its first tool
+  change within a moment of starting was told it had never started, because the check for
+  "is this streaming yet?" could not tell a job that had already paused from one that
+  never began.
+- **From the browser: answering the tool-change prompt with Abort now stops the job.** It
+  ended the tool change but left the job itself hanging, holding the machine and the
+  screen. Resume is also refused while a tool change is still under way, instead of
+  restarting the file with the spindle still moving; and aborting no longer fails outright
+  when it and the job's own shutdown arrive together.
+- **From the terminal: stopping at a tool change waits for the machine to settle.** It
+  waited a fixed half second and carried on, which is not always long enough for the
+  spindle to stop, the tool to lift, and the depth adjustment to be taken back out.
+- **A pause in the file asks you what to do instead of quietly stopping.** An `M0` or `M1`
+  part-way through a job stopped the stream and then nothing happened at all: no prompt,
+  no message, and a progress bar frozen at whatever line it had reached, looking exactly
+  like a job that had died. It now says where it paused and waits for you to continue or
+  stop. An `M2` or `M30` means the program is over, so the job finishes properly — retract,
+  spindle off, home — rather than sitting there.
+- **A tool change always pauses.** Whether an `M6` stopped the job was quietly governed by
+  the `PauseFileOnHold` setting, which is about feed holds, appears in no menu, and reads
+  as unrelated. Turned off, coppercli swallowed the tool change and carried on cutting with
+  the tool still in the spindle. A tool change is not a preference; it now always pauses.
+  `M0`, `M1`, `M2` and `M30` still follow that setting.
+
 ## v0.4.1a
 
 - **Typing the machine's address opens the web UI again.** v0.4.1 put a per-run token in

@@ -181,7 +181,6 @@ namespace coppercli.Core.Controllers
                 Context = new ProbeContext(Options.SourceFile ?? string.Empty, _machine.G54Offset)
             };
             _currentPointIndex = 0;
-            _probeTimes.Clear();
 
             ControllerLog.Log(LogProbeGridCreated, _grid.SizeX, _grid.SizeY, _grid.TotalPoints);
         }
@@ -195,7 +194,6 @@ namespace coppercli.Core.Controllers
 
             _grid = grid ?? throw new ArgumentNullException(nameof(grid));
             _currentPointIndex = grid.Progress;
-            _probeTimes.Clear();
 
             ControllerLog.Log(LogProbeGridLoaded, grid.Progress, grid.TotalPoints);
         }
@@ -278,7 +276,7 @@ namespace coppercli.Core.Controllers
                 while (_grid.RemainingCount > 0 && !ct.IsCancellationRequested)
                 {
                     // Check for pause
-                    while (State == ControllerState.Paused && !ct.IsCancellationRequested)
+                    while (IsPaused && !ct.IsCancellationRequested)
                     {
                         await Task.Delay(Constants.StatusPollIntervalMs, ct);
                     }
@@ -332,7 +330,7 @@ namespace coppercli.Core.Controllers
                                 TransitionTo(ControllerState.Paused);
 
                                 // Wait for resume or cancel
-                                while (State == ControllerState.Paused && !ct.IsCancellationRequested)
+                                while (IsPaused && !ct.IsCancellationRequested)
                                 {
                                     await Task.Delay(Constants.StatusPollIntervalMs, ct);
                                 }
@@ -433,6 +431,27 @@ namespace coppercli.Core.Controllers
             _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.SafeHeight:F3}"));
             await Task.Delay(Constants.CommandDelayMs);
             ControllerLog.Log("ProbeController.CleanupAsync: done");
+        }
+
+        /// <inheritdoc/>
+        protected override void ResetRunState()
+        {
+            lock (_phaseLock)
+            {
+                _phase = ProbePhase.NotStarted;
+            }
+
+            _probeTcs = null;
+
+            // Timings seed the ETA and the slow-probe warning, so a run measures its own
+            // rather than inheriting the last one's.
+            _probeTimes.Clear();
+
+            // _grid and _currentPointIndex are deliberately NOT cleared. They describe
+            // the grid, not the run: LoadGrid sets the index to the grid's progress so an
+            // interrupted board resumes where it stopped, and both setup methods run
+            // before StartAsync. Clearing the index here would silently re-probe a board
+            // the operator had already half measured.
         }
 
         // =========================================================================
@@ -564,9 +583,12 @@ namespace coppercli.Core.Controllers
 
         private async Task<(bool Success, Vector3 Position)> ProbePointAsync(CancellationToken ct)
         {
-            _probeTcs = new TaskCompletionSource<(bool, Vector3)>();
+            var probeTcs = new TaskCompletionSource<(bool, Vector3)>();
+            _probeTcs = probeTcs;
 
-            using var registration = ct.Register(() => _probeTcs.TrySetCanceled());
+            // Cancel the source this call created, not whatever the field points at by
+            // the time cancellation arrives.
+            using var registration = ct.Register(() => probeTcs.TrySetCanceled());
 
             _machine.ProbeStart();
 
@@ -575,7 +597,7 @@ namespace coppercli.Core.Controllers
                 _machine.SendLine(CmdAbsolute);
                 _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
 
-                return await MachineWait.AwaitReplyOrTimeoutAsync(_probeTcs.Task,
+                return await MachineWait.AwaitReplyOrTimeoutAsync(probeTcs.Task,
                     Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct);
             }
             finally

@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
@@ -348,6 +350,65 @@ namespace coppercli.Tests
             controller.SetupGrid(new Vector2(0, 0), new Vector2(50, 50), 2.0, 10.0);
 
             Assert.Equal(0, controller.CurrentPointIndex);
+        }
+
+        /// <summary>
+        /// LoadGrid sets _currentPointIndex to the grid's saved progress so an
+        /// interrupted board resumes where it stopped, and both SetupGrid and LoadGrid
+        /// run before StartAsync - exactly when ResetRunState fires. _grid and
+        /// _currentPointIndex are therefore excluded from ResetRunState: they describe
+        /// the grid the operator loaded, not the run about to start.
+        ///
+        /// The capture below reads CurrentPointIndex at the first phase change RunAsync
+        /// makes, before the probing loop gets anywhere near its own per-point
+        /// reassignment of the field - the one place remaining that a wrongly-cleared
+        /// index would still be visible. If ResetRunState cleared it, a half-probed
+        /// board would report starting over from point zero rather than resuming.
+        /// </summary>
+        [Fact]
+        public async Task StartingAPartiallyProbedGrid_ResumesFromItsSavedProgress()
+        {
+            var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            // Model an interrupted board: some points already measured, the rest still
+            // queued.
+            if (grid.TryPeekNext(out var point))
+            {
+                grid.RecordMeasurement(point.X, point.Y, -0.5);
+            }
+
+            controller.LoadGrid(grid);
+            int expectedResumeIndex = grid.Progress;
+            Assert.True(expectedResumeIndex > 0);
+
+            int? indexAtRunStart = null;
+            controller.PhaseChanged += phase =>
+            {
+                if (phase == ProbePhase.SafetyRetracting && indexAtRunStart == null)
+                {
+                    indexAtRunStart = controller.CurrentPointIndex;
+                }
+            };
+
+            using var cts = new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+            try
+            {
+                // StartAsync runs synchronously up to and past this phase change before
+                // it can hit any await that would hand control back here, so the
+                // capture above has already happened by this point.
+                Assert.NotNull(indexAtRunStart);
+            }
+            finally
+            {
+                cts.Cancel();
+                await run;
+            }
+
+            Assert.Equal(expectedResumeIndex, indexAtRunStart);
         }
 
         // =========================================================================

@@ -25,6 +25,7 @@ namespace coppercli.Menus
         private static ProgressInfo? _latestProgress;
         private static ControllerState _latestState;
         private static ToolChangeInfo? _pendingToolChange;
+        private static UserInputRequest? _pendingOperatorPause;
         private static ControllerError? _latestError;
 
         // ETA is estimated only while actually milling. The clock starts when streaming
@@ -124,6 +125,7 @@ namespace coppercli.Menus
             _latestProgress = null;
             _latestState = ControllerState.Idle;
             _pendingToolChange = null;
+            _pendingOperatorPause = null;
             _latestError = null;
             _etaEstimator = null;
             _millStreamStart = null;
@@ -136,8 +138,14 @@ namespace coppercli.Menus
             var totalPausedTime = TimeSpan.Zero;
             var (lastWidth, lastHeight) = GetSafeWindowSize();
 
-            // Cancellation token for stopping the controller
-            using var cts = new CancellationTokenSource();
+            // Cancellation token for stopping the controller. Not wrapped in `using`:
+            // if the bounded wait in the finally below times out, the controller may
+            // still be handing this token to a linked source on a background thread,
+            // and disposing under it there throws ObjectDisposedException on that
+            // thread. Disposing it isn't what makes the run stop, so let it be
+            // collected normally instead.
+            var cts = new CancellationTokenSource();
+            Task? millTask = null;
 
             Logger.Clear();
             Logger.Log("=== MonitorMilling started (controller-based) ===");
@@ -176,6 +184,14 @@ namespace coppercli.Menus
                 _pendingToolChange = info;
                 Logger.Log("Tool change detected: T{0} at line {1}", info.ToolNumber, info.LineNumber);
             };
+            // The milling controller's own prompt (M0/M1), distinct from the tool-change
+            // controller ToolChangeDetected hands off to - RunToolChangeController below
+            // subscribes to a different controller instance's UserInputRequired.
+            Action<UserInputRequest> onUserInputRequired = request =>
+            {
+                _pendingOperatorPause = request;
+                Logger.Log("Mill controller user input required: {0}", request.Message);
+            };
             Action<ControllerError> onError = error =>
             {
                 _latestError = error;
@@ -185,6 +201,7 @@ namespace coppercli.Menus
             controller.StateChanged += onStateChanged;
             controller.ProgressChanged += onProgressChanged;
             controller.ToolChangeDetected += onToolChange;
+            controller.UserInputRequired += onUserInputRequired;
             controller.ErrorOccurred += onError;
 
             Console.Clear();
@@ -239,14 +256,20 @@ namespace coppercli.Menus
                 Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
                     controller.Options.RequireHoming, controller.Options.DepthAdjustment);
 
-                // Reset controller if needed (from previous run)
-                if (controller.State != ControllerState.Idle)
+                // Reset controller if needed (from previous run). Reset() throws
+                // outside Completed/Failed/Cancelled/Idle, so only call it once
+                // HasFinished says that is safe - otherwise a teardown that left
+                // the controller Running/Paused would make this call throw instead
+                // of starting the new run.
+                if (controller.HasFinished)
                 {
                     controller.Reset();
                 }
 
-                // Start controller (fire and forget - we monitor via events)
-                _ = controller.StartAsync(cts.Token);
+                // Start controller. The task is kept (not fire-and-forget): the
+                // finally below waits on it so shutdown blocks until the run's own
+                // cleanup has actually finished, not merely until events say so.
+                millTask = controller.StartAsync(cts.Token);
 
                 // Record start time (drives the elapsed display).
                 startTime = DateTime.Now;
@@ -258,9 +281,7 @@ namespace coppercli.Menus
                 {
                     // Check controller state for completion
                     var state = _latestState;
-                    if (state == ControllerState.Completed ||
-                        state == ControllerState.Failed ||
-                        state == ControllerState.Cancelled)
+                    if (ControllerBase.IsFinishedState(state))
                     {
                         Logger.Log("Controller finished with state: {0}", state);
                         break;
@@ -289,9 +310,35 @@ namespace coppercli.Menus
                         {
                             Logger.Log("Tool change aborted by user");
                             cts.Cancel();
-                            // Wait for controller to finish cleanup
-                            Thread.Sleep(ResetWaitMs);
                             return;
+                        }
+                    }
+
+                    // Handle pending operator pause (M0/M1) - the mill controller's own
+                    // prompt, not routed through RunToolChangeController since no
+                    // separate tool-change workflow is running.
+                    if (_pendingOperatorPause != null)
+                    {
+                        var request = _pendingOperatorPause;
+                        _pendingOperatorPause = null;
+
+                        Logger.Log("Handling operator pause: {0}", request.Message);
+                        pauseStartTime = DateTime.Now;
+
+                        // A pause exists because something needs a human decision, so a
+                        // reflex Enter must not resume cutting - default to not continuing.
+                        // ShowOverlayConfirm renders [y/N] for this, so the prompt already
+                        // shows the operator which key does what.
+                        bool? proceed = ShowOverlayConfirm(request.Message, defaultYes: false);
+                        Console.Clear();
+
+                        string response = proceed == true ? OptionContinue : OptionAbort;
+                        request.OnResponse(response);
+
+                        if (response == OptionContinue)
+                        {
+                            totalPausedTime += DateTime.Now - pauseStartTime;
+                            paused = false;
                         }
                     }
 
@@ -325,8 +372,6 @@ namespace coppercli.Menus
                         {
                             Logger.Log("Stopping (Escape pressed)");
                             cts.Cancel();
-                            // Wait for controller to finish cleanup
-                            Thread.Sleep(ResetWaitMs);
                             return;
                         }
                         else if (key.KeyChar == '+' || key.KeyChar == '=')
@@ -417,15 +462,43 @@ namespace coppercli.Menus
                 {
                     MenuHelpers.ShowError(_latestError.Message);
                 }
-
-                // Reset controller for next use
-                if (controller.State != ControllerState.Idle)
-                {
-                    controller.Reset();
-                }
             }
             finally
             {
+                // Cancel unconditionally: a no-op once the controller has already
+                // finished, but on an exit path that never touched cts (an exception
+                // escaping the loop, say) it is what tells the controller to unwind.
+                cts.Cancel();
+
+                // Wait on the run's own task rather than polling IsActive: IsActive
+                // excludes Completing, so polling it would return while the safe-stop,
+                // re-home, and depth-adjustment restore that make up Completing are
+                // still running. Waiting on the task returns only once that unwind -
+                // whatever state it lands in - has actually finished. Bounded so an
+                // operator abort can never hang the TUI; a cancelled run's Wait can
+                // throw AggregateException, and nothing on a machine-abort path may
+                // escape this finally.
+                try
+                {
+                    millTask?.Wait(TimeSpan.FromMilliseconds(ControllerCancelTimeoutMs));
+                }
+                catch
+                {
+                    // Ignore
+                }
+
+                // Reset controller for next use, guarded by the same precondition
+                // Reset() itself requires. Runs for every exit - normal, abort, or
+                // exception - so the controller never sits in a terminal state
+                // waiting for the next run to reset it. If the wait above timed out,
+                // State can still be Completing/Running/Paused, and Reset() throws on
+                // those states; skip it rather than let that throw escape a
+                // machine-abort finally.
+                if (controller.HasFinished)
+                {
+                    controller.Reset();
+                }
+
                 // Stop sleep prevention
                 SleepPrevention.Stop();
 
@@ -442,12 +515,21 @@ namespace coppercli.Menus
                 controller.StateChanged -= onStateChanged;
                 controller.ProgressChanged -= onProgressChanged;
                 controller.ToolChangeDetected -= onToolChange;
+                controller.UserInputRequired -= onUserInputRequired;
                 controller.ErrorOccurred -= onError;
 
                 Logger.Log("=== MonitorMilling ended ===");
                 Console.CursorVisible = true;
             }
         }
+
+        /// <summary>
+        /// True for the terminal states a run can end in - Completed, Failed, or
+        /// Cancelled. This is exactly the precondition <see cref="ControllerBase.Reset"/>
+        /// itself requires (besides Idle, which needs no reset), so callers that guard
+        /// a Reset() call with this can never hit the InvalidOperationException Reset()
+        /// throws outside it.
+        /// </summary>
 
         private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, string etaStr, string? statusMessage = null, string? statusSubMessage = null)
         {
@@ -936,7 +1018,8 @@ namespace coppercli.Menus
                 }
 
                 // Wait for task to complete
-                toolChangeTask.Wait();
+                // Bounded: a tool change that never unwinds must not take the TUI with it.
+                toolChangeTask.Wait(TimeSpan.FromMilliseconds(ControllerCancelTimeoutMs));
 
                 // Clear display state
                 _toolChangeOverlayMessage = null;

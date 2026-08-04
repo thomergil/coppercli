@@ -430,8 +430,10 @@ namespace coppercli.Core.Communication
                                 string sendLine = File[FilePosition];
 
                                 // Check if this is an M6 tool change line - don't send to GRBL
-                                // (GRBL doesn't support M6, we handle it in coppercli)
-                                bool isM6Line = Regex.IsMatch(sendLine, M6Pattern, RegexOptions.IgnoreCase);
+                                // (GRBL doesn't support M6, we handle it in coppercli).
+                                // Through GCodeParser so this and MillingController cannot
+                                // disagree about what a tool change line is.
+                                bool isM6Line = GCodeParser.IsM6Line(sendLine);
 
                                 if (!isM6Line)
                                 {
@@ -444,7 +446,11 @@ namespace coppercli.Core.Communication
                                     RecordLog($"> [M6] WorkPos=({WorkPosition.X:F3}, {WorkPosition.Y:F3}, {WorkPosition.Z:F3})");
                                 }
 
-                                if (PauseLines[FilePosition] && _settings.PauseFileOnHold)
+                                // A tool change is not a hold preference: PauseFileOnHold governs
+                                // whether M0/M1/M2/M30 stop the stream, but skipping M6 would mean
+                                // cutting the rest of the job with the wrong tool, so M6 always
+                                // pauses regardless of that setting.
+                                if (PauseLines[FilePosition] && (isM6Line || _settings.PauseFileOnHold))
                                 {
                                     RecordLog($"> [PAUSE triggered at FilePosition={FilePosition}, PauseLines[{FilePosition}]=true]");
                                     Mode = OperatingMode.Manual;
@@ -1040,23 +1046,7 @@ namespace coppercli.Core.Communication
 
             for (int line = 0; line < file.Count; line++)
             {
-                var matches = GCodeParser.GCodeSplitter.Matches(file[line]);
-
-                foreach (Match m in matches)
-                {
-                    if (m.Groups[1].Value == "M")
-                    {
-                        int code = int.MinValue;
-
-                        if (int.TryParse(m.Groups[2].Value, out code))
-                        {
-                            if (IsPauseMCode(code))
-                        {
-                            pauselines[line] = true;
-                        }
-                        }
-                    }
-                }
+                pauselines[line] = GCodeParser.ClassifyPauseLine(file[line]) != PauseMCode.None;
             }
 
             File = new ReadOnlyCollection<string>(file);

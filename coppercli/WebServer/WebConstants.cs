@@ -222,6 +222,7 @@ public static class WebConstants
     public const string ErrorMachineNotConnected = "Machine not connected";
     public const string ErrorCannotPauseNotRunning = "Cannot pause: not running";
     public const string ErrorCannotResumeNotPaused = "Cannot resume: not paused";
+    public const string ErrorCannotResumeToolChangeActive = "Cannot resume: tool change in progress";
     public const string ErrorProbingNotRunning = "Cannot pause: probing not running";
     public const string ErrorProbingNotPaused = "Cannot resume: probing not paused";
     public const string ErrorExpectedMultipart = "Expected multipart/form-data";
@@ -238,6 +239,8 @@ public static class WebConstants
     public const string ErrorPortInUse = "Serial port is in use by another connection. Close the existing connection first.";
     public const string ErrorNoStoredWorkZero = "No stored work zero to trust";
     public const string ErrorNoAutosavedProbeData = "No autosaved probe data";
+    public const string ErrorStopTimedOut =
+        "Stop did not finish in time. The machine may still be moving - check it directly before doing anything else.";
 
     // --- API Error Message Formats ---
     public const string ErrorInvalidFileType = "Invalid file type: {0}";

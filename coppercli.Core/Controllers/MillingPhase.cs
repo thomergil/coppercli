@@ -30,6 +30,9 @@ namespace coppercli.Core.Controllers
         /// <summary>Handling M6 tool change.</summary>
         ToolChange,
 
+        /// <summary>Waiting for the operator to acknowledge an M0/M1 pause.</summary>
+        WaitingForOperator,
+
         /// <summary>Waiting for completion and cleanup.</summary>
         Completing
     }

@@ -218,9 +218,6 @@ namespace coppercli.Core.Util
         /// <summary>Retract distance after probing tool setter (mm).</summary>
         public const double ToolSetterRetract = 10.0;
 
-        /// <summary>Clearance above last known tool setter position for rapid approach (mm).</summary>
-        public const double ToolSetterApproachClearance = 20.0;
-
         // =========================================================================
         // G-code parsing
         // =========================================================================

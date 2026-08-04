@@ -58,10 +58,9 @@ namespace coppercli.Core.Controllers
         private readonly object _phaseLock = new();
         private ToolChangeInfo? _currentToolChange;
 
-        // Carried between tool changes within a run: the reference tool length the new
-        // tool is measured against, and the last tool-setter Z (for a fast approach).
+        // The reference tool's length, measured at the start of a tool change and used to
+        // work out the new tool's offset. Cleared per tool change - see ResetRunState.
         private double _referenceToolLength;
-        private double _lastToolSetterZ;
 
         // Return position after tool change
         private double _returnX;
@@ -138,6 +137,10 @@ namespace coppercli.Core.Controllers
             {
                 throw new InvalidOperationException(string.Format(ErrorCannotStart, State));
             }
+
+            // This is the entry point, not StartAsync, so the reset the base class would
+            // have done has to happen here.
+            ResetRunState();
 
             _currentToolChange = info;
             ControllerLog.Log(LogToolChangeStart, info.ToolNumber);
@@ -217,14 +220,22 @@ namespace coppercli.Core.Controllers
         // IController implementation
         // =========================================================================
 
-        /// <summary>
-        /// Reset controller to initial state.
-        /// Must also reset Phase to NotStarted so DetectToolChange() returns null.
-        /// </summary>
-        public override void Reset()
+        /// <inheritdoc/>
+        protected override void ResetRunState()
         {
-            base.Reset();
-            Phase = ToolChangePhase.NotStarted;
+            // NotStarted is what makes DetectToolChange() report no tool change.
+            lock (_phaseLock)
+            {
+                _phase = ToolChangePhase.NotStarted;
+            }
+
+            _currentToolChange = null;
+            _returnX = 0;
+            _returnY = 0;
+
+            // A tool length measured against one tool change says nothing about the next,
+            // where the operator has been free to fit anything.
+            _referenceToolLength = 0;
         }
 
         protected override Task RunAsync(CancellationToken ct)
@@ -455,14 +466,11 @@ namespace coppercli.Core.Controllers
             double slowFeed = config?.SlowFeed ?? ToolSetterProbeFeed;
             double retract = config?.Retract ?? ToolSetterRetract;
 
-            // Rapid approach if we know the approximate position
-            if (_lastToolSetterZ != 0)
-            {
-                double approachZ = _lastToolSetterZ + ToolSetterApproachClearance;
-                _machine.SendLine(CmdAbsolute);
-                _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{approachZ:F3}"));
-                await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
-            }
+            // No rapid pre-approach. The only height available to aim one at is the
+            // trigger height of the PREVIOUS probe, and within a tool change that probe
+            // was taken with the previous tool. A tool longer than the clearance margin
+            // would be driven into the setter at rapid speed. The seek probe below starts
+            // from wherever Z is, which is what it is for.
 
             // Fast seek probe
             var (seekSuccess, seekZ) = await ExecuteProbeAsync(-probeDepth, fastFeed, ct);
@@ -470,8 +478,6 @@ namespace coppercli.Core.Controllers
             {
                 return null;
             }
-
-            _lastToolSetterZ = seekZ;
 
             // Retract
             _machine.SendLine(CmdAbsolute);

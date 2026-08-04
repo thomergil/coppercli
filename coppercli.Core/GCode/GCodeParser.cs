@@ -106,6 +106,9 @@ namespace coppercli.Core.GCode
         // "line is a tool change" cannot mean two different things.
         private static readonly Regex M6Pattern = new Regex(GrblProtocol.M6Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex M0Pattern = new Regex(GrblProtocol.M0Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        // Parenthesised comments and semicolon-to-end-of-line, the two forms G-code uses.
+        private static readonly Regex CommentStripPattern = new Regex(@"\([^)]*\)|;.*$", RegexOptions.Compiled);
         private static readonly Regex ToolNumberPattern = new Regex(@"\bT(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ToolNamePattern = new Regex(@"\(([^)]+)\)", RegexOptions.Compiled);
 
@@ -114,7 +117,17 @@ namespace coppercli.Core.GCode
         /// </summary>
         public static bool IsM6Line(string line)
         {
-            return M6Pattern.IsMatch(line);
+            return M6Pattern.IsMatch(StripComments(line));
+        }
+
+        /// <summary>
+        /// Drops G-code comments - parenthesised, and semicolon to end of line - so a
+        /// remark that mentions an M-code is never read as one. Left as a space, not
+        /// nothing, so "M0(stop)G1" cannot fuse into a word that matches neither.
+        /// </summary>
+        public static string StripComments(string line)
+        {
+            return CommentStripPattern.Replace(line, " ");
         }
 
         /// <summary>
@@ -122,7 +135,42 @@ namespace coppercli.Core.GCode
         /// </summary>
         public static bool IsM0Line(string line)
         {
-            return M0Pattern.IsMatch(line);
+            return M0Pattern.IsMatch(StripComments(line));
+        }
+
+        /// <summary>
+        /// Classifies the M-code that would stop file streaming at this line, if any.
+        /// Built on the same GCodeSplitter/GCodeNumbers pairing Machine.SetFile uses to
+        /// decide which lines pause in the first place, so "what does this pause mean"
+        /// has one answer shared by the code that gates the pause and the code that
+        /// reacts to it (MillingController, once the stream has actually stopped there).
+        /// </summary>
+        public static GCodeNumbers.PauseMCode ClassifyPauseLine(string line)
+        {
+            // Upper-cased because GCodeSplitter only matches capitals, while the M6
+            // recogniser below ignores case. Disagreeing would mean a lowercase "m6" was
+            // withheld from the machine as a tool change and simultaneously not treated
+            // as one, so the job would cut on with the tool still in the spindle.
+            foreach (Match m in GCodeSplitter.Matches(StripComments(line).ToUpperInvariant()))
+            {
+                if (m.Groups[1].Value != "M")
+                {
+                    continue;
+                }
+
+                if (!int.TryParse(m.Groups[2].Value, out int code))
+                {
+                    continue;
+                }
+
+                var kind = GCodeNumbers.ClassifyPauseMCode(code);
+                if (kind != GCodeNumbers.PauseMCode.None)
+                {
+                    return kind;
+                }
+            }
+
+            return GCodeNumbers.PauseMCode.None;
         }
 
         /// <summary>

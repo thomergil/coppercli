@@ -551,7 +551,7 @@ namespace coppercli.Menus
 
             while (controller.State == ControllerState.Initializing ||
                    controller.State == ControllerState.Running ||
-                   controller.State == ControllerState.Paused)
+                   controller.IsPaused)
             {
                 // Check for key presses
                 if (Console.KeyAvailable)
@@ -582,7 +582,7 @@ namespace coppercli.Menus
                             controller.Pause();
                             AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusPaused}[/]");
                         }
-                        else if (controller.State == ControllerState.Paused)
+                        else if (controller.IsPaused)
                         {
                             controller.Resume();
                             AnsiConsole.MarkupLine($"\n[{ColorSuccess}]{ProbeStatusResumed}[/]");
@@ -591,7 +591,7 @@ namespace coppercli.Menus
                 }
 
                 // Show paused state change (e.g., auto-pause from slow probe)
-                bool isPaused = controller.State == ControllerState.Paused;
+                bool isPaused = controller.IsPaused;
                 if (isPaused && !wasPaused)
                 {
                     AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusPaused}[/]");

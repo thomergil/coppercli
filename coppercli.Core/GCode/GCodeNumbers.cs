@@ -140,26 +140,50 @@ namespace coppercli.Core.GCode
         public const int MCodeToolChange = 6;
 
         /// <summary>
-        /// M-codes that pause file execution.
-        /// Used to detect pause lines when scanning G-code files.
+        /// What a pause-causing M-code means for file streaming: an operator prompt, a
+        /// tool change, or the end of the program. The single place that maps the
+        /// numeric M-code constants above to that meaning, so a caller that reacts
+        /// differently to different pause causes (see GCodeParser.ClassifyPauseLine)
+        /// derives from this rather than keeping a second list of the same codes.
         /// </summary>
-        public static readonly int[] PauseMCodes =
+        public enum PauseMCode
         {
-            MCodeProgramStop,
-            MCodeProgramOptionalStop,
-            MCodeProgramEnd,
-            MCodeProgramEndReset,
-            MCodeToolChange
-        };
+            /// <summary>Not a pause-causing M-code.</summary>
+            None,
 
-        /// <summary>
-        /// Checks if an M-code causes execution to pause.
-        /// </summary>
-        public static bool IsPauseMCode(int code) =>
-            code == MCodeProgramStop ||
-            code == MCodeProgramOptionalStop ||
-            code == MCodeProgramEnd ||
-            code == MCodeProgramEndReset ||
-            code == MCodeToolChange;
+            /// <summary>M0: pauses unconditionally, waiting for the operator.</summary>
+            ProgramStop,
+
+            /// <summary>M1: pauses only if the optional-stop switch is on.</summary>
+            OptionalStop,
+
+            /// <summary>M2 or M30: the program is over.</summary>
+            ProgramEnd,
+
+            /// <summary>M6: pauses for a manual tool change.</summary>
+            ToolChange
+        }
+
+        /// <summary>Classifies a numeric M-code by what it means for file streaming.</summary>
+        public static PauseMCode ClassifyPauseMCode(int code)
+        {
+            if (code == MCodeProgramStop)
+            {
+                return PauseMCode.ProgramStop;
+            }
+            if (code == MCodeProgramOptionalStop)
+            {
+                return PauseMCode.OptionalStop;
+            }
+            if (code == MCodeProgramEnd || code == MCodeProgramEndReset)
+            {
+                return PauseMCode.ProgramEnd;
+            }
+            if (code == MCodeToolChange)
+            {
+                return PauseMCode.ToolChange;
+            }
+            return PauseMCode.None;
+        }
     }
 }

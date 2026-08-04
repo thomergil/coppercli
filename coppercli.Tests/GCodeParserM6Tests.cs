@@ -236,5 +236,52 @@ namespace coppercli.Tests
             Assert.Null(number);
             Assert.Null(name);
         }
+        // =========================================================================
+        // Comment stripping and case agreement between the two recognisers
+        //
+        // Machine.cs decides whether to withhold a line from GRBL with IsM6Line, and
+        // marks which lines pause with ClassifyPauseLine. A line the first calls a tool
+        // change and the second does not is withheld and never paused for: the job cuts
+        // on with the tool still in the spindle.
+        // =========================================================================
+
+        [Theory]
+        [InlineData("m6")]
+        [InlineData("M6")]
+        [InlineData("t2 m06")]
+        [InlineData("M06 (Tool change.)")]
+        public void ToolChangeLines_AreRecognisedIdenticallyByBothRecognisers(string line)
+        {
+            Assert.True(GCodeParser.IsM6Line(line));
+            Assert.Equal(GCodeNumbers.PauseMCode.ToolChange, GCodeParser.ClassifyPauseLine(line));
+        }
+
+        [Theory]
+        [InlineData("G1 X1 Y1 (rapid before M6)")]
+        [InlineData("G1 X1 Y1 ; then M6 by hand")]
+        public void AnMCodeInsideACommentIsNotAToolChange(string line)
+        {
+            Assert.False(GCodeParser.IsM6Line(line));
+            Assert.Equal(GCodeNumbers.PauseMCode.None, GCodeParser.ClassifyPauseLine(line));
+        }
+
+        [Theory]
+        [InlineData("G1 X1 Y1 (finished, was M2)")]
+        [InlineData("G1 X1 Y1 (pause here, not M0)")]
+        [InlineData("G1 X1 Y1 ; M30 comes later")]
+        public void AnMCodeInsideACommentDoesNotEndOrPauseTheProgram(string line)
+        {
+            Assert.Equal(GCodeNumbers.PauseMCode.None, GCodeParser.ClassifyPauseLine(line));
+            Assert.False(GCodeParser.IsM0Line(line));
+        }
+
+        [Fact]
+        public void ARealMCodeIsStillFoundWhenTheLineAlsoCarriesAComment()
+        {
+            Assert.Equal(GCodeNumbers.PauseMCode.ProgramEnd,
+                GCodeParser.ClassifyPauseLine("M2 ( Program end. )"));
+            Assert.Equal(GCodeNumbers.PauseMCode.ProgramStop,
+                GCodeParser.ClassifyPauseLine("M0 (pause for inspection)"));
+        }
     }
 }

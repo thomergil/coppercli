@@ -151,24 +151,46 @@ function updatePremillDepthDisplay(depth) {
     }
 }
 
-function togglePause() {
+// Server may refuse a resume (e.g. a tool change is active) or fail to confirm a stop in
+// time - either way the button must reflect what the server actually did, not what the
+// operator asked for, so this awaits the response instead of assuming success.
+async function togglePause() {
     const btn = $('mill-pause-btn');
-    if (btn.dataset.paused === 'true') {
-        fetch(API_MILL_RESUME, { method: 'POST' });
-        updatePauseButton(btn, false);
-    } else {
-        fetch(API_MILL_PAUSE, { method: 'POST' });
-        updatePauseButton(btn, true);
+    const wasPaused = btn.dataset.paused === 'true';
+    try {
+        const response = await fetch(wasPaused ? API_MILL_RESUME : API_MILL_PAUSE, { method: 'POST' });
+        const json = await response.json();
+        if (!json.success) {
+            showError(json.error || `Failed to ${wasPaused ? 'resume' : 'pause'}`);
+            return;
+        }
+        updatePauseButton(btn, !wasPaused);
+    } catch (err) {
+        showError(`Failed to ${wasPaused ? 'resume' : 'pause'}: ${err.message}`);
     }
 }
 
-function stopMill() {
-    fetch(API_MILL_STOP, { method: 'POST' });
+async function stopMill() {
+    try {
+        const response = await fetch(API_MILL_STOP, { method: 'POST' });
+        const json = await response.json();
+        if (!json.success) {
+            // The server could not confirm the machine stopped - leave the mill screen
+            // up and the milling state alone rather than telling the operator it did.
+            showError(json.error || 'Failed to stop');
+            return;
+        }
+    } catch (err) {
+        showError('Failed to stop: ' + err.message);
+        return;
+    }
+
     // Set isMilling false immediately to prevent "Milling complete!" toast
     // when status update arrives (since STOP is not completion)
     state.isMilling = false;
     state.lockedScreen = null;  // Clear screen lock so navigation works
     state.userStoppedMilling = true;  // Prevent re-locking on next status update
+    hideToolChangeOverlay();  // Server confirmed the stop - any pending prompt is moot
     $('mill-back-btn').disabled = false;
     resetGridState();  // Clear local grid state
     showScreen(SCREEN_DASHBOARD);
@@ -180,12 +202,43 @@ function stopMill() {
 const PHASE_WAITING_FOR_TOOL_CHANGE = 'WaitingForToolChange';
 const PHASE_WAITING_FOR_ZERO_Z = 'WaitingForZeroZ';
 
+// Marks a bare M0/M1 prompt within status.toolChange (must match MillingPhase.WaitingForOperator).
+const PHASE_WAITING_FOR_OPERATOR = 'WaitingForOperator';
+
+// True from the moment a toolchange:input prompt is shown (tool change or a bare
+// M0/M1) until it is answered or the run ends. A bare M0/M1 has no ToolChangeController
+// workflow behind it, so status.toolChange is null for the whole time it is pending -
+// without this flag, the next status poll would read that null as "nothing going on"
+// and tear the overlay down before the operator can answer it.
+let pendingUserInputPrompt = false;
+
+// Id of the prompt this client last showed, from either path (live handleToolChangeInput
+// or the status-recovery branch below). A status snapshot built on the server before the
+// operator's answer, but delivered after the toolchange:complete that answer triggered,
+// would otherwise read as "a prompt is pending" and resurrect an overlay already
+// dismissed - comparing ids catches that even though both prompts look identical
+// otherwise, and still lets a genuinely new prompt with a different id through.
+let lastPromptId = null;
+
+// Single place that tears the overlay/flag back down, shared by every path that can
+// end a pending prompt: answered (handleToolChangeComplete), or the run ending on its
+// own (handleStateChange, stopMill) - a prompt parked via WaitingForUserInput can be
+// cancelled straight to Failed/Cancelled without ever being answered.
+function hideToolChangeOverlay() {
+    pendingUserInputPrompt = false;
+    const overlay = $('toolchange-overlay');
+    if (overlay) {
+        overlay.classList.add(CLASS_HIDDEN);
+    }
+}
+
 /**
  * Update tool change display based on controller phase (FSM state).
  * Called from screens.js when status is received.
  *
  * UI behavior is 1:1 with phase:
  *   - WaitingForToolChange → mill screen shows overlay with Continue/Abort
+ *   - WaitingForOperator → mill screen shows overlay for a bare M0/M1 prompt
  *   - WaitingForZeroZ → jog screen shows "Continue Milling" button
  *   - Other phases → spindle moving, no user action needed
  *   - null → no tool change in progress
@@ -193,6 +246,29 @@ const PHASE_WAITING_FOR_ZERO_Z = 'WaitingForZeroZ';
 export function updateToolChangeDisplay(toolChange) {
     const overlay = $('toolchange-overlay');
     if (!overlay) return;
+
+    // A prompt is up and unanswered - leave it alone regardless of what this poll
+    // saw. hideToolChangeOverlay() takes it down instead, once it is actually
+    // resolved: answered (handleToolChangeComplete) or the run ending
+    // (handleStateChange, stopMill).
+    if (pendingUserInputPrompt) {
+        return;
+    }
+
+    // A bare M0/M1 prompt has no ToolChangeController phase of its own to recover
+    // from, so GetStatus() folds it into this same field - this is the only path a
+    // client that reloaded or reconnected mid-prompt has, since the toolchange:input
+    // broadcast that announced it live is one-shot and already missed. The id check
+    // makes this idempotent once shown, the same way pendingUserInputPrompt does for
+    // the live path above.
+    if (toolChange && toolChange.phase === PHASE_WAITING_FOR_OPERATOR) {
+        if (toolChange.id !== lastPromptId) {
+            lastPromptId = toolChange.id;
+            pendingUserInputPrompt = true;
+            renderUserInputPrompt(toolChange);
+        }
+        return;
+    }
 
     // No tool change or not waiting for tool change → hide overlay
     if (!toolChange || toolChange.phase !== PHASE_WAITING_FOR_TOOL_CHANGE) {
@@ -257,12 +333,17 @@ async function abortToolChange() {
         state.isMilling = false;
         state.lockedScreen = null;
         state.userStoppedMilling = true;  // Prevent re-locking on next status update
+        hideToolChangeOverlay();  // Aborting - any pending prompt is moot
 
-        // Hide overlay
-        const overlay = $('toolchange-overlay');
-        if (overlay) overlay.classList.add(CLASS_HIDDEN);
-
-        await fetch(API_MILL_TOOLCHANGE_ABORT, { method: 'POST' });
+        const response = await fetch(API_MILL_TOOLCHANGE_ABORT, { method: 'POST' });
+        const json = await response.json();
+        if (!json.success) {
+            // The server could not confirm both controllers stopped - surface it and
+            // leave navigation alone rather than telling the operator it's safe to walk
+            // away from the machine.
+            showError(json.error || 'Failed to abort');
+            return;
+        }
         console.log('abortToolChange: abort request complete, navigating to dashboard');
         showScreen(SCREEN_DASHBOARD);
     } catch (err) {
@@ -575,6 +656,7 @@ function handleStateChange(controllerState) {
         case CONTROLLER_STATE_COMPLETING:
         case CONTROLLER_STATE_COMPLETED:
             state.isMilling = false;
+            hideToolChangeOverlay();  // Run is over - any pending prompt is moot
             resetGridState();  // Clear local grid state on completion
             showInfo(TEXT_MILLING_COMPLETE);
             showScreen(SCREEN_DASHBOARD);
@@ -582,6 +664,9 @@ function handleStateChange(controllerState) {
         case CONTROLLER_STATE_FAILED:
         case CONTROLLER_STATE_CANCELLED:
             state.isMilling = false;
+            // Run is over - a prompt parked in WaitingForUserInput can be cancelled
+            // straight to here without ever being answered, so drop it too.
+            hideToolChangeOverlay();
             resetGridState();  // Clear local grid state on cancel/failure
             showScreen(SCREEN_DASHBOARD);
             break;
@@ -669,16 +754,10 @@ function handleToolChangeProgress(progress) {
     }
 }
 
-function handleToolChangeInput(data) {
-    console.log('Tool change input required:', data);
-
-    // Server validates state before sending toolchange:input.
-    // Don't check state.isMilling - server is source of truth.
-    // Ensure isMilling is set since server confirmed we're in a tool change.
-    state.isMilling = true;
-
-    // Show user input dialog - this is when user action is actually needed
-    // data contains: title, message, options[]
+// Renders a { title, message, options } prompt into the overlay and shows it. Shared
+// by the live path (handleToolChangeInput) and the status-recovery path
+// (updateToolChangeDisplay), so the two can never render the prompt differently.
+function renderUserInputPrompt(data) {
     const overlay = $('toolchange-overlay');
     if (!overlay) return;
 
@@ -708,6 +787,21 @@ function handleToolChangeInput(data) {
     overlay.classList.remove(CLASS_HIDDEN);
 }
 
+function handleToolChangeInput(data) {
+    console.log('Tool change input required:', data);
+
+    // Server validates state before sending toolchange:input.
+    // Don't check state.isMilling - server is source of truth.
+    // Ensure isMilling is set since server confirmed we're in a tool change.
+    state.isMilling = true;
+    pendingUserInputPrompt = true;
+    lastPromptId = data.id;
+
+    // Show user input dialog - this is when user action is actually needed
+    // data contains: title, message, options[], id
+    renderUserInputPrompt(data);
+}
+
 async function sendToolChangeInput(response) {
     try {
         const result = await fetch(API_MILL_TOOLCHANGE_INPUT, {
@@ -726,11 +820,9 @@ async function sendToolChangeInput(response) {
 
 function handleToolChangeComplete(data) {
     console.log('Tool change complete:', data);
-    // Hide overlay
-    const overlay = $('toolchange-overlay');
-    if (overlay) {
-        overlay.classList.add(CLASS_HIDDEN);
-    }
+    // The prompt (if any) has been answered - let status polling drive the
+    // overlay again.
+    hideToolChangeOverlay();
 
     if (!data.success && !data.aborted) {
         // Only show error for actual failures, not user aborts

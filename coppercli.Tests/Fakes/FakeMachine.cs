@@ -5,6 +5,7 @@ using System.Collections.ObjectModel;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Communication;
+using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using static coppercli.Core.Communication.Machine;
 
@@ -36,6 +37,13 @@ namespace coppercli.Tests.Fakes
         /// <summary>Machine travel limits (mm, negative = toward workpiece).</summary>
         public Vector3 MinPosition { get; set; } = new Vector3(-300, -200, -100);
         public Vector3 MaxPosition { get; set; } = new Vector3(0, 0, 0);
+
+        /// <summary>
+        /// Mirrors MachineSettings.PauseFileOnHold (same default). Governs whether
+        /// M0/M1/M2/M30 stop the stream - M6 always does, regardless of this setting,
+        /// the same decoupling production's Machine.cs applies.
+        /// </summary>
+        public bool PauseFileOnHold { get; set; } = true;
 
         // =========================================================================
         // State
@@ -437,28 +445,47 @@ namespace coppercli.Tests.Fakes
 
                 var line = _fileLines[FilePosition];
 
-                // Check for M6 tool change
-                if (line.Contains("M6") || line.Contains("M06"))
+                // Faithful to production Machine.cs: M6 is recognised the same way
+                // (GCodeParser.IsM6Line - the same anchored pattern, not a substring
+                // check that would also fire on M60/M65) and swallowed rather than sent
+                // onward; every other line is processed as normal.
+                bool isM6Line = GCodeParser.IsM6Line(line);
+                if (!isM6Line)
                 {
-                    Mode = OperatingMode.Manual;
-                    OperatingModeChanged?.Invoke();
-                    SetStatus("Idle");
-                    return; // Pause for tool change
+                    await ProcessCommandAsync(line);
                 }
 
-                // Check for M0 pause
-                if (System.Text.RegularExpressions.Regex.IsMatch(line, @"\bM0{1,2}\b"))
-                {
-                    Mode = OperatingMode.Manual;
-                    OperatingModeChanged?.Invoke();
-                    SetStatus("Idle");
-                    return;
-                }
+                // A tool change is not a hold preference - PauseFileOnHold governs
+                // whether M0/M1/M2/M30 stop the stream, but M6 always pauses regardless,
+                // the same decoupling production applies in Machine.cs's SendFile loop.
+                // Classified with GCodeParser.ClassifyPauseLine - the same classifier
+                // MillingController uses to react once the stream has stopped - so this
+                // fake cannot pause on a line MillingController would not recognise, or
+                // vice versa.
+                var pauseKind = GCodeParser.ClassifyPauseLine(line);
+                bool isPauseLine = pauseKind != GCodeNumbers.PauseMCode.None;
+                bool shouldPause = isPauseLine && (isM6Line || PauseFileOnHold);
 
-                await ProcessCommandAsync(line);
+                // GRBL answers a program stop with a feed hold. It never sees an M6 (that
+                // is swallowed before sending) and a program end simply leaves it idle, so
+                // only these two report Hold.
+                bool holdsOnPause = pauseKind == GCodeNumbers.PauseMCode.ProgramStop
+                    || pauseKind == GCodeNumbers.PauseMCode.OptionalStop;
 
+                // FilePosition advances past the line whether or not it paused here -
+                // production does the same - so MillingController's File[FilePosition -
+                // 1] lookup finds the line that just ran, not the one before it.
                 FilePosition++;
                 FilePositionChanged?.Invoke();
+
+                if (shouldPause)
+                {
+                    Mode = OperatingMode.Manual;
+                    OperatingModeChanged?.Invoke();
+
+                    SetStatus(holdsOnPause ? "Hold:0" : "Idle");
+                    return; // Pause for tool change, operator prompt, or program end
+                }
             }
 
             Mode = OperatingMode.Manual;

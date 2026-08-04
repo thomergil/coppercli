@@ -51,12 +51,45 @@ public static class CncWebServer
     private static bool _forceDisconnected = false;  // Suppress auto-reconnect after force disconnect
     private static readonly object _reconnectLock = new();
 
-    // Milling controller cancellation (for stopping operations)
+    // Milling controller cancellation (for stopping operations). Only ever assigned a
+    // fresh instance synchronously in HandleMillStart, before the run that uses it is
+    // scheduled - see the compare-and-clear remarks on that assignment.
     private static CancellationTokenSource? _millCts;
 
-    // Tool change controller cancellation and pending user input
+    // The Task backing the in-flight controller.StartAsync() started by HandleMillStart,
+    // so StopMillingAsync can wait for that run's own cancellation-driven cleanup instead
+    // of racing it with a second, independent StopAsync/Reset.
+    private static Task? _millRunTask;
+
+    // Serializes StopMillingAsync so only one caller drives the milling controller's FSM
+    // at a time: the combined stop path (HandleMillStopAsync) and a tool change that ends
+    // without success on its own can both reach it around the same moment.
+    private static readonly SemaphoreSlim _millStopLock = new(1, 1);
+
+    // Tool change controller cancellation and pending user input. _toolChangeCts is only
+    // ever assigned a fresh instance synchronously in HandleMillStart's onToolChange
+    // callback, before the run that uses it is scheduled.
     private static CancellationTokenSource? _toolChangeCts;
-    private static UserInputRequest? _pendingToolChangeInput;
+
+    // Pending prompt awaiting a response via ApiMillToolChangeUserInput - shared by the
+    // tool-change controller's own prompts (set in StartToolChangeControllerAsync) and
+    // the milling controller's M0/M1 prompt (set in HandleMillStart's onUserInputRequired
+    // below). The two can never be pending at once: an M6 tool change and an M0/M1 are
+    // mutually exclusive states of the same stream position, so reusing this one field -
+    // and the toolchange:input/toolchange:complete wire messages - needs no new plumbing.
+    private static UserInputRequest? _pendingMillUserInput;
+
+    // The Task backing the in-flight StartToolChangeControllerAsync started when M6 is
+    // detected, so HandleMillStopAsync can wait for that run's own cancellation-driven
+    // cleanup (including the Reset back to Idle it performs) instead of racing it with a
+    // second, independent Reset() from here.
+    private static Task? _toolChangeRunTask;
+
+    // Serializes HandleMillStopAsync, the single entry point for an operator-initiated
+    // stop (the Stop button and the tool-change dialog's Abort button both funnel
+    // through it - see its remarks), so two concurrent stop/abort requests do not both
+    // try to drive both controllers' teardown at once.
+    private static readonly SemaphoreSlim _toolChangeAbortLock = new(1, 1);
 
     // Probe controller cancellation
     private static CancellationTokenSource? _probeCts;
@@ -677,7 +710,17 @@ public static class CncWebServer
                 if (method == MethodPost)
                 {
                     var resumeController = AppState.Milling;
-                    if (resumeController.State == ControllerState.Paused)
+
+                    // A tool change leaves the milling controller Paused for its own
+                    // reasons. Resuming here while one is under way would restart file
+                    // streaming behind its back, mid tool-swap. Gated on the milling
+                    // controller's own Phase rather than DetectToolChange (the tool
+                    // change controller's status): Phase flips to ToolChange before the
+                    // Paused transition and before the event that starts the tool change
+                    // controller fires, so this is race-free - DetectToolChange lags up
+                    // to a few seconds behind it (see DetectToolChange's own remarks).
+                    bool toolChangeActive = resumeController.Phase == MillingPhase.ToolChange;
+                    if (resumeController.IsPaused && !toolChangeActive)
                     {
                         resumeController.Resume();
                         await WriteJson(response, new { success = true });
@@ -685,7 +728,10 @@ public static class CncWebServer
                     else
                     {
                         response.StatusCode = HttpStatusBadRequest;
-                        await WriteJson(response, new { error = ErrorCannotResumeNotPaused });
+                        await WriteJson(response, new
+                        {
+                            error = toolChangeActive ? ErrorCannotResumeToolChangeActive : ErrorCannotResumeNotPaused
+                        });
                     }
                 }
                 break;
@@ -693,8 +739,7 @@ public static class CncWebServer
             case ApiMillStop:
                 if (method == MethodPost)
                 {
-                    await HandleMillStopAsync();
-                    await WriteJson(response, new { success = true });
+                    await WriteStopResult(response, await HandleMillStopAsync());
                 }
                 break;
 
@@ -768,7 +813,7 @@ public static class CncWebServer
                 if (method == MethodPost)
                 {
                     var resumeProbeController = AppState.Probe;
-                    if (resumeProbeController.State == ControllerState.Paused)
+                    if (resumeProbeController.IsPaused)
                     {
                         resumeProbeController.Resume();
                         await WriteJson(response, new { success = true });
@@ -857,8 +902,7 @@ public static class CncWebServer
             case ApiMillToolChangeAbort:
                 if (method == MethodPost)
                 {
-                    await HandleToolChangeAbortAsync();
-                    await WriteJson(response, new { success = true });
+                    await WriteStopResult(response, await HandleToolChangeAbortAsync());
                 }
                 break;
 
@@ -1001,14 +1045,19 @@ public static class CncWebServer
         var controllerState = controller.State;
         var controllerPhase = controller.Phase;
 
-        // Milling state from controller
-        var isMilling = controllerState == ControllerState.Running ||
-                        controllerState == ControllerState.Initializing ||
-                        controllerState == ControllerState.Paused;
+        // Milling state from controller. IsActive alone misses WaitingForUserInput
+        // (the M0/M1 prompt), and the job is not over just because the spindle is
+        // parked waiting on the operator - reporting otherwise sends the browser
+        // to the dashboard mid-cut with the tool still down.
+        var isMilling = controller.IsActive || controllerState == ControllerState.WaitingForUserInput;
         var isPaused = controllerState == ControllerState.Paused;
 
-        // Tool change state from AppState (set by controller event)
-        var toolChange = DetectToolChange();
+        // Tool change state from AppState (set by controller event), falling back to a
+        // pending bare M0/M1 prompt when there is no tool change. Both flow through the
+        // same overlay client-side, and this field is the only way a client that reloaded
+        // or reconnected mid-prompt can recover it - the toolchange:input WS broadcast
+        // that announced it live is one-shot and already missed by then.
+        var toolChange = DetectToolChange() ?? DetectOperatorPause();
 
         var settings = AppState.Settings;
         var profile = !string.IsNullOrEmpty(settings.MachineProfile)
@@ -1054,8 +1103,13 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Get tool change status from the ToolChangeController.
-    /// The controller's Phase is the single source of truth.
+    /// Get tool change status from the ToolChangeController, for display only. The
+    /// controller's Phase is the single source of truth, but StartToolChangeControllerAsync
+    /// does not reach it until the tool-change run task is scheduled and picked up by the
+    /// thread pool, so this lags the milling controller's own MillingPhase.ToolChange by
+    /// up to a few seconds. A caller that needs to know synchronously whether a tool
+    /// change is under way (e.g. gating /api/mill/resume) must check
+    /// AppState.Milling.Phase directly instead - see that call site's remarks.
     ///
     /// UI behavior is 1:1 with phase:
     ///   - null (NotStarted/Complete) → no tool change UI
@@ -1089,6 +1143,30 @@ public static class CncWebServer
             phase = phase.ToString(),
             toolNumber = info?.ToolNumber,
             toolName = info?.ToolName
+        };
+    }
+
+    /// <summary>
+    /// Detects a bare M0/M1 prompt pending on the milling controller itself - the
+    /// counterpart to DetectToolChange for the one case that controller doesn't cover.
+    /// Shaped so the single client-side handler that already reconstructs a tool-change
+    /// overlay from status.toolChange can reconstruct this one too, without needing to
+    /// know which kind of prompt it is.
+    /// </summary>
+    private static object? DetectOperatorPause()
+    {
+        if (AppState.Milling.Phase != MillingPhase.WaitingForOperator || _pendingMillUserInput == null)
+        {
+            return null;
+        }
+
+        return new
+        {
+            phase = MillingPhase.WaitingForOperator.ToString(),
+            title = _pendingMillUserInput.Title,
+            message = _pendingMillUserInput.Message,
+            options = _pendingMillUserInput.Options,
+            id = _pendingMillUserInput.Id
         };
     }
 
@@ -1998,8 +2076,11 @@ public static class CncWebServer
 
         var controller = AppState.Milling;
 
-        // Reset controller if needed (from previous run)
-        if (controller.State != ControllerState.Idle)
+        // Reset controller if needed (from previous run). Reset() throws outside
+        // Completed/Failed/Cancelled/Idle, so only call it once HasFinished says
+        // that is safe - otherwise a teardown that left the controller Running/Paused
+        // would make this call throw instead of starting the new run.
+        if (controller.State != ControllerState.Idle && controller.HasFinished)
         {
             controller.Reset();
         }
@@ -2055,9 +2136,57 @@ public static class CncWebServer
                 lineNumber = info.LineNumber
             });
 
-            // Auto-start the tool change controller (no client API call needed)
-            // This is the FSM-driven approach: server controls the workflow
-            _ = Task.Run(() => StartToolChangeControllerAsync(info, controller));
+            // Auto-start the tool change controller (no client API call needed). This is
+            // the FSM-driven approach: server controls the workflow. toolChangeCts is
+            // created and assigned to the shared field here, synchronously, before
+            // Task.Run schedules the body that uses it - not inside that body - so a
+            // caller can never observe the field unset while a run is starting. It is
+            // also the identity StartToolChangeControllerAsync's finally compares
+            // against before clearing the field (compare-and-clear), so a second tool
+            // change - or this run finishing very quickly - can never erase a newer
+            // run's handle out from under it. Tracked in _toolChangeRunTask so
+            // HandleMillStopAsync can await this exact run instead of driving the same
+            // FSM itself in parallel with it.
+            var toolChangeCts = new CancellationTokenSource();
+            _toolChangeCts = toolChangeCts;
+            _toolChangeRunTask = Task.Run(() => StartToolChangeControllerAsync(info, controller, toolChangeCts));
+        };
+        // The mill controller's own prompt (M0/M1) - distinct from a tool change, which
+        // runs on the separate ToolChangeController instance handled by onToolChange
+        // above. Reuses the tool-change dialog's WS message and pending-input field (see
+        // _pendingMillUserInput) since the two prompts can never be pending at once.
+        Action<UserInputRequest> onUserInputRequired = request =>
+        {
+            Logger.Log("Mill controller user input required: {0}", request.Message);
+
+            // Wrap OnResponse so the dialog closes once answered. Unlike a tool change -
+            // several prompts in sequence, closed only by the workflow's own
+            // toolchange:complete once every step is done - this is always exactly one
+            // prompt: Abort never reaches here (it goes through the separate tool-change
+            // abort endpoint/button instead), so any response landing here is Continue,
+            // and there is no next prompt to keep the dialog open for.
+            // Id carries request's own GUID through so a client recovering this prompt
+            // from GetStatus (see DetectOperatorPause) can compare it against this same
+            // broadcast's id and tell them apart from an already-answered prompt.
+            _pendingMillUserInput = new UserInputRequest
+            {
+                Id = request.Id,
+                Title = request.Title,
+                Message = request.Message,
+                Options = request.Options,
+                OnResponse = response =>
+                {
+                    request.OnResponse(response);
+                    BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = true });
+                }
+            };
+            BroadcastMessage(WsMessageTypeToolChangeInput, new
+            {
+                title = request.Title,
+                message = request.Message,
+                options = request.Options,
+                id = request.Id
+            });
         };
         Action<ControllerError> onError = error =>
         {
@@ -2072,6 +2201,7 @@ public static class CncWebServer
         controller.StateChanged += onStateChanged;
         controller.ProgressChanged += onProgressChanged;
         controller.ToolChangeDetected += onToolChange;
+        controller.UserInputRequired += onUserInputRequired;
         controller.ErrorOccurred += onError;
 
         // Configure controller. The web UI has no per-start depth confirmation (the TUI does);
@@ -2086,12 +2216,21 @@ public static class CncWebServer
         SleepPrevention.Start();
         Logger.Log("Sleep prevention started: {0}", SleepPrevention.IsActive);
 
-        // Start controller (fire and forget - events broadcast updates)
-        _ = Task.Run(async () =>
+        // Start controller (fire and forget - events broadcast updates). millCts is
+        // captured here, after the synchronous assignment above and before Task.Run
+        // schedules the body that reads it, so the closure never observes _millCts
+        // unset. It is also the identity the finally below compares against before
+        // clearing the shared fields (compare-and-clear): a second /api/mill/start - or
+        // this run finishing very quickly - can then never erase a newer run's handle.
+        // The Task itself is tracked in _millRunTask so a stop/abort can await this
+        // exact run winding down rather than driving the same FSM itself in parallel
+        // with it (see HandleMillStopAsync).
+        var millCts = _millCts;
+        _millRunTask = Task.Run(async () =>
         {
             try
             {
-                await controller.StartAsync(_millCts.Token);
+                await controller.StartAsync(millCts.Token);
             }
             finally
             {
@@ -2099,10 +2238,17 @@ public static class CncWebServer
                 controller.StateChanged -= onStateChanged;
                 controller.ProgressChanged -= onProgressChanged;
                 controller.ToolChangeDetected -= onToolChange;
+                controller.UserInputRequired -= onUserInputRequired;
                 controller.ErrorOccurred -= onError;
+                _pendingMillUserInput = null;
 
-                // Clear milling CTS to indicate operation is complete
-                _millCts = null;
+                // Compare-and-clear: only release the shared handles if they still
+                // belong to this run.
+                if (ReferenceEquals(_millCts, millCts))
+                {
+                    _millCts = null;
+                    _millRunTask = null;
+                }
 
                 // Stop sleep prevention
                 SleepPrevention.Stop();
@@ -2122,30 +2268,168 @@ public static class CncWebServer
         Logger.Log("Milling started (controller-based)");
     }
 
-    private static async Task HandleMillStopAsync()
+    /// <summary>
+    /// Tears down BOTH controllers, however the run was interrupted: an operator's Stop
+    /// must stop a tool change too, not just the milling run it paused for, so a stray
+    /// "$X" issued while cleaning up milling does not clear an alarm the tool change is
+    /// about to drive straight through. The Stop button and the tool-change dialog's
+    /// Abort button both funnel through this one method (see <see
+    /// cref="HandleToolChangeAbortAsync"/>) - a second, independent path through either
+    /// FSM is how the two front ends drift apart.
+    ///
+    /// Serialized on <see cref="_toolChangeAbortLock"/>, bounded so a caller that cannot
+    /// get in gets a definite "not confirmed stopped" answer rather than hanging the
+    /// request forever. Lock order is strictly this lock, THEN the tool-change run task's
+    /// own unwind, THEN <see cref="_millStopLock"/> (acquired inside <see
+    /// cref="StopMillingAsync"/>, once the tool change has already finished unwinding) -
+    /// never the reverse, so the two locks cannot deadlock against each other.
+    ///
+    /// CRITICAL: nothing reachable from the tool-change run task itself may call back
+    /// into this method - that would await this exact task from inside its own
+    /// execution. A tool change that ends without success on its own (nobody at the Stop
+    /// button) tears down the milling run via <see cref="StopMillingAsync"/> directly
+    /// instead - see StartToolChangeControllerAsync.
+    /// </summary>
+    /// <returns>False if a lock, or a run's cancellation-driven unwind, did not complete
+    /// within <see cref="ControllerCancelTimeoutMs"/> - the caller must not tell the
+    /// operator the machine has stopped.</returns>
+    private static async Task<bool> HandleMillStopAsync()
+    {
+        bool acquiredAbortLock = await _toolChangeAbortLock.WaitAsync(ControllerCancelTimeoutMs);
+        if (!acquiredAbortLock)
+        {
+            Logger.Log("Mill stop: timed out waiting for a previous stop/abort to finish");
+            return false;
+        }
+
+        try
+        {
+            Logger.Log("Mill stop requested");
+
+            var toolChangeRunTask = _toolChangeRunTask;
+            _toolChangeCts?.Cancel();
+
+            bool toolChangeStopped = toolChangeRunTask == null
+                || await AwaitRunTeardownAsync(toolChangeRunTask, "Tool change");
+
+            bool millStopped = await StopMillingAsync();
+
+            Logger.Log("Mill stop complete");
+            return toolChangeStopped && millStopped;
+        }
+        finally
+        {
+            _toolChangeAbortLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Tears down the milling controller alone, however its run ended. Split out from
+    /// <see cref="HandleMillStopAsync"/> so a tool change that ends without success on
+    /// its own (see StartToolChangeControllerAsync) can tear down the milling run it
+    /// interrupted without calling back into the combined stop path and awaiting its own
+    /// task from inside itself.
+    ///
+    /// Serialized on <see cref="_millStopLock"/>, bounded for the same reason as <see
+    /// cref="HandleMillStopAsync"/>: cancelling _millCts wakes the controller
+    /// .StartAsync() parked in HandleMillStart, which runs its own CleanupAsync +
+    /// terminal-state transition as it unwinds. Also driving StopAsync/Reset from here
+    /// at the same time races that unwind and can hit an illegal transition (e.g.
+    /// Cancelled -> Cancelled, or Idle -> Cancelled), which throws. Awaiting the tracked
+    /// run task lets that in-flight unwind own the transition, and the lock keeps two
+    /// concurrent callers from both reaching Reset() afterward.
+    /// </summary>
+    /// <returns>False if the lock, or the run's unwind, did not complete within
+    /// <see cref="ControllerCancelTimeoutMs"/>.</returns>
+    private static async Task<bool> StopMillingAsync()
     {
         if (_machine == null)
         {
-            return;
+            return true;
         }
 
-        var controller = AppState.Milling;
-        int position = _machine.FilePosition;
-        Logger.Log("Mill stop requested at line {0}", position);
-
-        // Cancel the milling operation
-        _millCts?.Cancel();
-
-        // Stop controller (handles cleanup: spindle off, Z retract)
-        await controller.StopAsync();
-
-        // Reset controller for next use
-        if (controller.State != ControllerState.Idle)
+        bool acquiredStopLock = await _millStopLock.WaitAsync(ControllerCancelTimeoutMs);
+        if (!acquiredStopLock)
         {
-            controller.Reset();
+            Logger.Log("Mill stop: timed out waiting for a previous stop to finish");
+            return false;
         }
 
-        Logger.Log("Mill stop complete");
+        try
+        {
+            var controller = AppState.Milling;
+
+            // Cancel unconditionally, before looking at State: Idle is also the state in
+            // the window between /api/mill/start returning and the pool thread reaching
+            // TransitionTo(Initializing), and a Stop arriving in that window must still
+            // cancel the token the run is about to start honoring, not silently no-op.
+            var runTask = _millRunTask;
+            _millCts?.Cancel();
+
+            if (runTask == null && controller.State == ControllerState.Idle)
+            {
+                return true;  // Nothing in flight and nothing left to reset.
+            }
+
+            Logger.Log("Mill stop tearing down at line {0}", _machine.FilePosition);
+
+            bool stopped = true;
+            if (runTask != null)
+            {
+                // A run is in flight: let its own cancellation unwind drive cleanup and
+                // the terminal-state transition (see remarks above) instead of racing it.
+                stopped = await AwaitRunTeardownAsync(runTask, "Mill");
+            }
+            else if (controller.State != ControllerState.Idle)
+            {
+                // No run is in flight - safe to drive cleanup directly.
+                await controller.StopAsync();
+            }
+
+            // A timed-out unwind can leave the controller in a non-terminal state (still
+            // Running/Paused/etc). Reset() throws on anything but
+            // Completed/Failed/Cancelled/Idle, so only call it once the state says that
+            // is safe.
+            var state = controller.State;
+            if (state != ControllerState.Idle && ControllerBase.IsFinishedState(state))
+            {
+                controller.Reset();
+            }
+
+            Logger.Log("Mill stop complete");
+            return stopped;
+        }
+        finally
+        {
+            _millStopLock.Release();
+        }
+    }
+
+    /// <summary>States from which ControllerBase.Reset() is legal to call.</summary>
+
+    /// <summary>
+    /// Waits for a controller's run task to unwind after cancellation, bounded so a
+    /// stalled run cannot hang the caller forever. Any fault is swallowed here rather
+    /// than rethrown: the teardown that follows this call is the entire reason for
+    /// waiting, and letting the run's own exception propagate out of the await would
+    /// skip it.
+    /// </summary>
+    /// <returns>True if the run task unwound within <see cref="ControllerCancelTimeoutMs"/>.</returns>
+    private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label)
+    {
+        var completed = await Task.WhenAny(runTask, Task.Delay(ControllerCancelTimeoutMs));
+        if (completed != runTask)
+        {
+            Logger.Log("{0}: run task did not unwind within {1}ms", label, ControllerCancelTimeoutMs);
+            return false;
+        }
+
+        if (runTask.IsFaulted)
+        {
+            Logger.Log("{0}: run task faulted during teardown: {1}", label, runTask.Exception);
+        }
+
+        return true;
     }
 
 
@@ -3104,6 +3388,25 @@ public static class CncWebServer
         response.Close();
     }
 
+    /// <summary>
+    /// Answers a Stop or Abort request. <paramref name="stopped"/> is false when
+    /// <see cref="HandleMillStopAsync"/> could not confirm both controllers actually
+    /// finished tearing down within their time budget - the caller must not tell the
+    /// operator the machine has stopped in that case.
+    /// </summary>
+    private static async Task WriteStopResult(HttpListenerResponse response, bool stopped)
+    {
+        if (stopped)
+        {
+            await WriteJson(response, new { success = true });
+        }
+        else
+        {
+            response.StatusCode = HttpStatusServerError;
+            await WriteJson(response, new { error = ErrorStopTimedOut });
+        }
+    }
+
     /// <summary>Writes a bare sentence, for a response a person reads rather than the UI.</summary>
     private static async Task WriteText(HttpListenerResponse response, string text)
     {
@@ -3405,11 +3708,25 @@ public static class CncWebServer
     /// This is the FSM-driven approach: server controls the workflow, client just observes.
     /// The ToolChangeController.State and Phase are the single source of truth.
     /// </summary>
-    private static async Task StartToolChangeControllerAsync(ToolChangeInfo info, MillingController millingController)
+    /// <param name="cts">Created and assigned to <see cref="_toolChangeCts"/> by the
+    /// caller before this task was scheduled - see the onToolChange callback in
+    /// HandleMillStart. Used as this run's identity for the compare-and-clear in the
+    /// finally below, and as the cancellation source for the tool change itself.</param>
+    private static async Task StartToolChangeControllerAsync(ToolChangeInfo info, MillingController millingController, CancellationTokenSource cts)
     {
         if (!MachineConnected)
         {
             Logger.Log("StartToolChangeControllerAsync: machine not connected");
+
+            // The caller already published cts/this task to the shared fields before
+            // scheduling this run (see the onToolChange callback in HandleMillStart);
+            // returning here without the compare-and-clear below would leave them
+            // pointing at a run that never really started, forever.
+            if (ReferenceEquals(_toolChangeCts, cts))
+            {
+                _toolChangeCts = null;
+                _toolChangeRunTask = null;
+            }
             return;
         }
 
@@ -3428,9 +3745,6 @@ public static class CncWebServer
         var settings = AppState.Settings;
         var currentFile = AppState.CurrentFile;
         toolChangeController.Options = ToolChangeOptions.FromSettings(settings, currentFile);
-
-        // Start tool change controller workflow
-        _toolChangeCts = new CancellationTokenSource();
 
         // Subscribe to tool change controller events
         Action<ControllerState> onStateChanged = state =>
@@ -3462,12 +3776,13 @@ public static class CncWebServer
         Action<UserInputRequest> onUserInputRequired = request =>
         {
             Logger.Log("Tool change user input required: {0}", request.Message);
-            _pendingToolChangeInput = request;
+            _pendingMillUserInput = request;
             BroadcastMessage(WsMessageTypeToolChangeInput, new
             {
                 title = request.Title,
                 message = request.Message,
-                options = request.Options
+                options = request.Options,
+                id = request.Id
             });
         };
         Action<ControllerError> onError = error =>
@@ -3487,41 +3802,85 @@ public static class CncWebServer
 
         try
         {
-            bool success = await toolChangeController.HandleToolChangeAsync(info, _toolChangeCts.Token);
+            bool success = await toolChangeController.HandleToolChangeAsync(info, cts.Token);
 
             if (success)
             {
                 Logger.Log("Tool change complete, resuming milling");
                 BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = true });
-                millingController.Resume();
+
+                // The operator may have pressed Stop while the tool change was still
+                // running, which cancels the milling controller independently of this
+                // workflow. Resume() throws on anything but Paused, and an unguarded
+                // throw here would skip the toolChangeController.Reset() below,
+                // stranding the tool-change controller non-Idle for the rest of the
+                // session - so only resume if the milling controller is actually
+                // still parked waiting for this tool change.
+                if (millingController.State == ControllerState.Paused)
+                {
+                    millingController.Resume();
+                }
             }
             else
             {
-                // Distinguish between user abort and actual failure
+                // Distinguish between user abort and actual failure only in what the
+                // operator is told - the milling run this tool change interrupted is
+                // torn down identically either way. Only the milling side is torn down
+                // here (StopMillingAsync), never the combined stop path
+                // (HandleMillStopAsync): an operator-initiated Stop/Abort already
+                // cancelled this run's token and is awaiting this exact task, so calling
+                // back into that combined path from here would await this task from
+                // inside its own execution (see HandleMillStopAsync's remarks).
                 bool wasAborted = toolChangeController.State == ControllerState.Cancelled;
                 Logger.Log("Tool change {0}", wasAborted ? "aborted" : "failed");
                 BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = false, aborted = wasAborted });
+                await StopMillingAsync();
             }
         }
         finally
         {
+            // However it ended - success, user abort, genuine failure, or an
+            // exception out of Resume() above - the tool change is over: return the
+            // controller to Idle so DetectToolChange stops reporting one and Phase
+            // does not stay stuck at whatever step it reached. This is the single
+            // place that resets the tool change controller; HandleMillStopAsync
+            // awaits this task instead of resetting the controller itself, so a
+            // second Reset() never lands here concurrently. Placed in the finally so
+            // it always runs, even when Resume() throws.
+            if (toolChangeController.State != ControllerState.Idle)
+            {
+                toolChangeController.Reset();
+            }
+
             toolChangeController.StateChanged -= onStateChanged;
             toolChangeController.ProgressChanged -= onProgressChanged;
             toolChangeController.UserInputRequired -= onUserInputRequired;
             toolChangeController.ErrorOccurred -= onError;
-            _pendingToolChangeInput = null;
-            _toolChangeCts = null;
+            _pendingMillUserInput = null;
+
+            // Compare-and-clear: only release the shared handles if they still belong
+            // to this run (see the onToolChange callback in HandleMillStart).
+            if (ReferenceEquals(_toolChangeCts, cts))
+            {
+                _toolChangeCts = null;
+                _toolChangeRunTask = null;
+            }
         }
     }
 
 
     /// <summary>
-    /// Handle user input response during tool change workflow.
-    /// Called when user clicks Continue or Abort in the tool change dialog.
+    /// Handle a user input response posted to the tool-change dialog endpoint. Shared by
+    /// the tool-change controller's own prompts and the milling controller's M0/M1
+    /// prompt (see <see cref="_pendingMillUserInput"/>) - whichever one is pending.
+    /// Called when the user clicks Continue or Abort.
     /// </summary>
     private static async Task HandleToolChangeUserInput(HttpListenerResponse response, ToolChangeUserInputRequest? req)
     {
-        if (_pendingToolChangeInput == null)
+        // Taken once: two Continue taps can arrive together, and re-reading the field
+        // between the check and the call lets the second find it already cleared.
+        var pending = _pendingMillUserInput;
+        if (pending == null)
         {
             response.StatusCode = HttpStatusBadRequest;
             await WriteJson(response, new { error = ErrorNoPendingUserInput });
@@ -3538,40 +3897,22 @@ public static class CncWebServer
         Logger.Log("Tool change user input response: {0}", req.response);
 
         // Call the callback to unblock the controller
-        _pendingToolChangeInput.OnResponse?.Invoke(req.response);
-        _pendingToolChangeInput = null;
+        _pendingMillUserInput = null;
+        pending.OnResponse?.Invoke(req.response);
 
         await WriteJson(response, new { success = true });
     }
 
     /// <summary>
-    /// Handle tool change abort. Stops milling and raises Z.
-    /// Controller transitions to Cancelled state when CTS is cancelled.
+    /// Handle tool change abort. An operator-initiated stop that happens to arrive via
+    /// the tool-change dialog's Abort button rather than the main Stop button - both need
+    /// to tear down the same two controllers the same way, so this is a thin caller of
+    /// the shared stop path. See <see cref="HandleMillStopAsync"/> for the lock order
+    /// and timeout behavior this depends on.
     /// </summary>
-    private static async Task HandleToolChangeAbortAsync()
-    {
-        Logger.Log("Tool change abort requested");
-
-        // Cancel any running tool change controller
-        // Controller will transition to Cancelled state
-        _toolChangeCts?.Cancel();
-
-        // Stop milling (this handles spindle off, Z raise, etc.)
-        await HandleMillStopAsync();
-
-        // Reset tool change controller so DetectToolChange returns null
-        var toolChangeController = AppState.ToolChange;
-        Logger.Log("Tool change abort: State={0}, Phase={1}", toolChangeController.State, toolChangeController.Phase);
-        if (toolChangeController.State != ControllerState.Idle)
-        {
-            toolChangeController.Reset();
-            Logger.Log("Tool change controller reset after abort");
-        }
-        else
-        {
-            Logger.Log("Tool change controller already Idle, skipping Reset");
-        }
-    }
+    /// <returns>False if the shared stop path could not confirm both controllers
+    /// finished tearing down in time.</returns>
+    private static Task<bool> HandleToolChangeAbortAsync() => HandleMillStopAsync();
 
     /// <summary>
     /// Handle depth adjustment. Used before milling to adjust cut depth.

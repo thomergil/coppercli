@@ -21,9 +21,19 @@ namespace coppercli.Tests
             public bool CleanupWasCalled { get; private set; }
             public Exception? ExceptionToThrow { get; set; }
             public TaskCompletionSource<bool>? RunBlocker { get; set; }
+            public int ResetRunStateCallCount { get; private set; }
+
+            /// <summary>
+            /// Snapshot of <see cref="ResetRunStateCallCount"/> taken on RunAsync's very
+            /// first line, before it does anything else - lets a test tell whether
+            /// ResetRunState already ran by the time RunAsync started, rather than only
+            /// by the time it finished.
+            /// </summary>
+            public int? ResetRunStateCallCountAtRunStart { get; private set; }
 
             protected override async Task RunAsync(CancellationToken ct)
             {
+                ResetRunStateCallCountAtRunStart = ResetRunStateCallCount;
                 RunWasCalled = true;
 
                 if (ExceptionToThrow != null)
@@ -46,6 +56,12 @@ namespace coppercli.Tests
             {
                 CleanupWasCalled = true;
                 return Task.CompletedTask;
+            }
+
+            /// <inheritdoc/>
+            protected override void ResetRunState()
+            {
+                ResetRunStateCallCount++;
             }
 
             // Expose protected method for testing
@@ -277,6 +293,54 @@ namespace coppercli.Tests
             Assert.Throws<InvalidOperationException>(() => controller.Reset());
 
             controller.RunBlocker.SetResult(true);
+        }
+
+        // =========================================================================
+        // ResetRunState contract tests
+        //
+        // ResetRunState is the one place a subclass clears the fields that describe a
+        // run (see the doc comment on the abstract method). Controllers are
+        // session-lifetime singletons, so if either caller ever stopped invoking it, a
+        // field left behind by one run would leak into the next.
+        // =========================================================================
+
+        [Fact]
+        public async Task StartAsync_CallsResetRunStateBeforeRunning()
+        {
+            var controller = new TestController();
+
+            await controller.StartAsync();
+
+            // Checked at the moment RunAsync started, not merely by the time the run
+            // finished, so a ResetRunState() moved to the bottom of StartAsync fails
+            // this rather than passing it.
+            Assert.Equal(1, controller.ResetRunStateCallCountAtRunStart);
+        }
+
+        [Fact]
+        public void Reset_AfterCompleted_CallsResetRunState()
+        {
+            var controller = new TestController();
+            controller.TestTransitionTo(ControllerState.Initializing);
+            controller.TestTransitionTo(ControllerState.Running);
+            controller.TestTransitionTo(ControllerState.Completing);
+            controller.TestTransitionTo(ControllerState.Completed);
+
+            controller.Reset();
+
+            Assert.Equal(1, controller.ResetRunStateCallCount);
+        }
+
+        [Fact]
+        public async Task StartAsync_ThenReset_CallsResetRunStateTwice()
+        {
+            var controller = new TestController();
+            await controller.StartAsync();
+
+            controller.Reset();
+
+            // Once from the top of StartAsync, once from Reset() itself.
+            Assert.Equal(2, controller.ResetRunStateCallCount);
         }
 
         // =========================================================================

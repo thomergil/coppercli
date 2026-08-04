@@ -66,6 +66,8 @@ namespace coppercli.Core.Controllers
         public const string LogMillingComplete = "Milling complete (stable idle)";
         public const string LogM6Detected = "M6 detected at line {0}, tool {1}";
         public const string LogSkippingM0 = "Skipping M0 at line {0} (redundant after M6)";
+        public const string LogOperatorPauseContinued = "Operator continued past pause at line {0}";
+        public const string LogProgramEndDetected = "Program end (M2/M30) detected at line {0}, ending stream";
 
         // =========================================================================
         // Phase names (for progress display)
@@ -77,6 +79,10 @@ namespace coppercli.Core.Controllers
         public const string PhaseInitializing = "Initializing";
         public const string PhaseMilling = "Milling";
         public const string PhaseCompleting = "Completing";
+        public const string PhaseWaitingForOperator = "Paused";
+
+        /// <summary>How far past an M6 to look for the redundant M0 that follows it.</summary>
+        public const int ToolChangeM0SearchLines = 8;
 
         // =========================================================================
         // Progress messages
@@ -133,5 +139,20 @@ namespace coppercli.Core.Controllers
         public const string ToolChangePrompt = "Change to tool T{0} and press Continue";
         public const string ToolChangePromptZeroZ = "Jog to PCB surface, set Z0, then press Continue";
         public const string ToolChangeZeroZTitle = "Set Z Zero";
+
+        // =========================================================================
+        // Operator pause (M0/M1) prompt
+        // =========================================================================
+
+        /// <summary>Title for the M0/M1 pause dialog. Reuses the tool-change dialog
+        /// plumbing (see MillingController.HandleOperatorPauseAsync), so it needs its
+        /// own title rather than inheriting "Tool Change".</summary>
+        public const string OperatorPauseTitle = "Program Paused";
+
+        /// <summary>{0} is the 1-based line number, so it matches what an operator
+        /// editing the file would call "line N", not the 0-based index the code uses.</summary>
+        public const string OperatorPausePrompt =
+            "Paused at line {0}. The tool is still down and the spindle is still running. "
+            + "Continue milling, or stop the job?";
     }
 }
