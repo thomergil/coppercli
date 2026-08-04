@@ -163,6 +163,20 @@ export const CONTROLLER_STATE_COMPLETING = 'Completing';
 // MillingPhase.WaitingForOperator - marks a bare M0/M1 prompt inside status.toolChange.
 // Validated against the server's own value at startup; see validateConstants.
 export const MILL_PHASE_WAITING_FOR_OPERATOR = 'WaitingForOperator';
+
+// Shown when a request never reaches coppercli. The browser's own exception text names
+// nothing an operator standing at the machine can act on, and the machine may still be
+// moving, so these say what to do instead.
+export const ERROR_STOP_NOT_SENT =
+    'Could not reach coppercli to stop the job. The machine may still be moving - check it directly.';
+export const ERROR_ABORT_NOT_SENT =
+    'Could not reach coppercli to abort. The machine may still be moving - check it directly.';
+export const ERROR_START_NOT_SENT =
+    'Could not reach coppercli to start the job. Check the connection, then try again.';
+export const ERROR_PAUSE_NOT_SENT =
+    'Could not reach coppercli. The job is still running - check the machine directly.';
+export const ERROR_INPUT_NOT_SENT =
+    'Could not reach coppercli. The job is still waiting for an answer - try again.';
 export const CONTROLLER_STATE_COMPLETED = 'Completed';
 export const CONTROLLER_STATE_FAILED = 'Failed';
 export const CONTROLLER_STATE_CANCELLED = 'Cancelled';

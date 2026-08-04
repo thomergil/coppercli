@@ -5,6 +5,11 @@ import { $, showError, showInfo, showConfirm, updatePauseButton } from './helper
 import { showScreen } from './screens.js';
 import {
     MILL_PHASE_WAITING_FOR_OPERATOR,
+    ERROR_START_NOT_SENT,
+    ERROR_PAUSE_NOT_SENT,
+    ERROR_STOP_NOT_SENT,
+    ERROR_ABORT_NOT_SENT,
+    ERROR_INPUT_NOT_SENT,
     API_FILE_INFO,
     API_MILL_PREFLIGHT,
     API_MILL_START,
@@ -85,7 +90,8 @@ export async function startMill() {
         await fetch(API_MILL_START, { method: 'POST' });
         state.isMilling = true;
     } catch (err) {
-        showError('Failed to start milling: ' + err.message);
+        console.error('startMilling failed', err);
+        showError(ERROR_START_NOT_SENT);
     }
 }
 
@@ -167,7 +173,8 @@ async function togglePause() {
         }
         updatePauseButton(btn, !wasPaused);
     } catch (err) {
-        showError(`Failed to ${wasPaused ? 'resume' : 'pause'}: ${err.message}`);
+        console.error('togglePause failed', err);
+        showError(ERROR_PAUSE_NOT_SENT);
     }
 }
 
@@ -182,7 +189,8 @@ async function stopMill() {
             return;
         }
     } catch (err) {
-        showError('Failed to stop: ' + err.message);
+        console.error('stopMill failed', err);
+        showError(ERROR_STOP_NOT_SENT);
         return;
     }
 
@@ -346,7 +354,8 @@ async function abortToolChange() {
         console.log('abortToolChange: abort request complete, navigating to dashboard');
         showScreen(SCREEN_DASHBOARD);
     } catch (err) {
-        showError('Failed to abort: ' + err.message);
+        console.error('abortToolChange failed', err);
+        showError(ERROR_ABORT_NOT_SENT);
     }
 }
 
@@ -813,7 +822,8 @@ async function sendToolChangeInput(response) {
             showError(json.error || 'Failed to send input');
         }
     } catch (err) {
-        showError('Failed to send input: ' + err.message);
+        console.error('sendToolChangeInput failed', err);
+        showError(ERROR_INPUT_NOT_SENT);
     }
 }
 
