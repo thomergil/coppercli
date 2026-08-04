@@ -321,6 +321,9 @@ release/
 # Homebrew tap is a separate repo
 homebrew-tap/
 
+# safe-code config
+.safe_code.json
+
 # Claude Code instructions
 
 # Session transcripts written into the working tree by tooling
