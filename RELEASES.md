@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.4.2
 
 - **Abandoning a tool change no longer breaks every job after it.** Stopping at a tool
   change instead of completing it left the job still believing it was paused, and the same
@@ -45,6 +45,25 @@
   as unrelated. Turned off, coppercli swallowed the tool change and carried on cutting with
   the tool still in the spindle. A tool change is not a preference; it now always pauses.
   `M0`, `M1`, `M2` and `M30` still follow that setting.
+- **coppercli asks you to close the door instead of waiting for it.** Starting a job with
+  the enclosure open, or opening it while the machine homes, used to leave the screen
+  frozen for a minute and then report that homing had failed, without ever mentioning the
+  door. A job now holds at a prompt until the enclosure is shut — telling you which of the
+  two it is, the door still open or the door closed and the machine holding — and asks
+  again if the machine still disagrees. It never resumes on its own: pressing Continue is
+  what releases the hold.
+- **Nothing waits on something only you can clear.** Waiting for the machine to go idle,
+  to reach a height, or to start moving all used to run their timeout out against a held
+  or alarmed machine and then report a generic failure. They now stop as soon as the
+  machine is in a state that needs a person, and homing says the door stopped it.
+- **The status says the door is closed once you close it.** GRBL reports the door both
+  while it is open and after it is shut and waiting to be resumed, and coppercli was
+  keeping only the word "Door" and discarding the part that tells the two apart — so the
+  status sat on "Door" after you had already closed it, and closing it raised no update at
+  all. Both screens now say either "door open" or "door closed — press resume".
+- **Failed requests in the browser say what to do.** They showed the browser's own error
+  text, which named nothing you could act on; on the stop and abort buttons that appeared
+  at exactly the moment the machine may still have been moving. They now say so.
 
 ## v0.4.1a
 
