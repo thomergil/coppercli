@@ -23,18 +23,39 @@ namespace coppercli.Core.GCode
 
         public Vector3 Min { get; private set; }
         public Vector3 Max { get; private set; }
-        public Vector3 Size { get; private set; }
+        /// <summary>
+        /// The extent of the toolpath, derived from its bounds. Clamped at zero because a
+        /// file with no motion leaves the bounds at their empty sentinels, which subtract
+        /// to a negative extent.
+        /// </summary>
+        public Vector3 Size => NonNegativeExtent(Max, Min);
 
         public Vector3 MinFeed { get; private set; }
         public Vector3 MaxFeed { get; private set; }
-        public Vector3 SizeFeed { get; private set; }
+        /// <inheritdoc cref="Size"/>
+        public Vector3 SizeFeed => NonNegativeExtent(MaxFeed, MinFeed);
+
+        private static Vector3 NonNegativeExtent(Vector3 max, Vector3 min)
+        {
+            Vector3 extent = max - min;
+
+            for (int i = 0; i < 3; i++)
+            {
+                if (extent[i] < 0)
+                {
+                    extent[i] = 0;
+                }
+            }
+
+            return extent;
+        }
 
         public bool ContainsMotion { get; private set; } = false;
 
         /// <summary>
         /// Midpoint of the toolpath bounds in X and Y (Z left at 0). The natural place to
         /// park the spindle for an accessible tool swap. Computed from Min/Max, which the
-        /// file already owns - callers used to recompute (Min+Max)/2 in four places.
+        /// file already owns, so no caller recomputes (Min+Max)/2.
         /// </summary>
         public Vector3 Center => new Vector3((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2, 0);
 
@@ -120,31 +141,8 @@ namespace coppercli.Core.GCode
 
             Max = max;
             Min = min;
-            Vector3 size = Max - Min;
-
-            for (int i = 0; i < 3; i++)
-            {
-                if (size[i] < 0)
-                {
-                    size[i] = 0;
-                }
-            }
-
-            Size = size;
-
             MaxFeed = maxfeed;
             MinFeed = minfeed;
-            Vector3 sizefeed = MaxFeed - MinFeed;
-
-            for (int i = 0; i < 3; i++)
-            {
-                if (sizefeed[i] < 0)
-                {
-                    sizefeed[i] = 0;
-                }
-            }
-
-            SizeFeed = sizefeed;
         }
 
         public static GCodeFile Load(string path)

@@ -1,15 +1,15 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Phases within a grid probing workflow.
+    /// The step of work a grid probing run is on.
+    ///
+    /// Work steps only. Whether the run finished, was cancelled, or failed is
+    /// <see cref="ControllerState"/>'s to answer; naming those here wrote one fact twice.
     /// </summary>
     public enum ProbePhase
     {
         /// <summary>Not probing.</summary>
         NotStarted,
-
-        /// <summary>Creating probe grid from file bounds.</summary>
-        CreatingGrid,
 
         /// <summary>Tracing probe outline (optional).</summary>
         TracingOutline,
@@ -33,15 +33,6 @@ namespace coppercli.Core.Controllers
         RecordingResult,
 
         /// <summary>Raising Z after all points complete.</summary>
-        FinalRetract,
-
-        /// <summary>All points probed successfully.</summary>
-        Complete,
-
-        /// <summary>Probing was cancelled by user.</summary>
-        Cancelled,
-
-        /// <summary>Probing failed due to error.</summary>
-        Failed
+        FinalRetract
     }
 }

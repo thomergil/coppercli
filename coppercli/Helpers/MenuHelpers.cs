@@ -181,12 +181,16 @@ namespace coppercli.Helpers
                 }
             }
 
-            // Check probe data applied (if probe points exist)
-            if (AppState.ProbePoints != null && !AppState.AreProbePointsApplied)
+            // The map for this job, whether or not anything has loaded it yet: a complete
+            // map sitting in the autosave still has to be applied before the job runs, or
+            // every cut is uncorrected.
+            var probeGrid = AppState.CurrentProbeGrid;
+
+            if (probeGrid != null && !AppState.AreProbePointsApplied)
             {
-                if (!AppState.ProbePoints.HasCompleteData)
+                if (!probeGrid.HasCompleteData)
                 {
-                    probeProgress = $"{AppState.ProbePoints.Progress}/{AppState.ProbePoints.TotalPoints}";
+                    probeProgress = $"{probeGrid.Progress}/{probeGrid.TotalPoints}";
                     return new MillPreflightResult(false, MillPreflightError.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
                 }
                 return new MillPreflightResult(false, MillPreflightError.ProbeNotApplied, warnings, null, dangerousWarnings);
@@ -196,7 +200,7 @@ namespace coppercli.Helpers
             // get wrong: every cutting move already carries its corrections. If the
             // setup has moved since it was measured, those corrections are for
             // somewhere else, and the whole job cuts at the wrong depth.
-            if (AppState.ProbePoints != null && AppState.AreProbePointsApplied)
+            if (probeGrid != null && AppState.AreProbePointsApplied)
             {
                 var applicability = AppState.GetProbeApplicability();
 
@@ -236,10 +240,9 @@ namespace coppercli.Helpers
         public static string? GetMillDisabledReason() => DescribeMillBlockingError(ValidateMillPreflight());
 
         /// <summary>
-        /// The reason milling is blocked, or null when the result is not a blocker (all
-        /// clear, or an alarm that the ready-check handles). One mapping, so the menu and
-        /// the disabled-reason display cannot enumerate the cases differently - the menu
-        /// used to inline four of them and had already fallen behind on ProbeSetupChanged.
+        /// The reason milling is blocked, or null when nothing blocks it: all clear, or an
+        /// alarm the ready-check reports instead. One mapping, so the menu entry and the
+        /// reason shown beside it cannot enumerate the cases differently.
         /// </summary>
         public static string? DescribeMillBlockingError(MillPreflightResult result) => result.Error switch
         {
@@ -735,7 +738,7 @@ namespace coppercli.Helpers
                     return null;
                 }
 
-                if (key.Key == ConsoleKey.Backspace)
+                if (InputHelpers.IsKey(key, ConsoleKey.Backspace))
                 {
                     if (input.Length > 0)
                     {

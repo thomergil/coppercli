@@ -9,7 +9,7 @@ namespace coppercli.Core.Controllers
     {
         /// <summary>Builds milling options. The RequireHoming = not-yet-homed rule lives
         /// here so both front ends enforce it identically.</summary>
-        public static MillingOptions Create(string? filePath, float depthAdjustment,
+        public static MillingOptions Create(string? filePath, double depthAdjustment,
             bool machineIsHomed)
         {
             return new MillingOptions
@@ -28,7 +28,7 @@ namespace coppercli.Core.Controllers
         /// Depth adjustment in mm (negative = deeper).
         /// Applied as offset to work coordinate Z origin.
         /// </summary>
-        public float DepthAdjustment { get; set; }
+        public double DepthAdjustment { get; set; }
 
         /// <summary>
         /// Whether to home the machine if not already homed.

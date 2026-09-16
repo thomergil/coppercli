@@ -1,7 +1,7 @@
 // coppercli Web UI WebSocket
 
 import { state } from './state.js';
-import { showError, showConfirm } from './helpers.js';
+import { showError, showInfo, showConfirm } from './helpers.js';
 import { updateStatus, showConnectionStatus } from './screens.js';
 import {
     MAX_RECONNECT_ATTEMPTS,
@@ -9,6 +9,7 @@ import {
     FORCE_DISCONNECT_RECONNECT_DELAY_MS,
     WEBSOCKET_PING_INTERVAL_MS,
     ERROR_OTHER_CLIENT_SUBSTRING,
+    CMD_PING,
     MSG_TYPE_STATUS,
     MSG_TYPE_MILL_STATE,
     MSG_TYPE_MILL_PROGRESS,
@@ -64,7 +65,7 @@ export function connectWebSocket() {
         }
         pingInterval = setInterval(() => {
             if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-                state.ws.send(JSON.stringify({ type: 'ping' }));
+                state.ws.send(JSON.stringify({ type: CMD_PING }));
             }
         }, WEBSOCKET_PING_INTERVAL_MS);
     };
@@ -90,7 +91,13 @@ export function connectWebSocket() {
                     handleToolChangeControllerEvent(msg.type, msg.data);
                     break;
                 case MSG_TYPE_PROBE_ERROR:
-                    showError(msg.data.message);
+                    // A skipped point is worth telling the operator without the red of a
+                    // run that ended.
+                    if (msg.data.isFatal === false) {
+                        showInfo(msg.data.message);
+                    } else {
+                        showError(msg.data.message);
+                    }
                     break;
                 case MSG_TYPE_CONNECTION_ERROR:
                     handleConnectionError(msg.data.error);
@@ -145,7 +152,8 @@ async function handleConnectionError(error) {
                 await fetch(API_FORCE_DISCONNECT, { method: 'POST' });
                 setTimeout(() => location.reload(), 500);
             } catch (err) {
-                showError(TEXT_FORCE_DISCONNECT_FAILED + ': ' + err.message);
+                console.error('force disconnect failed', err);
+                showError(TEXT_FORCE_DISCONNECT_FAILED);
             }
         }
     } else {

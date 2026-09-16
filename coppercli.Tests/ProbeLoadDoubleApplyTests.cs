@@ -15,6 +15,7 @@ namespace coppercli.Tests
     /// original first; the TUI did not. AppState.LoadProbeGridFromFile is now the single source
     /// that reloads the original for both. This pins that behaviour.
     /// </summary>
+    [Collection(WebServerCollection.Name)]
     public class ProbeLoadDoubleApplyTests
     {
         private static ProbeGrid ConstantHeightGrid(double height)

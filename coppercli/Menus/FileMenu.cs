@@ -444,7 +444,7 @@ namespace coppercli.Menus
                         // Empty filename - just exit edit mode
                         return new FileBrowserResult { Action = FileBrowserAction.FilenameChanged, Filename = filename, EditingFilename = false };
                     }
-                    else if (key.Key == ConsoleKey.Backspace)
+                    else if (InputHelpers.IsKey(key, ConsoleKey.Backspace))
                     {
                         if (filename.Length > 0)
                         {
@@ -468,7 +468,7 @@ namespace coppercli.Menus
                         // Clear filter and exit filter mode
                         return new FileBrowserResult { Action = FileBrowserAction.FilterChanged, NewFilter = "", FilterActive = false };
                     }
-                    else if (key.Key == ConsoleKey.Backspace)
+                    else if (InputHelpers.IsKey(key, ConsoleKey.Backspace))
                     {
                         if (filter.Length > 0)
                         {

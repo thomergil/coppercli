@@ -15,7 +15,11 @@ import {
     TEXT_FILE_UPLOADED,
     BYTES_PER_KB,
     BYTES_PER_MB,
-    POSITION_DECIMALS_BRIEF
+    POSITION_DECIMALS_BRIEF,
+    TEXT_UPLOAD,
+    TEXT_UPLOADING,
+    TEXT_FILE_LOAD_FAILED,
+    TEXT_UPLOAD_FAILED
 } from './constants.js';
 
 // Shared file browser instance
@@ -82,10 +86,11 @@ export async function loadFile() {
             showInfo(`Loaded: ${data.name} (${data.lines} lines)`);
             showScreen(SCREEN_DASHBOARD);
         } else {
-            showError('Failed to load file: ' + (data.error || TEXT_UNKNOWN));
+            showError(data.error || TEXT_FILE_LOAD_FAILED);
         }
     } catch (err) {
-        showError('Failed to load file: ' + err.message);
+        console.error('file load failed', err);
+        showError(TEXT_FILE_LOAD_FAILED);
     } finally {
         btn.disabled = false;
         btn.textContent = TEXT_LOAD;
@@ -99,7 +104,7 @@ async function uploadFile(file) {
     const uploadBtn = $('upload-file-btn');
     if (uploadBtn) {
         uploadBtn.disabled = true;
-        uploadBtn.textContent = 'Uploading...';
+        uploadBtn.textContent = TEXT_UPLOADING;
     }
 
     try {
@@ -116,11 +121,12 @@ async function uploadFile(file) {
             showError(data.error || TEXT_UNKNOWN);
         }
     } catch (err) {
-        showError('Upload failed: ' + err.message);
+        console.error('upload failed', err);
+        showError(TEXT_UPLOAD_FAILED);
     } finally {
         if (uploadBtn) {
             uploadBtn.disabled = false;
-            uploadBtn.textContent = 'Upload';
+            uploadBtn.textContent = TEXT_UPLOAD;
         }
     }
 }

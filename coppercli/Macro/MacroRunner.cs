@@ -396,43 +396,48 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // Use the single-point probe mechanism
-            // Spindle descends until it touches the surface, then stops
-            // User should call "zero xyz" after this to set work zero
-            AppState.SingleProbing = true;
-            bool probeSuccess = false;
-            bool probeDone = false;
+            // ProbeController owns single probing, and ProbeZSingleAsync reports the
+            // result directly. Do not route it through a callback on AppState: nothing in
+            // the tree invokes one, so such a probe can only ever report a timeout.
+            var controller = AppState.Probe;
 
-            AppState.SingleProbeCallback = (pos, success) =>
+            if (controller.IsActive)
             {
-                probeSuccess = success;
-                probeDone = true;
-                // Do NOT auto-zero - user will call "zero xyz" explicitly
-            };
+                AnsiConsole.MarkupLine($"[{ColorError}]{ProbeErrorAlreadyRunning}[/]");
+                return false;
+            }
 
-            // Start probe
-            machine.ProbeStart();
-            var settings = AppState.Settings;
-            MachineCommands.ProbeZ(machine, settings.ProbeMaxDepth, settings.ProbeFeed);
+            controller.Options = ProbeOptions.FromSettings(AppState.Settings);
 
-            // Wait for probe to complete
-            var deadline = DateTime.Now.AddMilliseconds(ZHeightWaitTimeoutMs);
-            while (!probeDone && DateTime.Now < deadline)
+            // Probing descends at the probe feed and can take minutes, so the macro keeps
+            // watching for the abort key rather than blocking on the result. A soft reset
+            // is what actually halts a G38.2 already under way; cancelling alone would
+            // abandon the wait and leave the tool descending.
+            using var cts = new CancellationTokenSource();
+            var probeTask = Task.Run(() => controller.ProbeZSingleAsync(cts.Token));
+
+            while (!probeTask.IsCompleted)
             {
                 if (CheckAbort())
                 {
-                    machine.ProbeStop();
-                    AppState.SingleProbing = false;
-                    AppState.SingleProbeCallback = null;
+                    cts.Cancel();
+                    machine.SoftReset();
                     return false;
                 }
+
                 Thread.Sleep(StatusPollIntervalMs);
             }
 
-            AppState.SingleProbing = false;
-            AppState.SingleProbeCallback = null;
-
-            if (!probeDone)
+            bool probeSuccess;
+            try
+            {
+                probeSuccess = probeTask.GetAwaiter().GetResult().Success;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+            catch (TimeoutException)
             {
                 AnsiConsole.MarkupLine($"[{ColorError}]{ControllerConstants.ErrorProbeTimeout}[/]");
                 return false;

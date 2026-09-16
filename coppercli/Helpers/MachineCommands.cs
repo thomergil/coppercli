@@ -71,12 +71,12 @@ namespace coppercli.Helpers
         public static void SetWorkZeroAndWait(Machine machine, string axes)
         {
             MachineWait.ZeroWorkOffsetAsync(machine, axes).GetAwaiter().GetResult();
-            AppState.IsWorkZeroSet = true;
+            AppState.WorkZeroWasSet();
             AppState.HandleWorkZeroChange(axes);
 
             // Zeroing all three axes establishes a full origin worth offering to trust on
             // the next launch. Persisting it here means neither front end has to remember
-            // to - both used to do it by hand afterwards.
+            // to, so no caller has to do it afterwards.
             string upper = axes.ToUpperInvariant();
             if (upper.Contains('X') && upper.Contains('Y') && upper.Contains('Z'))
             {
@@ -84,7 +84,7 @@ namespace coppercli.Helpers
                 Persistence.SaveSession();
             }
 
-            Logger.Log($"SetWorkZeroAndWait: IsWorkZeroSet = true (axes={axes})");
+            Logger.Log($"SetWorkZeroAndWait: work zero set (axes={axes})");
         }
 
         /// <summary>
@@ -122,7 +122,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Guarded rapid move to the centre of the loaded file. No-op (returns false)
+        /// Guarded rapid move to the center of the loaded file. No-op (returns false)
         /// when no file is loaded. Does not change Z.
         /// </summary>
         public static bool GotoFileCenterXY(Machine machine, GCodeFile? file)
@@ -134,14 +134,7 @@ namespace coppercli.Helpers
             return GotoAbsoluteXY(machine, file.Center.X, file.Center.Y);
         }
 
-        /// <summary>
-        /// Probe toward workpiece on Z axis until contact (no error if no contact).
-        /// </summary>
-        public static void ProbeZ(Machine machine, double maxDepth, double feed)
-        {
-            machine.SendLine(Inv($"{CmdProbeToward} Z-{maxDepth:F3} F{feed:F1}"));
-        }
-
+        
         /// <summary>
         /// Sets absolute distance mode (G90).
         /// </summary>

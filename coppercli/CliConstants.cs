@@ -15,7 +15,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>Current version (with 'v' prefix for display).</summary>
-        public const string AppVersion = "v0.4.2";
+        public const string AppVersion = "v0.5.0-pre";
 
         // =========================================================================
         // Timing: CLI-specific
@@ -145,6 +145,9 @@ namespace coppercli
             new("Creep",     5,  0.01, 9),  // 1-9: 0.01, 0.02... 0.09mm
         };
 
+        /// <summary>The mode a session starts in, and the one a jog falls back to.</summary>
+        public const int DefaultJogModeIndex = 1;  // Normal
+
         // =========================================================================
         // Probing defaults
         // =========================================================================
@@ -252,14 +255,13 @@ namespace coppercli
         /// <summary>Warning message when sleep prevention unavailable in network mode.</summary>
         public const string SleepPreventionWarning = "Sleep prevention unavailable";
 
-        /// <summary>Shown when a job does not finish stopping within the time allowed.</summary>
-        /// <summary>Status shown once an operator asks to abort a moving tool change.</summary>
         /// <summary>Shown while GRBL reports the enclosure open.</summary>
         public const string DoorOpenMessage = "DOOR OPEN";
 
         /// <summary>Shown once the door is shut and the machine is waiting to be resumed.</summary>
         public const string DoorClosedMessage = "DOOR CLOSED - press resume";
 
+        /// <summary>Status shown once an operator asks to abort a moving tool change.</summary>
         public const string ToolChangeAbortingMessage = "Stopping the tool change...";
 
         /// <summary>
@@ -269,6 +271,10 @@ namespace coppercli
         /// </summary>
         public const string ToolChangeAbortHint = "{0}  (Esc=Stop)";
 
+        /// <summary>
+        /// Shown when a job does not finish stopping within the time allowed. Both the
+        /// terminal and the browser say this, so there is one sentence for it.
+        /// </summary>
         public const string StopTimedOutWarning =
             "Stop did not finish in time. The machine may still be moving - check it directly before doing anything else.";
 
@@ -461,7 +467,6 @@ namespace coppercli
         public const string ProbeMenuDiscard = "Discard Probe Data";
 
         /// <summary>Menu item: Clear probe data (from saved file).</summary>
-        public const string ProbeMenuClear = "Clear Probe Data";
 
         /// <summary>Menu item: Discard existing data and start fresh.</summary>
         public const string ProbeMenuDiscardAndStart = "Discard and Start Probing";
@@ -561,6 +566,13 @@ namespace coppercli
         /// <summary>Status: probe data is complete (no more points to probe).</summary>
         public const string ProbeStatusComplete = "Probe data is already complete.";
 
+        /// <summary>
+        /// Shown when a macro asks for a probe while probing is already under way. Both
+        /// share one controller, so the second would take over the first's settings.
+        /// </summary>
+        public const string ProbeErrorAlreadyRunning =
+            "Probing is already running. Wait for it to finish, then try again.";
+
         /// <summary>Status: probing has started.</summary>
         public const string ProbeStatusStarted = "Probing started. Space=Pause, Escape=Stop";
 
@@ -594,6 +606,14 @@ namespace coppercli
 
         /// <summary>Error: probe data is not complete.</summary>
         public const string ProbeErrorIncomplete = "Probe data not complete";
+
+        /// <summary>Shown when the saved probe data could not be deleted.</summary>
+        public const string ProbeDiscardFailed =
+            "Could not delete the saved probe data. Check the file is not open elsewhere.";
+
+        /// <summary>Shown when the autosaved map was measured for another job.</summary>
+        public const string ProbeAutosaveNotApplicable =
+            "The saved probe data was measured for a different file or work origin.";
 
         /// <summary>Error: no autosaved probe data available.</summary>
         public const string ProbeErrorNoAutosave = "No autosaved probe data";
@@ -636,7 +656,6 @@ namespace coppercli
         public const string ProbePromptMill = "Proceed to Milling?";
 
         /// <summary>Prompt: save probe data.</summary>
-        public const string ProbePromptSave = "Save probe data:";
 
         // =========================================================================
         // Probe menu: Display labels

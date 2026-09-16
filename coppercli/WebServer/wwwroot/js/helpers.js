@@ -10,7 +10,8 @@ import {
     TOAST_INFO_DURATION_MS,
     CLASS_SHOW,
     API_CONSTANTS,
-    MILL_PHASE_WAITING_FOR_OPERATOR,
+    PROMPT_KIND_OPERATOR_PAUSE,
+    PROMPT_OPTION_CONTINUE,
     // Duplicated constants (validated against server)
     PROBE_STATE_NONE,
     PROBE_STATE_READY,
@@ -29,10 +30,28 @@ import {
     CONTROLLER_STATE_INITIALIZING,
     CONTROLLER_STATE_RUNNING,
     CONTROLLER_STATE_PAUSED,
+    CONTROLLER_STATE_WAITING_FOR_USER_INPUT,
     CONTROLLER_STATE_COMPLETING,
     CONTROLLER_STATE_COMPLETED,
     CONTROLLER_STATE_FAILED,
     CONTROLLER_STATE_CANCELLED,
+    PHASE_MILLING,
+    PHASE_TRACING_OUTLINE,
+    PHASE_WAITING_FOR_TOOL_CHANGE,
+    PHASE_WAITING_FOR_ZERO_Z,
+    CMD_PING,
+    CMD_JOG_MODE,
+    CMD_HOME,
+    CMD_UNLOCK,
+    CMD_RESET,
+    CMD_FEEDHOLD,
+    CMD_RESUME,
+    CMD_GOTO_ORIGIN,
+    CMD_GOTO_CENTER,
+    CMD_GOTO_SAFE,
+    CMD_GOTO_REF,
+    CMD_GOTO_Z0,
+    CMD_PROBE_Z,
     MSG_TYPE_STATUS,
     MSG_TYPE_MILL_STATE,
     MSG_TYPE_MILL_PROGRESS,
@@ -49,7 +68,9 @@ import {
     TEXT_PAUSE,
     TEXT_RESUME,
     ICON_PAUSE,
-    ICON_RESUME
+    ICON_RESUME,
+    TEXT_NO_FILES,
+    CLASS_SELECTED
 } from './constants.js';
 
 // Get element by ID with null safety
@@ -89,6 +110,37 @@ export function updatePauseButton(btn, isPaused, pauseClass = null, resumeClass 
     if (pauseClass && resumeClass) {
         btn.classList.toggle(pauseClass, !isPaused);
         btn.classList.toggle(resumeClass, isPaused);
+    }
+}
+
+/**
+ * Whether the machine needs a person before it will move again. Mirrors
+ * MachineWait.IsProblematic in Core.
+ */
+export function isProblematicStatus(statusStr) {
+    return statusStr.startsWith(STATUS_ALARM_PREFIX) || statusStr === STATUS_DOOR;
+}
+
+/**
+ * Asks the server to do something and says whether it did. A refusal the server explained
+ * reaches the caller as `error`; a request that never completed does not, because its
+ * exception text is for the log rather than the operator.
+ */
+export async function postJson(url, body = null) {
+    try {
+        const options = body === null
+            ? { method: 'POST' }
+            : {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            };
+        const response = await fetch(url, options);
+        const data = await response.json();
+        return { ok: response.ok && data.success !== false, error: data.error, data };
+    } catch (err) {
+        console.error(`POST ${url} failed`, err);
+        return { ok: false, error: null, data: {} };
     }
 }
 
@@ -223,7 +275,7 @@ export class FileBrowser {
         this.selectedFile = null;
 
         if (!data.entries || data.entries.length === 0) {
-            this.listEl.innerHTML = '<div class="loading">No files found</div>';
+            this.listEl.innerHTML = `<div class="loading">${TEXT_NO_FILES}</div>`;
             return;
         }
 
@@ -288,8 +340,8 @@ export class FileBrowser {
     }
 
     _selectItem(item) {
-        this.listEl.querySelectorAll('.file-item').forEach(i => i.classList.remove('selected'));
-        item.classList.add('selected');
+        this.listEl.querySelectorAll('.file-item').forEach(i => i.classList.remove(CLASS_SELECTED));
+        item.classList.add(CLASS_SELECTED);
         this.selectedFile = item.dataset.path;
     }
 
@@ -352,15 +404,47 @@ export async function validateConstants() {
             check(CONTROLLER_STATE_INITIALIZING, server.controllerStates.initializing, 'CONTROLLER_STATE_INITIALIZING');
             check(CONTROLLER_STATE_RUNNING, server.controllerStates.running, 'CONTROLLER_STATE_RUNNING');
             check(CONTROLLER_STATE_PAUSED, server.controllerStates.paused, 'CONTROLLER_STATE_PAUSED');
+            check(CONTROLLER_STATE_WAITING_FOR_USER_INPUT, server.controllerStates.waitingForUserInput,
+                'CONTROLLER_STATE_WAITING_FOR_USER_INPUT');
             check(CONTROLLER_STATE_COMPLETING, server.controllerStates.completing, 'CONTROLLER_STATE_COMPLETING');
             check(CONTROLLER_STATE_COMPLETED, server.controllerStates.completed, 'CONTROLLER_STATE_COMPLETED');
             check(CONTROLLER_STATE_FAILED, server.controllerStates.failed, 'CONTROLLER_STATE_FAILED');
             check(CONTROLLER_STATE_CANCELLED, server.controllerStates.cancelled, 'CONTROLLER_STATE_CANCELLED');
         }
 
-        if (server.millPhases) {
-            check(MILL_PHASE_WAITING_FOR_OPERATOR, server.millPhases.waitingForOperator,
-                'MILL_PHASE_WAITING_FOR_OPERATOR');
+        if (server.promptKinds) {
+            check(PROMPT_KIND_OPERATOR_PAUSE, server.promptKinds.operatorPause,
+                'PROMPT_KIND_OPERATOR_PAUSE');
+        }
+
+        if (server.promptOptions) {
+            check(PROMPT_OPTION_CONTINUE, server.promptOptions.carryOn, 'PROMPT_OPTION_CONTINUE');
+        }
+
+        // Workflow phases
+        if (server.phases) {
+            check(PHASE_MILLING, server.phases.milling, 'PHASE_MILLING');
+            check(PHASE_TRACING_OUTLINE, server.phases.tracingOutline, 'PHASE_TRACING_OUTLINE');
+            check(PHASE_WAITING_FOR_TOOL_CHANGE, server.phases.waitingForToolChange,
+                'PHASE_WAITING_FOR_TOOL_CHANGE');
+            check(PHASE_WAITING_FOR_ZERO_Z, server.phases.waitingForZeroZ, 'PHASE_WAITING_FOR_ZERO_Z');
+        }
+
+        // WebSocket commands
+        if (server.commands) {
+            check(CMD_PING, server.commands.ping, 'CMD_PING');
+            check(CMD_JOG_MODE, server.commands.jogMode, 'CMD_JOG_MODE');
+            check(CMD_HOME, server.commands.home, 'CMD_HOME');
+            check(CMD_UNLOCK, server.commands.unlock, 'CMD_UNLOCK');
+            check(CMD_RESET, server.commands.reset, 'CMD_RESET');
+            check(CMD_FEEDHOLD, server.commands.feedhold, 'CMD_FEEDHOLD');
+            check(CMD_RESUME, server.commands.resume, 'CMD_RESUME');
+            check(CMD_GOTO_ORIGIN, server.commands.gotoOrigin, 'CMD_GOTO_ORIGIN');
+            check(CMD_GOTO_CENTER, server.commands.gotoCenter, 'CMD_GOTO_CENTER');
+            check(CMD_GOTO_SAFE, server.commands.gotoSafe, 'CMD_GOTO_SAFE');
+            check(CMD_GOTO_REF, server.commands.gotoRef, 'CMD_GOTO_REF');
+            check(CMD_GOTO_Z0, server.commands.gotoZ0, 'CMD_GOTO_Z0');
+            check(CMD_PROBE_Z, server.commands.probeZ, 'CMD_PROBE_Z');
         }
 
         // WebSocket message types

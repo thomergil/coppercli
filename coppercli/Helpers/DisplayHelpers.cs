@@ -73,8 +73,8 @@ namespace coppercli.Helpers
         /// <summary>ANSI code for emphasized success values (bold green).</summary>
         public const string AnsiSuccessBold = AnsiCodeBoldGreen;
 
-        /// <summary>ANSI code for critical errors/alerts (bold red).</summary>
-        public const string AnsiCritical = AnsiCodeBoldRed;
+        /// <summary>ANSI code for errors and alerts (bold red).</summary>
+        public const string AnsiAlert = AnsiCodeBoldRed;
 
         /// <summary>
         /// Gets the console window size safely, returning defaults if unavailable.

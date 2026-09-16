@@ -195,6 +195,12 @@ header {
     pointer-events: none;
 }
 
+.form-row input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .btn .disabled-reason {
     display: block;
     font-size: 0.7em;

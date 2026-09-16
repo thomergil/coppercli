@@ -11,11 +11,9 @@ namespace coppercli.Core.Controllers
     /// Abstract base class for workflow controllers implementing FSM logic.
     /// Enforces valid state transitions and provides common event infrastructure.
     ///
-    /// Controllers are session-lifetime singletons (see AppState), so one instance runs
-    /// many jobs. Everything describing the current run is therefore declared in
-    /// <see cref="ResetRunState"/> and cleared before each run starts; anything asking
-    /// "is this run paused/active?" is derived from <see cref="State"/> rather than
-    /// tracked alongside it.
+    /// One instance serves the whole session, so everything describing the current run is
+    /// declared in <see cref="ResetRunState"/> and cleared before each run starts. Whether
+    /// a run is paused, active or finished is derived from <see cref="State"/>.
     /// </summary>
     public abstract class ControllerBase : IController
     {
@@ -30,11 +28,13 @@ namespace coppercli.Core.Controllers
             // machine will home, and asking is better than timing out against a door.
             [ControllerState.Initializing] = new[] { ControllerState.Running, ControllerState.WaitingForUserInput, ControllerState.Failed, ControllerState.Cancelled },
             [ControllerState.Running] = new[] { ControllerState.Paused, ControllerState.WaitingForUserInput, ControllerState.Completing, ControllerState.Failed, ControllerState.Cancelled },
-            // Paused and WaitingForUserInput can fail: cleanup runs from there too.
-            [ControllerState.Paused] = new[] { ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
-            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Initializing, ControllerState.Running, ControllerState.Failed, ControllerState.Cancelled },
-            // Completing can still be cancelled - Stop during the final retract is a
-            // normal thing for an operator to do, and it used to throw out of a finally.
+            // Paused and WaitingForUserInput can fail: cleanup runs from there too. They
+            // also reach each other, because a paused run can still have something to ask
+            // and RequestUserInputAsync returns to whatever state it interrupted.
+            [ControllerState.Paused] = new[] { ControllerState.Running, ControllerState.WaitingForUserInput, ControllerState.Failed, ControllerState.Cancelled },
+            [ControllerState.WaitingForUserInput] = new[] { ControllerState.Initializing, ControllerState.Running, ControllerState.Paused, ControllerState.Failed, ControllerState.Cancelled },
+            // Completing can still be cancelled: Stop during the final retract is a
+            // normal thing for an operator to do.
             [ControllerState.Completing] = new[] { ControllerState.Completed, ControllerState.Failed, ControllerState.Cancelled },
             [ControllerState.Completed] = new[] { ControllerState.Idle },
             [ControllerState.Failed] = new[] { ControllerState.Idle },
@@ -60,15 +60,12 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// True while a run is under way. The single definition of "active", so the
-        /// probe/tool-change/mill status handlers stop each spelling it out.
+        /// True while a run is under way.
         /// </summary>
         public bool IsActive => IsActiveState(State);
 
         /// <summary>
-        /// <see cref="IsActive"/> for a state already in hand. Callers holding a snapshot
-        /// ask this rather than spelling the states out again, so "active" keeps one
-        /// definition however it is reached.
+        /// <see cref="IsActive"/> for a state already in hand.
         /// </summary>
         public static bool IsActiveState(ControllerState state)
         {
@@ -78,10 +75,7 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// True while a run is paused. Derived from <see cref="State"/> so "paused" has
-        /// one definition: a flag kept alongside it drifts the moment a path clears one
-        /// and not the other, and the run that inherits the stale copy reads it as a
-        /// guard rather than as a question.
+        /// True while a run is paused.
         /// </summary>
         public bool IsPaused => IsPausedState(State);
 
@@ -89,9 +83,8 @@ namespace coppercli.Core.Controllers
         public static bool IsPausedState(ControllerState state) => state == ControllerState.Paused;
 
         /// <summary>
-        /// True for the states a run can end in. These are exactly the states
-        /// <see cref="Reset"/> accepts besides Idle, so a caller guarding a reset asks
-        /// the same question Reset does rather than keeping its own copy of the answer.
+        /// The states a run can end in. These are exactly the states <see cref="Reset"/>
+        /// accepts besides Idle.
         /// </summary>
         public static bool IsFinishedState(ControllerState state)
         {
@@ -102,6 +95,17 @@ namespace coppercli.Core.Controllers
 
         /// <summary>True once this run has ended, however it ended.</summary>
         public bool HasFinished => IsFinishedState(State);
+
+        /// <summary><see cref="IsRunInProgress"/> for a state already in hand.</summary>
+        public static bool IsRunInProgressState(ControllerState state) =>
+            state != ControllerState.Idle && !IsFinishedState(state);
+
+        /// <summary>
+        /// True while a run is under way in any sense: initializing, moving, paused, waiting
+        /// on a person, or finishing. <see cref="IsActive"/> is the narrower question of
+        /// whether the machine is being driven; a run parked at a prompt still owns it.
+        /// </summary>
+        public bool IsRunInProgress => IsRunInProgressState(State);
 
         /// <summary>
         /// True while a run is waiting on a person - a tool change, or a pause the
@@ -135,7 +139,7 @@ namespace coppercli.Core.Controllers
             {
                 if (!IsValidTransition(_state, newState))
                 {
-                    throw new InvalidOperationException(
+                    throw new InvalidControllerStateException(
                         string.Format(ErrorInvalidTransition, _state, newState));
                 }
 
@@ -146,6 +150,32 @@ namespace coppercli.Core.Controllers
             // Log and fire event outside lock to prevent deadlocks
             ControllerLog.Log(LogStateTransition, GetType().Name, oldState, newState);
             StateChanged?.Invoke(newState);
+        }
+
+        /// <summary>
+        /// Transition if the table allows it, and say whether it did.
+        ///
+        /// For a transition another thread may already have made. The test and the
+        /// assignment happen under one hold of the lock, so nothing can land between them.
+        /// </summary>
+        protected bool TryTransitionTo(ControllerState newState)
+        {
+            ControllerState oldState;
+
+            lock (_stateLock)
+            {
+                if (!IsValidTransition(_state, newState))
+                {
+                    return false;
+                }
+
+                oldState = _state;
+                _state = newState;
+            }
+
+            ControllerLog.Log(LogStateTransition, GetType().Name, oldState, newState);
+            StateChanged?.Invoke(newState);
+            return true;
         }
 
         /// <summary>
@@ -173,10 +203,36 @@ namespace coppercli.Core.Controllers
             ErrorOccurred?.Invoke(error);
         }
 
-        /// <summary>Emit an error from an exception.</summary>
+        /// <summary>
+        /// Emit an error from an exception. A workflow's own refusal - an
+        /// InvalidOperationException or a TimeoutException - reaches the operator unchanged;
+        /// anything else goes to the log and the operator is told the run stopped.
+        /// </summary>
         protected void EmitError(Exception ex, bool isFatal = true)
         {
-            EmitError(new ControllerError(ex.Message, ex, isFatal));
+            ControllerLog.Log("{0} run failed: {1}", GetType().Name, ex);
+
+            // ObjectDisposedException is an InvalidOperationException the framework raises,
+            // and its text names the object that was disposed.
+            bool workflowsOwnWords = ex is InvalidOperationException or TimeoutException
+                && ex is not (InvalidControllerStateException or ObjectDisposedException);
+
+            EmitError(new ControllerError(
+                workflowsOwnWords ? ex.Message : ErrorRunFailed, ex, isFatal));
+        }
+
+        /// <summary>
+        /// Block while the run is paused, returning once it resumes or the token is
+        /// cancelled. Every workflow that can pause mid-step waits here, so "what does
+        /// paused mean and how often do we look" has one answer rather than one per
+        /// call site.
+        /// </summary>
+        protected async Task WaitWhilePausedAsync(CancellationToken ct)
+        {
+            while (IsPaused && !ct.IsCancellationRequested)
+            {
+                await Task.Delay(Util.Constants.StatusPollIntervalMs, ct).ConfigureAwait(false);
+            }
         }
 
         /// <summary>
@@ -191,9 +247,8 @@ namespace coppercli.Core.Controllers
             string[] options,
             CancellationToken ct)
         {
-            // Return to whatever we interrupted, not always Running: a prompt can come
-            // up while the run is still Initializing, and forcing Running there would
-            // skip the rest of setup and make the later transition illegal.
+            // Return to whatever this interrupted, not always Running: a prompt can come
+            // up while the run is still Initializing.
             var resumeTo = State;
 
             var tcs = new TaskCompletionSource<string>();
@@ -255,13 +310,12 @@ namespace coppercli.Core.Controllers
         {
             if (State != ControllerState.Idle)
             {
-                throw new InvalidOperationException(
+                throw new InvalidControllerStateException(
                     string.Format(ErrorCannotStart, State));
             }
 
-            // Here as well as in Reset(), so a run starts clean whether or not anything
-            // reset the controller after the last one. Relying on the caller to reset
-            // makes correctness depend on every abort path remembering to.
+            // Here as well as in Reset(), so a run starts clean whether or not the caller
+            // reset the controller after the last one.
             ResetRunState();
 
             try
@@ -282,7 +336,7 @@ namespace coppercli.Core.Controllers
                     // Ignore cleanup errors during cancellation
                 }
 
-                if (State != ControllerState.Completed && State != ControllerState.Cancelled)
+                if (!HasFinished)
                 {
                     TransitionTo(ControllerState.Cancelled);
                 }
@@ -300,18 +354,57 @@ namespace coppercli.Core.Controllers
                 }
 
                 EmitError(ex);
-                if (State != ControllerState.Failed)
+                if (!HasFinished)
                 {
                     TransitionTo(ControllerState.Failed);
                 }
             }
+
+            // A run that returns without reaching a terminal state leaves the controller
+            // claiming the machine, which every front end reads as "still running" with no
+            // way back. Finishing it here keeps HasFinished true once this task completes.
+            if (!HasFinished && State != ControllerState.Idle)
+            {
+                ControllerLog.Log("{0}.RunAsync returned in {1} without finishing the run",
+                    GetType().Name, State);
+                TransitionTo(ct.IsCancellationRequested
+                    ? ControllerState.Cancelled
+                    : ControllerState.Failed);
+            }
+        }
+
+        /// <inheritdoc/>
+        public async Task ReleaseAsync()
+        {
+            if (State == ControllerState.Idle)
+            {
+                return;
+            }
+
+            if (!HasFinished)
+            {
+                try
+                {
+                    await StopAsync();
+                }
+                catch (Exception ex)
+                {
+                    // The point of releasing is that the next run can start. A cleanup that
+                    // throws must not leave the controller claiming the machine for ever.
+                    ControllerLog.Log("{0}: cleanup threw while releasing: {1}",
+                        GetType().Name, ex.Message);
+                    TryTransitionTo(ControllerState.Cancelled);
+                }
+            }
+
+            Reset();
         }
 
         public virtual void Pause()
         {
             if (State != ControllerState.Running)
             {
-                throw new InvalidOperationException(
+                throw new InvalidControllerStateException(
                     string.Format(ErrorCannotPause, State));
             }
             TransitionTo(ControllerState.Paused);
@@ -321,7 +414,7 @@ namespace coppercli.Core.Controllers
         {
             if (State != ControllerState.Paused)
             {
-                throw new InvalidOperationException(
+                throw new InvalidControllerStateException(
                     string.Format(ErrorCannotResume, State));
             }
             TransitionTo(ControllerState.Running);
@@ -340,7 +433,7 @@ namespace coppercli.Core.Controllers
             }
             finally
             {
-                if (State != ControllerState.Completed && State != ControllerState.Failed)
+                if (!HasFinished)
                 {
                     TransitionTo(ControllerState.Cancelled);
                 }
@@ -350,15 +443,13 @@ namespace coppercli.Core.Controllers
         public virtual void Reset()
         {
             var currentState = State;
-            if (currentState == ControllerState.Completed ||
-                currentState == ControllerState.Failed ||
-                currentState == ControllerState.Cancelled)
+            if (IsFinishedState(currentState))
             {
                 TransitionTo(ControllerState.Idle);
             }
             else if (currentState != ControllerState.Idle)
             {
-                throw new InvalidOperationException(
+                throw new InvalidControllerStateException(
                     string.Format(ErrorCannotReset, State));
             }
 

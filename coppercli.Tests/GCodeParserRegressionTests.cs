@@ -80,7 +80,7 @@ namespace coppercli.Tests
         [Theory]
         [InlineData("M6", true)]
         [InlineData("M06", true)]
-        [InlineData("T1 M6", true)]      // the case an anchored pattern used to miss
+        [InlineData("T1 M6", true)]      // an anchored pattern would miss this
         [InlineData("G0 M6 X10", true)]
         [InlineData("M60", false)]
         [InlineData("M16", false)]
@@ -92,7 +92,7 @@ namespace coppercli.Tests
 
         /// <summary>
         /// pcb2gcode emits "G64 P&lt;tolerance&gt;" in the header, before any motion command.
-        /// Its P word used to fall through to the motion handler, where no motion mode
+        /// Its P word must not fall through to the motion handler, where no motion mode
         /// was active yet, and the whole file failed to load.
         /// </summary>
         [Fact]

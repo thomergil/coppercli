@@ -70,7 +70,7 @@ namespace coppercli.Tests
 
         /// <summary>
         /// After a block we could not model, the machine is somewhere we cannot compute.
-        /// The file's own recovery move must survive intact - the parser used to still
+        /// The file's own recovery move must survive intact, so the parser must not
         /// believe Z was where it had been before the G53, so "G0 Z5" looked like a move
         /// to where the tool already was and was deleted, leaving the next cut to run at
         /// the retract depth.
@@ -86,7 +86,7 @@ namespace coppercli.Tests
                 "G1 X10 Y10 F100");
 
             // Three motions must survive: the setup move, the recovery, and the cut.
-            // The recovery is the one that used to vanish.
+            // The recovery move is the one that must survive.
             var motions = file.Toolpath.OfType<Line>().ToList();
 
             Assert.Equal(3, motions.Count);

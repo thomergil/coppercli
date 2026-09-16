@@ -1,7 +1,7 @@
 // coppercli Web UI Probe Screen
 
 import { state } from './state.js';
-import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton } from './helpers.js';
+import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     API_STATUS,
@@ -22,23 +22,21 @@ import {
     SCREEN_PROBE,
     SCREEN_PROBE_FILES,
     CLASS_HIDDEN,
+    CLASS_BTN_DANGER,
+    CLASS_BTN_SUCCESS,
+    CLASS_BTN_WARNING,
     CLASS_PROBED,
-    CLASS_SELECTED,
     PROBE_FILE_EXTENSION,
     PROBE_STATE_NONE,
     PROBE_STATE_READY,
     PROBE_STATE_PARTIAL,
     PROBE_STATE_COMPLETE,
-    TEXT_UNKNOWN,
-    TEXT_PROBING_COMPLETE,
     TEXT_PROBING_TITLE,
     TEXT_PROBING_DONE_TITLE,
     TEXT_PROBE_DATA_SAVED,
     TEXT_PROBE_DATA_LOADED,
     TEXT_PROBE_DATA_APPLIED,
     TEXT_PROBE_DATA_CLEARED,
-    TEXT_NO_PROBE_DATA,
-    TEXT_NO_FILES,
     TEXT_LOADING,
     TEXT_LOAD,
     TEXT_SAVE,
@@ -50,44 +48,46 @@ import {
     TEXT_ENTER_FILENAME,
     TEXT_PROBE_RECOVERED,
     TEXT_RECOVERY_FAILED,
+    TEXT_SETUP_FAILED,
+    TEXT_TRACE_FAILED,
+    TEXT_APPLY_FAILED,
+    TEXT_PROBE_APPLIED_TO_GCODE,
+    TEXT_DISCARD_FAILED,
+    TEXT_DISCARD_CONFIRM,
+    TEXT_DISCARD_TITLE,
+    TEXT_SOURCE_GCODE_MISSING,
+    TEXT_PAUSE_FAILED,
+    TEXT_PROBE_LOAD_FAILED,
+    TEXT_PROBE_SAVE_FAILED,
     TEXT_START_PROBING,
     TEXT_CONTINUE_PROBING,
+    TEXT_STOP,
     PROBE_POLL_INTERVAL_MS,
+    TRACE_BUTTON_SETTLE_MS,
+    TRACE_POLL_MAX_FAILURES,
+    ERROR_LOST_CONTACT,
     PROBE_GRID_CELL_SIZE_PX,
     POSITION_DECIMALS_FULL,
-    COLOR_GRADIENT_STEP,
-    COLOR_MAX_VALUE,
-    HEIGHT_RANGE_EPSILON
+    PHASE_TRACING_OUTLINE,
+    ERROR_PROBE_NOT_STARTED,
+    ERROR_STOP_NOT_SENT
 } from './constants.js';
 
 export async function setupProbeGrid() {
     const margin = parseFloat(document.getElementById('probe-margin').value) || state.probeDefaults.margin;
     const gridSize = parseFloat(document.getElementById('probe-grid-size').value) || state.probeDefaults.gridSize;
 
-    try {
-        const response = await fetch(API_PROBE_SETUP, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ margin, gridSize })
-        });
-
-        const data = await response.json();
-
-        if (data.success) {
-            updateProbeInfoDisplay(data.sizeX, data.sizeY, data.totalPoints, 0);
-            document.getElementById('probe-trace-btn').disabled = false;
-            const startBtn = document.getElementById('probe-start-btn');
-            startBtn.disabled = false;
-            // Fresh grid always says "Start" (not "Continue" which is for interrupted probes)
-            startBtn.textContent = TEXT_START_PROBING;
-            // Note: Save/Clear buttons controlled by status updates based on probe progress
-            renderProbeGrid(data.sizeX, data.sizeY);
-        } else {
-            showError('Setup failed: ' + (data.error || TEXT_UNKNOWN));
-        }
-    } catch (err) {
-        showError('Setup failed: ' + err.message);
+    const { ok, error, data } = await postJson(API_PROBE_SETUP, { margin, gridSize });
+    if (!ok) {
+        showError(error || TEXT_SETUP_FAILED);
+        return;
     }
+
+    updateProbeInfoDisplay(data.sizeX, data.sizeY, data.totalPoints, 0);
+    renderProbeGrid(data.sizeX, data.sizeY);
+    // The new grid decides every button on this screen, so read it back rather than
+    // setting them here as well.
+    await refreshProbeState();
 }
 
 export function renderProbeGrid(sizeX, sizeY) {
@@ -106,49 +106,45 @@ export function renderProbeGrid(sizeX, sizeY) {
     }
 }
 
-// Track if trace is in progress (to prevent status handlers from interfering)
-let isTracing = false;
+// What this page knows about the trace that the server has not reported yet: true from
+// asking for one until the first status shows it, false from stopping until the last status
+// stops showing it. Null the rest of the time, when the server's answer is the only one.
+let traceOverride = null;
 
 export function getIsTracing() {
-    return isTracing;
+    if (traceOverride !== null && traceOverride === state.tracingOutline) {
+        traceOverride = null;
+    }
+    return traceOverride ?? state.tracingOutline;
 }
 
 export async function traceOutline() {
     const startBtn = document.getElementById('probe-start-btn');
-    const traceBtn = document.getElementById('probe-trace-btn');
 
-    isTracing = true;
+    traceOverride = true;
 
-    // Transform Start Probing button into a red Stop button
-    startBtn.textContent = 'STOP';
-    startBtn.classList.remove('btn-success');
-    startBtn.classList.add('btn-danger');
-    startBtn.onclick = stopTrace;
-
-    // Disable trace button during trace
-    traceBtn.disabled = true;
+    // Turns the start button into the stop and disables everything else.
+    applyProbeRunLock();
 
     try {
-        const response = await fetch(API_PROBE_TRACE, { method: 'POST' });
-        const data = await response.json();
-        if (!data.success) {
-            showError('Trace failed: ' + (data.error || TEXT_UNKNOWN));
+        const { ok, error } = await postJson(API_PROBE_TRACE);
+        if (!ok) {
+            showError(error || TEXT_TRACE_FAILED);
+            return;
         }
 
         // Poll until trace is complete
         await pollTraceStatus();
-    } catch (err) {
-        showError('Trace failed: ' + err.message);
     } finally {
-        isTracing = false;
-        // Disable button briefly to prevent accidental tap (finger may still be on STOP)
+        traceOverride = false;
+
+        // Hands every control back to the state the server reports: label, colour, enabled.
+        await refreshProbeState();
+
+        // Then keep the start button disabled a moment longer, in case a finger is still
+        // on STOP, and let the state decide again rather than forcing it enabled.
         startBtn.disabled = true;
-        startBtn.textContent = 'Start Probing';
-        startBtn.classList.remove('btn-danger');
-        startBtn.classList.add('btn-success');
-        startBtn.onclick = startProbing;
-        traceBtn.disabled = false;
-        setTimeout(() => { startBtn.disabled = false; }, 500);
+        setTimeout(() => { refreshProbeState(); }, TRACE_BUTTON_SETTLE_MS);
     }
 }
 
@@ -156,42 +152,52 @@ async function stopTrace() {
     // Prevent status updates from showing probe progress view after trace stops
     state.probeDataDisplayed = true;
 
-    // Just send stop - don't touch probe UI since trace uses setup view
-    await fetch(API_PROBE_STOP, { method: 'POST' });
-    // The finally block in traceOutline will restore button state
+    // The server answers whether it confirmed the machine stopped, the same answer
+    // stopProbing reads. The finally in traceOutline restores the button either way.
+    const { ok, error } = await postJson(API_PROBE_STOP);
+    if (!ok) {
+        showError(error || ERROR_STOP_NOT_SENT);
+    }
 }
 
+// Ends when the server says the trace is over. One failed request must not unlock the
+// screen while the tool is still moving, but a server that has stopped answering is
+// reported rather than left holding the screen locked.
 async function pollTraceStatus() {
-    while (true) {
+    let failures = 0;
+
+    for (;;) {
         try {
             const response = await fetch(API_PROBE_STATUS);
             const data = await response.json();
-
-            // Check if trace phase is done
-            if (data.phase !== 'TracingOutline') {
-                break;
+            if (data.phase !== PHASE_TRACING_OUTLINE) {
+                return;
             }
-
-            await new Promise(resolve => setTimeout(resolve, PROBE_POLL_INTERVAL_MS));
+            failures = 0;
         } catch (err) {
             console.error('Trace poll error:', err);
-            break;
+            if (++failures >= TRACE_POLL_MAX_FAILURES) {
+                showError(ERROR_LOST_CONTACT);
+                return;
+            }
         }
+
+        await new Promise(resolve => setTimeout(resolve, PROBE_POLL_INTERVAL_MS));
     }
 }
 
 export async function startProbing() {
-    // Don't start probing if trace is active (button click fires both handlers)
-    if (isTracing) {
+    const { ok, error } = await postJson(API_PROBE_START);
+    if (!ok) {
+        // Nothing is probing, so leave the setup view up.
+        showError(error || ERROR_PROBE_NOT_STARTED);
         return;
     }
 
     document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
     document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
-    document.getElementById('probe-back-btn').disabled = true;
     state.probeDataDisplayed = false;  // Reset for new probing session
 
-    await fetch(API_PROBE_START, { method: 'POST' });
     pollProbeStatus();
 }
 
@@ -203,33 +209,39 @@ function resetProbeUI() {
     addClass('probe-done-btn', CLASS_HIDDEN);
     removeClass('probe-setup', CLASS_HIDDEN);
     addClass('probe-progress', CLASS_HIDDEN);
-    document.getElementById('probe-back-btn').disabled = false;
     // Reset pause button to default state
     updateProbePauseButton(false);
 }
 
 export async function stopProbing() {
-    await fetch(API_PROBE_STOP, { method: 'POST' });
+    const { ok, error } = await postJson(API_PROBE_STOP);
+    if (!ok) {
+        // The tool may still be down, so leave the progress view up rather than showing a
+        // setup screen that says the run is over.
+        showError(error || ERROR_STOP_NOT_SENT);
+        return;
+    }
+
     resetProbeUI();
 }
 
 export async function toggleProbePause() {
     const pauseBtn = $('probe-pause-btn');
-    if (!pauseBtn) return;
-
-    const isPaused = pauseBtn.dataset.paused === 'true';
-
-    if (isPaused) {
-        await fetch(API_PROBE_RESUME, { method: 'POST' });
-    } else {
-        await fetch(API_PROBE_PAUSE, { method: 'POST' });
+    if (!pauseBtn) {
+        return;
     }
-    // Button state will be updated by status poll
+
+    const { ok, error } = await postJson(
+        pauseBtn.dataset.paused === 'true' ? API_PROBE_RESUME : API_PROBE_PAUSE);
+    if (!ok) {
+        showError(error || TEXT_PAUSE_FAILED);
+    }
+    // The next status decides what the button says.
 }
 
 // Update pause button based on probe status
 export function updateProbePauseButton(isPaused) {
-    updatePauseButton($('probe-pause-btn'), isPaused, 'btn-warning', 'btn-success');
+    updatePauseButton($('probe-pause-btn'), isPaused, CLASS_BTN_WARNING, CLASS_BTN_SUCCESS);
 }
 
 export async function showProbeComplete() {
@@ -241,14 +253,11 @@ export async function showProbeComplete() {
     state.probeDataDisplayed = true;  // Mark as displayed to prevent loops
 
     // Auto-apply probe data to G-code (matches TUI default behavior)
-    try {
-        const response = await fetch(API_PROBE_APPLY, { method: 'POST' });
-        const data = await response.json();
-        if (data.success) {
-            showInfo('Probe data applied to G-code');
-        }
-    } catch (e) {
-        showError('Failed to apply probe data');
+    const { ok, error } = await postJson(API_PROBE_APPLY);
+    if (ok) {
+        showInfo(TEXT_PROBE_APPLIED_TO_GCODE);
+    } else {
+        showError(error || TEXT_APPLY_FAILED);
     }
 }
 
@@ -262,7 +271,7 @@ function displayProbeStatus(data) {
     document.getElementById('probe-progress-text').textContent =
         `${data.progress} / ${data.total}`;
 
-    if (data.minHeight !== 0 || data.maxHeight !== 0) {
+    if (data.hasHeights) {
         document.getElementById('probe-height-range').textContent =
             `Z: ${data.minHeight.toFixed(POSITION_DECIMALS_FULL)} to ${data.maxHeight.toFixed(POSITION_DECIMALS_FULL)}`;
     }
@@ -279,7 +288,7 @@ function displayProbeStatus(data) {
 
     // Update grid visualization with height-based colors
     if (data.points) {
-        updateProbeGridDisplay(data.points, data.minHeight, data.maxHeight);
+        updateProbeGridDisplay(data.points, data.colours);
     }
 
     // Update pause button based on paused state
@@ -294,13 +303,15 @@ export async function pollProbeStatus() {
     state.isProbePollRunning = true;
 
     try {
-        while (state.isProbing) {
+        // The server's answer ends the loop, so a dropped status broadcast cannot leave it
+        // spinning.
+        for (;;) {
             try {
                 const response = await fetch(API_PROBE_STATUS);
                 const data = await response.json();
 
                 if (!data.active) {
-                    break; // Server says probing stopped
+                    break;
                 }
 
                 displayProbeStatus(data);
@@ -317,60 +328,18 @@ export async function pollProbeStatus() {
     // Note: completion handling is done in updateStatus based on status.probing flag
 }
 
-function updateProbeGridDisplay(points, minHeight, maxHeight) {
-    const cells = document.querySelectorAll('.probe-cell');
-    const hasRange = maxHeight > minHeight && (maxHeight - minHeight) > HEIGHT_RANGE_EPSILON;
-
-    cells.forEach(cell => {
+// Paints the measured cells in the colours the server computed. The gradient itself
+// lives in HeightGradient.cs, so this view and the terminal's draw the same board.
+function updateProbeGridDisplay(points, colours) {
+    document.querySelectorAll('.probe-cell').forEach(cell => {
         const x = parseInt(cell.dataset.x);
         const y = parseInt(cell.dataset.y);
+
         if (points[x] && points[x][y] !== null) {
             cell.classList.add(CLASS_PROBED);
-            // Apply height-based color
-            const height = points[x][y];
-            const color = heightToColor(height, minHeight, maxHeight, hasRange);
-            cell.style.backgroundColor = color;
+            cell.style.backgroundColor = colours?.[x]?.[y] ?? '';
         }
     });
-}
-
-// Maps height to color gradient: blue -> cyan -> green -> yellow -> red
-// Matches the TUI's HeightToColor function
-function heightToColor(height, minHeight, maxHeight, hasRange) {
-    if (!hasRange) {
-        return `rgb(0, ${COLOR_MAX_VALUE}, 0)`; // Default green if no range
-    }
-
-    const t = Math.max(0, Math.min(1, (height - minHeight) / (maxHeight - minHeight)));
-
-    let r, g, b;
-    if (t < COLOR_GRADIENT_STEP) {
-        // Blue to Cyan
-        const s = t / COLOR_GRADIENT_STEP;
-        r = 0;
-        g = Math.round(COLOR_MAX_VALUE * s);
-        b = COLOR_MAX_VALUE;
-    } else if (t < COLOR_GRADIENT_STEP * 2) {
-        // Cyan to Green
-        const s = (t - COLOR_GRADIENT_STEP) / COLOR_GRADIENT_STEP;
-        r = 0;
-        g = COLOR_MAX_VALUE;
-        b = Math.round(COLOR_MAX_VALUE * (1 - s));
-    } else if (t < COLOR_GRADIENT_STEP * 3) {
-        // Green to Yellow
-        const s = (t - COLOR_GRADIENT_STEP * 2) / COLOR_GRADIENT_STEP;
-        r = Math.round(COLOR_MAX_VALUE * s);
-        g = COLOR_MAX_VALUE;
-        b = 0;
-    } else {
-        // Yellow to Red
-        const s = (t - COLOR_GRADIENT_STEP * 3) / COLOR_GRADIENT_STEP;
-        r = COLOR_MAX_VALUE;
-        g = Math.round(COLOR_MAX_VALUE * (1 - s));
-        b = 0;
-    }
-
-    return `rgb(${r}, ${g}, ${b})`;
 }
 
 export async function fetchAndDisplayProbeData() {
@@ -386,7 +355,7 @@ export async function fetchAndDisplayProbeData() {
                 document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
                 document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
                 displayProbeStatus(data);
-                showProbeComplete();
+                await showProbeComplete();
             } else {
                 // Partial probe: show setup view with grid and Continue button
                 document.getElementById('probe-setup').classList.remove(CLASS_HIDDEN);
@@ -395,7 +364,7 @@ export async function fetchAndDisplayProbeData() {
                 renderProbeGrid(data.sizeX, data.sizeY);
                 // Update grid cells with existing probe data
                 if (data.points) {
-                    updateProbeGridDisplay(data.points, data.minHeight, data.maxHeight);
+                    updateProbeGridDisplay(data.points, data.colours);
                 }
                 // State machine will enable Continue button via status updates
                 updateProbeButtonsFromState(data.state, data.hasUnsavedData);
@@ -403,7 +372,7 @@ export async function fetchAndDisplayProbeData() {
 
             // Warn if the source G-Code file is missing
             if (data.sourceGCodeMissing) {
-                showError('Original G-Code file is missing. Load the file to continue probing.');
+                showError(TEXT_SOURCE_GCODE_MISSING);
             }
         }
     } catch (err) {
@@ -433,19 +402,14 @@ function normalizeProbeFilename(filename) {
 
 // Save probe data to path, returns true on success
 async function saveProbeDataToPath(path) {
-    const response = await fetch(API_PROBE_SAVE, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path })
-    });
-    const data = await response.json();
-    if (data.success) {
-        showInfo(TEXT_PROBE_DATA_SAVED);
-        return true;
-    } else {
-        showError(data.error || TEXT_UNKNOWN);
+    const { ok, error } = await postJson(API_PROBE_SAVE, { path });
+    if (!ok) {
+        showError(error || TEXT_PROBE_SAVE_FAILED);
         return false;
     }
+
+    showInfo(TEXT_PROBE_DATA_SAVED);
+    return true;
 }
 
 // Reset probe UI to initial setup state (clear grid, show setup view)
@@ -457,37 +421,40 @@ function clearProbeGridUI() {
     state.probeDataDisplayed = false;
 }
 
-export async function discardProbeData() {
-    if (!await showConfirm('Discard all probe data?', 'Discard Probe Data')) return;
-
-    try {
-        await fetch(API_PROBE_DISCARD, { method: 'POST' });
-        showInfo(TEXT_PROBE_DATA_CLEARED);
-        clearProbeGridUI();
-        $('probe-start-btn').disabled = true;
-        // Update buttons based on new state (should be 'none')
-        await refreshProbeState();
-    } catch (err) {
-        showError('Discard failed: ' + err.message);
+/** Discards the probe data, and says whether the server agreed to. */
+async function discardOnServer() {
+    const { ok, error } = await postJson(API_PROBE_DISCARD);
+    if (!ok) {
+        showError(error || TEXT_DISCARD_FAILED);
     }
+    return ok;
+}
+
+export async function discardProbeData() {
+    if (!await showConfirm(TEXT_DISCARD_CONFIRM, TEXT_DISCARD_TITLE)) {
+        return;
+    }
+
+    if (!await discardOnServer()) {
+        return;
+    }
+
+    showInfo(TEXT_PROBE_DATA_CLEARED);
+    clearProbeGridUI();
+    // The now-empty grid decides every button on this screen.
+    await refreshProbeState();
 }
 
 export async function recoverAutosave() {
-    try {
-        const response = await fetch(API_PROBE_RECOVER_AUTOSAVE, { method: 'POST' });
-        const data = await response.json();
-
-        if (data.success) {
-            state.probeDataDisplayed = true;
-            showInfo(TEXT_PROBE_RECOVERED.replace('{0}', data.progress).replace('{1}', data.total));
-            // Refresh display to show the recovered data
-            await fetchAndDisplayProbeData();
-        } else {
-            showError(data.error || TEXT_RECOVERY_FAILED);
-        }
-    } catch (err) {
-        showError(TEXT_RECOVERY_FAILED + ': ' + err.message);
+    const { ok, error, data } = await postJson(API_PROBE_RECOVER_AUTOSAVE);
+    if (!ok) {
+        showError(error || TEXT_RECOVERY_FAILED);
+        return;
     }
+
+    state.probeDataDisplayed = true;
+    showInfo(TEXT_PROBE_RECOVERED.replace('{0}', data.progress).replace('{1}', data.total));
+    await fetchAndDisplayProbeData();
 }
 
 
@@ -565,14 +532,9 @@ export async function loadSelectedProbeFile() {
     btn.textContent = TEXT_LOADING;
 
     try {
-        const response = await fetch(API_PROBE_LOAD, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: selectedFile })
-        });
-        const data = await response.json();
+        const { ok, error, data } = await postJson(API_PROBE_LOAD, { path: selectedFile });
 
-        if (data.success) {
+        if (ok) {
             // Mark as displayed to prevent auto-navigate when user goes to dashboard
             // (user explicitly loaded a file, they're in control)
             state.probeDataDisplayed = true;
@@ -588,10 +550,11 @@ export async function loadSelectedProbeFile() {
                 showInfo(`${TEXT_PROBE_DATA_LOADED}: ${data.progress}/${data.totalPoints} points probed`);
             }
         } else {
-            showError(data.error || TEXT_UNKNOWN);
+            showError(error || TEXT_PROBE_LOAD_FAILED);
         }
     } catch (err) {
-        showError(`${TEXT_LOAD} failed: ${err.message}`);
+        console.error('probe data load failed', err);
+        showError(TEXT_PROBE_LOAD_FAILED);
     } finally {
         btn.disabled = false;
         btn.textContent = TEXT_LOAD;
@@ -614,7 +577,15 @@ function updateProbeInfoDisplay(sizeX, sizeY, totalPoints, progress) {
 export function initProbeScreen() {
     $('probe-setup-btn').addEventListener('click', setupProbeGrid);
     $('probe-trace-btn').addEventListener('click', traceOutline);
-    $('probe-start-btn').addEventListener('click', startProbing);
+    // One handler: the button is a stop during a trace and a start otherwise, and that
+    // is one fact. A second handler slot on the same button fires alongside this one.
+    $('probe-start-btn').addEventListener('click', () => {
+        if (getIsTracing()) {
+            stopTrace();
+        } else {
+            startProbing();
+        }
+    });
     $('probe-pause-btn').addEventListener('click', toggleProbePause);
     $('probe-stop-btn').addEventListener('click', stopProbing);
     $('probe-done-btn').addEventListener('click', dismissProbeComplete);
@@ -678,30 +649,67 @@ async function saveProbeToFile() {
             showScreen(SCREEN_DASHBOARD, true);
         }
     } catch (err) {
-        showError(`${TEXT_SAVE} failed: ${err.message}`);
+        console.error('probe data save failed', err);
+        showError(TEXT_PROBE_SAVE_FAILED);
     } finally {
         btn.disabled = false;
         btn.textContent = TEXT_SAVE;
     }
 }
 
-// Update probe buttons based on probe state.
-// This is the single source of truth for button states.
-//
-// 4-state model (based on in-memory grid progress):
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │  STATE     │ MEANING              │ START BUTTON   │ SAVE/DISCARD      │
-// ├────────────┼──────────────────────┼────────────────┼───────────────────┤
-// │  none      │ no grid              │ disabled       │ disabled          │
-// │  ready     │ grid, progress=0     │ [Start]        │ disabled          │
-// │  partial   │ 0 < progress < total │ [Continue]     │ [Discard]*        │
-// │  complete  │ progress = total     │ disabled       │ [Save]* / [Clear] │
-// └─────────────────────────────────────────────────────────────────────────┘
-// * Only if hasUnsavedData (autosave exists)
-//
+/**
+ * Holds the probe screen while a trace owns the machine: the start button becomes the stop
+ * and nothing else takes a tap. Returns true when it took the screen, so the caller stops.
+ */
+export function applyProbeRunLock() {
+    const setup = $('probe-setup');
+    const startBtn = $('probe-start-btn');
+    const backBtn = $('probe-back-btn');
+    const tracing = getIsTracing();
+
+    if (backBtn) {
+        backBtn.disabled = state.isProbing || tracing;
+    }
+
+    if (startBtn) {
+        startBtn.classList.toggle(CLASS_BTN_DANGER, tracing);
+        startBtn.classList.toggle(CLASS_BTN_SUCCESS, !tracing);
+    }
+
+    // The setup inputs are the only controls nothing else sets, so they are set both ways
+    // here. Its buttons are all set by the state switch below, which re-enables them.
+    if (setup) {
+        setup.querySelectorAll('input, select').forEach(el => { el.disabled = tracing; });
+    }
+
+    if (!tracing || !setup) {
+        return false;
+    }
+
+    if (startBtn) {
+        startBtn.textContent = TEXT_STOP;
+    }
+
+    // Only the setup view: a trace never shows the progress view, whose stop and pause
+    // belong to a grid probe.
+    setup.querySelectorAll('button').forEach(el => {
+        el.disabled = el.id !== 'probe-start-btn';
+    });
+    return true;
+}
+
+// Sets the probe buttons from the state the server computed. The four states, what each
+// means and which buttons each allows are defined once, in the remarks block at the top of
+// coppercli.Core/Controllers/ProbeController.cs.
 export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) {
+    // Decided first and returned on, so nothing below can paint over a running trace.
+    if (applyProbeRunLock()) {
+        return;
+    }
+
     const setupBtn = $('probe-setup-btn');
     const startBtn = $('probe-start-btn');
+    const traceBtn = $('probe-trace-btn');
     const saveBtn = $('probe-save-btn');
     const recoverBtn = $('probe-recover-btn');
     const discardBtn = $('probe-discard-btn');
@@ -709,6 +717,9 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
 
     // Recover button: enabled when autosave exists
     if (recoverBtn) recoverBtn.disabled = !hasUnsavedData;
+
+    // Trace button: there has to be a grid to walk the outline of.
+    if (traceBtn) traceBtn.disabled = probeState === PROBE_STATE_NONE;
 
     switch (probeState) {
         case PROBE_STATE_NONE:
@@ -771,6 +782,7 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
             if (loadBtn) loadBtn.disabled = false;
             break;
     }
+
 }
 
 // Fetch probe state from server and update buttons
@@ -809,14 +821,13 @@ function handleProbeSaveConfirm() {
 }
 
 async function handleProbeSaveDiscard() {
-    try {
-        await fetch(API_PROBE_DISCARD, { method: 'POST' });
-        showInfo(TEXT_PROBE_DATA_CLEARED);
-        hideProbeSaveModal();
-        clearProbeGridUI();
-    } catch (err) {
-        showError('Discard failed: ' + err.message);
+    if (!await discardOnServer()) {
+        return;
     }
+
+    showInfo(TEXT_PROBE_DATA_CLEARED);
+    hideProbeSaveModal();
+    clearProbeGridUI();
 }
 
 export function initProbeSaveModal() {
@@ -845,8 +856,8 @@ export async function checkAndShowUnsavedProbe() {
         const response = await fetch(API_PROBE_STATUS);
         const data = await response.json();
 
-        // Don't show recovery/save modals if probing is actively running
-        if (data.active) {
+        // Don't show recovery/save modals while the machine is on the board.
+        if (status.probing || status.tracingOutline) {
             return false;
         }
 
@@ -887,13 +898,12 @@ async function handleProbeRecoveryContinue() {
 }
 
 async function handleProbeRecoveryDiscard() {
-    try {
-        await fetch(API_PROBE_DISCARD, { method: 'POST' });
-        hideProbeRecoveryModal();
-        showScreen(SCREEN_DASHBOARD);
-    } catch (err) {
-        showError('Discard failed: ' + err.message);
+    if (!await discardOnServer()) {
+        return;
     }
+
+    hideProbeRecoveryModal();
+    showScreen(SCREEN_DASHBOARD);
 }
 
 export function initProbeRecoveryModal() {

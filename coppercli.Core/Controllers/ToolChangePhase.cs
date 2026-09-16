@@ -1,27 +1,21 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// FSM states for tool change workflow.
-    /// Models real-world physical operations, not UI states.
+    /// The step of work a tool change is on. Physical operations, not what the screen
+    /// shows, and never the run's own state: whether it finished is
+    /// <see cref="ControllerState"/>'s to answer.
     ///
-    /// Two modes exist:
-    ///   Mode A (with tool setter): automatic measurement
-    ///   Mode B (without tool setter): manual Z re-zeroing
+    /// With a tool setter, the offset is measured:
+    ///   RaisingZ → MovingToToolSetter → MeasuringReference → RaisingZ
+    ///   → MovingToWorkArea → WaitingForToolChange → MovingToToolSetter
+    ///   → MeasuringNewTool → ApplyingOffset → Returning
     ///
-    /// Mode A flow:
-    ///   NotStarted → RaisingZ → MovingToToolSetter → MeasuringReference
-    ///   → RaisingZ → MovingToWorkArea → WaitingForToolChange
-    ///   → MovingToToolSetter → MeasuringNewTool → ApplyingOffset
-    ///   → Returning → Complete
+    /// Without one, the operator re-zeroes Z by hand:
+    ///   RaisingZ → MovingToWorkArea → WaitingForToolChange → WaitingForZeroZ
     ///
-    /// Mode B flow:
-    ///   NotStarted → RaisingZ → MovingToWorkArea → WaitingForToolChange
-    ///   → WaitingForZeroZ → Complete
-    ///
-    /// UI behavior per phase:
-    ///   WaitingForToolChange → show overlay: "Change tool T{N}, press Continue"
-    ///   WaitingForZeroZ → jog screen shows "Continue Milling" button
-    ///   All other phases → spindle moving autonomously, no user action needed
+    /// Two phases wait on a person, and each puts a different thing on screen:
+    /// WaitingForToolChange asks for the tool, WaitingForZeroZ offers the jog screen. In
+    /// every other phase the machine is moving on its own.
     /// </summary>
     public enum ToolChangePhase
     {
@@ -62,9 +56,6 @@ namespace coppercli.Core.Controllers
         ApplyingOffset,
 
         /// <summary>Returning XY to original position.</summary>
-        Returning,
-
-        /// <summary>Tool change complete - ready to resume milling.</summary>
-        Complete
+        Returning
     }
 }

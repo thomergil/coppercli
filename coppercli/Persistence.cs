@@ -43,44 +43,26 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Probe data states. Single source of truth for both TUI and Web UI.
+        /// The autosave, parsed, or null when there is none or it cannot be read. A fresh
+        /// object each time: callers adopt it as the live grid and probe into it, so a shared
+        /// instance would make this method describe memory rather than the file.
         /// </summary>
-        public enum ProbeState
-        {
-            /// <summary>No autosave file exists.</summary>
-            None,
-            /// <summary>Autosave exists but some nodes were never measured.</summary>
-            Partial,
-            /// <summary>Autosave exists and every node holds a measured height.</summary>
-            Complete
-        }
-
-        /// <summary>
-        /// Gets the current probe state by checking the autosave file.
-        /// This is the single source of truth for both TUI and Web UI.
-        /// </summary>
-        public static ProbeState GetProbeState()
+        public static ProbeGrid? ReadProbeAutoSave()
         {
             var path = GetProbeAutoSavePath();
             if (!File.Exists(path))
             {
-                Logger.Log("GetProbeState: no autosave file at {0}", path);
-                return ProbeState.None;
+                return null;
             }
 
             try
             {
-                var grid = ProbeGrid.Load(path);
-                var state = grid.HasCompleteData ? ProbeState.Complete : ProbeState.Partial;
-                Logger.Log("GetProbeState: {0} at {1} ({2}/{3} probed, NotProbed.Count={4})",
-                    state, path, grid.Progress, grid.TotalPoints, grid.RemainingCount);
-                return state;
+                return ProbeGrid.Load(path);
             }
             catch (Exception ex)
             {
-                // Corrupted file - treat as none
-                Logger.Log("GetProbeState: failed to load {0} - {1}", path, ex.Message);
-                return ProbeState.None;
+                Logger.Log("ReadProbeAutoSave: failed to load {0} - {1}", path, ex.Message);
+                return null;
             }
         }
 
@@ -250,7 +232,6 @@ namespace coppercli
                 Logger.Log("SaveProbeProgress: saving {0}/{1} probed to {2}",
                     probePoints.Progress, probePoints.TotalPoints, path);
                 probePoints.Save(path);
-                AppState.Session.ProbeAutoSavePath = path;
 
                 // Remember which G-Code file was loaded when this probe was created
                 // This allows recovering the G-Code along with the probe data
@@ -269,23 +250,28 @@ namespace coppercli
             }
         }
 
-        public static void ClearProbeAutoSave()
+        /// <returns>False if the file is still there, so no caller tells the operator the
+        /// data is gone while it waits on disk to be offered again.</returns>
+        public static bool ClearProbeAutoSave()
         {
+            var path = GetProbeAutoSavePath();
+
             try
             {
-                var path = GetProbeAutoSavePath();
                 if (File.Exists(path))
                 {
                     File.Delete(path);
                 }
-                AppState.Session.ProbeAutoSavePath = null;
-                AppState.Session.ProbeSourceGCodeFile = null;
-                SaveSession();
             }
-            catch
+            catch (Exception ex)
             {
-                // Silent failure
+                Logger.Log("ClearProbeAutoSave: could not delete {0} - {1}", path, ex.Message);
+                return false;
             }
+
+            AppState.Session.ProbeSourceGCodeFile = null;
+            SaveSession();
+            return true;
         }
 
         /// <summary>
@@ -315,7 +301,6 @@ namespace coppercli
                 File.Move(autosavePath, newPath, overwrite: true);
 
                 // Clear session autosave path (file no longer exists there)
-                AppState.Session.ProbeAutoSavePath = null;
                 SaveSession();
 
                 Logger.Log($"SaveProbeToFile: moved {autosavePath} to {newPath}");

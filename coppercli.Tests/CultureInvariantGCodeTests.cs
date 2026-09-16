@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using coppercli.Tests.Fakes;
 using Xunit;
 
@@ -20,8 +21,11 @@ namespace coppercli.Tests
     /// GRBL errors, the safety retract silently does nothing and the next XY rapid runs at
     /// cutting depth.
     /// </summary>
-    // Sets the process-wide culture, so it must not run alongside other test classes.
-    [Collection("culture-sensitive")]
+    // The culture is set on this thread only. It flows into the awaits below with the
+    // execution context, so the code under test formats under it while tests on other
+    // threads keep their own. Do not use DefaultThreadCurrentCulture: it applies to the
+    // whole process, so a test asserting on a formatted number would pass or fail
+    // according to what runs beside it.
     public class CultureInvariantGCodeTests : IDisposable
     {
         private readonly CultureInfo _original = CultureInfo.CurrentCulture;
@@ -29,15 +33,12 @@ namespace coppercli.Tests
         public CultureInvariantGCodeTests()
         {
             // German: decimal comma, thousands dot - the worst case for G-code.
-            var german = new CultureInfo("de-DE");
-            CultureInfo.CurrentCulture = german;
-            CultureInfo.DefaultThreadCurrentCulture = german;
+            CultureInfo.CurrentCulture = new CultureInfo("de-DE");
         }
 
         public void Dispose()
         {
             CultureInfo.CurrentCulture = _original;
-            CultureInfo.DefaultThreadCurrentCulture = null;
         }
 
         private static void AssertNoDecimalComma(FakeMachine machine)
@@ -72,11 +73,11 @@ namespace coppercli.Tests
             {
                 Options = new ProbeOptions { SafeHeight = 6.5, MaxDepth = 10.25, ProbeFeed = 47.5 }
             };
-            controller.SetupGrid(
+            controller.LoadGrid(ProbeGrid.ForJob(
                 new Core.Util.Vector2(0, 0),
                 new Core.Util.Vector2(10.5, 10.5),
                 margin: 1.25,
-                gridSize: 5.5);
+                gridSize: 5.5));
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             try

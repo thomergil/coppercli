@@ -14,30 +14,10 @@ namespace coppercli.Core.Controllers
     /// <summary>
     /// Controller for tool change workflow (M6 handling).
     ///
-    /// SINGLE SOURCE OF TRUTH: The Phase property is the FSM state.
-    /// Both TUI and Web UI read Phase to determine what to display.
-    /// See ToolChangePhase.cs for the complete FSM documentation.
+    /// Phase is the state both front ends read to decide what to show, and
+    /// <see cref="ToolChangePhase"/> documents the two flows and what each phase means.
     ///
-    /// TWO MODES:
-    ///
-    /// Mode A (with tool setter) - automatic Z offset measurement:
-    ///   NotStarted → RaisingZ → MovingToToolSetter → MeasuringReference
-    ///   → RaisingZ → MovingToWorkArea → WaitingForToolChange [USER: change tool]
-    ///   → MovingToToolSetter → MeasuringNewTool → ApplyingOffset
-    ///   → Returning → Complete
-    ///
-    /// Mode B (without tool setter) - manual Z re-zeroing:
-    ///   NotStarted → RaisingZ → MovingToWorkArea → WaitingForToolChange [USER: change tool]
-    ///   → WaitingForZeroZ [USER: jog, set Z0] → Complete
-    ///
-    /// UI BEHAVIOR (1:1 with phase):
-    ///   - WaitingForToolChange → Mill screen shows overlay with Continue/Abort
-    ///   - WaitingForZeroZ → Jog screen shows "Continue Milling" button
-    ///   - All other phases → Spindle moving autonomously, no user action needed
-    ///   - null/NotStarted/Complete → No tool change UI
-    ///
-    /// PAGE RELOAD: UI queries /api/status which returns toolChange.phase.
-    /// UI checks phase string directly to determine what to show.
+    /// After a page reload the browser asks /api/status, which reports the phase.
     /// </summary>
     public class ToolChangeController : ControllerBase, IToolChangeController
     {
@@ -58,8 +38,8 @@ namespace coppercli.Core.Controllers
         private readonly object _phaseLock = new();
         private ToolChangeInfo? _currentToolChange;
 
-        // The reference tool's length, measured at the start of a tool change and used to
-        // work out the new tool's offset. Cleared per tool change - see ResetRunState.
+        // The reference tool's length, measured at the start of a tool change, from which
+        // the new tool's offset is worked out. Cleared per tool change; see ResetRunState.
         private double _referenceToolLength;
 
         // Return position after tool change
@@ -135,7 +115,7 @@ namespace coppercli.Core.Controllers
         {
             if (State != ControllerState.Idle)
             {
-                throw new InvalidOperationException(string.Format(ErrorCannotStart, State));
+                throw new InvalidControllerStateException(string.Format(ErrorCannotStart, State));
             }
 
             // This is the entry point, not StartAsync, so the reset the base class would
@@ -180,7 +160,11 @@ namespace coppercli.Core.Controllers
 
                 if (success)
                 {
-                    Phase = ToolChangePhase.Complete;
+                    // The run's state says it finished. The phase names the step of work,
+                    // and there is no step left, so the completion message is emitted here
+                    // rather than through a phase that restated the state.
+                    EmitProgress(new ProgressInfo(
+                        nameof(ControllerState.Completing), ProgressPercentComplete, MessageToolChangeComplete));
                     TransitionTo(ControllerState.Completing);
                     TransitionTo(ControllerState.Completed);
                     ControllerLog.Log(LogToolChangeComplete);
@@ -223,7 +207,7 @@ namespace coppercli.Core.Controllers
         /// <inheritdoc/>
         protected override void ResetRunState()
         {
-            // NotStarted is what makes DetectToolChange() report no tool change.
+            // NotStarted means no step is under way; the run's own state says whether one is.
             lock (_phaseLock)
             {
                 _phase = ToolChangePhase.NotStarted;
@@ -553,7 +537,6 @@ namespace coppercli.Core.Controllers
                 ToolChangePhase.ProbingPCBSurface => MessageToolChangeProbingPCB,
                 ToolChangePhase.ApplyingOffset => MessageToolChangeApplyingOffset,
                 ToolChangePhase.Returning => MessageToolChangeReturning,
-                ToolChangePhase.Complete => MessageToolChangeComplete,
                 _ => phase.ToString()
             };
         }

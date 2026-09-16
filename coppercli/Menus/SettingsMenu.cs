@@ -258,7 +258,7 @@ namespace coppercli.Menus
                     }
                     DisplayHelpers.WriteLineTruncated("", winWidth);
 
-                    var mode = JogModes[AppState.JogPresetIndex];
+                    var mode = AppState.CurrentJogMode;
                     DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiInfo}Jog:{DisplayHelpers.AnsiReset} {DisplayHelpers.AnsiSuccess}{mode.Name}{DisplayHelpers.AnsiReset} {mode.Feed}mm/min {mode.BaseDistance}mm", winWidth);
                     DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Arrows{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}HJKL{DisplayHelpers.AnsiReset} - X/Y    {DisplayHelpers.AnsiInfo}W/S{DisplayHelpers.AnsiReset} or {DisplayHelpers.AnsiInfo}PgUp/PgDn{DisplayHelpers.AnsiReset} - Z", winWidth);
                     DisplayHelpers.WriteLineTruncated($"  {DisplayHelpers.AnsiInfo}Tab{DisplayHelpers.AnsiReset} - Cycle speed", winWidth);
@@ -300,9 +300,9 @@ namespace coppercli.Menus
                         continue;
                     }
 
-                    if (key.Key == ConsoleKey.Tab)
+                    if (InputHelpers.IsKey(key, ConsoleKey.Tab))
                     {
-                        AppState.JogPresetIndex = (AppState.JogPresetIndex + 1) % JogModes.Length;
+                        AppState.CycleJogPreset();
                         continue;
                     }
 

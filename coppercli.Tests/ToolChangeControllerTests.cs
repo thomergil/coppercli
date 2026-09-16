@@ -160,57 +160,14 @@ namespace coppercli.Tests
         // Phase progression tests (synchronous verification)
         // =========================================================================
 
-        [Theory]
-        [InlineData(ToolChangePhase.NotStarted)]
-        [InlineData(ToolChangePhase.RaisingZ)]
-        [InlineData(ToolChangePhase.MovingToToolSetter)]
-        [InlineData(ToolChangePhase.MeasuringReference)]
-        [InlineData(ToolChangePhase.MovingToWorkArea)]
-        [InlineData(ToolChangePhase.WaitingForToolChange)]
-        [InlineData(ToolChangePhase.WaitingForZeroZ)]
-        [InlineData(ToolChangePhase.MeasuringNewTool)]
-        [InlineData(ToolChangePhase.ApplyingOffset)]
-        [InlineData(ToolChangePhase.Returning)]
-        [InlineData(ToolChangePhase.Complete)]
-        public void AllPhaseValues_AreValid(ToolChangePhase phase)
-        {
-            // Verify all enum values are defined
-            Assert.True(Enum.IsDefined(typeof(ToolChangePhase), phase));
-        }
 
         // =========================================================================
         // User input callback tests
         // =========================================================================
 
-        [Fact]
-        public void UserInputRequired_EventCanBeSubscribed()
-        {
-            var machine = CreateMockMachine();
-            var controller = CreateController(machine);
-
-            UserInputRequest? receivedRequest = null;
-            controller.UserInputRequired += req => receivedRequest = req;
-
-            // Just verify event is wirable - actual callback tested in async tests
-            Assert.Null(receivedRequest); // No input requested yet
-        }
-
         // =========================================================================
         // Error handling tests
         // =========================================================================
-
-        [Fact]
-        public void ErrorOccurred_EventCanBeSubscribed()
-        {
-            var machine = CreateMockMachine();
-            var controller = CreateController(machine);
-
-            ControllerError? receivedError = null;
-            controller.ErrorOccurred += err => receivedError = err;
-
-            // Verify event is wirable
-            Assert.Null(receivedError);
-        }
 
         // =========================================================================
         // Tool setter path tests

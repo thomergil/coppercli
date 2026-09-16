@@ -39,11 +39,11 @@ namespace coppercli.Menus
                     return;
                 }
 
-                // Disconnect (but preserve IsWorkZeroSet since server will reconnect to same machine)
+                // The server reconnects to the same machine, which keeps its work offset, so
+                // a zero that was known before the disconnect is still good after it.
                 var preserveWorkZero = AppState.IsWorkZeroSet;
                 AppState.Machine.Disconnect();
-                // Restore IsWorkZeroSet - the machine's work offset is preserved across reconnect
-                AppState.IsWorkZeroSet = preserveWorkZero;
+                AppState.TrustWorkZero(preserveWorkZero);
                 Logger.Log($"ServerMenu: Preserved IsWorkZeroSet={preserveWorkZero} across server transition");
 
                 selectedPort = currentPort;

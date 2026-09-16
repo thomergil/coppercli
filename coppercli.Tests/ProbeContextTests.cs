@@ -56,7 +56,7 @@ namespace coppercli.Tests
         /// <summary>
         /// The origin check is the one that catches a work zero moved by any route -
         /// jogging and re-zeroing, another client, a G10 in a macro. Only the X/Y zero
-        /// path used to consider this at all.
+        /// path considers this.
         /// </summary>
         [Fact]
         public void MapIsNotApplicable_WhenTheWorkOriginHasMoved()

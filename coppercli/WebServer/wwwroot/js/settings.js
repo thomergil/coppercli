@@ -7,7 +7,8 @@ import {
     API_PROFILES,
     SCREEN_DASHBOARD,
     TEXT_SETTINGS_SAVED,
-    TEXT_UNKNOWN
+    TEXT_UNKNOWN,
+    TEXT_SETTINGS_SAVE_FAILED
 } from './constants.js';
 
 // Settings field definitions for DRY iteration
@@ -104,7 +105,8 @@ export async function saveSettings() {
             showError(data.error || TEXT_UNKNOWN);
         }
     } catch (err) {
-        showError('Save failed: ' + err.message);
+        console.error('settings save failed', err);
+        showError(TEXT_SETTINGS_SAVE_FAILED);
     }
 }
 

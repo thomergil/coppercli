@@ -13,7 +13,7 @@ namespace coppercli.Tests
     {
         /// <summary>
         /// The height-map question must not depend on the work-zero answer. The terminal
-        /// used to skip it whenever the operator declined to trust the stored origin, so
+        /// must not be skipped when the operator declines to trust the stored origin, or
         /// the data was never resolved - and later announced itself as current.
         /// </summary>
         [Fact]

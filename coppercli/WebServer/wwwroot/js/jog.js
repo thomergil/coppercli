@@ -1,19 +1,19 @@
 // coppercli Web UI Jog Screen
 
 import { state } from './state.js';
-import { $, addTouchRepeat, showInfo, showConfirm, showError, updatePauseButton } from './helpers.js';
+import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, isProblematicStatus } from './helpers.js';
 import { sendCommand } from './websocket.js';
 import { showScreen } from './screens.js';
-import { isWaitingForZeroZ } from './mill.js';
+import { isWaitingForZeroZ, continueLastPrompt } from './mill.js';
 import {
     API_CONFIG,
     API_PROBE_STATUS,
-    API_MILL_TOOLCHANGE_INPUT,
+    API_ZERO,
+    ERROR_ZERO_NOT_SENT,
     CMD_JOG_MODE,
     CMD_HOME,
     CMD_UNLOCK,
     CMD_RESET,
-    CMD_ZERO,
     CMD_GOTO_ORIGIN,
     CMD_GOTO_CENTER,
     CMD_GOTO_SAFE,
@@ -22,11 +22,8 @@ import {
     CMD_PROBE_Z,
     CMD_FEEDHOLD,
     CMD_RESUME,
-    DEFAULT_JOG_MODE_INDEX,
     CLASS_ACTIVE,
     CLASS_HIDDEN,
-    STATUS_ALARM_PREFIX,
-    STATUS_DOOR,
     STATUS_RUN,
     STATUS_HOLD,
     PROBE_STATE_NONE,
@@ -39,6 +36,7 @@ export async function loadConfig() {
         const response = await fetch(API_CONFIG);
         const config = await response.json();
         state.jogModes = config.jogModes || [];
+        state.jogModeIndex = config.defaultJogModeIndex ?? slowestJogMode();
         // Load server-provided constants to avoid duplicating values
         if (config.probeDefaults) {
             state.probeDefaults = config.probeDefaults;
@@ -55,7 +53,14 @@ export async function loadConfig() {
             { name: 'Slow' },
             { name: 'Creep' }
         ];
+        // Without the server's answer, take the mode that moves least per press.
+        state.jogModeIndex = slowestJogMode();
     }
+}
+
+// The modes are ordered fastest to finest, so the last is the one that moves least.
+function slowestJogMode() {
+    return Math.max(0, state.jogModes.length - 1);
 }
 
 export function jogWithMode(axis, direction) {
@@ -90,7 +95,7 @@ function togglePause() {
 }
 
 // Check if probe data exists and warn before zeroing (only for X/Y changes)
-async function zeroWithWarning(axes, retract) {
+async function zeroWithWarning(axes) {
     // Only warn if X or Y is being zeroed (Z-only preserves probe corrections)
     const zeroingXY = axes.some(a => a === 'X' || a === 'Y');
 
@@ -111,7 +116,25 @@ async function zeroWithWarning(axes, retract) {
         }
     }
 
-    sendCommand(CMD_ZERO, { axes, retract });
+    // Over HTTP rather than the socket, because the server can refuse this and the operator
+    // must not be told the datum was set when it was not.
+    try {
+        const response = await fetch(API_ZERO, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ axes })
+        });
+        const json = await response.json();
+        if (!json.success) {
+            showError(json.error || ERROR_ZERO_NOT_SENT);
+            return;
+        }
+    } catch (err) {
+        console.error('zero failed', err);
+        showError(ERROR_ZERO_NOT_SENT);
+        return;
+    }
+
     showInfo(axes.length === 1 ? 'Z zeroed' : 'All axes zeroed');
 }
 
@@ -133,8 +156,8 @@ export function initJogScreen() {
     });
 
     // Zero buttons - warn if probe data exists
-    $('jog-zero-all-btn').addEventListener('click', () => zeroWithWarning(['X', 'Y', 'Z'], true));
-    $('jog-zero-z-btn').addEventListener('click', () => zeroWithWarning(['Z'], true));
+    $('jog-zero-all-btn').addEventListener('click', () => zeroWithWarning(['X', 'Y', 'Z']));
+    $('jog-zero-z-btn').addEventListener('click', () => zeroWithWarning(['Z']));
 
     // Probe Z at current position
     $('jog-probe-z-btn').addEventListener('click', () => sendCommand(CMD_PROBE_Z));
@@ -153,7 +176,7 @@ export function initJogScreen() {
     }
 
     // Set default jog mode
-    setJogMode(DEFAULT_JOG_MODE_INDEX);
+    setJogMode(state.jogModeIndex);
 
     // Mode selector buttons
     document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
@@ -166,20 +189,8 @@ export function initJogScreen() {
  * Sends "Continue" response to the tool change controller.
  */
 async function continueMilling() {
-    try {
-        const response = await fetch(API_MILL_TOOLCHANGE_INPUT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ response: 'Continue' })
-        });
-        const result = await response.json();
-        if (result.success) {
-            showScreen(SCREEN_MILL);
-        } else {
-            showError(result.error || 'Failed to continue');
-        }
-    } catch (err) {
-        showError('Failed to continue: ' + err.message);
+    if (await continueLastPrompt()) {
+        showScreen(SCREEN_MILL);
     }
 }
 
@@ -220,7 +231,7 @@ const xyMovementButtons = [
 // Update jog screen button states based on machine status
 export function updateJogButtons(status) {
     const statusStr = status?.status || '';
-    const isAlarm = statusStr.startsWith(STATUS_ALARM_PREFIX) || statusStr === STATUS_DOOR;
+    const isAlarm = isProblematicStatus(statusStr);
     const isRun = statusStr === STATUS_RUN;
     const isHold = statusStr.startsWith(STATUS_HOLD);
     const probeContact = status?.probePin || false;

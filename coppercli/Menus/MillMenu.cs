@@ -23,7 +23,6 @@ namespace coppercli.Menus
     {
         // Shared state for display updates (set by event handlers, read by render loop)
         private static ProgressInfo? _latestProgress;
-        private static ControllerState _latestState;
         private static ToolChangeInfo? _pendingToolChange;
         private static UserInputRequest? _pendingOperatorPause;
         private static ControllerError? _latestError;
@@ -123,7 +122,6 @@ namespace coppercli.Menus
 
             // Reset shared state
             _latestProgress = null;
-            _latestState = ControllerState.Idle;
             _pendingToolChange = null;
             _pendingOperatorPause = null;
             _latestError = null;
@@ -172,7 +170,6 @@ namespace coppercli.Menus
             // Subscribe to controller events
             Action<ControllerState> onStateChanged = state =>
             {
-                _latestState = state;
                 Logger.Log("Controller state: {0}", state);
             };
             Action<ProgressInfo> onProgressChanged = progress =>
@@ -232,12 +229,12 @@ namespace coppercli.Menus
                             Logger.Log("Safety confirmation aborted");
                             return;
                         }
-                        if (key.Key == ConsoleKey.DownArrow)
+                        if (InputHelpers.IsKey(key, ConsoleKey.DownArrow))
                         {
                             AppState.AdjustDepthDeeper();
                             Logger.Log("Depth adjustment: {0:F2}mm (deeper)", AppState.DepthAdjustment);
                         }
-                        if (key.Key == ConsoleKey.UpArrow)
+                        if (InputHelpers.IsKey(key, ConsoleKey.UpArrow))
                         {
                             AppState.AdjustDepthShallower();
                             Logger.Log("Depth adjustment: {0:F2}mm (shallower)", AppState.DepthAdjustment);
@@ -251,20 +248,13 @@ namespace coppercli.Menus
 
                 // === CONFIGURE AND START CONTROLLER ===
                 controller.Options = MillingOptions.Create(currentFile?.FileName,
-                    (float)AppState.DepthAdjustment, AppState.Machine.IsHomed);
+                    AppState.DepthAdjustment, AppState.Machine.IsHomed);
 
                 Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
                     controller.Options.RequireHoming, controller.Options.DepthAdjustment);
 
-                // Reset controller if needed (from previous run). Reset() throws
-                // outside Completed/Failed/Cancelled/Idle, so only call it once
-                // HasFinished says that is safe - otherwise a teardown that left
-                // the controller Running/Paused would make this call throw instead
-                // of starting the new run.
-                if (controller.HasFinished)
-                {
-                    controller.Reset();
-                }
+                // Clear the last run off the controller, whatever state it left behind.
+                controller.ReleaseAsync().GetAwaiter().GetResult();
 
                 // Start controller. The task is kept (not fire-and-forget): the
                 // finally below waits on it so shutdown blocks until the run's own
@@ -279,8 +269,8 @@ namespace coppercli.Menus
                 // === MONITOR LOOP ===
                 while (true)
                 {
-                    // Check controller state for completion
-                    var state = _latestState;
+                    // Asked of the controller, not of a copy an event has to keep current.
+                    var state = controller.State;
                     if (ControllerBase.IsFinishedState(state))
                     {
                         Logger.Log("Controller finished with state: {0}", state);
@@ -440,7 +430,7 @@ namespace coppercli.Menus
                 }
 
                 // === COMPLETION ===
-                var finalState = _latestState;
+                var finalState = controller.State;
                 var finalElapsed = DateTime.Now - startTime - totalPausedTime;
 
                 if (finalState == ControllerState.Completed)
@@ -452,9 +442,10 @@ namespace coppercli.Menus
                     {
                         if (ShowOverlayConfirm(ProbePromptClear, true) == true)
                         {
-                            AppState.DiscardProbeData();
-                            Persistence.ClearProbeAutoSave();
-                            ShowOverlayTimed(ProbeStatusCleared, ConfirmationDisplayMs);
+                            bool discarded = AppState.DiscardProbeDataAndAutosave();
+                            ShowOverlayTimed(
+                                discarded ? ProbeStatusCleared : ProbeDiscardFailed,
+                                ConfirmationDisplayMs);
                         }
                     }
                 }
@@ -499,16 +490,17 @@ namespace coppercli.Menus
                     MenuHelpers.ShowError(StopTimedOutWarning);
                 }
 
-                // Reset controller for next use, guarded by the same precondition
-                // Reset() itself requires. Runs for every exit - normal, abort, or
-                // exception - so the controller never sits in a terminal state
-                // waiting for the next run to reset it. If the wait above timed out,
-                // State can still be Completing/Running/Paused, and Reset() throws on
-                // those states; skip it rather than let that throw escape a
-                // machine-abort finally.
-                if (controller.HasFinished)
+                // Runs for every exit - normal, abort, or exception - so the controller
+                // never sits waiting for the next run to clear it. Logged rather than
+                // thrown: the rest of this finally unsubscribes and releases the machine.
+                try
                 {
-                    controller.Reset();
+                    controller.ReleaseAsync().GetAwaiter().GetResult();
+                }
+                catch (Exception releaseEx)
+                {
+                    Logger.Log("MillMenu: could not release the milling controller - {0}",
+                        releaseEx.Message);
                 }
 
                 // Stop sleep prevention
@@ -577,7 +569,7 @@ namespace coppercli.Menus
                 // status alone would leave them staring at "Door" having already done
                 // what it asked.
                 statusDisplay = MachineWait.IsDoorOpen(machine)
-                    ? $"{AnsiCritical}{DoorOpenMessage}{AnsiReset}"
+                    ? $"{AnsiAlert}{DoorOpenMessage}{AnsiReset}"
                     : $"{AnsiWarning}{DoorClosedMessage}{AnsiReset}";
             }
             else if (status.StartsWith(StatusHold))
@@ -590,7 +582,7 @@ namespace coppercli.Menus
             }
             else if (status.StartsWith(StatusAlarm))
             {
-                statusDisplay = $"{AnsiCritical}{StatusAlarm}{AnsiReset}";
+                statusDisplay = $"{AnsiAlert}{StatusAlarm}{AnsiReset}";
             }
             else
             {
@@ -624,7 +616,7 @@ namespace coppercli.Menus
             // Show feed override if not default (100%)
             int feedOvr = machine.FeedOverride;
             string feedOvrStr = feedOvr != OverrideDefaultPercent ? $"  Feed: {AnsiWarning}{feedOvr}%{AnsiReset}" : "";
-            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiCritical}Esc{AnsiReset}=Stop{feedOvrStr}", winWidth);
+            WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiAlert}Esc{AnsiReset}=Stop{feedOvrStr}", winWidth);
 
             double minX = currentFile.Min.X;
             double maxX = currentFile.Max.X;
@@ -679,7 +671,7 @@ namespace coppercli.Menus
             else if (status.StartsWith(StatusAlarm))
             {
                 overlayMessage = OverlayAlarmMessage;
-                overlayColor = AnsiCritical;
+                overlayColor = AnsiAlert;
             }
 
             DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor, overlaySubMessage);
@@ -879,11 +871,8 @@ namespace coppercli.Menus
         {
             var toolChangeController = AppState.ToolChange;
 
-            // Reset controller if needed
-            if (toolChangeController.State != ControllerState.Idle)
-            {
-                toolChangeController.Reset();
-            }
+            // Clear the last tool change off the controller, whatever state it left behind.
+            toolChangeController.ReleaseAsync().GetAwaiter().GetResult();
 
             // Set options from user settings and file bounds
             var settings = AppState.Settings;

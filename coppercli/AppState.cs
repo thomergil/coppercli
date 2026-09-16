@@ -49,16 +49,13 @@ namespace coppercli
         /// A disconnect means the operator's asserted work origin can no longer be trusted: the
         /// machine may be repositioned or power-cycled before it returns. Invalidate the zero
         /// centrally here — mirroring how Core clears <c>IsHomed</c> inside <c>Machine.Disconnect</c> —
-        /// so every disconnect path behaves identically. Previously only the TUI connection menu
-        /// cleared it, leaving it stale-true after a web-initiated or main-menu disconnect and
-        /// letting the milling/probing gates trust an origin the machine no longer holds.
+        /// so every disconnect path behaves identically.
         /// </summary>
         private static void OnMachineConnectionStateChanged()
         {
-            if (_machine != null && !_machine.Connected && IsWorkZeroSet)
+            if (_machine != null && !_machine.Connected)
             {
-                IsWorkZeroSet = false;
-                Logger.Log("AppState: machine disconnected - IsWorkZeroSet reset to false");
+                ForgetWorkZero();
             }
         }
 
@@ -103,18 +100,48 @@ namespace coppercli
         // AreProbePointsApplied has private setter - only ApplyProbeData() can set it to true.
         // LoadGCodeIntoMachine() always resets it to false.
         public static bool AreProbePointsApplied { get; private set; } = false;
-        public static bool IsWorkZeroSet { get; set; } = false;
         /// <summary>
-        /// Whether a grid probe is running. Derived from the probe controller - the
-        /// single owner of that state - rather than a flag one UI could forget to set
-        /// (the terminal path used to leave it stale, so terminal probes did not get the
-        /// error suppression web probes did).
+        /// Whether the work origin is known. Written only through the three methods below,
+        /// so every way it changes is named in one place.
+        /// </summary>
+        public static bool IsWorkZeroSet { get; private set; } = false;
+
+        /// <summary>The machine was just zeroed, so the origin is known.</summary>
+        public static void WorkZeroWasSet() => SetWorkZeroKnown(true, "zeroed on the machine");
+
+        /// <summary>
+        /// The operator vouched for an origin nobody just set: a zero remembered from the
+        /// last session, or one GRBL keeps across a reconnect to the same machine.
+        /// </summary>
+        public static void TrustWorkZero(bool trusted) =>
+            SetWorkZeroKnown(trusted, "trusted by the operator");
+
+        /// <summary>The origin is no longer known, because the machine may have moved.</summary>
+        public static void ForgetWorkZero() => SetWorkZeroKnown(false, "machine disconnected");
+
+        private static void SetWorkZeroKnown(bool known, string why)
+        {
+            if (IsWorkZeroSet == known)
+            {
+                return;
+            }
+
+            IsWorkZeroSet = known;
+            Logger.Log("AppState: IsWorkZeroSet = {0} ({1})", known, why);
+        }
+        /// <summary>
+        /// Whether a grid probe is running, derived from the probe controller that owns
+        /// that state, so no front end keeps a flag it could forget to clear.
         /// </summary>
         public static bool IsProbing => _probeController?.IsActive ?? false;
+
+        /// <inheritdoc cref="Core.Controllers.IProbeController.IsTracingOutline"/>
+        public static bool IsTracingOutline => _probeController?.IsTracingOutline ?? false;
+
+        /// <inheritdoc cref="Core.Controllers.IProbeController.IsMeasuringGrid"/>
+        public static bool IsMeasuringGrid => _probeController?.IsMeasuringGrid ?? false;
         public static bool SuppressErrors { get; set; } = false;
-        public static bool SingleProbing { get; set; } = false;
         public static bool MacroMode { get; set; } = false;
-        public static Action<Vector3, bool>? SingleProbeCallback { get; set; }
 
         // Depth adjustment for re-milling (negative = deeper, positive = shallower)
         // Use the helper methods below to modify this value.
@@ -153,7 +180,22 @@ namespace coppercli
         }
 
         // Jog state
-        public static int JogPresetIndex { get; set; } = 1;  // Start at Normal
+        /// <summary>
+        /// Which jog preset is selected. Advance it with <see cref="CycleJogPreset"/> and
+        /// read the preset itself from <see cref="CurrentJogMode"/>, so how the index wraps
+        /// and what it points at are each stated once rather than at every menu that offers
+        /// the key.
+        /// </summary>
+        public static int JogPresetIndex { get; private set; } = CliConstants.DefaultJogModeIndex;
+
+        /// <summary>The preset the index selects.</summary>
+        public static CliConstants.JogMode CurrentJogMode => CliConstants.JogModes[JogPresetIndex];
+
+        /// <summary>Move to the next preset, wrapping at the end.</summary>
+        public static void CycleJogPreset()
+        {
+            JogPresetIndex = (JogPresetIndex + 1) % CliConstants.JogModes.Length;
+        }
 
         /// <summary>
         /// Loads G-code into the machine and resets probe application state.
@@ -169,7 +211,7 @@ namespace coppercli
 
             // Record which board is loaded here, not at each of the callers - a height
             // map's applicability is decided by comparing against this, and a caller
-            // that forgot to set it made every later answer wrong.
+            // that does not set it makes every later answer wrong.
             if (!string.IsNullOrEmpty(file.FilePath))
             {
                 Session.LastLoadedGCodeFile = file.FilePath;
@@ -186,9 +228,8 @@ namespace coppercli
         /// Loads a probe grid from a file, replacing any current grid. If a grid was already
         /// baked into the in-memory G-code, the original is reloaded first: ApplyProbeGrid is
         /// additive (Z += interpolated height), so applying a second grid without restoring the
-        /// original would double the corrections and cut at the wrong depth. Single source for
-        /// both the TUI and web "load probe file" paths, which previously diverged — only the web
-        /// reloaded the original, so a TUI grid-over-grid load cut too deep.
+        /// original would double the corrections and cut at the wrong depth. One definition
+        /// for both the terminal and web "load probe file" paths, so each reloads first.
         /// </summary>
         public static ProbeGrid LoadProbeGridFromFile(string path)
         {
@@ -282,18 +323,13 @@ namespace coppercli
         /// <returns>The created ProbeGrid.</returns>
         public static ProbeGrid SetupProbeGrid(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
         {
-            var min = new Vector2(fileMin.X - margin, fileMin.Y - margin);
-            var max = new Vector2(fileMax.X + margin, fileMax.Y + margin);
+            var grid = ProbeGrid.ForJob(fileMin, fileMax, margin, gridSize);
 
-            var grid = new ProbeGrid(gridSize, min, max)
-            {
-                // Stamped at creation, from the machine's own reported origin. This is
-                // what later lets the map say whether it still describes this job,
-                // instead of that being guessed from the session file.
-                Context = new ProbeContext(
-                    Session.LastLoadedGCodeFile ?? string.Empty,
-                    Machine?.G54Offset ?? Core.Util.Vector3.MinValue)
-            };
+            // Stamped at creation from the machine's reported origin, so the map can later
+            // say whether it still describes this job.
+            grid.Context = new ProbeContext(
+                Session.LastLoadedGCodeFile ?? string.Empty,
+                Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
 
             ProbePoints = grid;
             ResetProbeApplicationState();
@@ -313,6 +349,10 @@ namespace coppercli
         public static bool ApplyProbeData()
         {
             Logger.Log($"ApplyProbeData: CurrentFile={CurrentFile != null}, ProbePoints={ProbePoints != null}, NotProbed={ProbePoints?.RemainingCount ?? -1}, AreProbePointsApplied={AreProbePointsApplied}");
+
+            // Adopt the autosave if that is where the map is. Applying is an operator
+            // action, so it may take the data on; a status read may not.
+            ProbePoints ??= ReadUsableAutosave();
 
             if (CurrentFile == null || ProbePoints == null || !ProbePoints.HasCompleteData)
             {
@@ -357,11 +397,9 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Ensures probe data is loaded into memory if autosave exists.
-        /// Single source of truth for both TUI and Web UI.
-        /// Call this when you need to access ProbePoints and want to ensure
-        /// any persisted data is loaded.
-        /// Also loads the associated G-Code file if available.
+        /// Adopts the autosave as the operator's current data when there is none in memory,
+        /// along with the G-code it was measured for. Call it before reading ProbePoints on
+        /// a path that may run before anything loaded them.
         /// </summary>
         public static void EnsureProbeDataLoaded()
         {
@@ -371,44 +409,69 @@ namespace coppercli
                 return;
             }
 
-            var state = Persistence.GetProbeState();
-            if (state == Persistence.ProbeState.None)
+            var candidate = ReadUsableAutosave();
+            if (candidate == null)
             {
                 return;
             }
 
-            // Load from autosave
-            var autosavePath = Persistence.GetProbeAutoSavePath();
-            try
+            ProbePoints = candidate;
+            ResetProbeApplicationState();
+            Logger.Log("EnsureProbeDataLoaded: adopted the autosave");
+
+            // Also load the G-Code file that was used when probe was created
+            LoadProbeSourceGCode();
+        }
+
+        /// <summary>
+        /// The autosave on disk, if it describes the job in hand. Reads the file and adopts
+        /// nothing, so a status can ask without changing what the operator has. A map
+        /// measured on another board, or before the origin moved, comes back null: it must
+        /// never be announced as the operator's current data.
+        /// </summary>
+        public static ProbeGrid? ReadUsableAutosave()
+        {
+            var candidate = Persistence.ReadProbeAutoSave();
+            if (candidate == null)
             {
-                var candidate = ProbeGrid.Load(autosavePath);
-
-                // Only adopt a map that describes the job in hand. Silently resurrecting
-                // one measured on another board, or before the origin moved, is how a
-                // leftover file came to be announced as the operator's current data.
-                var applicability = candidate.GetApplicability(
-                    Session.LastLoadedGCodeFile ?? string.Empty,
-                    Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
-
-                if (applicability == ProbeApplicability.DifferentFile
-                    || applicability == ProbeApplicability.OriginMoved)
-                {
-                    Logger.Log("EnsureProbeDataLoaded: autosave not applicable ({0}), leaving it alone",
-                        applicability);
-                    return;
-                }
-
-                ProbePoints = candidate;
-                ResetProbeApplicationState();
-                Logger.Log($"EnsureProbeDataLoaded: loaded from autosave ({state}, {applicability})");
-
-                // Also load the G-Code file that was used when probe was created
-                LoadProbeSourceGCode();
+                return null;
             }
-            catch (Exception ex)
+
+            var applicability = candidate.GetApplicability(
+                Session.LastLoadedGCodeFile ?? string.Empty,
+                Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
+
+            if (applicability == ProbeApplicability.DifferentFile
+                || applicability == ProbeApplicability.OriginMoved)
             {
-                Logger.Log($"EnsureProbeDataLoaded: failed - {ex.Message}");
+                Logger.Log("ReadUsableAutosave: not applicable ({0})", applicability);
+                return null;
             }
+
+            return candidate;
+        }
+
+        /// <summary>
+        /// The height map for the job in hand: the one loaded, or the autosave when nothing
+        /// is loaded and it describes this job. Every gate that asks whether the operator has
+        /// probe data reads this, so none of them can answer differently from the screen.
+        /// </summary>
+        public static ProbeGrid? CurrentProbeGrid => ProbePoints ?? ReadUsableAutosave();
+
+        /// <summary>
+        /// Deletes the autosave and drops the map in memory, in that order, so a delete that
+        /// fails does not leave the operator told the data is gone while it is still there.
+        /// </summary>
+        /// <returns>False if the autosave is still on disk.</returns>
+        public static bool DiscardProbeDataAndAutosave()
+        {
+            if (!Persistence.ClearProbeAutoSave())
+            {
+                return false;
+            }
+
+            DiscardProbeData();
+            return true;
         }
 
         /// <summary>
@@ -418,8 +481,10 @@ namespace coppercli
         /// </summary>
         public static ProbeGrid ForceLoadProbeFromAutosave()
         {
-            var autosavePath = Persistence.GetProbeAutoSavePath();
-            ProbePoints = ProbeGrid.Load(autosavePath);
+            // The same test the status applies: recovering a map measured for another board
+            // would hand the operator someone else's heights as their current data.
+            ProbePoints = ReadUsableAutosave()
+                ?? throw new InvalidOperationException(CliConstants.ProbeAutosaveNotApplicable);
             ResetProbeApplicationState();
             LoadProbeSourceGCode();
             Logger.Log($"ForceLoadProbeFromAutosave: loaded {ProbePoints.Progress}/{ProbePoints.TotalPoints} points");

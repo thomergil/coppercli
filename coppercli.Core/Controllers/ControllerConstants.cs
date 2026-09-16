@@ -7,9 +7,8 @@ namespace coppercli.Core.Controllers
     /// - Machine coordinates (G53): Absolute positions relative to home. Z=0 at top, negative down.
     /// - Work coordinates (G54 default): Relative to workpiece origin. Z=0 typically at PCB surface.
     ///
-    /// Safety-critical operations (retracts, tool changes) use MACHINE coordinates (G53) to ensure
-    /// predictable behavior regardless of work offset. Defense-in-depth: always verify coordinate
-    /// mode before safety-critical moves.
+    /// Retracts and tool changes use MACHINE coordinates (G53), so the destination does not move
+    /// when the work offset changes. Always set the coordinate mode explicitly before such a move.
     /// </summary>
     public static class ControllerConstants
     {
@@ -33,25 +32,34 @@ namespace coppercli.Core.Controllers
         /// <summary>Homing failed and the machine explained why.</summary>
         public const string ErrorHomingFailedBecause = "Homing did not complete, so milling cannot start. {0}";
         public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted to a safe height. Stopped before moving.";
+
+        /// <summary>Shown when a point could not be measured and the run carried on.</summary>
+        public const string ErrorProbePointSkipped =
+            "No contact at point {0} of {1}. It was left unmeasured, so the probe data is incomplete.";
+
+        /// <summary>Shown when a stopped run cannot confirm the tool reached safe height.</summary>
+        public const string ErrorStopRetractFailed =
+            "Stopped, but could not confirm the tool lifted clear. Check whether the tool is "
+            + "still down before you move the machine.";
         public const string ErrorWorkOffsetUnknown = "The machine did not report its work offsets. Stopped rather than guess the Z origin.";
-        /// <summary>
-        /// The door was opened and shut again while the machine was homing. GRBL holds
-        /// until it is resumed, and clearing that gate is the operator's to do.
-        /// </summary>
-        /// <summary>Title of the prompt that holds a job until the enclosure is shut.</summary>
+        /// <summary>Title of the prompt that holds a job until the door is closed.</summary>
         public const string DoorPromptTitle = "Enclosure Door";
 
         /// <summary>Shown while GRBL still reports the door open.</summary>
         public const string DoorOpenPrompt =
-            "The enclosure is open. Take the magnet off the switch if it is there, close "
-            + "the door, then continue.";
+            "The enclosure door is open. If a magnet is on the switch, take it off. Close "
+            + "the door, then press Continue.";
 
         /// <summary>Shown once it is shut but the machine is still holding.</summary>
         public const string DoorHoldingPrompt =
-            "The door is closed and the machine is holding. Continue to release it.";
+            "The door is closed and the machine is holding. Press Continue to release the hold.";
 
+        /// <summary>
+        /// The door was opened and closed again while the machine was homing. GRBL holds
+        /// until something resumes it, and only the operator may decide that.
+        /// </summary>
         public const string ErrorDoorClosedDuringHoming =
-            "The door was opened while the machine was homing, so it stopped. The door is "
+            "The door was opened while the machine was homing, so homing stopped. The door is "
             + "closed now - start the job again.";
 
         public const string ErrorMachineDoorOpen = "The enclosure door is open. Close it, then start the job again.";
@@ -59,8 +67,18 @@ namespace coppercli.Core.Controllers
         public const string ErrorMillingDidNotStart =
             "The job did not start streaming to the machine. This usually means the machine was left in probe mode - reconnect or reset, then try again.";
         public const string ErrorMillingAlarm = "The machine raised an alarm during the job. Milling stopped.";
+
+        /// <summary>
+        /// What the operator is told when a run ends on an error the workflow does not
+        /// handle itself - a disk error, a port another program took.
+        /// </summary>
+        public const string ErrorRunFailed =
+            "The run stopped on an unexpected error. Check the machine before doing anything else.";
         public const string LogMillingAlarm = "Milling aborted: machine in alarm state ({0})";
         public const string ErrorProbeNoContact = "Probe failed: max depth reached without contact";
+        public const string ErrorProbeHeightUnexpected =
+            "Probe height {0:F3}mm differs from the surrounding measurements by {1:F3}mm - "
+            + "check the board for debris before continuing.";
         public const string ErrorProbeTimeout = "Probe timed out";
         public const string ErrorToolSetterNotConfigured = "Tool setter position not configured";
         public const string ErrorTraceHeightUnsafe = "Trace height must be positive (current: {0:F3}mm)";
@@ -99,7 +117,7 @@ namespace coppercli.Core.Controllers
         public const string PhaseInitializing = "Initializing";
         public const string PhaseMilling = "Milling";
         public const string PhaseCompleting = "Completing";
-        public const string PhaseWaitingForOperator = "Paused";
+        public const string PhaseWaitingForOperator = "Waiting for operator";
 
         /// <summary>How far past an M6 to look for the redundant M0 that follows it.</summary>
         public const int ToolChangeM0SearchLines = 8;
@@ -169,8 +187,6 @@ namespace coppercli.Core.Controllers
         /// own title rather than inheriting "Tool Change".</summary>
         public const string OperatorPauseTitle = "Program Paused";
 
-        /// <summary>{0} is the 1-based line number, so it matches what an operator
-        /// editing the file would call "line N", not the 0-based index the code uses.</summary>
         /// <summary>
         /// Shown when the program pauses and carries no note saying why. Deliberately
         /// carries no line number: the streamed program is regenerated from the parsed
@@ -189,7 +205,20 @@ namespace coppercli.Core.Controllers
         /// <summary>How far back to look for a comment explaining a pause.</summary>
         public const int PauseNoteSearchLines = 4;
 
+        /// <summary>The percentage a finished step reports.</summary>
+        public const int ProgressPercentComplete = 100;
+
         /// <summary>How long to give GRBL to leave the door hold after a resume.</summary>
         public const int DoorResumeTimeoutMs = 5000;
+
+        /// <summary>
+        /// How far a probed height may sit from its measured neighbors before the run
+        /// pauses for the operator (mm).
+        ///
+        /// Adjacent nodes differ by the board's warp over one grid step plus probe
+        /// repeatability, together well under a tenth of a millimeter. A tip that stopped
+        /// somewhere other than the board lands whole tenths away.
+        /// </summary>
+        public const double ProbeHeightDeviationToleranceMm = 0.5;
     }
 }

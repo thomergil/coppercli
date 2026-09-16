@@ -14,6 +14,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Expose internals to the test project, so safety decisions that are not part of
+         Machine's public surface can still be pinned. -->
+    <InternalsVisibleTo Include="coppercli.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="Resources\*.csv">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

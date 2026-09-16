@@ -43,5 +43,12 @@ namespace coppercli.Core.Controllers
 
         /// <summary>Reset to Idle state for next operation.</summary>
         void Reset();
+
+        /// <summary>
+        /// Return the controller to Idle so the next run can start, whatever state this one
+        /// left it in. Stops an unfinished run first, because <see cref="Reset"/> refuses a
+        /// controller that still claims to be running. The only route back to Idle.
+        /// </summary>
+        Task ReleaseAsync();
     }
 }

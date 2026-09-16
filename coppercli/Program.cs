@@ -334,10 +334,8 @@ class Program
     /// Asks the questions carried over from the previous session.
     ///
     /// Which questions apply, and what each answer does, is decided in SessionRestore -
-    /// shared with the browser interface. This method only asks them. The two used to
-    /// each implement the sequence, and drifted: the terminal grew a condition that
-    /// skipped the height-map question whenever the work zero was not trusted, leaving
-    /// that data undecided on disk to resurface later as though it were current.
+    /// shared with the browser interface. This method only asks them, so neither front
+    /// end can skip a question or answer one differently.
     /// </summary>
     private static void OfferSessionRestore()
     {

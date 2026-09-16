@@ -1,6 +1,6 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-Cross-platform (Mac, Linux, Windows, and web) tool for PCB milling on GRBL machines with probe-based auto-leveling, tool changes, real-time visualization, depth-adjusted remills, session recovery, and a safety-first approach.
+Cross-platform (Mac, Linux, Windows, and web) tool for PCB milling on GRBL machines with probe-based auto-leveling, tool changes, real-time visualization, depth-adjusted remills, and session recovery.
 
 * Works **directly over USB/Serial** as a keyboard-driven terminal app on Mac, Linux, and Windows
 * Can work as a **USB/Serial proxy**, allowing remote control over a local network
@@ -63,20 +63,23 @@ For a complete end-to-end guide on milling PCBs, from KiCad export through G-cod
 
 ## Background
 
-Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), an excellent CNC milling with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimal interaction, and can recover interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
+Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), a CNC milling program with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimal interaction, and can recover interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
 
 ## Features
 
 - Cross-platform, auto-detects serial port and baud rate
 - Proxy mode for network access; HTTP server for web access
-- Keyboard-driven: single-key menu navigation, arrow/HJKL for jogging, Tab to cycle speeds
-- Jog speed presets (fast/normal/slow/creep) with vim-style multipliers (e.g., `3k` = 3× up)
+- Keyboard-driven: single-key menu navigation, arrows or WASD to jog X and Y, Q and Z to
+  jog the tool up and down, Tab to cycle speeds
+- Jog speed presets (fast, normal, slow, creep) with a digit prefix as multiplier, so `3w`
+  jogs three steps in +Y
 - Feed speed override during milling in 10% increments
 - Depth adjustment for re-milling in ±0.02mm increments
 - Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
 - Built-in machine profiles
 - Probe grid auto-leveling with configurable margin and grid size
-- Slow probe detection: pauses if a probe takes 20% longer than average to protect bad probes
+- Bad probe detection: pauses when a measured height disagrees with the points already
+  measured around it, so a reading taken on debris or through the surface is caught
 - Real-time probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
 - Save/load probe grids
@@ -94,28 +97,33 @@ Server mode runs both a TCP proxy and a web server, allowing remote access via e
 - **Port 34000**: Raw GRBL over TCP (for TUI clients using Network mode)
 - **Port 34001**: HTTP/WebSocket (for browser-based control)
 
-Open the **web UI** by typing the address printed at startup — `http://192.168.1.5:34001`
-or similar — into any browser on the same network. There is no password to enter.
+Open the **web UI** by typing the address printed at startup, such as
+`http://192.168.1.5:34001`, into any browser on the same network. There is no password.
 
 Use the numeric address, or a plain machine name such as `mill` or `mill.local`. A dotted
-domain name — `mill.lan`, `mill.home.arpa`, anything from your router's search domain — is
-refused on purpose: accepting those is what would let a remote site point a domain of its
-own at your machine and drive it through your browser.
+domain name such as `mill.lan`, `mill.home.arpa`, or anything from your router's search
+domain is refused. Accepting those would let a remote site point a domain of its own at
+your machine and drive it through your browser.
 
-Two things are refused, neither of which costs you a keystroke:
+Two things are refused:
 
 - A request whose source address is not on a private network and does not share a subnet
   with this machine. Plain port-forwarding therefore does not expose the mill.
-- A page you happen to be visiting calling the machine in the background, and a domain
-  that re-resolves to your machine's address to pose as the UI.
+- A request sent by a page on another site that says so, and a request for a domain name
+  that re-resolves to your machine's address (DNS rebinding).
+
+A plain cross-site `GET` - an `<img>` or `<script>` on someone else's page pointed at this
+port - says nothing about where it came from, so it cannot be told apart from your own
+navigation and is admitted. Nothing that moves the machine, starts a job, or writes a file
+answers a `GET`.
 
 > **It does not protect against other people on your own network.** Anyone who shares it
 > can drive the machine, and the raw GRBL bridge on port 34000 is wide open in the same
 > way. Only run either on a network you trust.
 >
-> It also cannot help if you deliberately publish the port through something that
-> terminates locally — an `ssh -R` tunnel, `ngrok`, or a reverse proxy — because the
-> request then arrives from this machine itself. Do not expose either port that way.
+> It also cannot help if you publish the port through something that terminates locally,
+> such as an `ssh -R` tunnel, `ngrok`, or a reverse proxy. The request then arrives from
+> this machine itself. Do not expose either port that way.
 
 ```bash
 # Start server mode
@@ -125,9 +133,11 @@ coppercli --server
 coppercli --server --proxy-port 35000 --web-port 8080
 ```
 
-When started, the console displays the connection URLs. Only one client can connect at a time.
+When started, the console displays the connection URLs. Drive the machine from one page.
+Nothing enforces this: a second browser gets a take-over prompt and still works if you
+decline it, and coppercli does not notice a second tab of the same browser.
 
-**Warning:** While coppercli employs tools to prevent sleep, be careful running clients on a laptop or device that may suspend/sleep. If the client suspends during milling, the network connection is lost, and the machine may be left in an unknown state. Always run the client on a device connected to power with sleep disabled. You should always stay close to your CNC machine when it is running.
+**Warning:** coppercli tries to keep the client awake, but a laptop or phone can still suspend. If the client suspends during milling, the network connection is lost and the machine may be left in an unknown state. Run the client on a device connected to power with sleep disabled, and stay next to the machine while it runs.
 
 ## Macros
 
@@ -177,13 +187,12 @@ The URL reservation is required for the web server. Without it, you'll get "Acce
 | `--server` | `-s` | Start server mode (proxy on 34000, web on 34001) |
 | `--proxy-port <number>` | | Override TCP proxy port (default: 34000) |
 | `--web-port <number>` | | Override web server port (default: 34001) |
+| `--port <number>` | | Older name for `--web-port` |
 | `--debug` | `-d` | Enable debug logging to `coppercli.log` |
 
 ## A note on Claude Code and code quality
 
-This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot). I did much of this with Claude Code. As of the time of this writing (Aug, 2026), Claude Code, running Claude Opus 5, quickly writes reasonable code. It does not maintain high code quality, write DRY code, or stick to clean coding patterns. I spent most of my time on this project pursuing clean code. All that said, this code is reasonably well tested but does not meet the code quality standards I'd hold myself to if writing it entirely by hand.
-
-That brings me, semi-related, to:
+This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot). I did much of this with Claude Code. As of the time of this writing (Aug, 2026), Claude Code, running Claude Opus 5, quickly writes reasonable code. It does not maintain high code quality, write DRY code, or stick to clean coding patterns. I spent most of my time on this project pursuing clean code. This code is reasonably well tested, but it does not meet the code quality standards I'd hold myself to if I wrote it entirely by hand.
 
 ## Warning
 

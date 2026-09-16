@@ -41,9 +41,6 @@ namespace coppercli.Core.Settings
         public double OutlineTraceHeight { get; set; } = Constants.RetractZMm;
         public double OutlineTraceFeed { get; set; } = 600.0;  // mm/min (10mm/sec)
 
-        // Firmware
-        public string FirmwareType { get; set; } = "Grbl";
-
         // Jogging
         public double JogFeed { get; set; } = 1000.0;
         public double JogDistance { get; set; } = 10.0;

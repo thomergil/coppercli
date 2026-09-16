@@ -45,12 +45,13 @@ namespace coppercli.Menus
             new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
                 EnabledWhen: () => AppState.Machine.Connected,
                 DisabledReason: GetJogDisabledReason),
+            // Enabled exactly when nothing blocks it, so the entry and the reason beside
+            // it cannot disagree.
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
-                EnabledWhen: () => AppState.Machine.Connected && AppState.CurrentFile != null && AppState.IsWorkZeroSet,
+                EnabledWhen: () => MenuHelpers.GetProbeDisabledReason() == null,
                 DisabledReason: MenuHelpers.GetProbeDisabledReason),
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
-                EnabledWhen: () => AppState.Machine.Connected && AppState.Machine.File.Count > 0 &&
-                    (AppState.ProbePoints == null || AppState.AreProbePointsApplied),
+                EnabledWhen: () => MenuHelpers.GetMillDisabledReason() == null,
                 DisabledReason: MenuHelpers.GetMillDisabledReason),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
                 EnabledWhen: () => AppState.Machine.Connected,

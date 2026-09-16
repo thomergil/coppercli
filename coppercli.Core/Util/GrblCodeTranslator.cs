@@ -10,8 +10,6 @@ namespace coppercli.Core.Util
     {
         static Dictionary<int, string> GrblErrors = new Dictionary<int, string>();
         static Dictionary<int, string> GrblAlarms = new Dictionary<int, string>();
-        static Dictionary<int, string> UcncErrors = new Dictionary<int, string>();
-        static Dictionary<int, string> UcncAlarms = new Dictionary<int, string>();
 
         /// <summary>
         /// setting name, unit, description
@@ -20,7 +18,14 @@ namespace coppercli.Core.Util
 
         private static bool _initialized = false;
 
-        private static void LoadErr(Dictionary<int, string> dict, string resourceName)
+        /// <summary>
+        /// Reads a quoted-CSV resource into a dictionary keyed by its first column.
+        ///
+        /// The two loaders differed only in how many columns they wanted and what they
+        /// built from them, so that is all each one still says.
+        /// </summary>
+        private static void LoadCsvResource<T>(
+            Dictionary<int, T> dict, string resourceName, Regex lineParser, Func<Match, T> build)
         {
             try
             {
@@ -30,20 +35,15 @@ namespace coppercli.Core.Util
                     return;
                 }
 
-                Regex LineParser = new Regex(@"""([0-9]+)"",""[^\n\r""]*"",""([^\n\r""]*)""");
-
-                MatchCollection mc = LineParser.Matches(content);
-
-                foreach (Match m in mc)
+                foreach (Match m in lineParser.Matches(content))
                 {
                     try
                     {
-                        int number = int.Parse(m.Groups[1].Value);
-                        dict[number] = m.Groups[2].Value;
+                        dict[int.Parse(m.Groups[1].Value)] = build(m);
                     }
                     catch
                     {
-                        // Skip malformed lines in error code file
+                        // One malformed line must not cost the whole table.
                     }
                 }
             }
@@ -52,39 +52,19 @@ namespace coppercli.Core.Util
                 Console.WriteLine($"Error loading {resourceName}: {ex.Message}");
             }
         }
+
+        private static readonly Regex ErrorLineParser =
+            new(@"""([0-9]+)"",""[^\n\r""]*"",""([^\n\r""]*)""");
+
+        private static readonly Regex SettingLineParser =
+            new(@"""([0-9]+)"",""([^\n\r""]*)"",""([^\n\r""]*)"",""([^\n\r""]*)""");
+
+        private static void LoadErr(Dictionary<int, string> dict, string resourceName)
+            => LoadCsvResource(dict, resourceName, ErrorLineParser, m => m.Groups[2].Value);
 
         private static void LoadSettings(Dictionary<int, Tuple<string, string, string>> dict, string resourceName)
-        {
-            try
-            {
-                string content = LoadEmbeddedResource(resourceName);
-                if (string.IsNullOrEmpty(content))
-                {
-                    return;
-                }
-
-                Regex LineParser = new Regex(@"""([0-9]+)"",""([^\n\r""]*)"",""([^\n\r""]*)"",""([^\n\r""]*)""");
-
-                MatchCollection mc = LineParser.Matches(content);
-
-                foreach (Match m in mc)
-                {
-                    try
-                    {
-                        int number = int.Parse(m.Groups[1].Value);
-                        dict[number] = new Tuple<string, string, string>(m.Groups[2].Value, m.Groups[3].Value, m.Groups[4].Value);
-                    }
-                    catch
-                    {
-                        // Skip malformed lines in settings file
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error loading {resourceName}: {ex.Message}");
-            }
-        }
+            => LoadCsvResource(dict, resourceName, SettingLineParser,
+                m => Tuple.Create(m.Groups[2].Value, m.Groups[3].Value, m.Groups[4].Value));
 
         private static string LoadEmbeddedResource(string resourceName)
         {
@@ -123,57 +103,42 @@ namespace coppercli.Core.Util
 
             LoadErr(GrblErrors, "grbl_error_codes_en_US.csv");
             LoadErr(GrblAlarms, "grbl_alarm_codes_en_US.csv");
-            LoadErr(UcncErrors, "ucnc_error_codes_en_US.csv");
-            LoadErr(UcncAlarms, "ucnc_alarm_codes_en_US.csv");
             LoadSettings(Settings, "grbl_setting_codes_en_US.csv");
 
             _initialized = true;
             Console.WriteLine("Loaded GRBL Code Database");
         }
 
-        public static string GetErrorMessage(int errorCode, bool alarm, string firmwareType = "Grbl")
+        /// <summary>
+        /// The sentence behind a bare GRBL code, or a readable stand-in when the code is
+        /// not in the table.
+        /// </summary>
+        public static string GetErrorMessage(int errorCode, bool alarm)
         {
             Initialize();
 
-            Dictionary<int, string> dict;
+            var dict = alarm ? GrblAlarms : GrblErrors;
 
-            if (firmwareType == "uCNC")
-            {
-                dict = alarm ? UcncAlarms : UcncErrors;
-            }
-            else
-            {
-                dict = alarm ? GrblAlarms : GrblErrors;
-            }
-
-            if (dict.ContainsKey(errorCode))
-            {
-                return dict[errorCode];
-            }
-            else
-            {
-                return alarm ? $"Unknown Alarm: {errorCode}" : $"Unknown Error: {errorCode}";
-            }
+            return dict.TryGetValue(errorCode, out string message)
+                ? message
+                : alarm ? $"Unknown Alarm: {errorCode}" : $"Unknown Error: {errorCode}";
         }
 
-        static Regex ErrorExp = new Regex(@"error:(\d+)");
-        private static string ErrorMatchEvaluator(Match m, string firmwareType)
-        {
-            return GetErrorMessage(int.Parse(m.Groups[1].Value), false, firmwareType);
-        }
+        private static readonly Regex ErrorExp = new(@"error:(\d+)");
+        private static readonly Regex AlarmExp = new(@"ALARM:(\d+)");
 
-        static Regex AlarmExp = new Regex(@"ALARM:(\d+)");
-        private static string AlarmMatchEvaluator(Match m, string firmwareType)
-        {
-            return GetErrorMessage(int.Parse(m.Groups[1].Value), true, firmwareType);
-        }
-
-        public static string ExpandError(string error, string firmwareType = "Grbl")
+        /// <summary>
+        /// Replaces every bare code in a line from the machine with what it means.
+        /// </summary>
+        public static string ExpandError(string error)
         {
             Initialize();
 
-            string ret = ErrorExp.Replace(error, m => ErrorMatchEvaluator(m, firmwareType));
-            return AlarmExp.Replace(ret, m => AlarmMatchEvaluator(m, firmwareType));
+            string expanded = ErrorExp.Replace(
+                error, m => GetErrorMessage(int.Parse(m.Groups[1].Value), alarm: false));
+
+            return AlarmExp.Replace(
+                expanded, m => GetErrorMessage(int.Parse(m.Groups[1].Value), alarm: true));
         }
     }
 }

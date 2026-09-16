@@ -1,4 +1,6 @@
 using System;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,10 +14,105 @@ namespace coppercli.Tests
 {
     /// <summary>
     /// Each of these pins a guard that decides whether the machine is allowed to move.
-    /// Every one fails if its guard is removed - that is the point of them.
+    /// Every one fails if its guard is removed.
     /// </summary>
     public class SafetyGuardTests
     {
+        // =====================================================================
+        // Disconnecting must stop the machine first
+        // =====================================================================
+
+        /// <summary>
+        /// Closing the port does not stop GRBL, so a machine reporting anything but Idle is
+        /// stopped first. Machine.Status holds the bare state word, with any substate kept
+        /// separately. The theory also covers Jog and Home, which the codebase has no status
+        /// constants for.
+        /// </summary>
+        [Theory]
+        [InlineData(GrblProtocol.StatusRun)]
+        [InlineData(GrblProtocol.StatusHold)]
+        [InlineData(GrblProtocol.StatusDoor)]
+        [InlineData(GrblProtocol.StatusAlarm)]
+        [InlineData("Jog")]
+        [InlineData("Home")]
+        public void NeedsStopBeforeDisconnect_IsTrueWhenTheMachineIsNotIdle(string status)
+        {
+            Assert.True(Machine.NeedsStopBeforeDisconnect(connected: true, status, bytesSent: 0));
+        }
+
+        /// <summary>An idle machine with nothing outstanding has nothing to stop.</summary>
+        [Fact]
+        public void NeedsStopBeforeDisconnect_IsFalseWhenIdleAndNothingOutstanding()
+        {
+            Assert.False(
+                Machine.NeedsStopBeforeDisconnect(connected: true, GrblProtocol.StatusIdle, bytesSent: 0));
+        }
+
+        /// <summary>
+        /// A stop waits out the whole teardown - feed hold, reset, unlock, idle, then the
+        /// lift - so its budget has to cover the sum. If the budget is smaller than that sum,
+        /// a working stop tells the operator the machine may still be moving.
+        /// </summary>
+        [Fact]
+        public void TheStopBudget_CoversTheTeardownItWaitsOn()
+        {
+            int teardown = (Constants.CommandDelayMs * 2)
+                + Constants.ResetWaitMs
+                + Constants.IdleWaitTimeoutMs
+                + Constants.CancelRetractTimeoutMs;
+
+            Assert.True(Constants.ControllerCancelTimeoutMs >= teardown);
+        }
+
+        /// <summary>
+        /// A line sent moments ago sits unparsed in GRBL's receive buffer while the status
+        /// still reads Idle. That happens when a jog and a disconnect both land between two
+        /// status polls.
+        /// </summary>
+        [Fact]
+        public void NeedsStopBeforeDisconnect_IsTrueWhenIdleWithALineOutstanding()
+        {
+            Assert.True(
+                Machine.NeedsStopBeforeDisconnect(connected: true, GrblProtocol.StatusIdle, bytesSent: 12));
+        }
+
+        /// <summary>
+        /// Auto-detect opens every serial port in turn and disconnects the ones that do not
+        /// answer. A port that never answered as GRBL must not be sent a reset.
+        /// </summary>
+        [Fact]
+        public void NeedsStopBeforeDisconnect_IsFalseForAPortThatNeverSpokeGrbl()
+        {
+            Assert.False(Machine.NeedsStopBeforeDisconnect(
+                connected: true, GrblProtocol.StatusDisconnected, bytesSent: 0));
+        }
+
+        /// <summary>A machine already disconnected has nothing to send to.</summary>
+        [Fact]
+        public void NeedsStopBeforeDisconnect_IsFalseWhenNotConnected()
+        {
+            Assert.False(
+                Machine.NeedsStopBeforeDisconnect(connected: false, GrblProtocol.StatusRun, bytesSent: 0));
+        }
+
+        /// <summary>
+        /// The bytes that stop a GRBL machine, in order, with time between them for GRBL to
+        /// act on each.
+        /// </summary>
+        [Fact]
+        public void WriteStopSequence_SendsAFeedHoldThenASoftReset()
+        {
+            var wire = new MemoryStream();
+            var elapsed = Stopwatch.StartNew();
+
+            Machine.WriteStopSequence(wire);
+
+            Assert.Equal(
+                new[] { (byte)GrblProtocol.FeedHold, (byte)GrblProtocol.SoftReset },
+                wire.ToArray());
+            Assert.True(elapsed.ElapsedMilliseconds >= Constants.CommandDelayMs + Constants.ResetWaitMs);
+        }
+
         // =====================================================================
         // Safety retract must be confirmed, not assumed
         // =====================================================================
@@ -256,7 +353,7 @@ namespace coppercli.Tests
         /// <summary>
         /// If the file never begins streaming, the controller must fail with a clear
         /// message. The completion check cannot tell "never started" from "finished", so
-        /// an unstarted stream used to sit at Idle for ever with nothing reported.
+        /// an unstarted stream would otherwise sit at Idle for ever with nothing reported.
         /// </summary>
         [Fact]
         public async Task Milling_FailsLoudly_WhenTheFileCannotStartStreaming()

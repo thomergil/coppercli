@@ -202,5 +202,113 @@ namespace coppercli.Tests
             Assert.Equal(0, grid.RemainingCount);
             Assert.True(grid.HasCompleteData);
         }
+
+        // =========================================================================
+        // Neighbour deviation
+        //
+        // This is what tells an untrustworthy reading from a good one: a height that
+        // disagrees with the board around it.
+        // =========================================================================
+
+        [Fact]
+        public void NeighbourDeviation_WithNoMeasuredNeighbours_IsNull()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            Assert.Null(grid.GetNeighbourDeviation(0, 0, -0.5));
+        }
+
+        [Fact]
+        public void NeighbourDeviation_IgnoresTheNodesOwnRecordedHeight()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            // The controller records the height before asking, so a node that counted
+            // itself would always look agreeable and the check would never fire.
+            grid.RecordMeasurement(0, 0, -5.0);
+
+            Assert.Null(grid.GetNeighbourDeviation(0, 0, -5.0));
+        }
+
+        [Fact]
+        public void NeighbourDeviation_MeasuresAgainstTheMeanOfMeasuredNeighbours()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            grid.RecordMeasurement(0, 1, -0.10);
+            grid.RecordMeasurement(1, 0, -0.30);
+
+            // Mean of the two orthogonal neighbors is -0.20.
+            double? deviation = grid.GetNeighbourDeviation(0, 0, -0.25);
+
+            Assert.NotNull(deviation);
+            Assert.Equal(0.05, deviation!.Value, 6);
+        }
+
+        [Fact]
+        public void NeighbourDeviation_SkipsUnmeasuredNeighbours()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            // A skipped point leaves a hole. It must not count as a height of zero.
+            grid.RecordMeasurement(1, 1, -0.40);
+
+            double? deviation = grid.GetNeighbourDeviation(1, 2, -0.40);
+
+            Assert.NotNull(deviation);
+            Assert.Equal(0.0, deviation!.Value, 6);
+        }
+
+        [Fact]
+        public void NeighbourDeviation_ExcludesDiagonalNodes()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            // Only a diagonal is measured. It sits further away than one grid step, so
+            // it is not the expectation for this node.
+            grid.RecordMeasurement(1, 1, -0.40);
+
+            Assert.Null(grid.GetNeighbourDeviation(0, 0, -0.40));
+        }
+
+        [Theory]
+        [InlineData(-3.0, 2.5)]   // pushed past the surface
+        [InlineData(2.0, 2.5)]    // stopped short, on debris or a shorted clip
+        public void NeighbourDeviation_IsUnsignedSoBothDirectionsAreFaults(
+            double measured, double expectedDeviation)
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            grid.RecordMeasurement(0, 1, -0.50);
+            grid.RecordMeasurement(1, 0, -0.50);
+
+            double? deviation = grid.GetNeighbourDeviation(0, 0, measured);
+
+            Assert.NotNull(deviation);
+            Assert.Equal(expectedDeviation, deviation!.Value, 6);
+        }
+
+        [Fact]
+        public void NeighbourDeviation_OnAWarpedBoardStaysSmallBetweenAdjacentNodes()
+        {
+            // A bowed board spans millimeters end to end while staying flat between any
+            // two adjacent nodes. Comparing against neighbors rather than the board's
+            // overall range is what keeps a real warp from reading as a fault.
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(40, 40));
+
+            for (int x = 0; x < grid.SizeX; x++)
+            {
+                for (int y = 0; y < grid.SizeY; y++)
+                {
+                    grid.AddPoint(x, y, -0.2 * x);
+                }
+            }
+
+            // Ends of the board differ by 0.8mm; adjacent nodes by 0.2mm.
+            double? deviation = grid.GetNeighbourDeviation(2, 2, -0.4);
+
+            Assert.NotNull(deviation);
+            Assert.Equal(0.0, deviation!.Value, 6);
+        }
     }
 }

@@ -16,6 +16,13 @@ namespace coppercli.Core.Controllers
         /// <summary>Current phase within the probing workflow.</summary>
         ProbePhase Phase { get; }
 
+        /// <summary>True while this run is tracing the grid outline rather than measuring.</summary>
+        bool IsTracingOutline { get; }
+
+        /// <summary>True while this run is measuring the grid, which is the only mode with
+        /// progress to show.</summary>
+        bool IsMeasuringGrid { get; }
+
         /// <summary>The probe grid being populated.</summary>
         ProbeGrid? Grid { get; }
 
@@ -41,16 +48,6 @@ namespace coppercli.Core.Controllers
         /// Reports point index (0-based), coordinates (X, Y), and measured Z height.
         /// </summary>
         event Action<int, Vector2, double>? PointCompleted;
-
-        /// <summary>
-        /// Create and configure the probe grid.
-        /// Must be called before StartAsync.
-        /// </summary>
-        /// <param name="fileMin">Minimum XY bounds of the G-code file.</param>
-        /// <param name="fileMax">Maximum XY bounds of the G-code file.</param>
-        /// <param name="margin">Margin around file bounds (mm).</param>
-        /// <param name="gridSize">Grid cell size (mm).</param>
-        void SetupGrid(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize);
 
         /// <summary>
         /// Load an existing probe grid (for continuing interrupted sessions).
@@ -90,7 +87,7 @@ namespace coppercli.Core.Controllers
         /// values and cannot drift - the controller reads only the fields it needs.
         /// </summary>
         public static ProbeOptions FromSettings(Settings.MachineSettings settings,
-            bool traceOutline = false, string? sourceFile = null)
+            bool traceOutline = false)
         {
             return new ProbeOptions
             {
@@ -103,7 +100,6 @@ namespace coppercli.Core.Controllers
                 TraceHeight = settings.OutlineTraceHeight,
                 TraceFeed = settings.OutlineTraceFeed,
                 TraceOutline = traceOutline,
-                SourceFile = sourceFile,
             };
         }
 
@@ -136,17 +132,10 @@ namespace coppercli.Core.Controllers
         public bool TraceOutline { get; set; }
 
         /// <summary>
-        /// The G-code file this grid is being probed for. Recorded on the map so it can
-        /// never be mistaken for one measured on another board.
+        /// How far a probed height may sit from its already-measured neighbors before
+        /// the run pauses for the operator (mm). Set to 0 to accept every height.
         /// </summary>
-        public string? SourceFile { get; set; }
-
-        /// <summary>
-        /// Threshold multiplier for slow probe detection.
-        /// If a probe takes longer than (average * threshold), pause.
-        /// Set to 0 to disable slow probe detection.
-        /// Default: 1.2 (20% slower than average triggers pause).
-        /// </summary>
-        public double SlowProbeThreshold { get; set; } = 1.2;
+        public double HeightDeviationTolerance { get; set; } =
+            ControllerConstants.ProbeHeightDeviationToleranceMm;
     }
 }

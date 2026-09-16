@@ -19,7 +19,6 @@ namespace coppercli.Core.Settings
         public string LastMacroFile { get; set; } = "";
 
         // Probe auto-save (for resuming interrupted probes)
-        public string ProbeAutoSavePath { get; set; } = "";
 
         // G-Code file that was loaded when probe data was created (for recovery)
         public string ProbeSourceGCodeFile { get; set; } = "";

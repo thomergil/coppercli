@@ -40,7 +40,7 @@ namespace coppercli.Core.Controllers
         /// True while the enclosure is actually open. GRBL stays in Door after the
         /// operator closes it, waiting to be resumed, so "the status says Door" and "the
         /// door is open" are different questions and only the substate separates them.
-        /// An unrecognised substate counts as open: telling someone to close a door that
+        /// An unrecognized substate counts as open: telling someone to close a door that
         /// is already shut costs a moment, and the opposite mistake costs a hand.
         /// </summary>
         public static bool IsDoorOpen(IMachine machine) =>
@@ -63,22 +63,34 @@ namespace coppercli.Core.Controllers
         // =========================================================================
 
         /// <summary>
-        /// Wait for machine to reach Idle state.
+        /// Poll until a condition holds, the deadline passes, or the caller cancels.
+        /// Every wait here is this loop with a different question.
+        ///
+        /// <paramref name="abortWhenProblematic"/> is false for the waits whose subject is
+        /// an alarmed or held machine, which would otherwise abandon what they watch.
         /// </summary>
-        public static async Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
+        private static async Task<bool> WaitUntilAsync(
+            IMachine machine,
+            Func<IMachine, bool> until,
+            int timeoutMs,
+            CancellationToken ct,
+            bool abortWhenProblematic = true,
+            Action? onPoll = null)
         {
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
-            long budgetMs = timeoutMs;
 
-            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < timeoutMs && !ct.IsCancellationRequested)
             {
-                if (machine.Status == StatusIdle)
+                onPoll?.Invoke();
+
+                if (until(machine))
                 {
                     return true;
                 }
 
-                // Same reasoning as WaitForStableIdleAsync: only a person clears these.
-                if (IsProblematic(machine))
+                // Nothing the caller is waiting for will arrive until a person clears the
+                // machine, so report it now rather than after the full timeout.
+                if (abortWhenProblematic && IsProblematic(machine))
                 {
                     return false;
                 }
@@ -86,8 +98,16 @@ namespace coppercli.Core.Controllers
                 await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
             }
 
-            return false;
+            // The condition can arrive inside the final interval, and calling that a
+            // timeout would send the caller down the failure path.
+            return !ct.IsCancellationRequested && until(machine);
         }
+
+        /// <summary>
+        /// Wait for the machine to report Idle.
+        /// </summary>
+        public static Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
+            => WaitUntilAsync(machine, m => m.Status == StatusIdle, timeoutMs, ct);
 
         /// <summary>
         /// Wait for machine to be idle for a sustained period (stable idle).
@@ -97,41 +117,18 @@ namespace coppercli.Core.Controllers
         /// <param name="timeoutMs">Maximum time to wait.</param>
         /// <param name="ct">Cancellation token.</param>
         /// <param name="onPoll">Optional callback invoked each poll iteration (for progress updates).</param>
-        public static async Task<bool> WaitForStableIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default, Action? onPoll = null)
+        public static Task<bool> WaitForStableIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default, Action? onPoll = null)
         {
-            var elapsed = System.Diagnostics.Stopwatch.StartNew();
-            long budgetMs = timeoutMs;
+            // Idle once is not stopped: GRBL reports it while buffered motion is still
+            // about to start, so it has to hold across several polls.
             int requiredCount = IdleSettleMs / StatusPollIntervalMs;
             int stableCount = 0;
 
-            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
+            return WaitUntilAsync(machine, m =>
             {
-                onPoll?.Invoke();
-
-                // An alarmed or door-held machine will not reach Idle until a person
-                // acts, so waiting out the timeout buys nothing and costs the operator a
-                // minute of a frozen screen that already knows what is wrong.
-                if (IsProblematic(machine))
-                {
-                    return false;
-                }
-
-                if (machine.Status == StatusIdle)
-                {
-                    stableCount++;
-                    if (stableCount >= requiredCount)
-                    {
-                        return true;
-                    }
-                }
-                else
-                {
-                    stableCount = 0;
-                }
-                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-            }
-
-            return false;
+                stableCount = m.Status == StatusIdle ? stableCount + 1 : 0;
+                return stableCount >= requiredCount;
+            }, timeoutMs, ct, onPoll: onPoll);
         }
 
         /// <summary>
@@ -146,69 +143,52 @@ namespace coppercli.Core.Controllers
         public static Task<bool> WaitForMachineZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
             => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.MachinePosition.Z, ct);
 
-        private static async Task<bool> WaitForZHeightCoreAsync(IMachine machine, double targetZ, int timeoutMs, Func<IMachine, double> getZ, CancellationToken ct)
+        private static Task<bool> WaitForZHeightCoreAsync(IMachine machine, double targetZ, int timeoutMs, Func<IMachine, double> getZ, CancellationToken ct)
         {
             if (timeoutMs <= 0)
             {
                 timeoutMs = ZHeightWaitTimeoutMs;
             }
 
-            var elapsed = System.Diagnostics.Stopwatch.StartNew();
-            long budgetMs = timeoutMs;
-
-            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
-            {
-                if (Math.Abs(getZ(machine) - targetZ) < PositionToleranceMm)
-                {
-                    return true;
-                }
-
-                // A held or alarmed machine will not move Z until a person clears it, so
-                // the height being waited for can never arrive. Report that now rather
-                // than after the timeout: the caller treats a failed retract as a reason
-                // to stop, and the operator is standing there watching nothing happen.
-                if (IsProblematic(machine))
-                {
-                    return false;
-                }
-
-                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-            }
-
-            return false;
+            return WaitUntilAsync(
+                machine, m => Math.Abs(getZ(m) - targetZ) < PositionToleranceMm, timeoutMs, ct);
         }
 
         /// <summary>
         /// Wait for machine to start moving (position changes or status becomes Run).
         /// Used to detect when a command has actually started executing.
         /// </summary>
-        public static async Task<bool> WaitForMoveStartAsync(IMachine machine, double startZ, int timeoutMs, CancellationToken ct = default)
-        {
-            var elapsed = System.Diagnostics.Stopwatch.StartNew();
-            long budgetMs = timeoutMs;
+        public static Task<bool> WaitForMoveStartAsync(IMachine machine, double startZ, int timeoutMs, CancellationToken ct = default)
+            => WaitUntilAsync(
+                machine,
+                m => Math.Abs(m.MachinePosition.Z - startZ) > PositionToleranceMm
+                     || m.Status.StartsWith(StatusRun),
+                timeoutMs,
+                ct);
 
-            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
-            {
-                // Move started if position changed or status is Run
-                if (Math.Abs(machine.MachinePosition.Z - startZ) > PositionToleranceMm)
-                {
-                    return true;
-                }
-                if (machine.Status.StartsWith(StatusRun))
-                {
-                    return true;
-                }
+        /// <summary>
+        /// Wait until GRBL stops reporting the enclosure open.
+        ///
+        /// The door substate arrives on the status poll, so the report in hand just after
+        /// an operator says they closed the door is older than the door. This gives the
+        /// machine time to say so before anyone is asked again.
+        /// </summary>
+        /// <returns>True once the door reads closed.</returns>
+        public static Task<bool> WaitForDoorClosedAsync(
+            IMachine machine, int timeoutMs, CancellationToken ct = default)
+            => WaitUntilAsync(machine, m => !IsDoorOpen(m), timeoutMs, ct, abortWhenProblematic: false);
 
-                // Nothing will start moving while the machine is held or alarmed.
-                if (IsProblematic(machine))
-                {
-                    return false;
-                }
-                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-            }
-
-            return false;
-        }
+        /// <summary>
+        /// Wait for the machine to leave the door hold after CycleStart is sent.
+        ///
+        /// Use this rather than <see cref="WaitForIdleAsync"/>, which gives up as soon as
+        /// the status reads Door. The machine is still holding at the door when CycleStart
+        /// is sent, so that wait can never succeed here.
+        /// </summary>
+        /// <returns>True once the machine is out of the door state.</returns>
+        public static Task<bool> WaitForDoorReleasedAsync(
+            IMachine machine, int timeoutMs, CancellationToken ct = default)
+            => WaitUntilAsync(machine, m => !IsDoor(m), timeoutMs, ct, abortWhenProblematic: false);
 
         /// <summary>
         /// Wait for status to change from current value.
@@ -237,7 +217,7 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Awaits a reply task, but never past a timeout. On cancellation the reply's own
-        /// cancellation surfaces (rather than being mislabelled a timeout); on a genuine
+        /// cancellation surfaces (rather than being mislabeled a timeout); on a genuine
         /// timeout, throws with the given message. Used for GRBL replies that may never
         /// arrive because the command was rejected.
         /// </summary>

@@ -228,6 +228,103 @@ namespace coppercli.Tests
         }
 
         // =========================================================================
+        // WaitForDoorClosedAsync tests
+        //
+        // The door substate rides on the status poll, so the report in hand just after
+        // an operator says they shut the door is older than the door. Re-reading it
+        // there is what showed them the same prompt again a moment after they answered.
+        // =========================================================================
+
+        [Fact]
+        public async Task WaitForDoorClosedAsync_WhenAlreadyClosed_ReturnsImmediately()
+        {
+            var machine = new MockMachine { Status = "Door", StatusSubState = "0" };
+
+            var elapsed = Stopwatch.StartNew();
+            bool closed = await MachineWait.WaitForDoorClosedAsync(machine, HangDetectTimeoutMs);
+            elapsed.Stop();
+
+            Assert.True(closed);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2);
+        }
+
+        [Fact]
+        public async Task WaitForDoorClosedAsync_WhenSubStateCatchesUpLate_ReturnsTrue()
+        {
+            // The machine still reports the door open when the wait starts, exactly as it
+            // does for the poll interval after the operator closes it.
+            var machine = new MockMachine { Status = "Door", StatusSubState = "1" };
+
+            var closing = Task.Run(async () =>
+            {
+                await Task.Delay(Constants.StatusPollIntervalMs * 3);
+                machine.StatusSubState = "0";
+            });
+
+            bool closed = await MachineWait.WaitForDoorClosedAsync(machine, HangDetectTimeoutMs);
+            await closing;
+
+            Assert.True(closed);
+        }
+
+        [Fact]
+        public async Task WaitForDoorClosedAsync_WhenDoorStaysOpen_ReturnsFalse()
+        {
+            // A door that really is ajar must still come back false, so the operator is
+            // asked again rather than the job proceeding into an open enclosure.
+            var machine = new MockMachine { Status = "Door", StatusSubState = "1" };
+
+            bool closed = await MachineWait.WaitForDoorClosedAsync(machine, Constants.StatusPollIntervalMs * 2);
+
+            Assert.False(closed);
+        }
+
+        /// <summary>
+        /// The case the operator actually met: door shut, machine holding at it, and the
+        /// release just sent. WaitForIdleAsync treats a door as a reason to stop waiting,
+        /// so it refused on its first look and the prompt came straight back.
+        /// </summary>
+        [Fact]
+        public async Task WaitForDoorReleasedAsync_WhileStillHolding_KeepsWaiting()
+        {
+            var machine = new MockMachine { Status = "Door", StatusSubState = "0" };
+
+            var releasing = Task.Run(async () =>
+            {
+                await Task.Delay(Constants.StatusPollIntervalMs * 3);
+                machine.Status = "Idle";
+            });
+
+            bool released = await MachineWait.WaitForDoorReleasedAsync(machine, HangDetectTimeoutMs);
+            await releasing;
+
+            Assert.True(released);
+
+            // The contrast that names the bug. Waiting for idle does not merely fail
+            // here, it refuses on its first look, which is why the prompt returned
+            // instantly rather than after any timeout the operator could notice.
+            var stillHolding = new MockMachine { Status = "Door", StatusSubState = "0" };
+
+            var refused = Stopwatch.StartNew();
+            bool wentIdle = await MachineWait.WaitForIdleAsync(stillHolding, HangDetectTimeoutMs);
+            refused.Stop();
+
+            Assert.False(wentIdle);
+            Assert.True(refused.ElapsedMilliseconds < Constants.StatusPollIntervalMs * 2);
+        }
+
+        [Fact]
+        public async Task WaitForDoorReleasedAsync_WhenHoldNeverLifts_ReturnsFalse()
+        {
+            var machine = new MockMachine { Status = "Door", StatusSubState = "0" };
+
+            bool released = await MachineWait.WaitForDoorReleasedAsync(
+                machine, Constants.StatusPollIntervalMs * 2);
+
+            Assert.False(released);
+        }
+
+        // =========================================================================
         // EnsureMachineReadyAsync tests
         // =========================================================================
 

@@ -21,10 +21,8 @@ namespace coppercli.Core.Communication
         private const int HealthCheckIntervalMs = 5000; // Check health every 5 seconds
         private const int RecoveryDelayMs = 1000;       // Wait before attempting recovery
         private const byte GrblStatusQuery = (byte)'?';
-        private const byte GrblFeedHold = (byte)'!';    // Feed hold to stop movement
-        private const byte GrblSoftReset = 0x18;        // Ctrl+X soft reset to cancel and stop spindle
-        private const int SafetyResetDelayMs = 100;     // Delay between feed hold and soft reset
         private const int SerialOpenTimeoutMs = 5000;     // Timeout for serial port open
+        private const int ThreadJoinTimeoutMs = 1000;     // How long to wait for a worker thread to end
 
         // =========================================================================
         // Events
@@ -50,7 +48,14 @@ namespace coppercli.Core.Communication
         // Public state properties
         // =========================================================================
         public bool IsRunning { get; private set; }
-        public bool HasClient { get; private set; }
+
+        /// <summary>
+        /// Whether a client is attached, read from the connection itself.
+        /// </summary>
+        public bool HasClient
+        {
+            get { lock (_clientLock) { return _client != null; } }
+        }
         public string? ClientAddress { get; private set; }
         public int TcpPort { get; private set; }
         public string SerialPortName { get; private set; } = string.Empty;
@@ -201,9 +206,9 @@ namespace coppercli.Core.Communication
             }
 
             // Wait for threads to finish
-            _acceptThread?.Join(1000);
-            _serialToTcpThread?.Join(1000);
-            _tcpToSerialThread?.Join(1000);
+            _acceptThread?.Join(ThreadJoinTimeoutMs);
+            _serialToTcpThread?.Join(ThreadJoinTimeoutMs);
+            _tcpToSerialThread?.Join(ThreadJoinTimeoutMs);
 
             // Close serial port
             try
@@ -258,7 +263,33 @@ namespace coppercli.Core.Communication
                 Thread.Sleep(Constants.ForceDisconnectMessageDelayMs);
 
                 CloseClientUnlocked();
-                return true;
+            }
+
+            // The client that was driving the machine is gone, so stop the machine here.
+            SendSafetyStop();
+            return true;
+        }
+
+        /// <summary>
+        /// Feed hold then soft reset, written straight to the port. Sent when the client
+        /// driving the machine disconnects, because GRBL keeps working through its planner
+        /// buffer.
+        /// </summary>
+        private void SendSafetyStop()
+        {
+            try
+            {
+                if (_serialPort == null)
+                {
+                    return;
+                }
+
+                Machine.WriteStopSequence(_serialPort.BaseStream);
+                RaiseInfo("Feed hold + soft reset sent (safety stop)");
+            }
+            catch
+            {
+                // Ignore errors - serial port may be in bad state
             }
         }
 
@@ -356,7 +387,6 @@ namespace coppercli.Core.Communication
                         _networkStream = _client.GetStream();
                         ClientAddress = newClientAddress;
                         ClientConnectedTime = DateTime.Now;
-                        HasClient = true;
                         BytesFromClient = 0;
                         BytesToClient = 0;
                         _lastClientActivity = DateTime.Now;
@@ -660,20 +690,7 @@ namespace coppercli.Core.Communication
                 CloseClientUnlocked();
             }
 
-            // Safety: send feed hold then soft reset to fully stop the machine
-            try
-            {
-                // Feed hold stops movement immediately
-                _serialPort?.Write(new byte[] { GrblFeedHold }, 0, 1);
-                Thread.Sleep(SafetyResetDelayMs);
-                // Soft reset cancels job and stops spindle
-                _serialPort?.Write(new byte[] { GrblSoftReset }, 0, 1);
-                RaiseInfo("Feed hold + soft reset sent (safety stop)");
-            }
-            catch
-            {
-                // Ignore errors - serial port may be in bad state
-            }
+            SendSafetyStop();
 
             RaiseInfo($"Client disconnected: {address}");
             ClientDisconnected?.Invoke();
@@ -742,7 +759,6 @@ namespace coppercli.Core.Communication
 
             _networkStream = null;
             _client = null;
-            HasClient = false;
             ClientAddress = null;
             ClientConnectedTime = null;
         }

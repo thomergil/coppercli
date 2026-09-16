@@ -19,12 +19,21 @@ namespace coppercli.Core.Communication
 {
     public class Machine : IMachine
     {
+        /// <summary>
+        /// What the machine is being driven to do. Whether there is a link at all is
+        /// <see cref="Connected"/>'s to answer, and every guard that must refuse a
+        /// disconnected machine asks that.
+        /// </summary>
         public enum OperatingMode
         {
+            /// <summary>Accepting individual commands.</summary>
             Manual,
+
+            /// <summary>Streaming a G-code file.</summary>
             SendFile,
-            Probe,
-            Disconnected
+
+            /// <summary>A probe is under way; the reply is awaited.</summary>
+            Probe
         }
 
         public event Action<Vector3, bool> ProbeFinished;
@@ -69,7 +78,6 @@ namespace coppercli.Core.Communication
         private Vector3 _machinePosition = new Vector3();
         private Vector3 _workOffset = new Vector3();
         private Vector3 _lastProbePosMachine;
-        private Vector3 _lastProbePosWork;
 
         public Vector3 MachinePosition
         {
@@ -94,12 +102,6 @@ namespace coppercli.Core.Communication
         {
             get { lock (_positionLock) { return _lastProbePosMachine; } }
             private set { lock (_positionLock) { _lastProbePosMachine = value; } }
-        }
-
-        public Vector3 LastProbePosWork
-        {
-            get { lock (_positionLock) { return _lastProbePosWork; } }
-            private set { lock (_positionLock) { _lastProbePosWork = value; } }
         }
 
         public int FeedOverride { get; private set; } = Constants.OverrideDefaultPercent;
@@ -179,7 +181,7 @@ namespace coppercli.Core.Communication
             private set { _filePosition = value; }
         }
 
-        private OperatingMode _mode = OperatingMode.Disconnected;
+        private OperatingMode _mode = OperatingMode.Manual;
         public OperatingMode Mode
         {
             get { return _mode; }
@@ -293,7 +295,9 @@ namespace coppercli.Core.Communication
 
                 if (!Connected)
                 {
-                    Mode = OperatingMode.Disconnected;
+                    // Back to the resting mode, so a link that drops mid-stream cannot
+                    // leave the next connection believing a file is still sending.
+                    Mode = OperatingMode.Manual;
                 }
 
                 RaiseEvent(ConnectionStateChanged);
@@ -562,7 +566,7 @@ namespace coppercli.Core.Communication
                                 CommandRejected?.Invoke(new GrblRejection(
                                     ParseErrorCode(line),
                                     errorline,
-                                    GrblCodeTranslator.ExpandError(line, _settings.FirmwareType)));
+                                    GrblCodeTranslator.ExpandError(line)));
                             }
                             else
                             {
@@ -719,8 +723,57 @@ namespace coppercli.Core.Communication
             WorkerThread.Start();
         }
 
+        /// <summary>
+        /// Whether GRBL may still have work queued, so the machine must be stopped before the
+        /// port closes. A port that never answered as GRBL is left alone. Idle is not enough
+        /// on its own: a line sent moments ago is in GRBL's receive buffer, unparsed, while
+        /// the status still reads Idle.
+        /// </summary>
+        internal static bool NeedsStopBeforeDisconnect(bool connected, string status, int bytesSent) =>
+            connected
+            && status != GrblProtocol.StatusDisconnected
+            && (status != GrblProtocol.StatusIdle || bytesSent > 0);
+
+        /// <summary>
+        /// Stop the machine, since GRBL keeps working through its planner buffer after the
+        /// port closes. Written straight to the connection rather than queued: Connected is
+        /// already false, so the send queue is no longer being drained.
+        /// </summary>
+        private void SendStop()
+        {
+            try
+            {
+                if (Connection != null)
+                {
+                    WriteStopSequence(Connection);
+                }
+            }
+            catch (Exception ex)
+            {
+                Controllers.ControllerLog.Log("Stop before disconnect failed: {0}", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Feed hold, then soft reset, with GRBL given time to act on each. The hold decelerates
+        /// the move to a stop; the reset ends the job and stops the spindle.
+        /// </summary>
+        internal static void WriteStopSequence(Stream connection)
+        {
+            connection.WriteByte((byte)GrblProtocol.FeedHold);
+            connection.Flush();
+            Thread.Sleep(Constants.CommandDelayMs);
+            connection.WriteByte((byte)GrblProtocol.SoftReset);
+            connection.Flush();
+            Thread.Sleep(Constants.ResetWaitMs);
+        }
+
         public void Disconnect()
         {
+            // Read before Connected is set false and the worker exits, so Status and BufferState
+            // still describe the running machine. Acted on below, once nothing is streaming lines.
+            bool stopFirst = NeedsStopBeforeDisconnect(Connected, Status, BufferState);
+
             if (Log != null)
             {
                 Log.Close();
@@ -733,6 +786,11 @@ namespace coppercli.Core.Communication
             if (WorkerThread != null && WorkerThread != Thread.CurrentThread)
             {
                 WorkerThread.Join();
+            }
+
+            if (stopFirst)
+            {
+                SendStop();
             }
 
             switch (_settings.ConnectionType)
@@ -765,8 +823,6 @@ namespace coppercli.Core.Communication
                 default:
                     throw new Exception("Invalid Connection Type");
             }
-
-            Mode = OperatingMode.Disconnected;
 
             IsHomed = false;
             IsHoming = false;
@@ -1549,7 +1605,6 @@ namespace coppercli.Core.Communication
             ProbePos -= WorkOffset;
             ProbePos.X += _settings.ProbeOffsetX;
             ProbePos.Y += _settings.ProbeOffsetY;
-            LastProbePosWork = ProbePos;
 
             bool ProbeSuccess = success.Value == "1";
 
@@ -1595,7 +1650,7 @@ namespace coppercli.Core.Communication
 
         private void ReportError(string error)
         {
-            NonFatalException?.Invoke(GrblCodeTranslator.ExpandError(error, _settings.FirmwareType));
+            NonFatalException?.Invoke(GrblCodeTranslator.ExpandError(error));
         }
 
         private void ReportBadStatus(string line)

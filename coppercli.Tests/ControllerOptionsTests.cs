@@ -5,9 +5,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Options were built from settings in several places and had drifted (the web grid
-    /// probe silently dropped trace height/feed). One factory per type now fills every
-    /// field, so any two call sites get identical options from identical settings.
+    /// One factory per option type fills every field from settings, so any two call sites
+    /// get identical options from identical settings.
     /// </summary>
     public class ControllerOptionsTests
     {
@@ -21,7 +20,7 @@ namespace coppercli.Tests
                 OutlineTraceHeight = 4, OutlineTraceFeed = 333
             };
 
-            var o = ProbeOptions.FromSettings(s, traceOutline: true, sourceFile: "/x.ngc");
+            var o = ProbeOptions.FromSettings(s, traceOutline: true);
 
             Assert.Equal(7, o.SafeHeight);
             Assert.Equal(9, o.MaxDepth);
@@ -29,10 +28,23 @@ namespace coppercli.Tests
             Assert.Equal(2, o.MinimumHeight);
             Assert.True(o.AbortOnFail);
             Assert.Equal(0.3, o.XAxisWeight);
-            Assert.Equal(4, o.TraceHeight);       // the field the web copy used to drop
-            Assert.Equal(333, o.TraceFeed);       // ditto
+            Assert.Equal(4, o.TraceHeight);
+            Assert.Equal(333, o.TraceFeed);
             Assert.True(o.TraceOutline);
-            Assert.Equal("/x.ngc", o.SourceFile);
+        }
+
+        /// <summary>
+        /// The height check has no setting behind it, so every run must get the shipped
+        /// tolerance rather than a zero that would silently accept every reading.
+        /// </summary>
+        [Fact]
+        public void ProbeOptions_FromSettings_CarriesTheShippedHeightTolerance()
+        {
+            var o = ProbeOptions.FromSettings(new MachineSettings());
+
+            Assert.Equal(ControllerConstants.ProbeHeightDeviationToleranceMm,
+                o.HeightDeviationTolerance);
+            Assert.True(o.HeightDeviationTolerance > 0);
         }
 
         [Fact]

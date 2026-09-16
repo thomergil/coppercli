@@ -21,47 +21,45 @@ find . -name "*conflicted*" -delete      # then delete
 **ONE PLACE FOR EVERY FACT.** This outranks every other rule here. Any fact — a piece
 of state, a rule, a constant, a predicate — is owned by exactly one place, and everything
 else *derives* from it. Never store a second copy, never compute the same answer from a
-second definition. There are three UIs; that is three renderers of one truth, never three
-truths.
+second definition. The three UIs render one source of state; none of them keeps its own
+copy.
 
 The tests are always the same two questions:
 - *Who owns this?* If two places can answer, one of them is wrong.
 - *Can these ever disagree?* If yes, they eventually will, silently, and the machine acts
   on the stale one.
 
-What this forbids, with the shapes it actually takes here:
-- A flag beside the state it describes. `_isPaused` next to `ControllerState.Paused`
-  disabled tool-change detection for a whole session. `IsPaused`/`IsActive`/`HasFinished`
-  are *derived* from `State`; `AppState.IsProbing` is derived from the controller.
+What this forbids, with the shapes it takes here:
+- A flag beside the state it describes. `IsPaused`, `IsActive` and `HasFinished` are
+  derived from `State`; `AppState.IsProbing` is derived from the controller.
 - A boolean saying "X is outstanding" next to a field saying "how much X". That is one
-  fact wearing two faces, and it baked a stale Z offset into G54. One field.
-- The same predicate spelled out at each call site. A second copy of "is this an M6 line"
-  let the machine swallow a tool change without pausing for it.
-- A constant duplicated between C# and JavaScript. Expose it via `/api/constants` —
+  fact stored twice. Use one field, with zero meaning none.
+- The same predicate spelled out at each call site. Give it one home and call it.
+- A constant duplicated between C# and JavaScript. Publish it through `/api/constants`;
   see `GetSharedConstants()`.
 - A comment restating a value the code owns. It disagrees the moment the code changes.
 
-Deriving a value once into a local for a consistent snapshot is not a second copy — that
-is one read, deliberately held still. Two independent *definitions* are the violation.
+Deriving a value once into a local for a consistent snapshot is not a second copy: it is a
+single read, reused within that scope. Two independent definitions are the violation.
 
-**OBSESSIVE DRYness.** Never duplicate code. If you write similar code twice, extract it immediately. Search for existing helpers before writing new code. Three similar lines are worse than one abstraction. This applies to: logic, constants, patterns, error handling, and validation.
+**No duplicated code.** If you write similar code twice, extract it immediately. Search for existing helpers before writing new code. Three similar lines are worse than one abstraction. This applies to: logic, constants, patterns, error handling, and validation.
 
 **Assume it exists.** Before adding any constant, utility function, or helper, search extensively - it almost certainly already exists. Check `Constants.cs`, `CliConstants.cs`, `GrblProtocol.cs`, `WebConstants.cs`, `constants.js`, and the `Helpers/` directory. When in doubt, grep first.
 
 **Before writing ANY logic, search first.** If you're about to write:
 - A loop that waits/polls/retries → grep for existing wait functions in `MachineWait.cs`
-- Status/state checking → check `MachineWait.cs`, `StatusHelpers.cs`
+- Status/state checking → check `MachineWait.cs`
 - Any pattern that "feels like it should exist" → it probably does, search for it
 
 **When you catch yourself writing 5+ lines of logic**, stop and search. The codebase likely has a helper. If not, create one - don't inline it.
 
 **Extend, don't duplicate.** If an existing function almost does what you need, add a parameter (like an `onPoll` callback) rather than copying and modifying the logic.
 
-**Ultra-clean APIs.** Interfaces should be minimal and focused. Dependencies flow one direction. Controllers own workflows, UIs own presentation. Use records for immutable DTOs. Events are synchronous. No god objects.
+**Small APIs.** Interfaces should be minimal and focused. Dependencies flow one direction. Controllers own workflows, UIs own presentation. Use records for immutable DTOs. Events are synchronous. No god objects.
 
-**Refactor proactively.** When you encounter code that violates these principles, fix it - don't work around it. Technical debt compounds. Clean code now saves time later.
+**Refactor proactively.** When you encounter code that violates these principles, fix it - don't work around it.
 
-**Keep it simple.** If code gets complex (multiple flags, nested conditions, complex state tracking), stop and rethink. Keep files small. The answer to "want me to simplify this?" is always yes.
+**Keep it simple.** If code gets complex (multiple flags, nested conditions, complex state tracking), stop and rethink. Keep files small. Never ask whether to simplify something; simplify it.
 
 **Follow established patterns.** Study existing code before adding new code. Match naming conventions, file organization, and architectural patterns. Consistency matters more than personal preference.
 
@@ -222,7 +220,10 @@ Migrations run automatically on `LoadSettings()`, rewrite the file once, and are
 
 ### Helper Organization
 
-- **`coppercli.Core/Controllers/MachineWait.cs`** - Status checks (`IsIdle`, `IsAlarm`, `IsHold`, `IsDoor`, `IsProblematic`), async wait functions, `HomeAsync` (single source of truth for homing)
+- **`coppercli.Core/Controllers/MachineWait.cs`** - Status checks (`IsIdle`, `IsAlarm`, `IsHold`, `IsDoor`, `IsProblematic`), async wait functions, `HomeAsync` (single source of truth for homing). Every wait here is `WaitUntilAsync` with a different predicate; add a wait by calling it, never by writing another poll loop
+- **`coppercli.Core/Controllers/ControllerBase.cs`** - The state machine every workflow runs on: the transition table, `IsActive`/`IsPaused`/`HasFinished` derived from `State`, `TransitionTo` (throws on an illegal move), `TryTransitionTo` (for a move another thread may already have made), `WaitWhilePausedAsync`
+- **`coppercli.Core/Util/HeightGradient.cs`** - The color a probed height is drawn in. Both the terminal and the browser take their colors from here; neither computes a gradient
+- **`coppercli/WebServer/PendingPrompt.cs`** - The one question a run is waiting on, and the rule for answering it. An answer names the question it answers and must be one of the choices offered; a run publishes its next question into this same slot from inside the call that answers the last
 - **`MachineCommands.cs`** - Sync wrappers for MachineWait, G-code patterns (`MoveToSafeHeight`, `HomeAndWait`, `EnsureMachineReady`)
 - **`MenuHelpers.cs`** - Menus, prompts, confirmations, validation (`GetProbeDisabledReason`, `ValidateMillPreflight`)
 - **`DisplayHelpers.cs`** - ANSI codes (`AnsiError`, `AnsiSuccess`, etc.), `WriteLineTruncated`, overlay box helpers
@@ -290,22 +291,11 @@ Machine state properties (e.g., `IsHomed`) belong in the `Machine` class, not in
 
 **Pattern: Homing as example**
 
-The `Machine.IsHomed` property is set in exactly ONE place:
-
-```csharp
-// coppercli.Core/Controllers/MachineWait.cs
-public static async Task<bool> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct)
-{
-    machine.SendLine(CmdHome);
-    bool success = await WaitForIdleAsync(machine, timeoutMs, ct);
-    if (!success || !IsIdle(machine))
-    {
-        return false;
-    }
-    machine.IsHomed = true;  // SINGLE place where IsHomed is set
-    return true;
-}
-```
+`MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed`, and it sets the
+flag only once it has evidence the machine actually homed. Read it in
+`coppercli.Core/Controllers/MachineWait.cs` rather than from an example here: a copy of
+the body in this file is a second definition, and it drifts the moment the real one
+changes.
 
 All callers use this method:
 - **Sync CLI callers** use `MachineCommands.HomeAndWait()` which wraps `MachineWait.HomeAsync()`

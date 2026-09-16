@@ -29,8 +29,7 @@ namespace coppercli
     /// <summary>
     /// The decisions carried over from a previous session, and what answering them does.
     ///
-    /// This exists because the sequence used to be written twice - inline in the terminal
-    /// startup and again in the browser client - and the two copies drifted. The terminal
+    /// One definition of the sequence, asked by both front ends. The terminal
     /// copy grew a condition that skipped the height-map question whenever the operator
     /// declined to trust the stored work zero, so the data was never resolved and was
     /// later announced as though it were current. The browser copy had no such gate.
@@ -71,9 +70,9 @@ namespace coppercli
             // Asked whatever the work-zero answer was. Gating this on that answer is the
             // defect this class exists to prevent: the data stayed on disk undecided and
             // resurfaced later claiming to be current.
-            var probeState = Persistence.GetProbeState();
+            var storedMap = AppState.ReadUsableAutosave();
 
-            if (probeState == Persistence.ProbeState.Partial)
+            if (storedMap != null && !storedMap.HasCompleteData)
             {
                 steps.Add(new SessionRestoreStep(
                     SessionRestoreTopic.UnfinishedHeightMap,
@@ -81,7 +80,7 @@ namespace coppercli
                     DescribeStoredMap(),
                     DefaultYes: true));
             }
-            else if (probeState == Persistence.ProbeState.Complete)
+            else if (storedMap != null)
             {
                 steps.Add(new SessionRestoreStep(
                     SessionRestoreTopic.UnsavedHeightMap,
@@ -117,7 +116,7 @@ namespace coppercli
                     break;
 
                 case SessionRestoreTopic.TrustWorkZero:
-                    AppState.IsWorkZeroSet = yes;
+                    AppState.TrustWorkZero(yes);
                     Logger.Log("SessionRestore: work zero {0}", yes ? "trusted" : "not trusted");
                     break;
 
@@ -145,7 +144,11 @@ namespace coppercli
         {
             try
             {
-                var grid = ProbeGrid.Load(Persistence.GetProbeAutoSavePath());
+                var grid = Persistence.ReadProbeAutoSave();
+                if (grid == null)
+                {
+                    return string.Empty;
+                }
 
                 string size = grid.HasCompleteData
                     ? $"{grid.TotalPoints} points"
@@ -179,12 +182,14 @@ namespace coppercli
         {
             try
             {
-                AppState.ProbePoints = ProbeGrid.Load(Persistence.GetProbeAutoSavePath());
-                AppState.ResetProbeApplicationState();
-                AppState.LoadProbeSourceGCode();
+                // Through the one adopter, so the map is checked against the job in hand
+                // here exactly as it is when the operator presses Recover later.
+                AppState.ForceLoadProbeFromAutosave();
             }
             catch (Exception ex)
             {
+                // Logged, not shown: this runs on the HTTP thread as well as the terminal's,
+                // and ShowError waits for a keypress nobody is there to give.
                 Logger.Log("SessionRestore: could not keep stored map - {0}", ex.Message);
             }
         }

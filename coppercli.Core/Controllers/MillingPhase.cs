@@ -1,39 +1,36 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Phases within the milling workflow.
-    /// Provides finer-grained tracking than ControllerState.
+    /// The step of work a milling run is on.
+    ///
+    /// This names what the machine is doing, never the state of the run.
+    /// <see cref="ControllerState"/> says whether a run is paused, waiting on a person,
+    /// finishing or finished; read it through the predicates on
+    /// <see cref="ControllerBase"/>. Naming one of those here too would let the two be set
+    /// apart and disagree, and <see cref="ToolChange"/> is the value Resume reads to decide
+    /// whether to skip the M0 pcb2gcode emits after an M6.
     /// </summary>
     public enum MillingPhase
     {
-        /// <summary>Not yet started.</summary>
+        /// <summary>No step under way.</summary>
         NotStarted,
 
-        /// <summary>Waiting for machine to stabilize in Idle state.</summary>
+        /// <summary>Waiting for the machine to stabilize in Idle.</summary>
         Settling,
 
-        /// <summary>Homing the machine (if not already homed).</summary>
+        /// <summary>Homing the machine.</summary>
         Homing,
 
         /// <summary>Retracting Z to safe height.</summary>
         Retracting,
 
-        /// <summary>Initializing machine state (G90, G17, depth adjustment).</summary>
-        Initializing,
+        /// <summary>Setting up coordinate modes and the depth adjustment.</summary>
+        ConfiguringMachine,
 
-        /// <summary>Actively milling (sending G-code file).</summary>
+        /// <summary>Streaming the G-code file to the machine.</summary>
         Milling,
 
-        /// <summary>User paused the operation.</summary>
-        Paused,
-
-        /// <summary>Handling M6 tool change.</summary>
-        ToolChange,
-
-        /// <summary>Waiting for the operator to acknowledge an M0/M1 pause.</summary>
-        WaitingForOperator,
-
-        /// <summary>Waiting for completion and cleanup.</summary>
-        Completing
+        /// <summary>Handling an M6 tool change.</summary>
+        ToolChange
     }
 }

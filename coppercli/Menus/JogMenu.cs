@@ -59,7 +59,7 @@ namespace coppercli.Menus
         private static int _pendingMultiplier = 1;
 
         // Current jog mode (needed for redraw during ProbeZ)
-        private static JogMode _currentMode = JogModes[1]; // Normal
+        private static JogMode _currentMode = JogModes[DefaultJogModeIndex];
 
         public static void Show()
         {
@@ -88,7 +88,7 @@ namespace coppercli.Menus
                 while (true)
                 {
                     var (winWidth, winHeight) = GetSafeWindowSize();
-                    var mode = JogModes[AppState.JogPresetIndex];
+                    var mode = AppState.CurrentJogMode;
                     _currentMode = mode;  // Track for ProbeZ redraw
 
                     // Clear screen on terminal resize to avoid artifacts
@@ -316,9 +316,9 @@ namespace coppercli.Menus
             }
 
             // Tab cycles through jog modes
-            if (key.Key == ConsoleKey.Tab)
+            if (InputHelpers.IsKey(key, ConsoleKey.Tab))
             {
-                AppState.JogPresetIndex = (AppState.JogPresetIndex + 1) % JogModes.Length;
+                AppState.CycleJogPreset();
                 _pendingMultiplier = 1; // Reset multiplier on mode change
                 return true;
             }
@@ -374,7 +374,7 @@ namespace coppercli.Menus
                 ShowOverlayTimed("Reset", ConfirmationDisplayMs, messageColor: AnsiWarning);
                 return true;
             }
-            if (key.Key == ConsoleKey.Spacebar)
+            if (InputHelpers.IsKey(key, ConsoleKey.Spacebar))
             {
                 if (MachineWait.IsHold(machine))
                 {
@@ -505,17 +505,16 @@ namespace coppercli.Menus
         /// </summary>
         private static bool ConfirmZeroWithProbeData(string axisDescription)
         {
-            // Only a map that describes the job in hand is worth warning about. The
-            // warning used to fire for any leftover file on disk, including one measured
-            // on another board - which is not the operator's data to lose.
+            // Only a map that describes the job in hand is worth warning about: a file
+            // measured on another board is not the operator's data to lose.
             if (AppState.ProbePoints == null
                 || AppState.GetProbeApplicability() != ProbeApplicability.Applicable)
             {
                 return true;
             }
 
-            var probeState = Persistence.GetProbeState();
-            string what = probeState == Persistence.ProbeState.Partial
+            var grid = AppState.CurrentProbeGrid;
+            string what = grid != null && !grid.HasCompleteData
                 ? "an unfinished height map"
                 : "a height map";
 
@@ -541,12 +540,10 @@ namespace coppercli.Menus
 
             Logger.Log("JogMenu: ProbeZ starting");
 
-            // Configure probe options
-            controller.Options = new Core.Controllers.ProbeOptions
-            {
-                MaxDepth = settings.ProbeMaxDepth,
-                ProbeFeed = settings.ProbeFeed
-            };
+            // Through the factory every other caller uses. Built by hand here, this took
+            // two of the operator's settings and left the rest at class defaults - the
+            // safe height and minimum retract among them.
+            controller.Options = Core.Controllers.ProbeOptions.FromSettings(settings);
 
             // Use CancellationTokenSource for user cancellation
             using var cts = new CancellationTokenSource();

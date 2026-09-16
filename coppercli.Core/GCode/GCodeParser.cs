@@ -345,6 +345,14 @@ namespace coppercli.Core.GCode
         /// </summary>
         private static bool _startUntrusted;
 
+        /// <summary>The position along the axis a center word names: I is X, J is Y, K is Z.</summary>
+        private static double CentreAxisPosition(Vector3 position, char centreWord) => centreWord switch
+        {
+            'I' => position.X,
+            'J' => position.Y,
+            _ => position.Z,
+        };
+
         static void Parse(string line, int lineNumber)
         {
             MatchCollection matches = GCodeSplitter.Matches(line);
@@ -586,7 +594,7 @@ namespace coppercli.Core.GCode
                         i--;
                         continue;
                     }
-                    // An unrecognised G-code takes its parameter words with it. Leaving
+                    // An unrecognized G-code takes its parameter words with it. Leaving
                     // them behind meant they fell through to the motion handler: a
                     // header line like "G64 P0.01" (pcb2gcode path tolerance) arrives
                     // before any motion mode is set and aborted the whole file load.
@@ -732,80 +740,51 @@ namespace coppercli.Core.GCode
                     break;
             }
 
-            // Find IJK
+            // Find IJK.
+            //
+            // A plane has two axes, and the arc center is given as an offset along each.
+            // I, J and K name X, Y and Z, so the word matching the plane's first axis sets
+            // U and the one matching its second sets V. The third names an axis the plane
+            // does not contain and cannot describe a center in it.
             {
                 int ArcIncremental = (State.ArcDistanceMode == ParseDistanceMode.Incremental) ? 1 : 0;
 
+                (char First, char Second) = State.Plane switch
+                {
+                    ArcPlane.XY => ('I', 'J'),
+                    ArcPlane.YZ => ('J', 'K'),
+                    _ => ('K', 'I'),
+                };
+
                 for (int i = 0; i < Words.Count; i++)
                 {
-                    if (Words[i].Command != 'I')
+                    char word = Words[i].Command;
+                    if (word != 'I' && word != 'J' && word != 'K')
                     {
                         continue;
                     }
 
-                    switch (State.Plane)
+                    if (word != First && word != Second)
                     {
-                        case ArcPlane.XY:
-                            U = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.X;
-                            break;
-                        case ArcPlane.YZ:
-                            throw new ParseException("current plane is YZ, I word is invalid", lineNumber);
-                        case ArcPlane.ZX:
-                            V = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.X;
-                            break;
+                        throw new ParseException(
+                            $"current plane is {State.Plane}, {word} word is invalid", lineNumber);
+                    }
+
+                    double offset = Words[i].Parameter * UnitMultiplier
+                        + ArcIncremental * CentreAxisPosition(State.Position, word);
+
+                    if (word == First)
+                    {
+                        U = offset;
+                    }
+                    else
+                    {
+                        V = offset;
                     }
 
                     IJKused = true;
                     Words.RemoveAt(i);
-                    break;
-                }
-
-                for (int i = 0; i < Words.Count; i++)
-                {
-                    if (Words[i].Command != 'J')
-                    {
-                        continue;
-                    }
-
-                    switch (State.Plane)
-                    {
-                        case ArcPlane.XY:
-                            V = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.Y;
-                            break;
-                        case ArcPlane.YZ:
-                            U = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.Y;
-                            break;
-                        case ArcPlane.ZX:
-                            throw new ParseException("current plane is ZX, J word is invalid", lineNumber);
-                    }
-
-                    IJKused = true;
-                    Words.RemoveAt(i);
-                    break;
-                }
-
-                for (int i = 0; i < Words.Count; i++)
-                {
-                    if (Words[i].Command != 'K')
-                    {
-                        continue;
-                    }
-
-                    switch (State.Plane)
-                    {
-                        case ArcPlane.XY:
-                            throw new ParseException("current plane is XY, K word is invalid", lineNumber);
-                        case ArcPlane.YZ:
-                            V = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.Z;
-                            break;
-                        case ArcPlane.ZX:
-                            U = Words[i].Parameter * UnitMultiplier + ArcIncremental * State.Position.Z;
-                            break;
-                    }
-
-                    IJKused = true;
-                    Words.RemoveAt(i);
-                    break;
+                    i--;
                 }
             }
 

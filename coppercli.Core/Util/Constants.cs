@@ -243,11 +243,12 @@ namespace coppercli.Core.Util
         // Controller cancellation timeouts
         // =========================================================================
 
-        /// <summary>Timeout waiting for controller to cancel cleanly (ms). 5 seconds.</summary>
-        public const int ControllerCancelTimeoutMs = 5000;
-
-        /// <summary>Timeout waiting for probe stop to complete (ms). 2 seconds.</summary>
-        public const int ProbeStopTimeoutMs = 2000;
+        /// <summary>
+        /// How long a stop waits for a run to unwind. Long enough for the whole teardown:
+        /// the machine is stopped and reset, then the tool is lifted clear and confirmed.
+        /// Too short and a stop that is working reports that the machine may still be moving.
+        /// </summary>
+        public const int ControllerCancelTimeoutMs = 12000;
 
         // =========================================================================
         // Mill grid visualization
