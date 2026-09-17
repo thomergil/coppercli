@@ -9,8 +9,8 @@ namespace coppercli.Tests
 {
     /// <summary>
     /// An overlay box is as wide as its widest content line, capped at the terminal width, and
-    /// GetOverlayBoxLine cuts a line that still does not fit. So the content has to be wrapped
-    /// before it is measured, or the operator reads half a sentence about the enclosure.
+    /// GetOverlayBoxLine cuts a line that still does not fit. Content has to be wrapped before
+    /// it is measured, or the operator reads half a sentence about the enclosure.
     /// </summary>
     public class OverlayWrapTests
     {
@@ -20,13 +20,11 @@ namespace coppercli.Tests
             "The enclosure door is open. If a magnet is on the switch, take it off. "
             + "Close the door. Ready to carry on?";
 
-        // The real hint, so the test breaks if it grows past what a narrow box can hold.
+        // The production hint, so the test fails if it grows past what a narrow box holds.
         private const string KeyHint = coppercli.CliConstants.ContinueOrCancelKeyHint;
 
-        /// <summary>An ANSI colour code: the escape character, "[", digits and "m".</summary>
         private static readonly string AnsiCodePattern = AnsiEscape + @"\[[0-9;]*m";
 
-        /// <summary>The character every ANSI colour code starts with.</summary>
         private const char AnsiEscape = (char)27;
 
         [Fact]
@@ -87,7 +85,7 @@ namespace coppercli.Tests
             Assert.Single(lines);
         }
 
-        /// <summary>The box as a screen of Width columns draws it, with the colours stripped.</summary>
+        /// <summary>The box as a screen of Width columns draws it, with the color codes stripped.</summary>
         private static string DrawBox(string message, string subtext)
         {
             var (lines, colors) = DisplayHelpers.BuildOverlayContent(

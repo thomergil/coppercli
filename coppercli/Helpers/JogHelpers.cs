@@ -3,21 +3,13 @@ using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper methods for jogging operations.
-    /// </summary>
     internal static class JogHelpers
     {
-        /// <summary>
-        /// Handle jog keys (arrows, AWDX for XY, Q/Z for Z).
-        /// Returns true if a jog command was sent.
-        /// </summary>
-        /// <param name="blockXY">When true, X/Y jog is blocked (e.g., probe in contact)</param>
+        /// <param name="blockXY">Set by callers while the probe is in contact.</param>
         public static bool HandleJogKey(ConsoleKeyInfo key, Machine machine, double feed, double distance, bool blockXY = false)
         {
             bool jogged = false;
 
-            // Arrow keys
             switch (key.Key)
             {
                 case ConsoleKey.UpArrow:
@@ -36,7 +28,6 @@ namespace coppercli.Helpers
                 case ConsoleKey.PageDown: machine.Jog('Z', -distance, feed); jogged = true; break;
             }
 
-            // Q/Z for Z jog
             if (!jogged && InputHelpers.IsKey(key, ConsoleKey.Q))
             {
                 machine.Jog('Z', distance, feed);
@@ -48,7 +39,6 @@ namespace coppercli.Helpers
                 jogged = true;
             }
 
-            // WASD-style for X/Y jog (blocked when probe in contact)
             if (!jogged && !blockXY && InputHelpers.IsKey(key, ConsoleKey.A))
             {
                 machine.Jog('X', -distance, feed);

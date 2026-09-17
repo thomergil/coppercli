@@ -1,5 +1,5 @@
-// Trusting the work zero from a previous session decides where the next cut lands, so the
-// modal stays open until the server answers and a refusal reaches the operator.
+// Trusting the work zero from a previous session sets where the next cut goes, so the modal
+// stays open until the server replies and a refusal is shown to the operator.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +7,6 @@ import { installDom, load, lastToast } from './dom-stub.mjs';
 
 const { CLASS_HIDDEN } = await load('constants.js');
 
-// Returns the page, with fetch answering every POST with `answer`.
 async function pageAnswering(answer) {
     const dom = installDom();
     globalThis.fetch = async () => answer();

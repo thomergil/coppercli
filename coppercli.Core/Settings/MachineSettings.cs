@@ -10,10 +10,8 @@ namespace coppercli.Core.Settings
 
     public class MachineSettings
     {
-        // Warnings
         public bool SilenceExperimentalWarning { get; set; } = false;
 
-        // Connection
         public ConnectionType ConnectionType { get; set; } = ConnectionType.Serial;
         public string SerialPortName { get; set; } = "/dev/ttyUSB0";
         public int SerialPortBaud { get; set; } = Constants.DefaultBaudRate;
@@ -21,7 +19,6 @@ namespace coppercli.Core.Settings
         public string EthernetIP { get; set; } = "192.168.1.101";
         public int EthernetPort { get; set; } = Constants.DefaultEthernetPort;
 
-        // Machine
         public int StatusPollInterval { get; set; } = Constants.StatusPollIntervalMs;
         public int ControllerBufferSize { get; set; } = Constants.GrblBufferSize;
         public bool LogTraffic { get; set; } = false;
@@ -29,7 +26,6 @@ namespace coppercli.Core.Settings
         public bool PauseFileOnHold { get; set; } = true;
         public bool IgnoreAdditionalAxes { get; set; } = true;
 
-        // Probing
         public double ProbeSafeHeight { get; set; } = Constants.RetractZMm;
         public double ProbeMinimumHeight { get; set; } = 1.0;
         public double ProbeMaxDepth { get; set; } = 5.0;
@@ -39,17 +35,15 @@ namespace coppercli.Core.Settings
         public double ProbeOffsetY { get; set; } = 0.0;
         public bool AbortOnProbeFail { get; set; } = false;
         public double OutlineTraceHeight { get; set; } = Constants.RetractZMm;
-        public double OutlineTraceFeed { get; set; } = 600.0;  // mm/min (10mm/sec)
+        public double OutlineTraceFeed { get; set; } = 600.0;
 
-        // Jogging
         public double JogFeed { get; set; } = 1000.0;
         public double JogDistance { get; set; } = 10.0;
         public double JogFeedSlow { get; set; } = 100.0;
         public double JogDistanceSlow { get; set; } = 1.0;
 
-        // Tool Change
         public string MachineProfile { get; set; } = "";  // e.g., "nomad3"
-        public double ToolSetterX { get; set; } = 0;      // Machine coords, 0 = not configured
+        public double ToolSetterX { get; set; } = 0;      // Machine coordinates
         public double ToolSetterY { get; set; } = 0;
     }
 }

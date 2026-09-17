@@ -1,17 +1,15 @@
 namespace coppercli
 {
     /// <summary>
-    /// The outcome of one work zero. Returned rather than stored, so one front end's result
-    /// cannot overwrite another's.
+    /// Returned rather than stored, so one front end's result cannot overwrite another's.
     /// </summary>
     /// <param name="Refused">Why nothing was sent, or null once the offset was written.</param>
-    /// <param name="Outcome">What it did to the height map.</param>
     public readonly record struct WorkZeroResult(string? Refused, WorkZeroOutcome Outcome);
 
     /// <summary>What setting the work zero did to the height map.</summary>
     public enum WorkZeroOutcome
     {
-        /// <summary>There was no map applied, so there was nothing to do.</summary>
+        /// <summary>No height map was applied to the G-code.</summary>
         NothingToDo,
 
         /// <summary>
@@ -43,12 +41,11 @@ namespace coppercli
         FileLeftAlone
     }
 
-    /// <summary>What an outcome means, for the screens that report it.</summary>
     public static class WorkZeroOutcomeExtensions
     {
         /// <summary>
-        /// Whether the loaded G-code now carries corrections that do not match the origin.
-        /// The operator has to reload the file; every screen says so in its own words.
+        /// Whether the loaded G-code now carries corrections that do not match the origin,
+        /// which the operator clears by reloading the file.
         /// </summary>
         public static bool LeftTheGCodeWrong(this WorkZeroOutcome outcome) =>
             outcome is WorkZeroOutcome.MapNotReapplied or WorkZeroOutcome.MapNotDiscarded;

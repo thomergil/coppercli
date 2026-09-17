@@ -4,16 +4,15 @@ using System;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Error information emitted by controllers.
+    /// What a run reports when something goes wrong. `Message` is worded for the operator and
+    /// reaches the screen through `MenuHelpers.ShowRunError`; `Exception` goes to the log only.
     /// </summary>
     public record ControllerError(
-        /// <summary>Human-readable error message.</summary>
         string Message,
 
-        /// <summary>Original exception, if any.</summary>
         Exception? Exception = null,
 
-        /// <summary>True if operation cannot continue, false if recoverable.</summary>
+        /// <summary>False when the run carries on after reporting this.</summary>
         bool IsFatal = true
     );
 }

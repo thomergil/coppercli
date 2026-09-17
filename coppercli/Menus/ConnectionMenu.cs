@@ -1,5 +1,3 @@
-// Extracted from Program.cs
-
 using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
@@ -17,9 +15,6 @@ using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Menus
 {
-    /// <summary>
-    /// Connection menu for connecting/disconnecting from the CNC machine.
-    /// </summary>
     internal static class ConnectionMenu
     {
         public enum ConnectionResult
@@ -32,12 +27,10 @@ namespace coppercli.Menus
             Error
         }
 
-        // Menu option types
         private enum ConnType { Serial, Ethernet, Back }
         private enum PortOption { Reconnect, AutoDetect, Port, Manual }
         private enum EthernetOption { Reconnect, AutoDetect, Manual }
 
-        // Connection type menu definition
         private static readonly MenuDef<ConnType> ConnTypeMenu = new(
             new MenuItem<ConnType>("Serial", 's', ConnType.Serial),
             new MenuItem<ConnType>("Network", 'n', ConnType.Ethernet),
@@ -70,7 +63,6 @@ namespace coppercli.Menus
                 {
                     settings.ConnectionType = ConnectionType.Serial;
 
-                    // List available ports
                     string[] ports = Array.Empty<string>();
                     AnsiConsole.Status()
                         .Start("Enumerating serial ports...", ctx =>
@@ -84,10 +76,8 @@ namespace coppercli.Menus
                         return;
                     }
 
-                    // Build dynamic port menu
                     var portMenu = new MenuDef<PortOption>();
 
-                    // Add Reconnect option if we have saved settings
                     if (!string.IsNullOrEmpty(settings.SerialPortName))
                     {
                         portMenu.Add(new MenuItem<PortOption>(
@@ -140,10 +130,8 @@ namespace coppercli.Menus
                 {
                     settings.ConnectionType = ConnectionType.Ethernet;
 
-                    // Build dynamic network menu
                     var ethMenu = new MenuDef<EthernetOption>();
 
-                    // Add Reconnect option if we have saved settings
                     if (!string.IsNullOrEmpty(settings.EthernetIP))
                     {
                         ethMenu.Add(new MenuItem<EthernetOption>(
@@ -163,7 +151,6 @@ namespace coppercli.Menus
 
                     if (selected.Option == EthernetOption.AutoDetect)
                     {
-                        // Show local IPs to help user understand the scan range
                         var localIPs = NetworkHelpers.GetLocalIPAddresses();
                         if (localIPs.Count > 0)
                         {
@@ -188,7 +175,6 @@ namespace coppercli.Menus
                         return;
                     }
 
-                    // Manual entry
                     settings.EthernetIP = MenuHelpers.Ask("IP address:", settings.EthernetIP);
                     settings.EthernetPort = MenuHelpers.Ask("Port:", settings.EthernetPort);
                 }
@@ -197,9 +183,6 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Quick connect using saved settings (called on startup).
-        /// </summary>
         public static void QuickConnect()
         {
             var settings = AppState.Settings;
@@ -214,9 +197,6 @@ namespace coppercli.Menus
             ConnectWithCurrentSettings();
         }
 
-        /// <summary>
-        /// Attempts to connect using the current settings and shows post-connection offers.
-        /// </summary>
         private static void ConnectWithCurrentSettings()
         {
             var machine = AppState.Machine;
@@ -232,7 +212,7 @@ namespace coppercli.Menus
                         HandleSuccessfulConnection(message);
                         break;
                     case ConnectionResult.Success:
-                        // Port opened but no GRBL response - not a usable connection
+                        // Success with no message: the port opened but GRBL never answered.
                         AnsiConsole.MarkupLine($"[{ColorWarning}]Warning: Port opened but no GRBL response received.[/]");
                         AnsiConsole.MarkupLine($"[{ColorWarning}]Check that the correct port is selected and GRBL is running.[/]");
                         machine.Disconnect();
@@ -245,12 +225,10 @@ namespace coppercli.Menus
                         }
                         break;
                     case ConnectionResult.ClientAlreadyConnected:
-                        // Another TUI client is already connected to the proxy
                         AnsiConsole.MarkupLine($"[{ColorWarning}]Another TUI client is already connected to the proxy.[/]");
                         AnsiConsole.MarkupLine($"[{ColorDim}]Close the other TUI client first, then try again.[/]");
                         break;
                     case ConnectionResult.SerialPortBusy:
-                        // Serial port is busy (likely because a web client is using it)
                         AnsiConsole.MarkupLine($"[{ColorWarning}]Serial port is busy (a web client may be connected).[/]");
                         if (!MenuHelpers.Confirm("Force disconnect the web client?"))
                         {
@@ -259,7 +237,6 @@ namespace coppercli.Menus
                         if (TryForceDisconnectRemote(settings))
                         {
                             Thread.Sleep(ForceDisconnectDelayMs);
-                            // Retry connection
                             (result, message) = TryConnectWithStatus("Reconnecting...");
                             if (result == ConnectionResult.Success && message != null)
                             {
@@ -303,9 +280,6 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Wraps TryConnect with status display and error suppression.
-        /// </summary>
         private static (ConnectionResult Result, string? Message) TryConnectWithStatus(string statusMessage)
         {
             ConnectionResult result = ConnectionResult.Error;
@@ -322,17 +296,13 @@ namespace coppercli.Menus
             return (result, message);
         }
 
-        /// <summary>
-        /// Handles successful connection: announces status and saves settings.
-        /// </summary>
         private static void HandleSuccessfulConnection(string grblStatus)
         {
-            // Don't announce Alarm state - it will be cleared silently
+            // An alarm is not announced: `EnableAutoStateClear` clears it moments later.
             if (grblStatus != StatusIdle && !grblStatus.StartsWith(StatusAlarm))
             {
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected. Machine is {grblStatus}.[/]");
             }
-            // Save connection settings and remember this as the last successful connection type
             AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
             Persistence.SaveSettings();
             Persistence.SaveSession();
@@ -392,9 +362,6 @@ namespace coppercli.Menus
             return false;
         }
 
-        /// <summary>
-        /// Scans the local network for devices with the proxy port open.
-        /// </summary>
         private static bool AutoDetectEthernet(int port, int mask)
         {
             var settings = AppState.Settings;
@@ -423,12 +390,11 @@ namespace coppercli.Menus
                 {
                     AnsiConsole.MarkupLine($"  [{ColorSuccess}]Found {found.Count} device(s)[/]");
 
-                    // Build menu with devices and Back option
                     var options = found.Select((ip, i) => $"{i + 1}. {ip}:{port}").ToList();
                     options.Add($"{options.Count + 1}. Back");
                     int choice = MenuHelpers.ShowMenu("Connect to:", options.ToArray());
 
-                    // Back selected
+                    // The Back entry sits one past the last device.
                     if (choice == found.Count)
                     {
                         return false;
@@ -439,13 +405,11 @@ namespace coppercli.Menus
                     settings.EthernetPort = port;
                     ConnectWithCurrentSettings();
 
-                    // Only return true if connection succeeded
                     if (AppState.Machine.Connected)
                     {
                         return true;
                     }
 
-                    // Connection failed - wait for user to see error
                     MenuHelpers.WaitEnter();
                     return false;
                 }
@@ -456,19 +420,14 @@ namespace coppercli.Menus
             return false;
         }
 
-        /// <summary>
-        /// Scans a network range for hosts with the specified port open.
-        /// </summary>
         private static List<string> ScanNetwork(string localIP, int mask, int port)
         {
             var found = new List<string>();
             var lockObj = new object();
 
-            // Convert IP to 32-bit integer
             var parts = localIP.Split('.').Select(int.Parse).ToArray();
             uint ipInt = ((uint)parts[0] << 24) | ((uint)parts[1] << 16) | ((uint)parts[2] << 8) | (uint)parts[3];
 
-            // Calculate network address and host count
             uint maskBits = 0xFFFFFFFF << (32 - mask);
             uint networkAddr = ipInt & maskBits;
             int hostCount = (1 << (32 - mask)) - 2; // Exclude network and broadcast
@@ -487,7 +446,7 @@ namespace coppercli.Menus
                 }
             });
 
-            // Sort by IP address numerically
+            // Numeric, not lexicographic: 10.0.0.9 sorts before 10.0.0.10.
             found.Sort((a, b) =>
             {
                 var aParts = a.Split('.').Select(int.Parse).ToArray();
@@ -505,19 +464,15 @@ namespace coppercli.Menus
             return found;
         }
 
-        /// <summary>
-        /// Checks if a TCP port is open on the specified host.
-        /// </summary>
         private static bool IsPortOpen(string host, int port, int timeoutMs)
         {
             try
             {
                 using var client = new TcpClient();
-                // Set send/receive timeouts
                 client.SendTimeout = timeoutMs;
                 client.ReceiveTimeout = timeoutMs;
 
-                // Use ConnectAsync with cancellation for reliable timeout
+                // TcpClient.Connect ignores SendTimeout, so the deadline comes from the token.
                 using var cts = new CancellationTokenSource(timeoutMs);
                 var task = client.ConnectAsync(host, port);
                 task.Wait(cts.Token);
@@ -526,15 +481,12 @@ namespace coppercli.Menus
             }
             catch (OperationCanceledException)
             {
-                // Timeout
             }
             catch (AggregateException)
             {
-                // Connection refused or other error
             }
             catch
             {
-                // Other errors
             }
             return false;
         }
@@ -559,7 +511,7 @@ namespace coppercli.Menus
                         }
                         catch
                         {
-                            // Ignore directory access errors - continue with other patterns
+                            // An unreadable /dev entry is skipped; the other patterns still run.
                         }
                     }
                 }
@@ -577,7 +529,6 @@ namespace coppercli.Menus
             bool serialPortBusy = false;
             Exception? error = null;
 
-            // Listen for rejection/error messages from proxy
             void OnLineReceived(string line)
             {
                 if (line.StartsWith(ProxyConnectionRejectedPrefix))
@@ -659,10 +610,6 @@ namespace coppercli.Menus
             return (ConnectionResult.PortNotOpened, null);
         }
 
-        /// <summary>
-        /// Attempts to force disconnect web clients on a remote server by calling the HTTP API.
-        /// Returns true if the API call succeeded.
-        /// </summary>
         private static bool TryForceDisconnectRemote(MachineSettings settings)
         {
             if (settings.ConnectionType != ConnectionType.Ethernet || string.IsNullOrEmpty(settings.EthernetIP))
@@ -670,7 +617,7 @@ namespace coppercli.Menus
                 return false;
             }
 
-            // Web server typically runs on proxy port + 1 (default: 34000 + 1 = 34001)
+            // The server publishes the web port one above the proxy port.
             int webPort = settings.EthernetPort + 1;
             var url = $"http://{settings.EthernetIP}:{webPort}{WebConstants.ApiForceDisconnect}";
 
@@ -689,9 +636,6 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Offers to home the machine after connecting. Called from Program.cs.
-        /// </summary>
         public static void OfferToHome()
         {
             var machine = AppState.Machine;
@@ -700,7 +644,6 @@ namespace coppercli.Menus
                 return;
             }
 
-            // Offer to home
             var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
             if (result == null)
             {
@@ -711,12 +654,10 @@ namespace coppercli.Menus
                 return;
             }
 
-            // Homing needs a machine that is neither alarmed nor holding at the door.
-            //
-            // The alarm arm is bounded by attempts, not a deadline: most of the wait is the
-            // operator walking to the machine and back, and a timer would expire while they
-            // are away. The door is MachineWait.ClearDoorHoldAsync's, with this screen's own
-            // confirmation and message.
+            // The alarm retry is bounded by attempts, not by a deadline: most of the wait is
+            // the operator walking to the machine and back, and a timer would expire while they
+            // are away. A door hold goes to `MachineWait.ClearDoorHoldAsync`, with this
+            // screen's own confirmation and message.
             int unlocks = 0;
 
             while (MachineWait.IsUnavailable(machine))
@@ -731,8 +672,8 @@ namespace coppercli.Menus
                             // and one of them would answer this before it has been read.
                             InputHelpers.FlushKeyboard();
 
-                            // The cycle start restarts the spindle and moves the tool back,
-                            // so the operator asks for it, here as in a run.
+                            // A cycle start restarts the spindle and moves the tool back, so
+                            // the operator confirms it here as in a run.
                             bool? release = MenuHelpers.ConfirmOrQuit(message, false);
                             if (release == null)
                             {
@@ -743,8 +684,8 @@ namespace coppercli.Menus
                         },
                         announce: message =>
                             AnsiConsole.MarkupLine($"[{ColorWarning}]{Markup.Escape(message)}[/]"),
-                        // A door that stays open would otherwise hold this screen with no key
-                        // that ends it.
+                        // Escape ends the wait; a door left open would otherwise hold this
+                        // screen with no way out.
                         onPoll: MenuHelpers.EscapePressed)
                         .GetAwaiter().GetResult();
 
@@ -770,8 +711,8 @@ namespace coppercli.Menus
 
                 if (!MachineWait.IsAlarm(machine))
                 {
-                    // Unavailable for a reason neither the operator nor this loop can act
-                    // on here - asleep, or not answering. Say so rather than spin.
+                    // Neither alarm nor door: asleep or not answering, which this loop cannot
+                    // clear.
                     MenuHelpers.ShowError(ErrorMachineWillNotClear);
                     return;
                 }

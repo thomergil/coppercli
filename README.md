@@ -1,10 +1,14 @@
 # <img src="img/logo.jpg" alt="coppercli logo" width="32" valign="middle"> coppercli
 
-Cross-platform (Mac, Linux, Windows, and web) tool for PCB milling on GRBL machines with probe-based auto-leveling, tool changes, real-time visualization, depth-adjusted remills, and session recovery.
+coppercli mills PCBs on GRBL machines: probe-based auto-leveling, tool changes, real-time
+visualization, depth-adjusted remills, and session recovery. It runs on macOS, Linux, and
+Windows.
 
-* Works **directly over USB/Serial** as a keyboard-driven terminal app on Mac, Linux, and Windows
-* Can work as a **USB/Serial proxy**, allowing remote control over a local network
-* Can work as **http server**, allowing remote control from a **browser** (desktop or mobile)
+Three ways to run it:
+
+* As a keyboard-driven terminal app, **over USB/serial**
+* As a **USB/serial proxy**, for control from another computer on a local network
+* As an **HTTP server**, for control from a browser on a desktop or phone
 
 Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), which is Windows-only.
 
@@ -25,9 +29,9 @@ Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), 
 | **Linux** | Download tarball from [Releases](https://github.com/thomergil/coppercli/releases/latest), extract, run `./coppercli` |
 | **From source** | Clone repo, then `./run.sh` (macOS/Linux) or `run.bat` (Windows) |
 
-Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to run from source.
+Running from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
-**GRBL version:** As per the [OpenCNCPilot documentation](https://github.com/martin2250/OpenCNCPilot), use GRBL 1.1f. Later versions may work, but are untested. Earlier versions (0.8, 0.9, 1.0) will **not** work. There are no workarounds, so you need to update your controller firmware.
+**GRBL version:** Use GRBL 1.1f, as the [OpenCNCPilot documentation](https://github.com/martin2250/OpenCNCPilot) recommends. Later versions may work but are untested. Versions 0.8, 0.9 and 1.0 do not work, and there is no workaround: update your controller firmware.
 
 ## Terminal screenshots
 
@@ -59,43 +63,46 @@ Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) to run f
 
 ## Tutorial
 
-For a complete end-to-end guide on milling PCBs, from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://thomer.com/pcb-nomad3).
+For an end-to-end guide to milling PCBs, from KiCad export through G-code generation to probing and milling, see [Milling a PCB with auto-leveling using a Carbide 3D Nomad 3](https://thomer.com/pcb-nomad3).
 
 ## Background
 
-Based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), a CNC milling program with height map interpolation. However, OpenCNCPilot is Windows-only, requires many finicky mouse clicks, and loses state on disconnect. coppercli is cross-platform, keyboard-driven, designed for minimal interaction, and can recover interrupted sessions. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
+coppercli is a fork of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250), a CNC milling program with height map interpolation. OpenCNCPilot runs on Windows only, takes many mouse clicks, and loses its state when the connection drops. coppercli is cross-platform, keyboard-driven, needs little interaction during a job, and can recover an interrupted session. I used [Claude Code](https://claude.ai/claude-code) to rework the codebase.
 
 ## Features
 
-- Cross-platform, auto-detects serial port and baud rate
-- Proxy mode for network access; HTTP server for web access
+- Cross-platform; auto-detects serial port and baud rate
+- Proxy mode for network access; HTTP server for browser access
 - Keyboard-driven: single-key menu navigation, arrows or WASD to jog X and Y, Q and Z to
   jog the tool up and down, Tab to cycle speeds
-- Jog speed presets (fast, normal, slow, creep) with a digit prefix as multiplier, so `3w`
+- Jog speed presets (fast, normal, slow, creep), with a digit prefix as multiplier, so `3w`
   jogs three steps in +Y
-- Feed speed override during milling in 10% increments
-- Depth adjustment for re-milling in ±0.02mm increments
-- Tool change (M6): auto-measures tool length with tool setter, or prompts re-probe without
+- Feed speed override during milling, in 10% increments
+- Depth adjustment for re-milling, in ±0.02mm increments
+- Tool change (M6): measures tool length with a tool setter, or prompts for a re-probe if
+  there is no setter
 - Built-in machine profiles
 - Probe grid auto-leveling with configurable margin and grid size
-- Bad probe detection: pauses when a measured height disagrees with the points already
-  measured around it, so a reading taken on debris or through the surface is caught
-- Real-time probing and milling displays with position grid visualization
+- Bad probe detection: pauses when a measured height is too far from the points already
+  measured around it, which catches a reading taken on debris or one that pushed through
+  the surface
+- Probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
-- Save/load probe grids
-- Macros for multi-step workflows with file placeholders
+- Save and load probe grids
+- Macros for multi-step workflows, with file placeholders
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe
 - Quick positioning: X0Y0, Z0, Z+6mm, Z+1mm, center of G-code bounds
 - Built-in file browser with optional search/filter
-- Safety-first: refuses suspect settings, requires homing, raises to safe height before moves
-- Session recovery: interrupted probing resumes, remembers last file, restores home points
+- Refuses out-of-range settings, requires homing, and raises to safe height before moves
+- Session recovery: interrupted probing resumes, the last file is remembered, home points
+  are restored
 
 ## Server Mode
 
-Server mode runs both a TCP proxy and a web server, allowing remote access via either:
+Server mode runs a TCP proxy and a web server at the same time:
 
-- **Port 34000**: Raw GRBL over TCP (for TUI clients using Network mode)
-- **Port 34001**: HTTP/WebSocket (for browser-based control)
+- **Port 34000**: raw GRBL over TCP, for TUI clients in Network mode
+- **Port 34001**: HTTP/WebSocket, for browser control
 
 Open the **web UI** by typing the address printed at startup, such as
 `http://192.168.1.5:34001`, into any browser on the same network. There is no password.
@@ -105,23 +112,23 @@ domain name such as `mill.lan`, `mill.home.arpa`, or anything from your router's
 domain is refused. Accepting those would let a remote site point a domain of its own at
 your machine and drive it through your browser.
 
-Two things are refused:
+Three kinds of request are refused:
 
 - A request whose source address is not on a private network and does not share a subnet
   with this machine. Plain port-forwarding therefore does not expose the mill.
-- A request sent by a page on another site that says so, and a request for a domain name
-  that re-resolves to your machine's address (DNS rebinding).
+- A request whose `Origin` or `Sec-Fetch-Site` header says it came from a page on another
+  site.
+- A request for a domain name that re-resolves to your machine's address (DNS rebinding).
 
-A plain cross-site `GET` - an `<img>` or `<script>` on someone else's page pointed at this
-port - says nothing about where it came from, so it cannot be told apart from your own
-navigation and is admitted. Nothing that moves the machine, starts a job, or writes a file
-answers a `GET`.
+A cross-site `GET` - an `<img>` or `<script>` on someone else's page pointed at this port -
+carries nothing that identifies where it came from, so it cannot be told apart from your own
+navigation and is admitted. No `GET` moves the machine, starts a job, or writes a file.
 
-> **It does not protect against other people on your own network.** Anyone who shares it
-> can drive the machine, and the raw GRBL bridge on port 34000 is wide open in the same
-> way. Only run either on a network you trust.
+> **This does not protect against other people on your own network.** Anyone on it can
+> drive the machine, and port 34000 has no access check at all. Only run either on a
+> network you trust.
 >
-> It also cannot help if you publish the port through something that terminates locally,
+> It also does not help if you publish the port through something that terminates locally,
 > such as an `ssh -R` tunnel, `ngrok`, or a reverse proxy. The request then arrives from
 > this machine itself. Do not expose either port that way.
 
@@ -133,15 +140,18 @@ coppercli --server
 coppercli --server --proxy-port 35000 --web-port 8080
 ```
 
-When started, the console displays the connection URLs. Drive the machine from one page.
+At startup the console prints the connection URLs. Drive the machine from one page.
 Nothing enforces this: a second browser gets a take-over prompt and still works if you
-decline it, and coppercli does not notice a second tab of the same browser.
+decline it, and coppercli does not detect a second tab of the same browser.
 
-**Warning:** coppercli tries to keep the client awake, but a laptop or phone can still suspend. If the client suspends during milling, the network connection is lost and the machine may be left in an unknown state. Run the client on a device connected to power with sleep disabled, and stay next to the machine while it runs.
+**Warning:** coppercli tries to keep the client awake, but a laptop or phone can still
+suspend. If the client suspends during milling, the network connection is lost and the
+machine may be left in an unknown state. Run the client on a device connected to power
+with sleep disabled, and stay next to the machine while it runs.
 
 ## Macros
 
-Automate multi-step workflows with `.cmacro` files:
+`.cmacro` files run multi-step workflows:
 
 ```
 # pcb-job.cmacro
@@ -157,17 +167,19 @@ prompt "Remove probe clip, close door"
 mill
 ```
 
-Run from menu (Main Menu → Macro) or command line:
+Run from the menu (Main Menu → Macro) or the command line:
 
 ```bash
 coppercli --macro pcb-job.cmacro --back_file ~/boards/back.ngc
 ```
 
-Placeholders like `[back_file:file]` prompt a file browser at runtime, or accept values via `--name path` on the command line. See [docs/macros.md](docs/macros.md) for the full command reference.
+A placeholder such as `[back_file:file]` opens a file browser at runtime, or takes a value
+from `--name path` on the command line. See [docs/macros.md](docs/macros.md) for the full
+command reference.
 
 ### Windows Setup
 
-On Windows, a one-time setup is required (run in Administrator PowerShell):
+Windows needs a one-time setup, run in an Administrator PowerShell.
 
 **Allow network access (firewall rules):**
 ```powershell
@@ -176,7 +188,8 @@ netsh advfirewall firewall add rule name="coppercli-web" dir=in action=allow pro
 netsh http add urlacl url=http://+:34001/ user=Everyone
 ```
 
-The URL reservation is required for the web server. Without it, you'll get "Access Denied" when starting. If you use custom ports, replace the port numbers accordingly.
+The web server needs the URL reservation; without it, startup fails with "Access Denied".
+If you use custom ports, replace the port numbers accordingly.
 
 ## Command-Line Arguments
 
@@ -192,11 +205,11 @@ The URL reservation is required for the web server. Without it, you'll get "Acce
 
 ## A note on Claude Code and code quality
 
-This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot). I did much of this with Claude Code. As of the time of this writing (Aug, 2026), Claude Code, running Claude Opus 5, quickly writes reasonable code. It does not maintain high code quality, write DRY code, or stick to clean coding patterns. I spent most of my time on this project pursuing clean code. This code is reasonably well tested, but it does not meet the code quality standards I'd hold myself to if I wrote it entirely by hand.
+This is a fork and an almost ground-up rewrite of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), done mostly with Claude Code. As of August 2026, Claude Code running Claude Opus 5 writes reasonable code quickly. It does not keep the code DRY or stick to clean patterns, and most of my time on this project went into cleaning that up. The code is reasonably well tested, but it does not meet the standard I would hold myself to writing it by hand.
 
 ## Warning
 
-**This software is EXTREMELY EXPERIMENTAL and may damage your CNC machine and drill bits. Use at your own risk. Stay nearby. Keep your hand on the emergency stop.**
+**This software is experimental and may damage your CNC machine and drill bits. Use at your own risk. Stay nearby. Keep your hand on the emergency stop.**
 
 ## License
 
@@ -204,6 +217,6 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Acknowledgments
 
-- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250) - the foundation this project is built on
+- [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot) by [Martin Pittermann](https://github.com/martin2250) - the project coppercli is based on
 - [Spectre.Console](https://spectreconsole.net/) - console UI library
 - [Claude Code](https://claude.ai/claude-code)

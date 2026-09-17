@@ -29,7 +29,6 @@ namespace coppercli.Tests.Fakes
         private readonly object _lock = new();
         private readonly List<string> _received = new();
 
-        // Lines that arrived while the machine was holding, waiting on the cycle start.
         private readonly List<string> _queued = new();
 
         // GRBL's door rules, shared with the other two doubles.
@@ -56,7 +55,7 @@ namespace coppercli.Tests.Fakes
 
         public int Port { get; }
 
-        /// <summary>The Z a probe reports contact at. The tool stops there.</summary>
+        /// <summary>Every probe reports contact here; this fake never reports a miss.</summary>
         public double ProbeContactZ { get; set; } = -1.0;
 
         /// <summary>Every line sent, in order, without its terminator.</summary>
@@ -78,11 +77,10 @@ namespace coppercli.Tests.Fakes
         public int SoftResetCount => CountOf(SoftResetMark);
         public int CycleStartCount => CountOf(CycleStartMark);
 
-        /// <summary>The enclosure is open and the machine is holding.</summary>
         public void SimulateDoorOpen() =>
             SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar);
 
-        /// <summary>GRBL is restoring from the park after a cycle start.</summary>
+        /// <summary>GRBL is moving the parked axes back after a cycle start.</summary>
         public void SimulateDoorResuming() =>
             SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateResuming);
 
@@ -94,8 +92,7 @@ namespace coppercli.Tests.Fakes
         }
 
         /// <summary>
-        /// The enclosure is closed and the machine is still holding, waiting for a cycle
-        /// start. A job start must recover from this state.
+        /// The enclosure reads closed and GRBL keeps holding until it takes a cycle start.
         /// </summary>
         public void SimulateDoorClosedAndHolding() =>
             SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed);
@@ -200,7 +197,8 @@ namespace coppercli.Tests.Fakes
                 {
                     Record(CycleStartMark);
 
-                    // A feed hold always resumes; the door has its own rules.
+                    // A feed hold always resumes on a cycle start; a door hold resumes only
+                    // under DoorModel's conditions.
                     if (_state == GrblProtocol.StatusHold)
                     {
                         SetState(GrblProtocol.StatusIdle, string.Empty);
@@ -239,9 +237,8 @@ namespace coppercli.Tests.Fakes
                 return;
             }
 
-            // GRBL executes nothing while it holds: the line is acknowledged, queued, and
-            // runs on the cycle start. A double that moved anyway would let a retract queued
-            // at the door pass every test that checks the tool stayed put.
+            // The line is acknowledged, queued, and run on the cycle start. A fake that moved
+            // anyway would report a retract as having run while the enclosure was open.
             if (DoorModel.Holding(_state))
             {
                 lock (_lock) { _queued.Add(line); }
@@ -278,7 +275,6 @@ namespace coppercli.Tests.Fakes
             Send(GrblProtocol.ResponseOk);
         }
 
-        /// <summary>Runs whatever arrived while the machine was holding.</summary>
         private void RunQueuedLines()
         {
             string[] queued;
@@ -294,7 +290,6 @@ namespace coppercli.Tests.Fakes
             }
         }
 
-        /// <summary>Reads the axis words so the reported position follows the move.</summary>
         private void ApplyMove(string line)
         {
             _x = AxisWord(line, 'X') ?? _x;

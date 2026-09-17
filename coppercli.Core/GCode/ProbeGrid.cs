@@ -14,16 +14,14 @@ namespace coppercli.Core.GCode
         public int TotalPoints { get { return SizeX * SizeY; } }
 
         /// <summary>
-        /// Points still to measure in this pass.
-        ///
-        /// Private, and every operation on it is taken under <see cref="_queueLock"/>.
-        /// The probing loop removes from it on one thread while the display reads it on
-        /// another, so callers get <see cref="SnapshotRemaining"/> rather than the list.
+        /// Points still to measure in this pass, every operation on them taken under
+        /// <see cref="_queueLock"/>. The probing loop removes from it on one thread while a
+        /// display reads it on another, so callers get <see cref="SnapshotRemaining"/>
+        /// rather than the list.
         /// </summary>
         private readonly List<(int X, int Y)> _remaining = new();
         private readonly object _queueLock = new object();
 
-        /// <summary>How many points remain to be measured in this pass.</summary>
         public int RemainingCount
         {
             get { lock (_queueLock) { return _remaining.Count; } }
@@ -31,10 +29,8 @@ namespace coppercli.Core.GCode
 
         public int Progress { get { return TotalPoints - RemainingCount; } }
 
-        /// <summary>
-        /// A copy of the points still to measure, safe to read while probing continues.
-        /// Callers get a snapshot so they cannot enumerate the live queue.
-        /// </summary>
+        /// <summary>A copy of the points still to measure, safe to read while probing
+        /// continues.</summary>
         public IReadOnlyList<(int X, int Y)> SnapshotRemaining()
         {
             lock (_queueLock) { return _remaining.ToArray(); }
@@ -79,7 +75,7 @@ namespace coppercli.Core.GCode
         /// <summary>
         /// Takes a point off the queue without a height - the probe did not reach the
         /// surface and the operator chose to carry on. The node stays unmeasured, so the
-        /// map is still incomplete and says so.
+        /// map is still incomplete.
         /// </summary>
         public void SkipPoint(int x, int y)
         {
@@ -259,23 +255,19 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// True only when every node of the grid holds a measured height.
-        ///
-        /// Progress counts points taken off the queue, which a skipped probe also does, so
-        /// Progress reaching TotalPoints does NOT mean the map is usable. Gate the height
-        /// map on this instead.
+        /// True only when every node holds a measured height. Progress counts points taken
+        /// off the queue, a skipped probe included, so Progress reaching TotalPoints does
+        /// not mean the map is usable.
         /// </summary>
         public bool HasCompleteData => Points != null && _measuredCount == TotalPoints;
 
-        /// <summary>
-        /// How many nodes hold a measured height. What a screen counting points shows;
-        /// <see cref="Progress"/> counts points taken off the queue, skipped ones included.
-        /// </summary>
+        /// <summary>How many nodes hold a measured height, which is what a screen counting
+        /// points shows.</summary>
         public int MeasuredCount => _measuredCount;
 
         /// <summary>
         /// How much of this map is measured. Every screen and gate reads this rather than
-        /// comparing Progress with TotalPoints, which a skipped point makes equal.
+        /// comparing Progress with TotalPoints.
         /// </summary>
         public ProbeDataState State =>
             HasCompleteData ? ProbeDataState.Complete
@@ -334,7 +326,6 @@ namespace coppercli.Core.GCode
         /// </summary>
         private const int MaxNodesPerAxis = 10000;
 
-        /// <summary>Shown when a file cannot be read as a height map.</summary>
         public const string MalformedMessage = "This file is not a usable height map.";
 
         /// <summary>Nodes holding a measured height. Kept as a count because
@@ -377,7 +368,7 @@ namespace coppercli.Core.GCode
             double fX = x - iLX;            // fractional part
             double fY = y - iLY;
 
-            double linUpper = Points[iHX, iHY].Value * fX + Points[iLX, iHY].Value * (1 - fX);  // linear intermediates
+            double linUpper = Points[iHX, iHY].Value * fX + Points[iLX, iHY].Value * (1 - fX);
             double linLower = Points[iHX, iLY].Value * fX + Points[iLX, iLY].Value * (1 - fX);
 
             return linUpper * fY + linLower * (1 - fY);  // bilinear result
@@ -385,21 +376,12 @@ namespace coppercli.Core.GCode
 
         /// <summary>
         /// How far <paramref name="height"/> sits from the mean of the measured nodes one
-        /// grid step from (x, y), or null when none of them has been measured yet.
-        ///
-        /// Those neighbors set the height a node is expected to match. A board is continuous,
-        /// so adjacent nodes differ by its warp over a single step and no more, where the
-        /// board's overall range says nothing useful: a bowed board spans millimeters end
-        /// to end while staying flat between any two adjacent nodes.
-        ///
-        /// Orthogonal only: a diagonal node sits further away, so it tolerates more real
-        /// deviation and would loosen the comparison for no gain. The node itself is never
-        /// among them, so a height already recorded here cannot pull its own expectation.
-        ///
-        /// Unsigned, because both directions are faults. A tip stopping short on debris
-        /// reads high and ruins the map exactly as one pushing past the surface reads low.
+        /// orthogonal step from (x, y), or null when none of them has been measured yet. A
+        /// board is continuous, so those neighbors differ from a sound reading by one step
+        /// of warp and no more, and the result is unsigned because a tip stopping short on
+        /// debris reads high exactly as one pushing past the surface reads low.
         /// </summary>
-        public double? GetNeighbourDeviation(int x, int y, double height)
+        public double? GetNeighborDeviation(int x, int y, double height)
         {
             double sum = 0;
             int count = 0;
@@ -414,10 +396,10 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
-                double? neighbour = Points[nx, ny];
-                if (neighbour.HasValue)
+                double? neighbor = Points[nx, ny];
+                if (neighbor.HasValue)
                 {
-                    sum += neighbour.Value;
+                    sum += neighbor.Value;
                     count++;
                 }
             }
@@ -445,12 +427,9 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Refills the work queue with every node that still has no measured height.
-        ///
-        /// A probe that fails with "don't abort on failure" drops its node from the
-        /// queue without recording anything, so the queue empties while the map stays
-        /// incomplete. Rebuilding lets the operator go back and fill those holes instead
-        /// of being left with a map that can never be applied.
+        /// Refills the work queue with every node that still has no measured height. A probe
+        /// that fails with "don't abort on failure" drops its node without recording
+        /// anything, so this is how the operator goes back and fills those holes.
         /// </summary>
         public void RequeueUnmeasuredPoints()
         {
@@ -631,7 +610,7 @@ namespace coppercli.Core.GCode
                 w.WriteAttributeString("SizeX", SizeX.ToString(Constants.DecimalParseFormat));
                 w.WriteAttributeString("SizeY", SizeY.ToString(Constants.DecimalParseFormat));
 
-                // The setup this map describes. Without it a map cannot be told apart
+                // The setup this map describes. Without it a map cannot be distinguished
                 // from one measured on another board, or before the origin moved.
                 if (Context.IsKnown)
                 {
@@ -663,15 +642,12 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Whether any node holds a height. Read from the count the grid already keeps, so it
+        /// Whether any node holds a height, read from the count the grid already keeps so it
         /// cannot disagree with MinHeight and MaxHeight. Not Progress, which counts points
         /// taken off the queue and so includes skipped probes.
         /// </summary>
         public bool HasValidHeights => _measuredCount > 0;
 
-        /// <summary>
-        /// Get information about the probe grid as a string.
-        /// </summary>
         public string GetInfo()
         {
             string zRange = HasValidHeights
@@ -679,8 +655,6 @@ namespace coppercli.Core.GCode
                 : "Z range: --";
 
             int pct = TotalPoints > 0 ? (int)Math.Round(100.0 * Progress / TotalPoints) : 0;
-            // A skipped point comes off the queue without a height, so Progress reaching
-            // TotalPoints is not the same as the map being usable.
             string progressText = HasCompleteData
                 ? $"Progress: {Progress}/{TotalPoints} (complete)"
                 : $"Progress: {Progress}/{TotalPoints} ({pct}%)";

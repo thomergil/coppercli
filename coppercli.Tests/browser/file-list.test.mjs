@@ -1,6 +1,6 @@
-// The file list is built as markup from names on disk. A name carrying a quote used to end
-// the attribute holding its path, so the file could not be loaded; an angle bracket
-// corrupted the rest of the list.
+// The file list is built as markup from names on disk. Unescaped, a quote in a name ends the
+// attribute holding its path and the file cannot be loaded; an angle bracket corrupts the
+// rest of the list.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

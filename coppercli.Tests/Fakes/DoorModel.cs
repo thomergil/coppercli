@@ -7,12 +7,12 @@ using coppercli.Core.Util;
 namespace coppercli.Tests.Fakes
 {
     /// <summary>
-    /// GRBL's door behaviour, in one place so the three doubles cannot answer it differently.
-    /// Each double keeps its own state; this owns the rules that state follows.
+    /// GRBL's door behavior in one place, so the three doubles cannot diverge. Each double
+    /// keeps its own state and calls in here for the rules that state follows.
     ///
-    /// Compared against the wire values rather than through MachineWait, because the door
-    /// tests are checking those predicates and a double that called them would always agree
-    /// with them.
+    /// The predicates below compare wire values directly instead of calling MachineWait: the
+    /// door tests check MachineWait's predicates, and a double built on them would agree with
+    /// them whatever they said.
     /// </summary>
     public sealed class DoorModel : IDisposable
     {
@@ -37,7 +37,8 @@ namespace coppercli.Tests.Fakes
         /// </summary>
         public int RestoreMs { get; set; }
 
-        /// <summary>A switch that reads closed but never lets GRBL resume.</summary>
+        /// <summary>Set true for a door switch that reads closed while the cycle start is
+        /// ignored.</summary>
         public bool IgnoreCycleStart { get; set; }
 
         /// <summary>
@@ -56,9 +57,9 @@ namespace coppercli.Tests.Fakes
             !state.StartsWith(GrblProtocol.StatusDoor, StringComparison.Ordinal);
 
         /// <summary>
-        /// Whether a soft reset from this state lands in Alarm. GRBL alarms on a reset out of
-        /// a hold, a door hold or a move; only a reset of an already-idle machine lands in
-        /// Idle. StopAndResetAsync sends $X for exactly this.
+        /// Whether a soft reset from this state lands in Alarm: GRBL alarms on a reset out of a
+        /// hold, a door hold or a move, and only a reset of an idle machine lands in Idle.
+        /// StopAndResetAsync sends $X to clear that alarm.
         /// </summary>
         public static bool ResetAlarms(string state) =>
             Holding(state) || state.StartsWith(GrblProtocol.StatusRun, StringComparison.Ordinal);
@@ -69,10 +70,9 @@ namespace coppercli.Tests.Fakes
             && state.StartsWith(GrblProtocol.StatusAlarm, StringComparison.Ordinal);
 
         /// <summary>
-        /// Take a cycle start at the door. GRBL resumes only once the enclosure reads closed;
-        /// with it ajar or the park retract still running the cycle start is ignored and the
-        /// machine keeps holding. The restore is a real move, reported as Door:3 until the
-        /// retracted axes are back.
+        /// GRBL resumes only once the enclosure reads closed, so while it is ajar or the park
+        /// retract is still running the cycle start is ignored and the hold stays. The restore
+        /// is a real move, reported as Door:3 until the parked axes are back.
         /// </summary>
         /// <returns>True if the cycle start was taken.</returns>
         public bool CycleStart(string state, string subState)

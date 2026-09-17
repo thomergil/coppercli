@@ -54,14 +54,14 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Every setting the table covers, one at a time, so a row that reads or writes the
-        /// wrong property shows up as a neighbour being reset.
+        /// wrong property shows up as a neighbor being reset.
         /// </summary>
         [Fact]
         public void RepairingOneSetting_LeavesTheOthersAlone()
         {
             foreach (var binding in SettingRanges.All)
             {
-                // A distinct usable value per setting, so a neighbour that was reset holds
+                // A distinct usable value per setting, so a neighbor that was reset holds
                 // its default instead of the value seeded here.
                 var settings = new MachineSettings();
                 double seed = 1000.0;

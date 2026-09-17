@@ -12,27 +12,23 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// G-code numbers must always use '.' as the decimal separator, whatever locale the
-    /// operator's machine is set to.
-    ///
-    /// The regression these pin: C# interpolated strings format with CurrentCulture. On a
-    /// German/Dutch/French system "Z-1.000" is emitted as "Z-1,000", which GRBL rejects
-    /// with error:2 ("numeric value format is not valid"). Because no controller observes
-    /// GRBL errors, the safety retract silently does nothing and the next XY rapid runs at
-    /// cutting depth.
+    /// G-code numbers must use '.' as the decimal separator whatever locale the operator's
+    /// machine is set to. C# interpolated strings format with CurrentCulture, so on a German,
+    /// Dutch or French system "Z-1.000" comes out as "Z-1,000", which GRBL rejects with
+    /// error:2 ("numeric value format is not valid"). No controller reads GRBL errors back,
+    /// so the safety retract does nothing and the next XY rapid runs at cutting depth.
     /// </summary>
-    // The culture is set on this thread only. It flows into the awaits below with the
-    // execution context, so the code under test formats under it while tests on other
-    // threads keep their own. Do not use DefaultThreadCurrentCulture: it applies to the whole
-    // process, so a test asserting on a formatted number would depend on what runs beside
-    // it.
+    // CurrentCulture is set on this thread only and flows into the awaits below with the
+    // execution context, so tests on other threads keep theirs. Do not use
+    // DefaultThreadCurrentCulture: it applies to the whole process, so a test asserting on a
+    // formatted number would depend on what runs beside it.
     public class CultureInvariantGCodeTests : IDisposable
     {
         private readonly CultureInfo _original = CultureInfo.CurrentCulture;
 
         public CultureInvariantGCodeTests()
         {
-            // German: decimal comma, thousands dot - the worst case for G-code.
+            // German formats a decimal comma and a thousands dot, the worst case for G-code.
             CultureInfo.CurrentCulture = new CultureInfo("de-DE");
         }
 
@@ -86,14 +82,13 @@ namespace coppercli.Tests
             }
             catch (OperationCanceledException)
             {
-                // Only the emitted text matters here.
+                // The run need not finish; the assertions below read only what was emitted.
             }
 
             Assert.NotEmpty(machine.SentCommands);
             AssertNoDecimalComma(machine);
         }
 
-        /// <summary>The invariant formatter must be immune to the ambient culture.</summary>
         [Fact]
         public void GCodeFormat_IsImmuneToAmbientCulture()
         {

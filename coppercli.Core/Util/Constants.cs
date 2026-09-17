@@ -3,124 +3,80 @@ using System.Globalization;
 namespace coppercli.Core.Util
 {
     /// <summary>
-    /// Core constants shared across the coppercli.Core library.
-    /// CLI-specific constants belong in coppercli/CliConstants.cs.
-    /// GRBL protocol constants belong in GrblProtocol.cs.
+    /// Constants shared across coppercli.Core; CLI-specific ones belong in
+    /// coppercli/CliConstants.cs and GRBL protocol ones in GrblProtocol.cs. Machine Z=0 is
+    /// home at the top, and negative Z runs down toward the work.
     /// </summary>
     public static class Constants
     {
-        // =========================================================================
-        // Number formatting (ensures consistent decimal parsing across locales)
-        // =========================================================================
-
-        /// <summary>
-        /// Number format for parsing decimals from G-code and GRBL responses.
-        /// Forces '.' as decimal separator regardless of system locale.
-        /// </summary>
+        /// <summary>Parses decimals from G-code and GRBL replies with '.' as the
+        /// separator, whatever the system locale is.</summary>
         public static readonly NumberFormatInfo DecimalParseFormat = new() { NumberDecimalSeparator = "." };
 
-        /// <summary>
-        /// Number format for outputting decimals in G-code commands.
-        /// Forces '.' as decimal separator with 3 decimal places.
-        /// </summary>
+        /// <summary>Writes decimals into G-code with '.' as the separator and three
+        /// decimal places.</summary>
         public static readonly NumberFormatInfo DecimalOutputFormat = new() { NumberDecimalSeparator = ".", NumberDecimalDigits = 3 };
 
-        // =========================================================================
-        // Version requirements
-        // =========================================================================
-
         /// <summary>
-        /// Minimum supported GRBL version. The build number encodes the letter suffix (e.g., 'f' = 102).
-        /// GRBL 1.1f introduced the real-time status report format we depend on.
+        /// The build number carries the letter suffix, so 'f' is 102. GRBL 1.1f is the first
+        /// with the real-time status report format this code reads.
         /// </summary>
         public static readonly Version MinimumGrblVersion = new(1, 1, 'f');
 
-        // =========================================================================
-        // Serial port timing
-        // =========================================================================
-
-        /// <summary>Read timeout for serial port operations (ms).</summary>
         public const int SerialReadTimeoutMs = 100;
 
-        /// <summary>Write timeout for serial port operations (ms).</summary>
         public const int SerialWriteTimeoutMs = 1000;
 
-        /// <summary>Default baud rate for GRBL controllers (GRBL v0.9+ default).</summary>
+        /// <summary>The GRBL default since v0.9.</summary>
         public const int DefaultBaudRate = 115200;
 
-        // =========================================================================
-        // GRBL controller defaults
-        // =========================================================================
-
-        /// <summary>Default GRBL serial buffer size in bytes. Commands are queued until this fills.</summary>
+        /// <summary>GRBL's serial receive buffer, in bytes; lines are queued until it
+        /// fills.</summary>
         public const int GrblBufferSize = 127;
 
-        /// <summary>Default value for feed/rapid/spindle overrides (100% = normal speed).</summary>
+        /// <summary>Percent, where 100 is the programmed rate.</summary>
         public const int OverrideDefaultPercent = 100;
 
-        /// <summary>Default interval for polling machine status via '?' command (ms).</summary>
+        /// <summary>How often '?' is sent for a status report.</summary>
         public const int StatusPollIntervalMs = 100;
 
-        /// <summary>Default TCP port for network-connected GRBL controllers.</summary>
         public const int DefaultEthernetPort = 34000;
 
-        // =========================================================================
-        // Proxy server (for bridging serial to TCP)
-        // =========================================================================
-
-        /// <summary>Buffer size for proxy TCP read/write operations (bytes).</summary>
+        /// <summary>Bytes per proxy read or write.</summary>
         public const int ProxyBufferSize = 4096;
 
-        /// <summary>Sleep interval in proxy worker thread when no data available (ms).</summary>
+        /// <summary>How long the proxy worker sleeps when the port has nothing to
+        /// read.</summary>
         public const int ProxyThreadSleepMs = 1;
 
-        /// <summary>Sleep interval in proxy accept loop when waiting for connections (ms).</summary>
+        /// <summary>How long the accept loop sleeps between checks for a pending
+        /// connection.</summary>
         public const int ProxyAcceptLoopSleepMs = 100;
 
-        /// <summary>Socket poll timeout for checking data/disconnection (microseconds). 100ms.</summary>
         public const int SocketPollTimeoutMicroseconds = 100000;
 
-        // =========================================================================
-        // Work loop timing
-        // =========================================================================
-
-        /// <summary>Interval for updating file position during G-code streaming (ms).</summary>
+        /// <summary>How often the file position is published while streaming.</summary>
         public const int FilePosUpdateIntervalMs = 500;
 
         /// <summary>
         /// How long the worker leaves GRBL alone before its first status query. Seeded into
-        /// the last-poll time, so a board still settling after the port opens is not asked
-        /// for a report it cannot answer.
+        /// the last-poll time, so a board still settling after the port opens is not polled
+        /// for a report it cannot yet produce.
         /// </summary>
         public const int FirstStatusPollDelayMs = 500;
 
-        /// <summary>
-        /// Grace period after connection to ignore spurious errors (ms).
-        /// Some controllers send garbage during initialization.
-        /// </summary>
+        /// <summary>Errors are ignored for this long after connecting, because some
+        /// controllers send garbage while initializing.</summary>
         public const int ErrorGracePeriodMs = 200;
 
-        // =========================================================================
-        // Logging
-        // =========================================================================
-
-        /// <summary>
-        /// Filename for raw serial traffic log (created when LogTraffic setting is enabled).
-        /// This logs all bytes sent/received on the serial port for debugging.
-        /// </summary>
+        /// <summary>Written when the LogTraffic setting is on, holding every line sent and
+        /// received.</summary>
         public const string SerialTrafficLogFile = "serial_traffic.log";
 
-        // =========================================================================
-        // Machine operation timing (used by controllers)
-        // =========================================================================
-
-        /// <summary>Delay after sending a command before sending another (ms).</summary>
         public const int CommandDelayMs = 200;
 
-        /// <summary>Timeout waiting for machine to become idle (ms).</summary>
         public const int IdleWaitTimeoutMs = 3000;
 
-        /// <summary>Timeout waiting for motion to start after sending command (ms).</summary>
         public const int MotionStartTimeoutMs = 1000;
 
         /// <summary>How long to wait for GRBL's reply to $# (its stored offsets).</summary>
@@ -135,25 +91,18 @@ namespace coppercli.Core.Util
         /// </summary>
         public const int ProbeReplyTimeoutMs = 180000;
 
-        /// <summary>Timeout waiting for Z axis to reach target height (ms). 30 seconds.</summary>
         public const int ZHeightWaitTimeoutMs = 30000;
 
-        /// <summary>Timeout waiting for any move to complete (ms). 60 seconds.</summary>
         public const int MoveCompleteTimeoutMs = 60000;
 
-        /// <summary>Timeout for homing operation to complete (ms). 60 seconds.</summary>
         public const int HomingTimeoutMs = 60000;
 
-        /// <summary>
-        /// Duration machine must be continuously idle to confirm stable state (ms).
-        /// Used to detect true completion vs. brief pauses.
-        /// </summary>
+        /// <summary>How long the machine must read Idle without a break before a move
+        /// counts as finished rather than briefly paused.</summary>
         public const int IdleSettleMs = 1000;
 
-        /// <summary>
-        /// Settle time after file load before starting mill (ms).
-        /// Allows user to verify setup before motion begins.
-        /// </summary>
+        /// <summary>How long a loaded file waits before milling starts, so the operator can
+        /// check the setup.</summary>
         public const int PostIdleSettleMs = 5000;
 
         /// <summary>Longest the settling phase may wait for a machine that never becomes
@@ -164,41 +113,24 @@ namespace coppercli.Core.Util
         /// The tool still needs to come up, but a Stop must not appear to hang.</summary>
         public const int CancelRetractTimeoutMs = 5000;
 
-        /// <summary>One second in milliseconds. Used for countdown calculations.</summary>
         public const int OneSecondMs = 1000;
 
-        /// <summary>Wait time after soft reset for GRBL to reinitialize (ms).</summary>
+        /// <summary>How long GRBL needs to reinitialize after a soft reset.</summary>
         public const int ResetWaitMs = 500;
 
-        // =========================================================================
-        // Position tolerances
-        // =========================================================================
-
-        /// <summary>
-        /// Tolerance for position comparisons (mm).
-        /// Positions within this distance are considered equal.
-        /// </summary>
+        /// <summary>Positions within this distance, in mm, are treated as equal.</summary>
         public const double PositionToleranceMm = 0.1;
 
         /// <summary>
-        /// How far a work offset read back may sit from the value written (mm). Tight,
-        /// because the machine either stored the number or it did not: the only slack is
-        /// the three decimals the G-code is written with. The position tolerance is far
-        /// wider than a depth adjustment, so using it here confirmed writes that never
-        /// landed.
+        /// How far a work offset read back may sit from the value written, in mm. The only
+        /// slack is the three decimals the G-code carries; PositionToleranceMm is wider than
+        /// a depth adjustment and confirmed writes that never landed.
         /// </summary>
         public const double WorkOffsetToleranceMm = 0.001;
 
-        /// <summary>
-        /// Epsilon for height range comparisons.
-        /// Used to determine if there's meaningful height variation in probe data.
-        /// </summary>
+        /// <summary>Below this, a probe map's height range counts as no variation at
+        /// all.</summary>
         public const double HeightRangeEpsilon = 0.0001;
-
-        // =========================================================================
-        // Z heights (machine coordinates)
-        // Machine Z=0 is at home (top), negative values are down toward workpiece.
-        // =========================================================================
 
         /// <summary>
         /// Where the tool is parked whenever it has to be clear of the work: before a job
@@ -208,62 +140,40 @@ namespace coppercli.Core.Util
         /// </summary>
         public const double SafeClearanceZ = -1.0;
 
-        // =========================================================================
-        // Tool setter defaults
-        // =========================================================================
-
-        /// <summary>Maximum depth to probe for tool setter (mm).</summary>
+        /// <summary>How far down the tool setter probe may go, in mm.</summary>
         public const double ToolSetterProbeDepth = 50.0;
 
-        /// <summary>Fast seek feed rate for tool setter (mm/min).</summary>
+        /// <summary>The fast seek toward the tool setter, in mm/min.</summary>
         public const double ToolSetterSeekFeed = 500.0;
 
-        /// <summary>Slow precise probe feed rate for tool setter (mm/min).</summary>
+        /// <summary>The slow second touch on the tool setter, in mm/min.</summary>
         public const double ToolSetterProbeFeed = 50.0;
 
-        /// <summary>Retract distance after probing tool setter (mm).</summary>
+        /// <summary>How far the tool lifts after touching the setter, in mm.</summary>
         public const double ToolSetterRetract = 10.0;
 
-        // =========================================================================
-        // G-code parsing
-        // =========================================================================
-
-        /// <summary>
-        /// Number of lines to search backwards for tool info (Tn commands).
-        /// When an M6 is found, we search up to this many lines backwards for the tool number.
-        /// </summary>
+        /// <summary>How many lines before an M6 are searched for its Tn tool
+        /// number.</summary>
         public const int ToolInfoSearchLines = 10;
 
-        // =========================================================================
-        // G-code warning prefixes
-        // Used to tag warnings from GCodeParser and filter them for display.
-        // =========================================================================
-
-        /// <summary>Prefix for dangerous G-code warnings (e.g., G28 home commands).</summary>
+        /// <summary>Tags a GCodeParser warning so a screen can pick it out: something
+        /// dangerous, such as a G28 home.</summary>
         public const string WarningPrefixDanger = "DANGER";
 
-        /// <summary>Prefix for imperial units warning.</summary>
+        /// <summary>Tags a GCodeParser warning that the file is written in inches.</summary>
         public const string WarningPrefixInches = "INCHES";
 
-        // =========================================================================
-        // Controller cancellation timeouts
-        // =========================================================================
-
         /// <summary>
-        /// How long a stop waits for a run to unwind. Long enough for the whole teardown:
-        /// the machine is stopped and reset, then the tool is lifted clear and confirmed.
-        /// Too short and a stop that is working reports that the machine may still be moving.
+        /// How long a stop waits for a run to unwind: the machine is stopped and reset, then
+        /// the tool is lifted clear and confirmed. Too short and a stop that is working
+        /// reports that the machine may still be moving.
         /// </summary>
         public const int ControllerCancelTimeoutMs = 12000;
 
-        // =========================================================================
-        // Mill grid visualization
-        // =========================================================================
-
-        /// <summary>Maximum grid width in cells for mill visualization.</summary>
+        /// <summary>Widest the mill view may be, in cells.</summary>
         public const int MillGridMaxWidth = 50;
 
-        /// <summary>Maximum grid height in cells for mill visualization.</summary>
+        /// <summary>Tallest the mill view may be, in cells.</summary>
         public const int MillGridMaxHeight = 20;
 
         /// <summary>Z threshold below which the tool is considered cutting (mm, work coords).</summary>
@@ -272,55 +182,38 @@ namespace coppercli.Core.Util
         /// <summary>Minimum coordinate range to avoid division by zero in grid mapping.</summary>
         public const double MillMinRangeThreshold = 0.001;
 
-        // =========================================================================
-        // Probe defaults
-        // =========================================================================
-
-        /// <summary>Maximum depth to probe for PCB surface (mm).</summary>
+        /// <summary>How far down a surface probe may go, in mm.</summary>
         public const double ProbeMaxDepth = 50.0;
 
-        /// <summary>Default probe feed rate (mm/min).</summary>
+        /// <summary>The default probe feed, in mm/min.</summary>
         public const double ProbeFeed = 100.0;
 
         /// <summary>Default Z retract height after probing (mm, work coordinates).</summary>
         public const double RetractZMm = 6.0;
 
-        // =========================================================================
-        // Connection error messages
-        // =========================================================================
-
         /// <summary>
-        /// Prefix to detect proxy connection rejection messages. This is the wire: a reader
-        /// tells "another client has it", which the operator can take over, from "the port is
-        /// held elsewhere", which they cannot, by which of these two sentences it received.
+        /// The prefix a client matches to recognize the one rejection it can act on: another
+        /// client holds the connection, and the operator may take it over.
         /// </summary>
         public const string ProxyConnectionRejectedPrefix = "Connection rejected:";
 
-        /// <summary>
-        /// Error sent to rejected proxy client before closing connection. Built from the
-        /// prefix, so a reword cannot leave the readers matching text nobody sends.
-        /// </summary>
+        /// <summary>Built from the prefix, so rewording the sentence cannot leave a reader
+        /// matching text nobody sends.</summary>
         public const string ProxyConnectionRejected = ProxyConnectionRejectedPrefix
             + " another client is already connected. Close the existing connection first.\r\n";
 
-        /// <summary>Prefix for serial port busy error from proxy.</summary>
         public const string ProxySerialPortBusyPrefix = "Cannot access";
 
-        /// <summary>Prefix to detect serial port in use by web client.</summary>
         public const string ProxySerialPortInUsePrefix = "Serial port in use:";
 
-        /// <summary>Error sent when serial port is in use by web client.</summary>
         public const string ProxySerialPortInUse = ProxySerialPortInUsePrefix
             + " a web client is connected. Force disconnect to continue.\r\n";
 
-        /// <summary>Prefix to detect force disconnect messages.</summary>
         public const string ProxyForceDisconnectPrefix = "Force disconnect:";
 
-        /// <summary>Message sent to client before force-disconnecting them.</summary>
         public const string ProxyForceDisconnect = ProxyForceDisconnectPrefix
             + " another client is taking over.\r\n";
 
-        /// <summary>Delay after sending force disconnect message before closing connection.</summary>
         public const int ForceDisconnectMessageDelayMs = 200;
     }
 }

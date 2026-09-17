@@ -5,13 +5,11 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The ETA has to track the pace the machine is actually keeping, in both directions.
-    /// An estimate that can only count down tells the operator a job is nearly finished
-    /// while it is in fact running late, which is worse than no estimate at all.
+    /// Covers EtaEstimator, which must follow the pace the machine keeps in both directions.
+    /// An estimate that only counts down reports a job as nearly finished while it runs late.
     /// </summary>
     public class EtaEstimatorTests
     {
-        /// <summary>Feeds a steady pace and returns the estimate at each sampled line.</summary>
         private static double[] RunAtSteadyPace(EtaEstimator eta, int totalLines,
                                                 double secondsPerLine, int step)
         {
@@ -43,9 +41,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The regression this pins. A machine running steadily slower than the model must
-        /// produce an estimate that reflects the real finish time, not the guess. The old
-        /// blend answered with the model guess here and never recovered.
+        /// A run steadily slower than the model must produce an estimate near the real finish
+        /// time. A blend weighted toward the model guess stays there and never recovers.
         /// </summary>
         [Theory]
         [InlineData(1.5)]
@@ -61,18 +58,16 @@ namespace coppercli.Tests
             var eta = new EtaEstimator(modelTotal, totalLines);
             var series = RunAtSteadyPace(eta, totalLines, secondsPerLine, step: 10);
 
-            // A tenth of the way in, the estimate must already be near the truth.
+            // Index 9 is line 100 of 1000, a tenth of the way in.
             double atTenPercent = series[9];
             double trueRemainingAtTenPercent = trueTotal * 0.9;
             Assert.InRange(atTenPercent, trueRemainingAtTenPercent * 0.85, trueRemainingAtTenPercent * 1.15);
 
-            // And it must land on zero by the end rather than still promising time.
             Assert.InRange(series[^1], 0.0, secondsPerLine * 2);
         }
 
         /// <summary>
-        /// The complaint that prompted the rewrite: the estimate was only ever willing to
-        /// go down. When the machine slows mid-job the time remaining must go UP.
+        /// An estimate that can only decrease hides a mid-job slowdown until the job overruns.
         /// </summary>
         [Fact]
         public void WhenTheMachineSlowsMidJob_TheEstimateRises()
@@ -86,7 +81,6 @@ namespace coppercli.Tests
 
             for (int line = 10; line <= totalLines; line += 10)
             {
-                // Second half runs at half speed.
                 double secondsPerLine = line <= totalLines / 2 ? 0.6 : 1.2;
                 elapsed += 10 * secondsPerLine;
                 double remaining = eta.Update(line, TimeSpan.FromSeconds(elapsed))!.Value.TotalSeconds;
@@ -107,8 +101,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Steady pace matching the model: the estimate should simply count down, without
-        /// the measurement introducing wobble.
+        /// At the model's own pace the measurement must not push the estimate back up between
+        /// samples.
         /// </summary>
         [Fact]
         public void AtTheModelledPace_TheEstimateCountsDownSmoothly()
@@ -137,9 +131,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Sitting on one line means the job is running behind, so the estimate drifts up -
-        /// but by roughly the time actually spent waiting, not by that time multiplied
-        /// across every line still to come.
+        /// Repeated updates on the same line must raise the estimate by about the time spent
+        /// waiting, not by that time scaled across every line still to come.
         /// </summary>
         [Fact]
         public void DwellingOnOneLine_DriftsUpByTheTimeSpentWaiting()
@@ -151,7 +144,6 @@ namespace coppercli.Tests
             var third = eta.Update(200, TimeSpan.FromMinutes(4) + TimeSpan.FromSeconds(12));
 
             Assert.True(third >= second && second >= first);
-            // 12 s of dwelling must not balloon the estimate across the remaining 800 lines.
             Assert.InRange((third!.Value - first!.Value).TotalSeconds, 0, 30);
         }
 
@@ -168,8 +160,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Reaction speed must come from progress through the job, not from how often the
-        /// caller happens to redraw. Polling ten times more often must not change the curve.
+        /// Reaction speed must follow progress through the job, not the rate Update is called
+        /// at. The fine run here polls ten times as often and must reach the same estimate.
         /// </summary>
         [Fact]
         public void ReactionSpeedDoesNotDependOnPollRate()

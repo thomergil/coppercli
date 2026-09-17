@@ -1,23 +1,13 @@
 namespace coppercli.Core.GCode
 {
     /// <summary>
-    /// G-code and M-code numeric constants used for parsing and interpretation.
-    /// These are the numeric values that appear after G or M in G-code commands.
-    /// For command strings like "G90" or "M5", see GrblProtocol.cs.
+    /// The numbers that follow G or M in a G-code command, as the parser compares them. The
+    /// command strings themselves, "G90" and "M5", are in GrblProtocol.cs.
     /// </summary>
     public static class GCodeNumbers
     {
-        // =========================================================================
-        // Dwell (G4)
-        // =========================================================================
-
-        /// <summary>G4: Dwell. Pauses for specified time (P parameter in seconds).</summary>
+        /// <summary>G4: pause for the time in its P word, in seconds.</summary>
         public const int Dwell = 4;
-
-        // =========================================================================
-        // Plane selection (G17-G19)
-        // Determines which two axes form the working plane for arcs and canned cycles.
-        // =========================================================================
 
         /// <summary>G17: XY plane (default). Z is the tool axis.</summary>
         public const int PlaneXY = 17;
@@ -28,29 +18,17 @@ namespace coppercli.Core.GCode
         /// <summary>G19: ZX plane. Y is the tool axis.</summary>
         public const int PlaneZX = 19;
 
-        // =========================================================================
-        // Units (G20-G21)
-        // =========================================================================
-
         /// <summary>G20: Interpret coordinates as inches.</summary>
         public const int UnitsInches = 20;
 
         /// <summary>G21: Interpret coordinates as millimeters.</summary>
         public const int UnitsMillimeters = 21;
 
-        // =========================================================================
-        // Home / predefined positions (G28-G30)
-        // =========================================================================
-
         /// <summary>G28: Return to home position (may crash into workpiece).</summary>
         public const int Home = 28;
 
         /// <summary>G30: Return to secondary home position (may crash into workpiece).</summary>
         public const int HomeSecondary = 30;
-
-        // =========================================================================
-        // Probing (G38.x)
-        // =========================================================================
 
         /// <summary>G38.2: Probe toward workpiece, stop on contact, signal error if no contact.</summary>
         public const double ProbeToward = 38.2;
@@ -64,10 +42,6 @@ namespace coppercli.Core.GCode
         /// <summary>G38.5: Probe away from workpiece, stop on loss of contact, no error if no loss.</summary>
         public const double ProbeAwayNoError = 38.5;
 
-        // =========================================================================
-        // Coordinate systems (G10, G53-G59)
-        // =========================================================================
-
         /// <summary>G10: Set work offset (coordinate system data).</summary>
         public const int SetWorkOffset = 10;
 
@@ -80,19 +54,11 @@ namespace coppercli.Core.GCode
         /// </summary>
         public const int SetPositionOffset = 92;
 
-        // =========================================================================
-        // Distance mode (G90-G91)
-        // =========================================================================
-
         /// <summary>G90: Absolute positioning. Coordinates are relative to work origin.</summary>
         public const int DistanceAbsolute = 90;
 
         /// <summary>G91: Incremental positioning. Coordinates are relative to current position.</summary>
         public const int DistanceIncremental = 91;
-
-        // =========================================================================
-        // Arc distance mode (G90.1-G91.1)
-        // =========================================================================
 
         /// <summary>G90.1: Absolute arc center mode (IJK are absolute coordinates).</summary>
         public const double ArcDistanceAbsolute = 90.1;
@@ -100,29 +66,17 @@ namespace coppercli.Core.GCode
         /// <summary>G91.1: Incremental arc center mode (IJK are relative to start point). Default.</summary>
         public const double ArcDistanceIncremental = 91.1;
 
-        // =========================================================================
-        // Feed rate mode (G93-G94)
-        // =========================================================================
-
         /// <summary>G93: Inverse time feed rate mode. F specifies time to complete move.</summary>
         public const int FeedRateInverseTime = 93;
 
         /// <summary>G94: Units per minute feed rate mode (default). F specifies distance/minute.</summary>
         public const int FeedRateUnitsPerMinute = 94;
 
-        // =========================================================================
-        // Tool length offset (G43.1, G49)
-        // =========================================================================
-
         /// <summary>G49: Cancel tool length offset.</summary>
         public const int ToolLengthOffsetCancel = 49;
 
         /// <summary>G43.1: Apply dynamic tool length offset (value follows Z parameter).</summary>
         public const double ToolLengthOffsetDynamic = 43.1;
-
-        // =========================================================================
-        // M-codes that pause or stop execution
-        // =========================================================================
 
         /// <summary>M0: Program stop. Pauses execution until cycle start.</summary>
         public const int MCodeProgramStop = 0;
@@ -140,15 +94,12 @@ namespace coppercli.Core.GCode
         public const int MCodeToolChange = 6;
 
         /// <summary>
-        /// What a pause-causing M-code means for file streaming: an operator prompt, a
-        /// tool change, or the end of the program. The single place that maps the
-        /// numeric M-code constants above to that meaning, so a caller that reacts
-        /// differently to different pause causes (see GCodeParser.ClassifyPauseLine)
-        /// derives from this rather than keeping a second list of the same codes.
+        /// What a pause-causing M-code means for file streaming: an operator prompt, a tool
+        /// change, or the end of the program. The one mapping from the numeric constants
+        /// above to that meaning, so GCodeParser.ClassifyPauseLine keeps no second list.
         /// </summary>
         public enum PauseMCode
         {
-            /// <summary>Not a pause-causing M-code.</summary>
             None,
 
             /// <summary>M0: pauses unconditionally, waiting for the operator.</summary>
@@ -164,7 +115,6 @@ namespace coppercli.Core.GCode
             ToolChange
         }
 
-        /// <summary>Classifies a numeric M-code by what it means for file streaming.</summary>
         public static PauseMCode ClassifyPauseMCode(int code)
         {
             if (code == MCodeProgramStop)

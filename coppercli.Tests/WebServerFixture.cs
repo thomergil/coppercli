@@ -22,9 +22,9 @@ namespace coppercli.Tests
     public sealed class WebServerFixture : IDisposable
     {
         /// <summary>
-        /// The repository root, for tests that read a source file rather than a built one.
-        /// Taken from this file's compile-time path, because the build output lives outside
-        /// the tree.
+        /// The repository root, for a test that reads a source file rather than a built one.
+        /// Taken from this file's compile-time path, because the build output is outside the
+        /// tree.
         /// </summary>
         public static string RepositoryRoot => Path.GetDirectoryName(
             Path.GetDirectoryName(ThisFile())!)!;
@@ -91,7 +91,7 @@ namespace coppercli.Tests
             Client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{Port}/") };
         }
 
-        /// <summary>Where .NET reads the per-user application data directory from.</summary>
+        /// <summary>The variable .NET reads the per-user application data directory from.</summary>
         private static string AppDataEnvVar =>
             OperatingSystem.IsWindows() ? "APPDATA" : "XDG_CONFIG_HOME";
 
@@ -108,16 +108,16 @@ namespace coppercli.Tests
                 AppState.ResetControllers();
             }
 
-            // The session is process-wide as well, and a test that replaces it would
-            // otherwise hand the next one whatever board it had loaded.
+            // The session is process-wide as well, so without this the next test starts with
+            // whatever board the last one loaded.
             if (!ReferenceEquals(AppState.Session, _session))
             {
                 AppState.Session = _session;
             }
 
             // The machine is shared across the collection, and a stop leaves it alarmed the
-            // way GRBL does. Hand each test an idle machine rather than whatever the last
-            // one left, so the order of the tests cannot decide the result.
+            // way GRBL does. Unlock it here, so the order of the tests cannot change the
+            // result.
             if (!MachineWait.IsIdle(_machine))
             {
                 _machine.SendLine(GrblProtocol.CmdUnlock);
@@ -130,11 +130,10 @@ namespace coppercli.Tests
         public FakeGrbl Grbl => _grbl;
         public int Port { get; }
 
-        /// <summary>Polls until the condition holds, or fails naming what it waited for.</summary>
         public static void WaitUntil(Func<bool> until, string what, int timeoutMs = StartupTimeoutMs)
         {
-            // Monotonic: a clock step under this wait would either end it at once or never,
-            // and every web test waits through here.
+            // Stopwatch is monotonic: a step in the wall clock during this wait would end it
+            // at once or never, and every web test waits through here.
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             while (elapsed.ElapsedMilliseconds < timeoutMs)
             {

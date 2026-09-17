@@ -1,5 +1,5 @@
-// The take-over modal is the only way to reclaim a machine another browser holds. Which
-// error means that is the server's answer, not something read out of its wording.
+// The take-over modal is the only way to reclaim a machine another browser holds. The browser
+// offers it on the otherClientConnected field, never on the wording of the error.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +7,6 @@ import { installDom, load } from './dom-stub.mjs';
 
 const { MSG_TYPE_CONNECTION_ERROR, CLASS_HIDDEN, TITLE_FORCE_DISCONNECT } = await load('constants.js');
 
-// Returns the page after it has handled a connection:error carrying `data`.
 async function pageAfterError(data) {
     const dom = installDom();
 

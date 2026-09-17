@@ -12,8 +12,7 @@ namespace coppercli.Tests
     /// </summary>
     public class PendingPromptTests
     {
-        /// <summary>Leaves the slot empty for the next test.</summary>
-        private static void ClearSlot() => PendingPrompt.ClearIfCurrent(PendingPrompt.Current);
+        private static void ClearPendingPrompt() => PendingPrompt.ClearIfCurrent(PendingPrompt.Current);
 
         private static UserInputRequest Prompt(List<string> answers) => new()
         {
@@ -36,8 +35,7 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A second tap on the button the previous prompt put on screen, arriving after the
-        /// run has replaced it.
+        /// Models a second tap on the button of a prompt the run has already replaced.
         /// </summary>
         [Fact]
         public void AnAnswerToAReplacedPrompt_IsRefused()
@@ -54,7 +52,7 @@ namespace coppercli.Tests
             Assert.Single(answers);
             Assert.Same(second, PendingPrompt.Current);
 
-            ClearSlot();
+            ClearPendingPrompt();
         }
 
         [Fact]
@@ -72,7 +70,7 @@ namespace coppercli.Tests
         [Fact]
         public void AnAnswerWithNoPromptPending_IsRefused()
         {
-            ClearSlot();
+            ClearPendingPrompt();
             Assert.Equal(PromptAnswerResult.NothingPending, PendingPrompt.Answer("any", "Continue"));
         }
 
@@ -115,13 +113,13 @@ namespace coppercli.Tests
             Assert.Empty(answers);
             Assert.Same(prompt, PendingPrompt.Current);
 
-            ClearSlot();
+            ClearPendingPrompt();
         }
 
         /// <summary>
         /// Answering resumes the run on this thread, and the run publishes its next prompt
-        /// into this slot before the answer returns. Clearing it afterwards would discard
-        /// that.
+        /// into the slot before the answer returns. Clearing the slot afterwards would
+        /// discard that prompt.
         /// </summary>
         [Fact]
         public void Answering_LeavesTheNextPromptInTheSlot()
@@ -147,10 +145,9 @@ namespace coppercli.Tests
             Assert.Equal(PromptAnswerResult.WrongPrompt, PendingPrompt.Answer(first.Id, "Continue"));
             Assert.Single(answers);
 
-            ClearSlot();
+            ClearPendingPrompt();
         }
 
-        /// <summary>An answer that names no prompt is refused.</summary>
         [Fact]
         public void AnAnswerNamingNoPrompt_IsRefused()
         {
@@ -161,7 +158,7 @@ namespace coppercli.Tests
             Assert.Equal(PromptAnswerResult.WrongPrompt, PendingPrompt.Answer(null, "Continue"));
             Assert.Empty(answers);
 
-            ClearSlot();
+            ClearPendingPrompt();
         }
     }
 }

@@ -9,8 +9,6 @@
 #
 
 set -e
-
-# Get version from CliConstants.cs
 VERSION=$(grep 'AppVersion = ' coppercli/CliConstants.cs | sed 's/.*"\(.*\)".*/\1/')
 if [[ -z "$VERSION" ]]; then
     echo "ERROR: Could not extract version from CliConstants.cs"
@@ -23,8 +21,6 @@ RELEASE_DIR="$REPO_ROOT/release"
 
 echo "=== Creating GitHub Release $VERSION ==="
 echo ""
-
-# Check prerequisites
 if ! command -v gh &> /dev/null; then
     echo "ERROR: gh CLI not found"
     echo "Install with: brew install gh"
@@ -43,8 +39,6 @@ if [[ ! -d "$RELEASE_DIR" ]]; then
     echo "Run ./scripts/build-release.sh first"
     exit 1
 fi
-
-# Check for release artifacts
 ARTIFACTS=()
 for f in "$RELEASE_DIR"/*; do
     if [[ -f "$f" ]]; then
@@ -62,8 +56,6 @@ for f in "${ARTIFACTS[@]}"; do
     echo "  - $(basename "$f")"
 done
 echo ""
-
-# Check if tag exists
 TAG="$VERSION"
 if git rev-parse "$TAG" &> /dev/null; then
     echo "Tag $TAG already exists"
@@ -72,8 +64,6 @@ else
     git tag "$TAG"
     git push origin "$TAG"
 fi
-
-# Check if release exists
 if gh release view "$TAG" &> /dev/null; then
     echo ""
     echo "Release $TAG already exists."
@@ -90,8 +80,6 @@ if gh release view "$TAG" &> /dev/null; then
         exit 0
     fi
 fi
-
-# Generate release notes
 NOTES="## Downloads
 
 | Platform | File |
@@ -127,8 +115,6 @@ tar -xzf coppercli-$VERSION-<platform>.tar.gz
 
 Or build from source with \`./run.sh\` (requires .NET 8 SDK).
 "
-
-# Create release
 echo "Creating release $TAG..."
 gh release create "$TAG" \
     "${ARTIFACTS[@]}" \

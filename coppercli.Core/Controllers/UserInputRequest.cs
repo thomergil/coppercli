@@ -3,8 +3,8 @@ using System;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Request for user input during a controller operation.
-    /// Controller emits this, UI shows prompt, UI calls OnResponse with selection.
+    /// A question a controller puts to the operator. The controller raises it, the UI draws it,
+    /// and the UI calls `OnResponse` with one of `Options`.
     /// </summary>
     public class UserInputRequest
     {
@@ -21,21 +21,17 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public required string Title { get; init; }
 
-        /// <summary>Message to display to the user.</summary>
         public required string Message { get; init; }
 
-        /// <summary>Available options (e.g., ["Continue", "Abort"]).</summary>
         public required string[] Options { get; init; }
 
         /// <summary>
-        /// True for the enclosure prompt. A screen that draws a heading over a run's prompt
-        /// ("TOOL CHANGE") must not draw it over this one, whose Continue releases the door
-        /// hold and restarts the spindle. Set where the prompt is raised, so no screen has to
-        /// recognise it by its text.
+        /// True for the enclosure prompt, set where the prompt is raised so that no screen has
+        /// to recognise it by its text. Answering Continue releases the door hold and restarts
+        /// the spindle, so a screen must not draw a run's heading ("TOOL CHANGE") over it.
         /// </summary>
         public bool IsDoorPrompt { get; init; }
 
-        /// <summary>Callback to invoke with the user's selection.</summary>
         public required Action<string> OnResponse { get; init; }
     }
 }

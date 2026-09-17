@@ -2,13 +2,12 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Configuration options for a milling operation.
-    /// Snapshot at StartAsync - changes during operation are ignored.
+    /// Read once, at StartAsync. A change made while the run is going has no effect.
     /// </summary>
     public class MillingOptions
     {
-        /// <summary>Builds milling options. The RequireHoming = not-yet-homed rule lives
-        /// here so both front ends enforce it identically.</summary>
+        /// <summary>The RequireHoming = not-yet-homed rule is written here once, so both front
+        /// ends enforce it identically.</summary>
         public static MillingOptions Create(string? filePath, double depthAdjustment,
             bool machineIsHomed)
         {
@@ -21,7 +20,6 @@ namespace coppercli.Core.Controllers
         }
 
 
-        /// <summary>Path to the G-code file to mill.</summary>
         public string? FilePath { get; set; }
 
         /// <summary>
@@ -32,14 +30,11 @@ namespace coppercli.Core.Controllers
         internal int SettleTimeoutMs { get; set; } = Util.Constants.SettleTimeoutMs;
 
         /// <summary>
-        /// Depth adjustment in mm (negative = deeper).
-        /// Applied as offset to work coordinate Z origin.
+        /// Millimeters, negative for deeper. Applied as an offset to the work coordinate Z
+        /// origin.
         /// </summary>
         public double DepthAdjustment { get; set; }
 
-        /// <summary>
-        /// Whether to home the machine if not already homed.
-        /// </summary>
         public bool RequireHoming { get; set; } = true;
     }
 }

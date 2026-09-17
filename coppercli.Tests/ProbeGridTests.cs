@@ -6,8 +6,10 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The probe grid decides the commanded Z of every cutting move, so a wrong or
-    /// guessed height here is a wrong cut depth on copper.
+    /// Every cutting move has this grid's interpolated height added to its commanded Z, so a
+    /// wrong height here is a wrong cut depth. Covers the grid geometry, interpolation inside
+    /// and outside the probed area, save and load, the queue of points still to measure, and
+    /// the neighbor deviation check that separates a bad reading from a good one.
     /// </summary>
     public class ProbeGridTests
     {
@@ -25,8 +27,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Progress counts removals from NotProbed, and a skipped probe removes without
-        /// measuring - so "progress complete" must not be mistaken for "usable map".
+        /// Progress counts points taken off the queue and a skipped probe comes off without a
+        /// height, so Progress reaching TotalPoints does not mean the map is usable.
         /// </summary>
         [Fact]
         public void SkippedPoint_LeavesGridIncompleteEvenWhenProgressLooksDone()
@@ -44,12 +46,11 @@ namespace coppercli.Tests
                 }
             }
 
-            // The one that failed comes off the queue without a height, exactly as
-            // ProbeController does when told not to abort on a failed probe.
+            // What ProbeController does with a failed probe when Options.AbortOnFail is off.
             grid.SkipPoint(1, 1);
 
-            Assert.Equal(grid.TotalPoints, grid.Progress);   // looks finished...
-            Assert.False(grid.HasCompleteData);              // ...but is not usable
+            Assert.Equal(grid.TotalPoints, grid.Progress);
+            Assert.False(grid.HasCompleteData);
         }
 
         [Fact]
@@ -64,7 +65,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A toolpath point exactly on the far edge must not index one past the last node.
-        /// 20.3mm at 3mm spacing rounds to 7.000000000000001 -> Ceiling 8 on a 8-node axis.
+        /// 20.3mm at 3mm spacing rounds to 7.000000000000001, so Ceiling gives 8 on an
+        /// 8-node axis.
         /// </summary>
         [Fact]
         public void InterpolateZ_AtExactUpperEdge_DoesNotGoOutOfBounds()
@@ -83,8 +85,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Outside the probed area the map takes the nearest edge. Taking the board's highest
-        /// point instead stepped by the whole warp range at the boundary, which is where the
+        /// Outside the probed area the map takes the height of the nearest edge. Taking the
+        /// board's highest point instead steps by the whole warp range at the edge, where the
         /// outermost traces are cut.
         /// </summary>
         [Fact]
@@ -96,21 +98,19 @@ namespace coppercli.Tests
             {
                 for (int y = 0; y < grid.SizeY; y++)
                 {
-                    // Rises along X only, so the edge value is unambiguous.
+                    // Height varies along X only, so each edge has a single value.
                     grid.AddPoint(x, y, grid.GetCoordinates(x, y).X / 100.0);
                 }
             }
 
             Assert.Equal(0.2, grid.MaxHeight, precision: 6);
 
-            // A hair past the low edge takes that edge, not the far corner.
             Assert.Equal(0.0, grid.InterpolateZ(-0.001, 10), precision: 3);
             Assert.Equal(0.0, grid.InterpolateZ(-5, 10), precision: 6);
 
-            // And past the high edge it stays at the high edge.
             Assert.Equal(0.2, grid.InterpolateZ(25, 10), precision: 6);
 
-            // Continuous across the boundary: the step is what the old answer introduced.
+            // No step in the height as a move crosses the edge of the probed area.
             Assert.Equal(
                 grid.InterpolateZ(20, 7), grid.InterpolateZ(20.0001, 7), precision: 6);
         }
@@ -144,10 +144,9 @@ namespace coppercli.Tests
         }
     
         /// <summary>
-        /// A skipped probe empties the work queue without measuring the node, so the
-        /// queue and the map disagree. Starting another run must put those nodes back -
-        /// otherwise the loop indexes an empty queue and the operator is left with a map
-        /// that can never be applied and never re-probed.
+        /// A skipped probe comes off the queue without measuring the node, so the queue empties
+        /// while the map stays incomplete. Without a requeue that node can never be measured
+        /// again, leaving a map that can neither be applied nor finished.
         /// </summary>
         [Fact]
         public void SkippedPoints_AreRequeuedSoTheyCanBeProbedAgain()
@@ -164,7 +163,7 @@ namespace coppercli.Tests
                     }
                 }
             }
-            grid.SkipPoint(1, 1);   // what the skip path leaves behind
+            grid.SkipPoint(1, 1);
 
             Assert.Equal(0, grid.RemainingCount);
             Assert.False(grid.HasCompleteData);
@@ -186,11 +185,9 @@ namespace coppercli.Tests
         }
     
         /// <summary>
-        /// Reproduces the reported crash: the display reads the remaining points on the
-        /// UI thread while probing removes them on another. Enumerating the live list
-        /// threw "Collection was modified; enumeration operation may not execute" partway
-        /// through a run - after about twenty points, whenever a redraw happened to
-        /// coincide with a removal - and lost the job.
+        /// The display reads the remaining points on the UI thread while the probe loop removes
+        /// them on another. Enumerating the live list rather than a snapshot throws "Collection
+        /// was modified; enumeration operation may not execute" and ends the run.
         /// </summary>
         [Fact]
         public void RemainingPointsCanBeReadWhileProbingRemovesThem()
@@ -204,7 +201,7 @@ namespace coppercli.Tests
             {
                 try
                 {
-                    // What DrawProbeMatrix does, as fast as it can.
+                    // What DrawProbeMatrix does on each redraw, as fast as it can.
                     while (grid.RemainingCount > 0)
                     {
                         var snapshot = grid.SnapshotRemaining();
@@ -218,7 +215,7 @@ namespace coppercli.Tests
                 }
             });
 
-            // What the probe loop does: reorder, take the next, record it.
+            // What the probe loop does for each point.
             for (int i = 0; i < total; i++)
             {
                 grid.OrderRemainingBy(pt => pt.X * 1.0 + pt.Y);
@@ -236,78 +233,71 @@ namespace coppercli.Tests
             Assert.True(grid.HasCompleteData);
         }
 
-        // =========================================================================
-        // Neighbour deviation
-        //
-        // This is the check that separates a bad reading from a good one: a height outside
-        // tolerance of the nodes around it.
-        // =========================================================================
-
         [Fact]
-        public void NeighbourDeviation_WithNoMeasuredNeighbours_IsNull()
+        public void NeighborDeviation_WithNoMeasuredNeighbors_IsNull()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            Assert.Null(grid.GetNeighbourDeviation(0, 0, -0.5));
+            Assert.Null(grid.GetNeighborDeviation(0, 0, -0.5));
         }
 
         [Fact]
-        public void NeighbourDeviation_IgnoresTheNodesOwnRecordedHeight()
+        public void NeighborDeviation_IgnoresTheNodesOwnRecordedHeight()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // The controller records the height before checking, so a node that counted
-            // itself would always be within tolerance and the check would never fire.
+            // The controller records the height before it checks, so a node that counted its
+            // own height would always read as within tolerance.
             grid.RecordMeasurement(0, 0, -5.0);
 
-            Assert.Null(grid.GetNeighbourDeviation(0, 0, -5.0));
+            Assert.Null(grid.GetNeighborDeviation(0, 0, -5.0));
         }
 
         [Fact]
-        public void NeighbourDeviation_MeasuresAgainstTheMeanOfMeasuredNeighbours()
+        public void NeighborDeviation_MeasuresAgainstTheMeanOfMeasuredNeighbors()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
             grid.RecordMeasurement(0, 1, -0.10);
             grid.RecordMeasurement(1, 0, -0.30);
 
-            // Mean of the two orthogonal neighbors is -0.20.
-            double? deviation = grid.GetNeighbourDeviation(0, 0, -0.25);
+            // Mean of the two measured neighbors is -0.20, so -0.25 deviates by 0.05.
+            double? deviation = grid.GetNeighborDeviation(0, 0, -0.25);
 
             Assert.NotNull(deviation);
             Assert.Equal(0.05, deviation!.Value, 6);
         }
 
         [Fact]
-        public void NeighbourDeviation_SkipsUnmeasuredNeighbours()
+        public void NeighborDeviation_SkipsUnmeasuredNeighbors()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // A skipped point leaves a hole. It must not count as a height of zero.
+            // An unmeasured neighbor is a hole, and must not count as a height of zero.
             grid.RecordMeasurement(1, 1, -0.40);
 
-            double? deviation = grid.GetNeighbourDeviation(1, 2, -0.40);
+            double? deviation = grid.GetNeighborDeviation(1, 2, -0.40);
 
             Assert.NotNull(deviation);
             Assert.Equal(0.0, deviation!.Value, 6);
         }
 
         [Fact]
-        public void NeighbourDeviation_ExcludesDiagonalNodes()
+        public void NeighborDeviation_ExcludesDiagonalNodes()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // Only a diagonal is measured. It is further than one grid step away, so it is
-            // not used as the expected height for this node.
+            // A diagonal is further than one grid step away, so it does not count as a
+            // neighbor of this node.
             grid.RecordMeasurement(1, 1, -0.40);
 
-            Assert.Null(grid.GetNeighbourDeviation(0, 0, -0.40));
+            Assert.Null(grid.GetNeighborDeviation(0, 0, -0.40));
         }
 
         [Theory]
         [InlineData(-3.0, 2.5)]   // pushed past the surface
         [InlineData(2.0, 2.5)]    // stopped short, on debris or a shorted clip
-        public void NeighbourDeviation_IsUnsignedInBothDirections(
+        public void NeighborDeviation_IsUnsignedInBothDirections(
             double measured, double expectedDeviation)
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
@@ -315,18 +305,18 @@ namespace coppercli.Tests
             grid.RecordMeasurement(0, 1, -0.50);
             grid.RecordMeasurement(1, 0, -0.50);
 
-            double? deviation = grid.GetNeighbourDeviation(0, 0, measured);
+            double? deviation = grid.GetNeighborDeviation(0, 0, measured);
 
             Assert.NotNull(deviation);
             Assert.Equal(expectedDeviation, deviation!.Value, 6);
         }
 
         [Fact]
-        public void NeighbourDeviation_OnAWarpedBoardStaysSmallBetweenAdjacentNodes()
+        public void NeighborDeviation_OnAWarpedBoardStaysSmallBetweenAdjacentNodes()
         {
-            // A bowed board spans millimetres end to end while staying flat between any two
-            // adjacent nodes. Comparing against neighbours rather than the overall range is
-            // what keeps a real warp from reading as a fault.
+            // A bowed board spans millimeters end to end while staying flat between any two
+            // adjacent nodes, so comparing against the neighbors rather than the overall
+            // range keeps a real warp from reading as a fault.
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(40, 40));
 
             for (int x = 0; x < grid.SizeX; x++)
@@ -338,16 +328,16 @@ namespace coppercli.Tests
             }
 
             // Ends of the board differ by 0.8mm; adjacent nodes by 0.2mm.
-            double? deviation = grid.GetNeighbourDeviation(2, 2, -0.4);
+            double? deviation = grid.GetNeighborDeviation(2, 2, -0.4);
 
             Assert.NotNull(deviation);
             Assert.Equal(0.0, deviation!.Value, 6);
         }
 
         /// <summary>
-        /// Every screen and gate reads one answer for how much of a map is measured.
-        /// Derived from the counters, a skipped point reads as a finished map: Save and Apply
-        /// are offered for a map that cannot be applied, and Continue Probing disappears.
+        /// State is the single answer every screen and gate reads for how much of a map is
+        /// measured. Computed from Progress alone, a map with a skipped point reads as
+        /// complete, so Save and Apply are offered for a map that cannot be applied.
         /// </summary>
         [Fact]
         public void AMapWithASkippedPoint_IsPartialHoweverFarTheQueueGot()
@@ -367,8 +357,8 @@ namespace coppercli.Tests
 
             grid.SkipPoint(1, 1);
 
-            Assert.Equal(grid.TotalPoints, grid.Progress);       // looks finished...
-            Assert.Equal(ProbeDataState.Partial, grid.State);    // ...and is not
+            Assert.Equal(grid.TotalPoints, grid.Progress);
+            Assert.Equal(ProbeDataState.Partial, grid.State);
             Assert.Equal(ProbeDataState.Partial, ProbeGrid.StateOf(grid));
         }
 

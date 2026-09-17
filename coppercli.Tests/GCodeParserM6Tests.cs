@@ -7,14 +7,13 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Tests for GCodeParser M6 detection utilities.
+    /// Covers the recognizers Machine.cs gates a running job on: IsM6Line and IsM0Line, the
+    /// tool number and name read from the lines around an M6, and agreement with
+    /// ClassifyPauseLine. Tool changes have no reference implementation in OpenCNCPilot, so
+    /// these tests are the only statement of what coppercli treats as an M6.
     /// </summary>
     public class GCodeParserM6Tests
     {
-        // =========================================================================
-        // IsM6Line tests
-        // =========================================================================
-
         [Theory]
         [InlineData("M6", true)]
         [InlineData("M06", true)]
@@ -35,10 +34,6 @@ namespace coppercli.Tests
             Assert.Equal(expected, GCodeParser.IsM6Line(line));
         }
 
-        // =========================================================================
-        // IsM0Line tests
-        // =========================================================================
-
         [Theory]
         [InlineData("M0", true)]
         [InlineData("M00", true)]
@@ -47,7 +42,7 @@ namespace coppercli.Tests
         [InlineData("M000", true)]
         [InlineData("  M0  ", true)]
         [InlineData("G0 M0", true)]
-        [InlineData("M01", false)]  // M01 is optional stop, not pause
+        [InlineData("M01", false)]  // M01 is an optional stop
         [InlineData("M6", false)]
         [InlineData("G0 X0", false)]
         [InlineData("", false)]
@@ -55,10 +50,6 @@ namespace coppercli.Tests
         {
             Assert.Equal(expected, GCodeParser.IsM0Line(line));
         }
-
-        // =========================================================================
-        // ExtractToolNumber tests
-        // =========================================================================
 
         [Theory]
         [InlineData("T1", 1)]
@@ -76,10 +67,6 @@ namespace coppercli.Tests
             Assert.Equal(expected, GCodeParser.ExtractToolNumber(line));
         }
 
-        // =========================================================================
-        // ExtractToolName tests
-        // =========================================================================
-
         [Theory]
         [InlineData("T1 (0.8mm drill)", "0.8mm drill")]
         [InlineData("(End Mill)", "End Mill")]
@@ -92,10 +79,6 @@ namespace coppercli.Tests
         {
             Assert.Equal(expected, GCodeParser.ExtractToolName(line));
         }
-
-        // =========================================================================
-        // FindToolInfo tests
-        // =========================================================================
 
         [Fact]
         public void FindToolInfo_FindsToolOnSameLine()
@@ -149,10 +132,9 @@ namespace coppercli.Tests
         [Fact]
         public void FindToolInfo_SearchesBackwardUpToToolInfoSearchLines()
         {
-            // Constants.ToolInfoSearchLines defines how far back we search (10 lines)
             var lines = new List<string>
             {
-                "T5 (far away tool)",  // Line 0 - beyond search range
+                "T5 (far away tool)",  // line 0, further back than ToolInfoSearchLines
                 "G0 X0",
                 "G0 X1",
                 "G0 X2",
@@ -163,8 +145,8 @@ namespace coppercli.Tests
                 "G0 X7",
                 "G0 X8",
                 "G0 X9",
-                "T7 (nearby tool)",    // Line 11 - within search range of M6
-                "M6"                   // Line 12
+                "T7 (nearby tool)",    // line 11, within range of the M6 on line 12
+                "M6"
             };
 
             var (number, name) = GCodeParser.FindToolInfo(lines, 12);
@@ -176,7 +158,7 @@ namespace coppercli.Tests
         [Fact]
         public void FindToolInfo_FindsToolNameOnSeparateLine()
         {
-            // Tool number on M6 line, tool name on previous line (common pcb2gcode format)
+            // pcb2gcode writes the tool name as a comment on the line before the M6.
             var lines = new List<string>
             {
                 "G0 X0",
@@ -205,17 +187,14 @@ namespace coppercli.Tests
         [Fact]
         public void FindToolInfo_HandlesOutOfBoundsIndex()
         {
-            // When lineIndex is out of bounds, the function searches backwards
-            // from valid indices, so it can still find tools within range
+            // FindToolInfo searches lineIndex - ToolInfoSearchLines to lineIndex - 1, so an
+            // index past the end reads the lines that do exist instead of throwing.
             var lines = new List<string>
             {
                 "G0 X0",
-                "G0 X1"  // No tool on this line
+                "G0 X1"
             };
 
-            // With index beyond list length, backwards search still works.
-            // The search range is lineIndex - ToolInfoSearchLines to lineIndex - 1.
-            // Valid indices 0 and 1 are in range but have no tool.
             int outOfBoundsIndex = Constants.ToolInfoSearchLines;
             var (number, name) = GCodeParser.FindToolInfo(lines, outOfBoundsIndex);
 
@@ -236,15 +215,10 @@ namespace coppercli.Tests
             Assert.Null(number);
             Assert.Null(name);
         }
-        // =========================================================================
-        // Comment stripping and case agreement between the two recognisers
-        //
-        // Machine.cs decides whether to withhold a line from GRBL with IsM6Line, and
-        // marks which lines pause with ClassifyPauseLine. A line the first calls a tool
-        // change and the second does not is withheld and never paused for: the job cuts
-        // on with the tool still in the spindle.
-        // =========================================================================
 
+        // Machine.cs withholds a line from GRBL when IsM6Line accepts it, and pauses where
+        // ClassifyPauseLine reports a tool change. A line only IsM6Line accepts is withheld
+        // and never paused for, so the job cuts on with the old tool in the spindle.
         [Theory]
         [InlineData("m6")]
         [InlineData("M6")]

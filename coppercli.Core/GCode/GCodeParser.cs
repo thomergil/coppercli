@@ -67,9 +67,6 @@ namespace coppercli.Core.GCode
         public static List<Command> Commands = null!;
         public static List<string> Warnings = null!;
 
-        /// <summary>
-        /// When true, A, B, C axes are ignored during parsing
-        /// </summary>
         public static bool IgnoreAdditionalAxes { get; set; } = true;
 
         /// <summary>
@@ -98,30 +95,23 @@ namespace coppercli.Core.GCode
             Parse(File.ReadLines(path));
         }
 
-        // =========================================================================
-        // M-code detection utilities (for tool change, pause, etc.)
-        // =========================================================================
-
-        // Same pattern the serial layer uses to intercept M6 - keep it one definition so
-        // "line is a tool change" cannot mean two different things.
+        // The serial layer intercepts M6 with this same pattern, so "the line is a tool
+        // change" has one definition.
         private static readonly Regex M6Pattern = new Regex(GrblProtocol.M6Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex M0Pattern = new Regex(GrblProtocol.M0Pattern, RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        // Parenthesised comments and semicolon-to-end-of-line, the two forms G-code uses.
+        // Parenthesized comments and semicolon-to-end-of-line, the two forms G-code uses.
         private static readonly Regex CommentStripPattern = new Regex(@"\([^)]*\)|;.*$", RegexOptions.Compiled);
         private static readonly Regex ToolNumberPattern = new Regex(@"\bT(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
         private static readonly Regex ToolNamePattern = new Regex(@"\(([^)]+)\)", RegexOptions.Compiled);
 
-        /// <summary>
-        /// Returns true if the line contains an M6 (tool change) command.
-        /// </summary>
         public static bool IsM6Line(string line)
         {
             return M6Pattern.IsMatch(StripComments(line));
         }
 
         /// <summary>
-        /// Drops G-code comments - parenthesised, and semicolon to end of line - so a
+        /// Drops G-code comments - parenthesized, and semicolon to end of line - so a
         /// remark that mentions an M-code is never read as one. Left as a space, not
         /// nothing, so "M0(stop)G1" cannot fuse into a word that matches neither.
         /// </summary>
@@ -130,26 +120,22 @@ namespace coppercli.Core.GCode
             return CommentStripPattern.Replace(line, " ");
         }
 
-        /// <summary>
-        /// Returns true if the line contains an M0 (program pause) command.
-        /// </summary>
         public static bool IsM0Line(string line)
         {
             return M0Pattern.IsMatch(StripComments(line));
         }
 
         /// <summary>
-        /// Classifies the M-code that would stop file streaming at this line, if any.
-        /// Built on the same GCodeSplitter/GCodeNumbers pair Machine.SetFile uses to decide
-        /// which lines pause, so the code that pauses the stream and the code that reacts to
-        /// it (MillingController) classify the line the same way.
+        /// Which M-code would stop file streaming at this line, if any. Machine.SetFile and
+        /// MillingController both classify a line through here, so the code that pauses the
+        /// stream and the code that reacts to it cannot disagree.
         /// </summary>
         public static GCodeNumbers.PauseMCode ClassifyPauseLine(string line)
         {
-            // Upper-cased because GCodeSplitter only matches capitals, while the M6
-            // recogniser below ignores case. Disagreeing would mean a lowercase "m6" was
-            // withheld from the machine as a tool change and simultaneously not treated
-            // as one, so the job would cut on with the tool still in the spindle.
+            // Upper-cased because GCodeSplitter matches only capitals, while the M6 pattern
+            // ignores case. Disagreeing would withhold a lowercase "m6" from the machine as a
+            // tool change and also not treat it as one, so the job would cut on with the old
+            // tool still in the spindle.
             foreach (Match m in GCodeSplitter.Matches(StripComments(line).ToUpperInvariant()))
             {
                 if (m.Groups[1].Value != "M")
@@ -172,10 +158,7 @@ namespace coppercli.Core.GCode
             return GCodeNumbers.PauseMCode.None;
         }
 
-        /// <summary>
-        /// Extracts the tool number from a line (e.g., "T1" returns 1).
-        /// Returns null if no tool number found.
-        /// </summary>
+        /// <summary>Null when the line names no tool.</summary>
         public static int? ExtractToolNumber(string line)
         {
             var match = ToolNumberPattern.Match(line);
@@ -186,10 +169,8 @@ namespace coppercli.Core.GCode
             return null;
         }
 
-        /// <summary>
-        /// Extracts the tool name from a comment in the line.
-        /// Returns null if no comment found.
-        /// </summary>
+        /// <summary>The text of the line's parenthesized comment, or null when it has
+        /// none.</summary>
         public static string? ExtractToolName(string line)
         {
             var match = ToolNamePattern.Match(line);
@@ -200,16 +181,13 @@ namespace coppercli.Core.GCode
             return null;
         }
 
-        /// <summary>
-        /// Finds tool info by searching the given line and preceding lines.
-        /// Returns (toolNumber, toolName) tuple.
-        /// </summary>
+        /// <summary>Searches the line itself, then back up to
+        /// Constants.ToolInfoSearchLines lines before it.</summary>
         public static (int? ToolNumber, string? ToolName) FindToolInfo(IList<string> lines, int lineIndex)
         {
             int? toolNumber = null;
             string? toolName = null;
 
-            // First check the current line
             if (lineIndex >= 0 && lineIndex < lines.Count)
             {
                 string line = lines[lineIndex];
@@ -217,7 +195,6 @@ namespace coppercli.Core.GCode
                 toolName = ExtractToolName(line);
             }
 
-            // Search backwards for missing info (tool number and/or name)
             for (int i = lineIndex - 1; i >= 0 && i >= lineIndex - Constants.ToolInfoSearchLines; i--)
             {
                 if (i >= lines.Count)
@@ -225,7 +202,6 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
-                // Stop if we have both number and name
                 if (toolNumber != null && toolName != null)
                 {
                     break;
@@ -233,13 +209,11 @@ namespace coppercli.Core.GCode
 
                 string prevLine = lines[i];
 
-                // Look for tool number if we don't have one
                 if (toolNumber == null)
                 {
                     toolNumber = ExtractToolNumber(prevLine);
                 }
 
-                // Look for tool name if we don't have one
                 if (toolName == null)
                 {
                     toolName = ExtractToolName(prevLine);
@@ -257,7 +231,7 @@ namespace coppercli.Core.GCode
             {
                 i++;
 
-                // Extract T code before cleanup strips comments
+                // Before CleanupLine, which strips the comment the tool name sits in.
                 ExtractTCode(linei, i);
 
                 string line = CleanupLine(linei, i);
@@ -323,13 +297,11 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Marks the modelled position unknown after a block we could not model.
-        ///
-        /// The machine has moved (or re-datumed) somewhere we cannot compute, so every
-        /// axis word of the next move must be emitted rather than elided as "already
-        /// there". Without this, a file that retracts with G53 and then says "G0 Z5" to
-        /// come back has that recovery move deleted as zero-length, and the following
-        /// cut runs at the retract depth.
+        /// Marks the modelled position unknown after a block that could not be modelled, so
+        /// every axis word of the next move is emitted rather than elided as "already
+        /// there". Without this, a file that retracts with G53 and then says "G0 Z5" to come
+        /// back has that recovery move deleted as zero-length, and the cut that follows runs
+        /// at the retract depth.
         /// </summary>
         private static void InvalidatePositionAfterUnmodelledMove()
         {
@@ -338,14 +310,13 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Set by <see cref="InvalidatePositionAfterUnmodelledMove"/>, cleared onto the
-        /// next motion it produces. Carries "we do not know where this move begins" from
-        /// the unmodelled block to the move that follows it.
+        /// Set by <see cref="InvalidatePositionAfterUnmodelledMove"/> and cleared onto the
+        /// next motion, which then carries an untrusted Start.
         /// </summary>
         private static bool _startUntrusted;
 
         /// <summary>The position along the axis a center word names: I is X, J is Y, K is Z.</summary>
-        private static double CentreAxisPosition(Vector3 position, char centreWord) => centreWord switch
+        private static double CenterAxisPosition(Vector3 position, char centerWord) => centerWord switch
         {
             'I' => position.X,
             'J' => position.Y,
@@ -363,9 +334,9 @@ namespace coppercli.Core.GCode
                 Words.Add(new Word() { Command = match.Groups[1].Value[0], Parameter = double.Parse(match.Groups[2].Value, Constants.DecimalParseFormat) });
             }
 
-            // Decide the fate of the whole block before anything is extracted from it.
-            // Doing this first is what keeps an M or S word in the same block from being
-            // emitted once as its own command and again inside the preserved line.
+            // The whole block is classified before anything is extracted from it.
+            // Otherwise an M or S word in a preserved block is emitted once as its own
+            // command and again inside the preserved line.
             bool refuseBlock = false;
             bool preserveBlock = false;
 
@@ -378,10 +349,10 @@ namespace coppercli.Core.GCode
 
                 double g = w.Parameter;
 
-                // Homing from a file is refused outright. We cannot model where it goes,
-                // and passing it through would send the machine to its G28/G30 position
-                // at rapid - across whatever is clamped to the bed. Checked across the
-                // whole block, so "G53 G28 Z0" cannot slip through as a preserved line.
+                // Homing from a file is refused: the destination cannot be modelled, and
+                // passing it through would rapid the machine to its G28/G30 position across
+                // whatever is clamped to the bed. Checked across the whole block, so
+                // "G53 G28 Z0" cannot slip through as a preserved line.
                 if (g == GCodeNumbers.Home || g == GCodeNumbers.HomeSecondary)
                 {
                     Warnings.Add($"{Constants.WarningPrefixDanger}: G{(int)g} (Home) command found and ignored - it would rapid across the workpiece. (line {lineNumber})");
@@ -422,7 +393,7 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
-                // T codes are handled in ExtractTCode before cleanup
+                // Already emitted by ExtractTCode, before the comments were stripped.
                 if (Words[i].Command == 'T')
                 {
                     Words.RemoveAt(i--);
@@ -456,8 +427,8 @@ namespace coppercli.Core.GCode
                 continue;
             }
 
-            // Set when the block held a G-code we do not understand. Its words go with
-            // it rather than being reinterpreted as motion.
+            // Set when the block held a G-code the parser does not recognize. Its words go
+            // with it rather than being reinterpreted as motion.
             bool dropBlock = false;
 
             for (int i = 0; i < Words.Count; i++)
@@ -577,15 +548,13 @@ namespace coppercli.Core.GCode
                             continue;
                         }
                     }
-                    // G94 = units per minute feed rate (default) - safe to ignore
+                    // G94 is the default feed mode, and nothing here depends on it.
                     if (param == GCodeNumbers.FeedRateUnitsPerMinute)
                     {
                         Words.RemoveAt(i);
                         i--;
                         continue;
                     }
-                    // G93 = inverse time feed rate - warn because height map and time
-                    // calculations assume G94. Feed values would be misinterpreted.
                     if (param == GCodeNumbers.FeedRateInverseTime)
                     {
                         Warnings.Add($"WARNING: G93 (inverse time feed) not fully supported - height map correction and time estimates will be incorrect. (line {lineNumber})");
@@ -646,7 +615,6 @@ namespace coppercli.Core.GCode
                 throw new ParseException("arcs (G2/G3) are only allowed after an absolute position has been established (eg. with \"G90 G0 X0 Y0 Z5\")", lineNumber);
             }
 
-            // Find EndPos
             {
                 int Incremental = (State.DistanceMode == ParseDistanceMode.Incremental) ? 1 : 0;
 
@@ -692,9 +660,8 @@ namespace coppercli.Core.GCode
                 throw new ParseException("feed rate undefined", lineNumber);
             }
 
-            // Note: Feed moves before absolute position is established won't have
-            // height maps applied, but this is common in G-code preambles and not
-            // worth warning about.
+            // A feed move made before an absolute position is established gets no height
+            // map. That is common in preambles, so it raises no warning.
 
             if (MotionMode <= 1)
             {
@@ -739,12 +706,10 @@ namespace coppercli.Core.GCode
                     break;
             }
 
-            // Find IJK.
-            //
-            // A plane has two axes, and the arc center is given as an offset along each.
-            // I, J and K name X, Y and Z, so the word matching the plane's first axis sets
-            // U and the one matching its second sets V. The third names an axis the plane
-            // does not contain and cannot describe a center in it.
+            // A plane has two axes, and the arc center is an offset along each. I, J and K
+            // name X, Y and Z, so the word matching the plane's first axis sets U and the
+            // one matching its second sets V; the third names an axis the plane does not
+            // contain.
             {
                 int ArcIncremental = (State.ArcDistanceMode == ParseDistanceMode.Incremental) ? 1 : 0;
 
@@ -770,7 +735,7 @@ namespace coppercli.Core.GCode
                     }
 
                     double offset = Words[i].Parameter * UnitMultiplier
-                        + ArcIncremental * CentreAxisPosition(State.Position, word);
+                        + ArcIncremental * CenterAxisPosition(State.Position, word);
 
                     if (word == First)
                     {
@@ -787,7 +752,6 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            // Resolve Radius
             for (int i = 0; i < Words.Count; i++)
             {
                 if (Words[i].Command != 'R')

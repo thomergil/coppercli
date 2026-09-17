@@ -1,13 +1,10 @@
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper methods for path operations.
-    /// </summary>
     internal static class PathHelpers
     {
         /// <summary>
-        /// The name with one of the given extensions on it. One rule, so a name the operator
-        /// gives the terminal and the same name given to the browser save one file, not two.
+        /// Both the terminal and the browser call this, so one typed name produces one file
+        /// rather than two.
         /// </summary>
         public static string EnsureExtension(string filename, string[]? extensions)
         {
@@ -22,13 +19,12 @@ namespace coppercli.Helpers
                 return filename;
             }
 
-            // Append the first valid extension
             return filename + extensions[0];
         }
 
         /// <summary>
-        /// Expands a leading ~ to the home directory. Only "~", "~/" and "~\" are a home
-        /// path; "~name" is another user's, and coppercli cannot resolve it.
+        /// Only "~", "~/" and "~\" are a home path; "~name" is another user's, and coppercli
+        /// cannot resolve it.
         /// </summary>
         public static string ExpandTilde(string path)
         {

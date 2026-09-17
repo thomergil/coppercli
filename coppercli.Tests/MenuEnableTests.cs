@@ -13,9 +13,9 @@ namespace coppercli.Tests
     public class MenuEnableTests
     {
         /// <summary>
-        /// The Start button and the refusal behind it read this one property. A CanStart that
-        /// cleared the mill on an alarm, a missing file or an unapplied height map would run
-        /// the job anyway, and every reason-text test would still pass.
+        /// Both the Start button and the text shown in its place read MillStartCheck.CanStart.
+        /// A CanStart that returned true on an alarm, a missing file or an unapplied height
+        /// map would start the job, and every reason-text test would still pass.
         /// </summary>
         [Fact]
         public void CanStart_IsExactlyTheAbsenceOfABlocker()
@@ -27,8 +27,8 @@ namespace coppercli.Tests
 
                 Assert.Equal(error == MillBlocker.None, check.CanStart);
 
-                // The switch and the reason are one answer: a blocked start with no reason,
-                // or a reason beside an enabled button, is the disagreement this pins.
+                // A blocked start with no reason, or a reason beside an enabled button, is
+                // the disagreement this covers.
                 Assert.Equal(check.CanStart, MenuHelpers.GetMillBlockerReason(check) == null);
             }
         }
@@ -57,19 +57,14 @@ namespace coppercli.Tests
         [Fact]
         public void AnAlarm_IsReportedAsAnAlarm()
         {
-            // This mapping is the only place that names an alarm.
             Assert.Equal(DisabledAlarm, MenuHelpers.GetMillBlockerReason(
                 new MillStartCheck(MillBlocker.AlarmState,
                     new System.Collections.Generic.List<MillWarning>(), null)));
         }
 
 
-        /// <summary>
-        /// A menu item is selectable exactly when its blocker says nothing, and the reason
-        /// shown comes from that same call.
-        /// </summary>
         [Fact]
-        public void ABlockedItem_IsNotSelectableAndSaysWhy()
+        public void ABlockedItem_IsNotSelectableAndReportsTheReason()
         {
             var blocked = new MenuItem<int>("Probe", 'p', 1, Blocker: () => "a job is running");
 

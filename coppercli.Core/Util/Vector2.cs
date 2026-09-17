@@ -88,10 +88,8 @@ namespace coppercli.Core.Util
 
         public double Magnitude { get { return Math.Sqrt(X * X + Y * Y); } }
 
-        // Tolerance for floating-point equality comparison.
-        // Using 1e-9 (one billionth) rather than double.Epsilon (~5e-324) because
-        // double.Epsilon is too small for practical comparison - floating-point
-        // arithmetic errors routinely exceed it, making equality checks fail.
+        // double.Epsilon (~5e-324) sits far below the error ordinary floating-point
+        // arithmetic accumulates, so an equality check against it never succeeds.
         public const double EqualityTolerance = 1e-9;
     }
 }

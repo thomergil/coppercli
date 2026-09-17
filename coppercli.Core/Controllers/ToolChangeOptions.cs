@@ -4,12 +4,10 @@ using coppercli.Core.Util;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Configuration options for a tool change operation.
-    /// Passed to HandleToolChangeAsync - must be set before each tool change.
+    /// Set this before every call to `HandleToolChangeAsync`; it is read once, at the start.
     /// </summary>
     public class ToolChangeOptions
     {
-        /// <summary>Builds tool-change options from settings and the loaded file's bounds.</summary>
         public static ToolChangeOptions FromSettings(Settings.MachineSettings settings, GCode.GCodeFile? file)
         {
             return new ToolChangeOptions
@@ -23,27 +21,21 @@ namespace coppercli.Core.Controllers
 
 
         /// <summary>
-        /// Maximum probe depth for PCB surface probing (mm, positive value).
-        /// Used in non-tool-setter mode when probing the PCB surface.
+        /// Millimeters, positive. Used without a tool setter, when probing the PCB surface.
         /// </summary>
         public double ProbeMaxDepth { get; set; } = 5.0;
 
-        /// <summary>
-        /// Probe feed rate for PCB surface probing (mm/min).
-        /// Used in non-tool-setter mode.
-        /// </summary>
+        /// <summary>Millimeters per minute. Used without a tool setter.</summary>
         public double ProbeFeed { get; set; } = 20.0;
 
         /// <summary>
-        /// Height to retract after probing (mm, work coordinates).
-        /// Used in non-tool-setter mode after zeroing Z.
+        /// Millimeters in work coordinates. Used without a tool setter, after Z is zeroed.
         /// </summary>
         public double RetractHeight { get; set; } = 6.0;
 
         /// <summary>
-        /// Center of work area for tool swap positioning (work coordinates).
-        /// If null, uses the return position (where M6 was encountered).
-        /// Set this to file bounds center for accessible tool swap location.
+        /// Where the tool is parked for the swap, in work coordinates. Null falls back to the
+        /// return position, which is wherever the M6 was reached.
         /// </summary>
         public Vector3? WorkAreaCenter { get; set; }
     }

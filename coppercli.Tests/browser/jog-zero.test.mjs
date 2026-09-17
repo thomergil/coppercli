@@ -1,6 +1,6 @@
-// What became of the height map decides whether the next cut is at the right depth, so the
-// browser has to draw it in words and as a warning when the G-code no longer matches the
-// origin. Nothing else exercises jog.js's zero response.
+// The height map outcome sets whether the next cut is at the right depth, so the browser
+// draws it in words, and as a warning where the G-code no longer matches the origin. Nothing
+// else exercises jog.js's handling of the zero response.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +10,6 @@ const {
     HEIGHT_MAP_TEXT_BY_OUTCOME, ZEROED_MAP_NOT_REAPPLIED, ZEROED_FILE_LEFT_ALONE, TEXT_ZEROED_Z
 } = await load('constants.js');
 
-// Returns the page, with the zero endpoint answering `answer`.
 async function pageZeroing(answer) {
     const dom = installDom();
     globalThis.fetch = async () => ({ ok: true, json: async () => answer });

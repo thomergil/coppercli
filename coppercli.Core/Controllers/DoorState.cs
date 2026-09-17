@@ -6,7 +6,6 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public enum DoorState
     {
-        /// <summary>Not at the door at all.</summary>
         None,
 
         /// <summary>The enclosure may be open. Only the operator can close it.</summary>

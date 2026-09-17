@@ -3,9 +3,6 @@ using System.IO;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Simple file logger for debugging.
-    /// </summary>
     public static class Logger
     {
         private const string LogFileName = "coppercli.log";
@@ -14,9 +11,6 @@ namespace coppercli.Helpers
 
         public static bool Enabled { get; set; } = false;
 
-        /// <summary>
-        /// Returns the full path to the log file.
-        /// </summary>
         public static string LogFilePath => LogPath;
 
         private static string LogPath
@@ -25,10 +19,9 @@ namespace coppercli.Helpers
             {
                 if (_logPath == null)
                 {
-                    // The log sits next to the executable. AppContext.BaseDirectory gives
-                    // that directory for both ordinary and single-file builds, whereas
-                    // Assembly.Location returns an empty string from a single-file app -
-                    // which is exactly how releases are published.
+                    // AppContext.BaseDirectory gives the executable's directory for both
+                    // ordinary and single-file builds; Assembly.Location returns an empty
+                    // string from a single-file app, which is how releases are published.
                     _logPath = Path.Combine(AppContext.BaseDirectory, LogFileName);
                 }
                 return _logPath;
@@ -50,8 +43,7 @@ namespace coppercli.Helpers
                     var line = $"[{timestamp}] {message}";
                     var bytes = System.Text.Encoding.UTF8.GetBytes(line + Environment.NewLine);
 
-                    // Use WriteThrough to bypass OS buffering and write directly to disk.
-                    // This ensures logs are available immediately (important for debugging crashes).
+                    // WriteThrough so a crash cannot lose lines still held in the OS buffer.
                     using var fs = new FileStream(
                         LogPath,
                         FileMode.Append,
@@ -64,7 +56,7 @@ namespace coppercli.Helpers
             }
             catch
             {
-                // Silently ignore logging failures
+                // A logging failure must not break the caller.
             }
         }
 
@@ -81,10 +73,9 @@ namespace coppercli.Helpers
             }
             catch (Exception)
             {
-                // A placeholder that does not match its arguments must not take down the
-                // caller: this overload formats before Log(string) can catch anything.
-                // A bare null argument binds to the array itself, so this is not only
-                // FormatException.
+                // string.Format runs before Log(string) can catch anything, so a placeholder
+                // that does not match its arguments would reach the caller. A bare null
+                // argument binds to the array itself, so it is not only FormatException.
                 Log(format);
             }
         }
@@ -100,7 +91,7 @@ namespace coppercli.Helpers
             }
             catch
             {
-                // Silently ignore
+                // A failed delete must not break the caller; the old log stays.
             }
         }
     }

@@ -3,27 +3,27 @@ using System;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Estimates the time remaining in a job from the pace the machine is actually keeping,
-    /// using the toolpath's own duration estimate only as a starting guess.
+    /// Time remaining in a job, measured from the pace the machine is actually keeping. The
+    /// toolpath model's own estimate serves only as the warmup guess, before enough lines have
+    /// run to measure anything.
     ///
-    /// The estimate has to be free to move in BOTH directions. An earlier version weighted
-    /// the guess by (1 - fraction-complete), which made the remaining time proportional to
-    /// (1-f)(1 + f(k-1)) for a machine running k times slower than the model. The slope of
-    /// that at the start is (k-2), so unless the machine was more than twice as slow as
-    /// predicted the displayed figure could only ever fall: a job running 50% late counted
-    /// calmly down to zero and then carried on cutting.
+    /// The figure must be free to rise as well as fall. Weighting the model guess by
+    /// (1 - fraction-complete) makes the remaining time proportional to (1-f)(1 + f(k-1)) for a
+    /// machine running k times slower than the model, whose slope starts at (k-2): below k=2
+    /// the figure can only fall, so a job running 50% late counts calmly to zero and keeps
+    /// cutting.
     ///
-    /// Instead, measure the recent pace in seconds per line as an exponential moving average
-    /// and project it across the lines still to run. Two details matter:
+    /// So the pace, in seconds per line, is an exponential moving average projected across the
+    /// lines still to run. Two details matter:
     ///
     ///   - the average is smoothed over a share of the job rather than a number of samples,
     ///     so how quickly it reacts does not change when the caller's redraw rate does;
-    ///   - time already spent sitting on the current line is added as its own term rather
-    ///     than folded into the pace, so a single long cut does not get extrapolated across
-    ///     every remaining line - but a genuine stall still pushes the estimate up.
+    ///   - time already spent on the line in progress is added as its own term rather than
+    ///     folded into the pace, so one long cut is not extrapolated across every remaining
+    ///     line, while a genuine stall still pushes the estimate up.
     ///
-    /// The model guess only covers the warmup, before enough lines have run to measure
-    /// anything. The clock this is fed must measure milling only, not the setup before it.
+    /// The elapsed time passed to <see cref="Update"/> must cover milling only, not the setup
+    /// before it.
     /// </summary>
     public sealed class EtaEstimator
     {
@@ -45,10 +45,10 @@ namespace coppercli.Core.Controllers
         private double _pace;
         private bool _havePace;
 
-        /// <param name="modelEstimate">Up-front guess for the whole job, from the toolpath
-        /// model. Zero or negative if the model could not estimate (e.g. no feed moves), in
-        /// which case only the measured pace is used once it exists.</param>
-        /// <param name="totalLines">Number of lines in the job.</param>
+        /// <summary>
+        /// Pass zero or a negative modelEstimate where the toolpath model could not estimate,
+        /// for example a file with no feed moves; only the measured pace is then used.
+        /// </summary>
         public EtaEstimator(TimeSpan modelEstimate, int totalLines)
         {
             _totalLines = Math.Max(1, totalLines);
@@ -99,7 +99,7 @@ namespace coppercli.Core.Controllers
                 return TimeSpan.FromSeconds(Math.Max(0, guessRemaining));
             }
 
-            // Until enough lines have run to measure a pace worth trusting, lean on the guess.
+            // Until enough lines have run to measure a pace worth trusting, blend in the guess.
             double rate = _pace;
             if (_haveModel)
             {

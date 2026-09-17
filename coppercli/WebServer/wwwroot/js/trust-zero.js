@@ -1,5 +1,3 @@
-// coppercli Web UI - Trust Work Zero Modal
-
 import { $, showInfo, showError, postJson } from './helpers.js';
 import {
     API_STATUS,
@@ -15,8 +13,8 @@ export function initTrustZeroModal() {
 
     if (yesBtn) {
         yesBtn.addEventListener('click', async () => {
-            // The modal stays up until the server says the work zero was trusted. A refusal
-            // the operator does not see leaves them believing a work zero nobody set.
+            // The modal stays up unless the server confirms the work zero was trusted. A
+            // refusal the operator does not see would leave them trusting a zero nobody set.
             const result = await postJson(API_TRUST_WORK_ZERO);
             if (!result.ok) {
                 showError(result.error || TEXT_WORK_ZERO_NOT_TRUSTED);
@@ -50,7 +48,6 @@ export async function checkAndShowTrustZero() {
         const response = await fetch(API_STATUS);
         const status = await response.json();
 
-        // Show modal if: connected AND stored work zero exists AND not yet trusted AND not milling
         if (status.connected && status.hasStoredWorkZero && !status.isWorkZeroSet && !status.milling) {
             showTrustZeroModal();
         }

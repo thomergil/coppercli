@@ -1,5 +1,3 @@
-// Macro execution engine
-
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
@@ -11,15 +9,13 @@ using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Macro
 {
-    /// <summary>
-    /// Executes a list of macro commands with TUI display.
-    /// </summary>
     internal class MacroRunner
     {
-        // Display layout constants
-        private const int HeaderLines = 4;   // Lines for header/title area
-        private const int FooterLines = 3;   // Lines for footer/help text area
-        private const int MinVisibleSteps = 3;  // Minimum steps to show in list
+        // HeaderLines and FooterLines must match the rows DrawProgress writes above and below
+        // the step list, because the viewport height is what is left over after both.
+        private const int HeaderLines = 4;
+        private const int FooterLines = 3;
+        private const int MinVisibleSteps = 3;
 
         private readonly List<MacroCommand> _commands;
         private readonly string _macroName;
@@ -34,9 +30,6 @@ namespace coppercli.Macro
             _aborted = false;
         }
 
-        /// <summary>
-        /// Runs the macro. Returns true if completed successfully, false if aborted.
-        /// </summary>
         public bool Run()
         {
             if (_commands.Count == 0)
@@ -78,7 +71,6 @@ namespace coppercli.Macro
                     _currentStep++;
                 }
 
-                // Draw final state
                 DrawProgress();
                 Console.CursorVisible = true;
                 AnsiConsole.MarkupLine($"\n[{ColorSuccess}]Macro completed successfully![/]");
@@ -94,9 +86,6 @@ namespace coppercli.Macro
             }
         }
 
-        /// <summary>
-        /// Draws the macro progress display with optional overlay message.
-        /// </summary>
         private void DrawProgress(string? overlayMessage = null, string? overlaySubtext = null)
         {
             var (winWidth, winHeight) = DisplayHelpers.GetSafeWindowSize();
@@ -104,11 +93,9 @@ namespace coppercli.Macro
 
             Console.SetCursorPosition(0, 0);
 
-            // Header
             DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiPrompt}Macro: {_macroName}{DisplayHelpers.AnsiReset}", winWidth);
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
-            // Status line
             var activity = MachineWait.GetActivity(machine);
             var statusColor = MachineWait.IsUnavailable(activity)
                 ? DisplayHelpers.AnsiError
@@ -121,21 +108,17 @@ namespace coppercli.Macro
                 winWidth);
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
-            // Calculate how many steps we can show
             int availableLines = winHeight - HeaderLines - FooterLines;
             int maxVisibleSteps = Math.Max(MinVisibleSteps, availableLines);
 
-            // Calculate viewport to keep current step visible
             int viewStart = 0;
             if (_commands.Count > maxVisibleSteps)
             {
-                // Keep current step roughly centered
                 viewStart = Math.Max(0, _currentStep - maxVisibleSteps / 2);
                 viewStart = Math.Min(viewStart, _commands.Count - maxVisibleSteps);
             }
             int viewEnd = Math.Min(viewStart + maxVisibleSteps, _commands.Count);
 
-            // Calculate overlay box dimensions if needed
             string[] overlayLines = Array.Empty<string>();
             string[] overlayColors = Array.Empty<string>();
             int boxWidth = 0;
@@ -150,7 +133,6 @@ namespace coppercli.Macro
                 boxWidth = DisplayHelpers.CalculateOverlayBoxWidth(overlayLines, winWidth);
                 boxLeftPad = (winWidth - boxWidth) / 2;
 
-                // Center vertically in the step list area
                 int boxHeight = DisplayHelpers.CalculateOverlayBoxHeight(overlayLines);
                 int stepAreaStart = HeaderLines + (viewStart > 0 ? 1 : 0);
                 int stepAreaHeight = viewEnd - viewStart;
@@ -158,7 +140,6 @@ namespace coppercli.Macro
                 boxEndRow = boxStartRow + boxHeight - 1;
             }
 
-            // One row of the box drawn over whatever the step list has on that row.
             string OverlayRow(string background, int row) => DisplayHelpers.CompositeOverlay(
                 background,
                 DisplayHelpers.GetOverlayBoxLine(row - boxStartRow, boxWidth, overlayLines, overlayColors),
@@ -167,14 +148,12 @@ namespace coppercli.Macro
 
             int currentRow = HeaderLines;
 
-            // Show "more above" indicator
             if (viewStart > 0)
             {
                 DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiDim}  ... {viewStart} more above{DisplayHelpers.AnsiReset}", winWidth);
                 currentRow++;
             }
 
-            // Draw steps (with overlay if applicable)
             for (int i = viewStart; i < viewEnd; i++)
             {
                 var cmd = _commands[i];
@@ -200,7 +179,6 @@ namespace coppercli.Macro
                 var stepNum = $"{i + 1,3}.";
                 string line = $"{color}{marker} {stepNum} {cmd.DisplayText}{DisplayHelpers.AnsiReset}";
 
-                // Check if this row should have overlay
                 if (overlayMessage != null && currentRow >= boxStartRow && currentRow <= boxEndRow)
                 {
                     DisplayHelpers.WriteLineTruncated(OverlayRow(line, currentRow), winWidth);
@@ -212,24 +190,22 @@ namespace coppercli.Macro
                 currentRow++;
             }
 
-            // If overlay extends beyond step list, draw remaining box lines
             if (overlayMessage != null)
             {
                 while (currentRow <= boxEndRow)
                 {
-                    // CompositeOverlay handles empty margin lines (returns background)
+                    // A box row that is all margin composites onto nothing, so the empty
+                    // background is enough.
                     DisplayHelpers.WriteLineTruncated(OverlayRow(string.Empty, currentRow), winWidth);
                     currentRow++;
                 }
             }
 
-            // Show "more below" indicator
             if (viewEnd < _commands.Count)
             {
                 DisplayHelpers.WriteLineTruncated($"{DisplayHelpers.AnsiDim}  ... {_commands.Count - viewEnd} more below{DisplayHelpers.AnsiReset}", winWidth);
             }
 
-            // Footer
             DisplayHelpers.WriteLineTruncated("", winWidth);
             if (overlayMessage == null)
             {
@@ -237,14 +213,10 @@ namespace coppercli.Macro
             }
         }
 
-        /// <summary>
-        /// Executes a single command. Returns true on success, false on failure.
-        /// </summary>
         private bool ExecuteCommand(MacroCommand command)
         {
             var machine = AppState.Machine;
 
-            // Check for abort before each command
             if (CheckAbort())
             {
                 return false;
@@ -361,7 +333,6 @@ namespace coppercli.Macro
             var machine = AppState.Machine;
             string axes = args.Length > 0 ? args[0].ToUpper() : "XYZ";
 
-            // Build the axis words for the work-offset command.
             string axisCmd = "";
             bool zeroingZ = false;
             if (axes.Contains('X'))
@@ -398,7 +369,8 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // If zeroing Z, move to safe height (matches JogMenu behavior)
+            // Zeroing Z leaves the tool down at the workpiece, so retract as `JogMenu` does
+            // after the same move.
             if (zeroingZ)
             {
                 MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
@@ -417,8 +389,6 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // ProbeController owns single probing, and ProbeZSingleAsync returns the result
-            // directly.
             var controller = AppState.Probe;
 
             if (controller.IsActive)
@@ -429,10 +399,9 @@ namespace coppercli.Macro
 
             controller.Options = ProbeOptions.FromSettings(AppState.Settings);
 
-            // Probing descends at the probe feed and can take minutes, so the macro keeps
-            // watching for the abort key rather than blocking. A soft reset is what stops a
-            // G38.2 already running: cancelling alone abandons the wait and leaves the tool
-            // descending.
+            // Probing descends at the probe feed and can take minutes, so the macro watches for
+            // the abort key rather than blocking. Only a soft reset stops a G38.2 already
+            // running; cancelling the token abandons the wait and leaves the tool descending.
             using var cts = new CancellationTokenSource();
             var probeTask = Task.Run(() => controller.ProbeZSingleAsync(cts.Token));
 
@@ -469,7 +438,8 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // Stay at probe position - user will call "zero xyz" then "safe"
+            // The tool stays at the probe position, for a macro that goes on to "zero xyz"
+            // and then "safe".
             return true;
         }
 
@@ -488,9 +458,8 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // "probe apply" is documented for reusing a grid on the same board. Reusing
-            // it on a different one, or after the origin moved, would cut to heights
-            // measured somewhere else.
+            // "probe apply" is for reusing a grid on the same board. On a different board, or
+            // after the origin moved, it would cut to heights measured somewhere else.
             var applicability = AppState.GetProbeApplicability();
 
             if (!applicability.IsUsable())
@@ -501,8 +470,8 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // Milling a warped board with no height compensation is exactly what this
-            // command exists to prevent, so a failure here must fail the macro.
+            // A failure here fails the macro: milling a warped board with no height
+            // compensation is what this command prevents.
             string? notApplied = AppState.ApplyProbeData();
             if (notApplied != null)
             {
@@ -517,7 +486,6 @@ namespace coppercli.Macro
         {
             string message = args.Length > 0 ? args[0] : PromptEnter;
 
-            // Draw progress with overlay
             DrawProgress(message, "Enter=Continue  Escape=Abort");
 
             while (true)
@@ -539,7 +507,6 @@ namespace coppercli.Macro
         {
             string message = args.Length > 0 ? args[0] : "Continue?";
 
-            // Draw progress with overlay
             DrawProgress(message, "Y=Yes  N=No (aborts)");
 
             while (true)
@@ -560,15 +527,14 @@ namespace coppercli.Macro
 
         private bool ExecuteWait(string[] args)
         {
-            // Wait for machine to reach idle state
             return WaitForIdle();
         }
 
         private bool WaitForIdle()
         {
             var machine = AppState.Machine;
-            // Monotonic: a wall clock that steps under this wait would either end it at once
-            // or never.
+            // Stopwatch, not the wall clock: an NTP or daylight-saving step would end this
+            // wait at once or never.
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
 
             while (elapsed.ElapsedMilliseconds < IdleWaitTimeoutMs)
@@ -592,7 +558,6 @@ namespace coppercli.Macro
                 Thread.Sleep(StatusPollIntervalMs);
             }
 
-            // If we got here, we timed out but might still be OK
             return MachineWait.IsIdle(machine);
         }
 
@@ -603,7 +568,6 @@ namespace coppercli.Macro
                 return true;
             }
 
-            // Check for Escape key
             if (Console.KeyAvailable)
             {
                 var key = Console.ReadKey(true);

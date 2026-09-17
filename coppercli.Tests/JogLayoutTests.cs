@@ -7,13 +7,13 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The jog screen pads each row out to the width of the box. A padding computed from a
-    /// hand-counted width leaves the row short or overruns the border, and nothing on screen
-    /// says which.
+    /// The jog screen pads each position row out to the width of the box. A padding computed
+    /// from a hand-counted width leaves the row short or pushes the border off the end of the
+    /// line.
     /// </summary>
     public class JogLayoutTests
     {
-        /// <summary>Coordinates at their widest, which is what the field is sized for.</summary>
+        /// <summary>The widest a coordinate formats, which is what the field is sized for.</summary>
         private static readonly Vector3 Widest = new(-999.999, -999.999, -999.999);
 
         [Fact]
@@ -27,7 +27,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Both rows are drawn from the same builder, so one cannot grow without the other.
+        /// PositionContentWidth is derived from WorkLabel alone, so MachineLabel has to be
+        /// padded to the same length.
         /// </summary>
         [Fact]
         public void BothPositionRows_DrawTheSameWidth()

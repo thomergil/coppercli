@@ -4,19 +4,14 @@ using coppercli.Core.Controllers;
 
 namespace coppercli.WebServer;
 
-/// <summary>Why an answer to a prompt was or was not accepted.</summary>
 internal enum PromptAnswerResult
 {
-    /// <summary>The answer reached the run, which is no longer waiting.</summary>
     Accepted,
 
-    /// <summary>Nothing is waiting on an answer.</summary>
     NothingPending,
 
-    /// <summary>The answer named a prompt other than the one now waiting.</summary>
     WrongPrompt,
 
-    /// <summary>The answer was not one of the options the prompt offered.</summary>
     NotAnOption,
 }
 
@@ -34,10 +29,8 @@ internal static class PendingPrompt
     // it, so every access goes through Volatile or Interlocked.
     private static UserInputRequest? _request;
 
-    /// <summary>The question now waiting, or null if none is.</summary>
     public static UserInputRequest? Current => Volatile.Read(ref _request);
 
-    /// <summary>Publish a question.</summary>
     public static void Set(UserInputRequest request) => Volatile.Write(ref _request, request);
 
     /// <summary>
@@ -65,7 +58,6 @@ internal static class PendingPrompt
             return PromptAnswerResult.NothingPending;
         }
 
-        // Which prompt it answers is checked before whether the answer is valid.
         if (promptId != pending.Id)
         {
             return PromptAnswerResult.WrongPrompt;

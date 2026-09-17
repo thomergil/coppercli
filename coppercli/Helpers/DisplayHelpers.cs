@@ -6,32 +6,16 @@ using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper functions for console display, especially for flicker-free full-screen modes.
-    /// </summary>
     /// <remarks>
-    /// WHY TWO COLOR SYSTEMS?
-    ///
-    /// This codebase uses two color systems:
-    ///
-    /// 1. Spectre.Console markup ([{ColorError}], [{ColorSuccess}], etc.)
-    ///    - Used for: Menus, dialogs, static output
-    ///    - Rendered by Spectre's pipeline with rich formatting
-    ///
-    /// 2. Raw ANSI escape codes (AnsiError, AnsiSuccess, etc.)
-    ///    - Used for: Live displays (JogMenu, MillMenu, MacroRunner, SetupToolSetter)
-    ///    - Required for flicker-free updates using Console.SetCursorPosition(0, 0)
-    ///    - WriteLineTruncated() pads lines to full width, overwriting old content
-    ///    - Spectre.Console's rendering doesn't support this precise cursor control
-    ///
-    /// Both systems use the same semantic color names (Error=red, Success=green, etc.)
-    /// defined in CliConstants. The ANSI codes below map to the same meanings.
+    /// Two color systems run side by side. Menus, dialogs and static output use Spectre.Console
+    /// markup such as ColorError and ColorSuccess; the live screens - JogMenu, MillMenu,
+    /// MacroRunner, SetupToolSetter - use the raw ANSI codes below, because redrawing from
+    /// Console.SetCursorPosition(0, 0) needs WriteLineTruncated to pad each line over the last
+    /// frame, and Spectre.Console's rendering does not offer that cursor control. The two sets
+    /// name the same colors: AnsiError is the red of ColorError, and so on down the list.
     /// </remarks>
     internal static class DisplayHelpers
     {
-        // =========================================================================
-        // Raw ANSI escape codes
-        // =========================================================================
         public const string AnsiReset = "\u001b[0m";
         private const string AnsiCodeCyan = "\u001b[36m";
         private const string AnsiCodeBoldCyan = "\u001b[1;36m";
@@ -44,44 +28,27 @@ namespace coppercli.Helpers
         private const string AnsiCodeBoldRed = "\u001b[1;31m";
         private const string AnsiCodeDim = "\u001b[2m";
 
-        // =========================================================================
-        // Semantic ANSI colors (match CliConstants color theme)
-        // =========================================================================
-
-        /// <summary>ANSI code for errors (red). Matches ColorError.</summary>
         public const string AnsiError = AnsiCodeRed;
 
-        /// <summary>ANSI code for success/confirmation (green). Matches ColorSuccess.</summary>
         public const string AnsiSuccess = AnsiCodeGreen;
 
-        /// <summary>ANSI code for warnings/values (yellow). Matches ColorWarning.</summary>
         public const string AnsiWarning = AnsiCodeYellow;
 
-        /// <summary>ANSI code for prompts/headers (blue). Matches ColorPrompt.</summary>
         public const string AnsiPrompt = AnsiCodeBoldBlue;
 
-        /// <summary>ANSI code for info/labels (cyan). Matches ColorInfo.</summary>
         public const string AnsiInfo = AnsiCodeCyan;
 
-        /// <summary>ANSI code for secondary/disabled text. Matches ColorDim.</summary>
         public const string AnsiDim = AnsiCodeDim;
 
-        /// <summary>ANSI escape sequence to clear from cursor to end of line.</summary>
         public const string AnsiClearToEol = "\u001b[K";
 
-        // =========================================================================
-        // Bold variants for emphasis (highlighting important values/states)
-        // =========================================================================
-
-        /// <summary>ANSI code for emphasized success values (bold green).</summary>
         public const string AnsiSuccessBold = AnsiCodeBoldGreen;
 
-        /// <summary>ANSI code for errors and alerts (bold red).</summary>
         public const string AnsiAlert = AnsiCodeBoldRed;
 
         /// <summary>
-        /// The terminal's text for what the machine is doing, falling back to GRBL's own
-        /// word where there is none. Every terminal screen reads this.
+        /// The words every terminal screen shows for what the machine is doing; GRBL's own
+        /// status word is shown where there is no phrase for the activity.
         /// </summary>
         public static string GetActivityText(MachineActivity activity, string rawStatus) => activity switch
         {
@@ -95,7 +62,8 @@ namespace coppercli.Helpers
         };
 
         /// <summary>
-        /// Gets the console window size safely, returning defaults if unavailable.
+        /// Console.WindowWidth throws when output is redirected or no console is attached, so
+        /// the fallback size stands in.
         /// </summary>
         public static (int Width, int Height) GetSafeWindowSize()
         {
@@ -110,25 +78,22 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Writes a line to the console, truncated or padded to exactly maxWidth display characters.
-        /// Handles ANSI escape codes correctly (they don't count toward display width).
-        /// This enables flicker-free updates when used with Console.SetCursorPosition(0, 0).
+        /// Pads or truncates to exactly maxWidth display characters, counting ANSI escape codes
+        /// as zero width. The padding overwrites what the last frame left on that line, which is
+        /// what makes a redraw from Console.SetCursorPosition(0, 0) flicker-free.
         /// </summary>
-        /// <param name="addNewline">If false, omits the trailing newline. Use for the last line
-        /// of a full-screen layout to prevent scrolling when terminal height equals content height.</param>
+        /// <param name="addNewline">False on the last line of a full-screen layout, where the
+        /// newline scrolls the screen once the content is as tall as the terminal.</param>
         public static void WriteLineTruncated(string text, int maxWidth, bool addNewline = true)
         {
-            // Calculate display length (excluding ANSI codes)
             int displayLen = CalculateDisplayLength(text);
 
             if (displayLen > maxWidth)
             {
-                // Truncate to maxWidth display characters
                 text = TruncateToDisplayWidth(text, maxWidth);
             }
             else if (displayLen < maxWidth)
             {
-                // Pad to full width to overwrite old content
                 text = text + new string(' ', maxWidth - displayLen);
             }
 
@@ -142,9 +107,6 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Calculates the display length of a string, excluding ANSI escape codes.
-        /// </summary>
         public static int CalculateDisplayLength(string text)
         {
             int displayLen = 0;
@@ -152,7 +114,7 @@ namespace coppercli.Helpers
             {
                 if (text[i] == '\u001b')
                 {
-                    // Skip ANSI sequence
+                    // An ANSI color sequence runs to a terminating 'm' and prints nothing.
                     while (i < text.Length && text[i] != 'm')
                     {
                         i++;
@@ -166,9 +128,6 @@ namespace coppercli.Helpers
             return displayLen;
         }
 
-        /// <summary>
-        /// Truncates a string to a maximum display width, preserving ANSI codes.
-        /// </summary>
         public static string TruncateToDisplayWidth(string text, int maxWidth)
         {
             var result = new StringBuilder();
@@ -178,7 +137,6 @@ namespace coppercli.Helpers
             {
                 if (text[i] == '\u001b')
                 {
-                    // Copy entire ANSI sequence
                     while (i < text.Length && text[i] != 'm')
                     {
                         result.Append(text[i]);
@@ -186,7 +144,7 @@ namespace coppercli.Helpers
                     }
                     if (i < text.Length)
                     {
-                        result.Append(text[i]); // 'm'
+                        result.Append(text[i]);
                     }
                 }
                 else
@@ -199,17 +157,11 @@ namespace coppercli.Helpers
             return result.ToString();
         }
 
-        /// <summary>
-        /// Formats a TimeSpan as HH:MM:SS.
-        /// </summary>
         public static string FormatTimeSpan(TimeSpan ts)
         {
             return ts.ToString(@"hh\:mm\:ss");
         }
 
-        /// <summary>
-        /// Formats a duration in a human-readable short form (e.g., "1h 23m 45s").
-        /// </summary>
         public static string FormatDuration(TimeSpan duration)
         {
             if (duration.TotalHours >= 1)
@@ -223,36 +175,21 @@ namespace coppercli.Helpers
             return $"{duration.Seconds}s";
         }
 
-        // =========================================================================
-        // Overlay box helpers (shared by MacroRunner and MillMenu)
-        // =========================================================================
-
-        /// <summary>
-        /// Fixed lines in overlay box: 2 margins + 2 borders + 2 padding = 6.
-        /// Total height = OverlayBoxFixedLines + number of content lines.
-        /// </summary>
+        /// <summary>Two margins, two borders and two padding rows, none of them content.</summary>
         public const int OverlayBoxFixedLines = 6;
 
-        /// <summary>Padding added to content width for overlay box (border + inner padding on each side).</summary>
+        /// <summary>Border and inner padding on each side of the content.</summary>
         public const int OverlayBoxPadding = 6;
 
-        /// <summary>Minimum width for overlay box for aesthetics.</summary>
         public const int OverlayBoxMinWidth = 20;
 
-        /// <summary>Margin from grid edge for overlay box.</summary>
         public const int OverlayBoxMargin = 4;
 
-        /// <summary>
-        /// Calculates overlay box height based on content lines.
-        /// </summary>
         public static int CalculateOverlayBoxHeight(string[] contentLines)
         {
             return OverlayBoxFixedLines + contentLines.Length;
         }
 
-        /// <summary>
-        /// Calculates overlay box width based on content, respecting min/max constraints.
-        /// </summary>
         public static int CalculateOverlayBoxWidth(string[] contentLines, int maxWidth)
         {
             int contentWidth = contentLines.Max(l => l.Length);
@@ -261,9 +198,9 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// The lines an overlay box holds, and the colour of each: the message first, then the
-        /// subtext. Both are wrapped to what a box of <paramref name="maxWidth"/> fits, because
-        /// GetOverlayBoxLine cuts a content line that is wider than the box.
+        /// The message lines come first in <paramref name="messageColor"/>, then the subtext in
+        /// AnsiDim. Both are wrapped to what a box of <paramref name="maxWidth"/> fits, because
+        /// GetOverlayBoxLine cuts a content line wider than the box.
         /// </summary>
         public static (string[] Lines, string[] Colors) BuildOverlayContent(
             string message, string? subtext, string messageColor, int maxWidth)
@@ -292,8 +229,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Gets a single line of a dynamic-height overlay box.
-        /// Structure: margin, border, padding, [content lines], padding, border, margin.
+        /// The line order is margin, border, padding, the content lines, padding, border,
+        /// margin.
         /// </summary>
         public static string GetOverlayBoxLine(int lineIndex, int boxWidth,
             string[] contentLines, string[] contentColors)
@@ -305,7 +242,6 @@ namespace coppercli.Helpers
 
             string inner = new string(' ', boxWidth - 2);
 
-            // Line indices: 0=margin, 1=border, 2=padding, 3..3+N-1=content, 3+N=padding, 3+N+1=border, 3+N+2=margin
             int contentStart = 3;
             int contentEnd = contentStart + contentLines.Length - 1;
             int bottomPadding = contentEnd + 1;
@@ -314,7 +250,7 @@ namespace coppercli.Helpers
 
             if (lineIndex == 0 || lineIndex == bottomMargin)
             {
-                return "";  // margins
+                return "";
             }
             if (lineIndex == 1)
             {
@@ -322,7 +258,7 @@ namespace coppercli.Helpers
             }
             if (lineIndex == 2 || lineIndex == bottomPadding)
             {
-                return $"║{inner}║";  // padding
+                return $"║{inner}║";
             }
             if (lineIndex == bottomBorder)
             {
@@ -337,9 +273,6 @@ namespace coppercli.Helpers
             return "";
         }
 
-        /// <summary>
-        /// Centers text within a given width.
-        /// </summary>
         public static string CenterText(string text, int width)
         {
             if (text.Length >= width)
@@ -351,13 +284,12 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Composites an overlay box on top of a background line.
-        /// The background shows through on either side of the box, with a 1-char margin.
-        /// Returns the background unchanged if overlay is empty (margin line).
+        /// The background shows through on either side of the box, with a one-character margin.
+        /// An empty overlay line is one of the box's margin rows, and the background comes back
+        /// unchanged.
         /// </summary>
         public static string CompositeOverlay(string background, string overlay, int overlayStart, int totalWidth)
         {
-            // Margin lines are empty - return background
             if (string.IsNullOrEmpty(overlay))
             {
                 return background;
@@ -365,32 +297,26 @@ namespace coppercli.Helpers
 
             const int margin = 1;
 
-            // Truncate background to fit
             string bgTruncated = TruncateToDisplayWidth(background, totalWidth);
 
-            // Build result: background up to margin before overlay, margin, overlay, margin
             var result = new StringBuilder();
 
-            // Get background portion before the margin
             int marginStart = Math.Max(0, overlayStart - margin);
             string bgBefore = TruncateToDisplayWidth(bgTruncated, marginStart);
             result.Append(bgBefore);
 
-            // Pad if background is shorter than margin start
             int bgBeforeLen = CalculateDisplayLength(bgBefore);
             if (bgBeforeLen < marginStart)
             {
                 result.Append(new string(' ', marginStart - bgBeforeLen));
             }
 
-            // Reset colors and add left margin
+            // Reset first, or the background line's color runs on into the box.
             result.Append(AnsiReset);
-            result.Append(' '); // left margin
+            result.Append(' ');
 
-            // Add overlay
             result.Append(overlay);
 
-            // Add right margin
             result.Append(' ');
 
             result.Append(AnsiReset);
@@ -439,8 +365,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Draws a centered overlay box. Used by ShowOverlayTimed, ShowOverlayAndWait and
-        /// ShowOverlayConfirm. Newlines in the message or subtext make a multi-line overlay.
+        /// A newline in the message or the subtext makes a multi-line overlay.
         /// </summary>
         private static void DrawCenteredOverlay(string message, string subtext, string messageColor)
         {
@@ -462,25 +387,17 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Draws a centered overlay box and returns. Use this where the caller does its own
-        /// waiting; the box stands until something else redraws the screen.
+        /// For a caller that does its own waiting: the box stays up until something else
+        /// redraws the screen.
         /// </summary>
-        /// <param name="message">Main message to display.</param>
-        /// <param name="subtext">Secondary text (optional).</param>
-        /// <param name="messageColor">ANSI color for main message.</param>
         public static void ShowOverlay(string message, string? subtext = null, string? messageColor = null)
         {
             DrawCenteredOverlay(message, subtext ?? "", messageColor ?? AnsiSuccess);
         }
 
         /// <summary>
-        /// Draws a centered overlay box for a specified duration.
-        /// Use this for confirmations that auto-dismiss.
+        /// For a confirmation that clears itself; the calling thread blocks for durationMs.
         /// </summary>
-        /// <param name="message">Main message to display.</param>
-        /// <param name="durationMs">How long to show the overlay.</param>
-        /// <param name="subtext">Secondary text (optional).</param>
-        /// <param name="messageColor">ANSI color for main message.</param>
         public static void ShowOverlayTimed(string message, int durationMs, string? subtext = null, string? messageColor = null)
         {
             DrawCenteredOverlay(message, subtext ?? "", messageColor ?? AnsiSuccess);
@@ -488,12 +405,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Draws a centered overlay box and waits for Enter key.
-        /// Use this for alerts/errors in full-screen TUI modes.
+        /// For an alert the operator has to acknowledge before the screen carries on.
         /// </summary>
-        /// <param name="message">Main message to display.</param>
-        /// <param name="subtext">Secondary text (e.g., "Press Enter to continue").</param>
-        /// <param name="messageColor">ANSI color for main message.</param>
         public static void ShowOverlayAndWait(string message, string? subtext = null, string? messageColor = null)
         {
             DrawCenteredOverlay(message, subtext ?? "Press Enter", messageColor ?? AnsiError);
@@ -508,14 +421,8 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Draws a centered overlay box with a Y/N confirmation prompt.
-        /// Use this for confirmations in full-screen TUI modes.
-        /// </summary>
-        /// <param name="message">Main message to display.</param>
-        /// <param name="defaultYes">If true, shows [Y/n] and Enter returns true; otherwise [y/N] and Enter returns false.</param>
-        /// <param name="messageColor">ANSI color for main message.</param>
-        /// <returns>true for Yes, false for No, null for Escape/quit.</returns>
+        /// <param name="defaultYes">What Enter returns, and which letter the hint capitalizes.</param>
+        /// <returns>true for Yes, false for No, null when the operator pressed Escape or Q.</returns>
         public static bool? ShowOverlayConfirm(string message, bool defaultYes = false, string? messageColor = null)
         {
             string hint = defaultYes ? "[Y/n]" : "[y/N]";

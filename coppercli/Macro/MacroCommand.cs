@@ -1,42 +1,31 @@
-// Macro command types and data structures
-
 namespace coppercli.Macro
 {
     /// <summary>
-    /// All available macro commands. Every TUI operation has a corresponding keyword.
+    /// Every operation the TUI offers has a keyword here, and `MacroParser` maps the keyword to it.
     /// </summary>
     public enum MacroCommandType
     {
-        // File
         Load,
 
-        // Movement
         Jog,
         Home,
         Safe,
         Zero,
         Unlock,
 
-        // Probing
-        ProbeZ,     // "probe z"
-        ProbeGrid,  // "probe grid"
-        ProbeApply, // "probe apply"
+        ProbeZ,
+        ProbeGrid,
+        ProbeApply,
 
-        // Execution
         Mill,
 
-        // User interaction
         Prompt,
         Confirm,
         Echo,
 
-        // Flow control
         Wait
     }
 
-    /// <summary>
-    /// A parsed macro command with its arguments and source location.
-    /// </summary>
     public record MacroCommand(
         MacroCommandType Type,
         string[] Args,
@@ -44,9 +33,6 @@ namespace coppercli.Macro
         string OriginalLine
     )
     {
-        /// <summary>
-        /// Gets a display-friendly representation of this command.
-        /// </summary>
         public string DisplayText
         {
             get

@@ -8,53 +8,37 @@ using coppercli.Core.Util;
 namespace coppercli.Core.Communication
 {
     /// <summary>
-    /// Serial-to-TCP proxy that bridges a serial port to a TCP listener,
-    /// allowing remote GRBL clients to connect over the network.
+    /// Forwards bytes between one TCP client and a serial port, so a remote GRBL client can
+    /// drive a machine attached to this host. One client at a time; a second is rejected.
     /// </summary>
     public class SerialProxy : IDisposable
     {
-        // =========================================================================
-        // Constants
-        // =========================================================================
         /// <summary>How long a client may send nothing before that counts as one silence.</summary>
         private const int ClientSilenceIntervalMs = 10000;
 
         /// <summary>How many of those in a row mean the client has gone.</summary>
         private const int MaxSilentIntervals = 3;
-        private const int HealthCheckIntervalMs = 5000; // Check health every 5 seconds
-        private const int RecoveryDelayMs = 1000;       // Wait before attempting recovery
+        private const int HealthCheckIntervalMs = 5000;
+        private const int RecoveryDelayMs = 1000;
         private const byte GrblStatusQuery = (byte)'?';
-        private const int SerialOpenTimeoutMs = 5000;     // Timeout for serial port open
-        private const int ThreadJoinTimeoutMs = 1000;     // How long to wait for a worker thread to end
+        private const int SerialOpenTimeoutMs = 5000;
+        private const int ThreadJoinTimeoutMs = 1000;
 
-        // =========================================================================
-        // Events
-        // =========================================================================
         public event Action<string>? Info;
         public event Action<string>? Error;
         public event Action? ClientConnected;
         public event Action? ClientDisconnected;
 
-        // =========================================================================
-        // Callbacks
-        // =========================================================================
-
         /// <summary>
-        /// Optional callback to check if the serial port is in use by another component
-        /// (e.g., web server's Machine connection). If set and returns true, the proxy
-        /// will reject new TUI clients with a specific message instead of attempting
-        /// to open the serial port.
+        /// Set by the host to report whether something else holds the serial port, such as
+        /// the web server's Machine connection. A true reply rejects the new client instead
+        /// of opening the port a second time.
         /// </summary>
         public Func<bool>? IsSerialPortInUse { get; set; }
 
-        // =========================================================================
-        // Public state properties
-        // =========================================================================
         public bool IsRunning { get; private set; }
 
-        /// <summary>
-        /// Whether a client is attached, read from the connection itself.
-        /// </summary>
+        /// <summary>Derived from the connection, so no second flag can fall out of step.</summary>
         public bool HasClient
         {
             get { lock (_clientLock) { return _client != null; } }
@@ -65,8 +49,8 @@ namespace coppercli.Core.Communication
         public int BaudRate { get; private set; }
 
         /// <summary>
-        /// Returns true if the proxy appears healthy (listener bound, serial port open when client connected).
-        /// Useful for checking state after system suspend/resume.
+        /// The listener is bound, and the serial port is open whenever a client is attached.
+        /// Checked after a suspend and resume, which can leave either one closed.
         /// </summary>
         public bool IsHealthy
         {
@@ -77,13 +61,11 @@ namespace coppercli.Core.Communication
                     return false;
                 }
 
-                // Check if serial port is still open (only required when client is connected)
                 if (HasClient && (_serialPort == null || !_serialPort.IsOpen))
                 {
                     return false;
                 }
 
-                // Check if TCP listener is still bound
                 if (_listener == null || !_listener.Server.IsBound)
                 {
                     return false;
@@ -93,18 +75,13 @@ namespace coppercli.Core.Communication
             }
         }
 
-        // =========================================================================
-        // Statistics
-        // =========================================================================
         public long BytesFromClient { get; private set; }
         public long BytesToClient { get; private set; }
         /// <summary>
-        /// When the client attached, on the monotonic clock, or null with none attached.
-        /// A screen shows how long ago that was, which a wall clock gets wrong the moment it
-        /// steps.
-        ///
-        /// Private, and read through <see cref="ClientConnectedFor"/>: three threads null it
-        /// under the lock, so a caller that tests then reads can find it gone between the two.
+        /// When the client attached, on the monotonic clock, or null with none attached; a
+        /// wall clock would misreport the elapsed time the moment it steps. Read through
+        /// <see cref="ClientConnectedFor"/>, because three threads null it under the lock
+        /// and a caller that tests it then reads it can find it gone between the two.
         /// </summary>
         private long? _clientConnectedAtMs;
 
@@ -125,9 +102,6 @@ namespace coppercli.Core.Communication
             }
         }
 
-        // =========================================================================
-        // Private state
-        // =========================================================================
         private SerialPort? _serialPort;
         private TcpListener? _listener;
         private TcpClient? _client;
@@ -139,19 +113,20 @@ namespace coppercli.Core.Communication
         private readonly object _clientLock = new();
         private bool _disposed;
         /// <summary>
-        /// When the client last sent anything, on the monotonic clock: a wall clock that
-        /// steps would disconnect it or never notice it had gone.
+        /// When the client last sent anything, on the monotonic clock. A wall clock that
+        /// steps would either drop a live client at once or never time out a dead one.
         /// </summary>
         private long _lastClientActivityMs;
 
         /// <summary>
         /// How many intervals in a row the client has sent nothing. The '?' sent below goes
-        /// to the serial port, not to the client, so it verifies nothing about the peer.
+        /// to the serial port, not to the client, so it proves nothing about the peer.
         /// </summary>
         private int _silentIntervals;
 
         /// <summary>
-        /// Starts the proxy, opening the serial port and TCP listener.
+        /// Checks the serial port can be opened, then starts the TCP listener. The port is
+        /// held open only while a client is attached.
         /// </summary>
         public void Start(string serialPort, int baudRate, int tcpPort)
         {
@@ -166,7 +141,6 @@ namespace coppercli.Core.Communication
 
             try
             {
-                // Validate serial port is accessible (open then close) with timeout
                 var openTask = Task.Run(() =>
                 {
                     using var testPort = new SerialPort(serialPort, baudRate);
@@ -179,7 +153,6 @@ namespace coppercli.Core.Communication
                     throw new TimeoutException($"Timeout opening serial port {serialPort} (may be held by another process)");
                 }
 
-                // Re-throw any exception from the task
                 if (openTask.IsFaulted && openTask.Exception != null)
                 {
                     throw openTask.Exception.InnerException ?? openTask.Exception;
@@ -187,15 +160,12 @@ namespace coppercli.Core.Communication
 
                 RaiseInfo($"Validated serial port {serialPort} @ {baudRate}");
 
-                // Start TCP listener
                 _listener = new TcpListener(IPAddress.Any, tcpPort);
                 _listener.Start();
                 RaiseInfo($"Listening on TCP port {tcpPort}");
 
-                // Create cancellation token
                 _cts = new CancellationTokenSource();
 
-                // Start accept thread
                 _acceptThread = new Thread(AcceptLoop)
                 {
                     Name = "ProxyAccept",
@@ -207,16 +177,12 @@ namespace coppercli.Core.Communication
             }
             catch (Exception ex)
             {
-                // Cleanup on failure
                 _listener?.Stop();
                 _listener = null;
                 throw new InvalidOperationException($"Failed to start proxy: {ex.Message}", ex);
             }
         }
 
-        /// <summary>
-        /// Stops the proxy and releases all resources.
-        /// </summary>
         public void Stop()
         {
             if (!IsRunning)
@@ -226,28 +192,22 @@ namespace coppercli.Core.Communication
 
             RaiseInfo("Stopping proxy...");
 
-            // Signal threads to stop
             _cts?.Cancel();
 
-            // Close client connection
             CloseClient();
 
-            // Stop listener
             try
             {
                 _listener?.Stop();
             }
             catch
             {
-                // Ignore errors during shutdown
             }
 
-            // Wait for threads to finish
             _acceptThread?.Join(ThreadJoinTimeoutMs);
             _serialToTcpThread?.Join(ThreadJoinTimeoutMs);
             _tcpToSerialThread?.Join(ThreadJoinTimeoutMs);
 
-            // Close serial port
             try
             {
                 _serialPort?.Close();
@@ -255,7 +215,6 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore errors during shutdown
             }
 
             _serialPort = null;
@@ -268,9 +227,8 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Force-disconnects the current client (if any) to allow another client to connect.
-        /// Sends a force-disconnect message before closing so the client can exit gracefully.
-        /// Returns true if a client was disconnected, false if no client was connected.
+        /// Drops the attached client so another may connect, sending it a message first so
+        /// it can exit cleanly. False when no client was attached.
         /// </summary>
         public bool ForceDisconnectClient()
         {
@@ -283,20 +241,19 @@ namespace coppercli.Core.Communication
 
                 RaiseInfo("Force-disconnecting client");
 
-                // Send message before closing so client knows to exit
                 SendMessage(_client, Constants.ProxyForceDisconnect);
 
-                // Graceful TCP shutdown: signal "no more data" but let client read pending data
+                // Shutdown(Send) signals no more data while leaving the client able to
+                // read what is already queued to it.
                 try
                 {
                     _client.Client.Shutdown(System.Net.Sockets.SocketShutdown.Send);
                 }
                 catch
                 {
-                    // Ignore shutdown errors
                 }
 
-                // Brief delay to ensure message is received before connection closes
+                // The message has to reach the client before the socket closes.
                 Thread.Sleep(Constants.ForceDisconnectMessageDelayMs);
 
                 CloseClientUnlocked();
@@ -326,16 +283,14 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore errors - serial port may be in bad state
+                // The port may already be unusable, and nothing else can stop the machine.
             }
         }
 
         /// <summary>
-        /// Checks if resources are healthy and attempts recovery if not.
-        /// Called periodically from AcceptLoop to handle suspend/resume.
-        /// Returns true if healthy or recovery succeeded, false if unrecoverable.
-        /// Only attempts to recover the TCP listener - serial port issues will
-        /// naturally disconnect the client without recovery attempts.
+        /// Rebinds the TCP listener when it is no longer bound, which a suspend and resume
+        /// can leave it. A serial port fault is not recovered here: it disconnects the
+        /// client, and the port is reopened on the next connection.
         /// </summary>
         private bool TryRecoverIfNeeded()
         {
@@ -346,7 +301,6 @@ namespace coppercli.Core.Communication
                 return true;
             }
 
-            // TCP listener is down - attempt recovery
             RaiseInfo("TCP listener unhealthy, attempting recovery...");
             Thread.Sleep(RecoveryDelayMs);
 
@@ -356,7 +310,6 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore cleanup errors
             }
 
             try
@@ -373,9 +326,6 @@ namespace coppercli.Core.Communication
             }
         }
 
-        /// <summary>
-        /// Thread that accepts incoming TCP connections.
-        /// </summary>
         private void AcceptLoop()
         {
             long lastHealthCheck = Environment.TickCount64;
@@ -384,13 +334,11 @@ namespace coppercli.Core.Communication
             {
                 try
                 {
-                    // Periodic health check and recovery (e.g., after system suspend/resume)
                     if (Environment.TickCount64 - lastHealthCheck >= HealthCheckIntervalMs)
                     {
                         lastHealthCheck = Environment.TickCount64;
                         if (!TryRecoverIfNeeded())
                         {
-                            // Recovery failed, exit loop
                             break;
                         }
                     }
@@ -400,7 +348,6 @@ namespace coppercli.Core.Communication
                         break;
                     }
 
-                    // Check for pending connection with timeout
                     if (!_listener.Pending())
                     {
                         Thread.Sleep(Constants.ProxyAcceptLoopSleepMs);
@@ -412,7 +359,6 @@ namespace coppercli.Core.Communication
 
                     lock (_clientLock)
                     {
-                        // Reject new connections if a client is already connected
                         if (_client != null)
                         {
                             RaiseInfo($"Rejected connection from {newClientAddress} (client already connected)");
@@ -432,7 +378,6 @@ namespace coppercli.Core.Communication
 
                     RaiseInfo($"Client connected: {ClientAddress}");
 
-                    // Check if serial port is in use by web client before attempting to open
                     if (IsSerialPortInUse?.Invoke() == true)
                     {
                         RaiseInfo("Rejected: serial port in use by web client");
@@ -441,7 +386,6 @@ namespace coppercli.Core.Communication
                         continue;
                     }
 
-                    // Open serial port now that a client is connected
                     try
                     {
                         _serialPort = new SerialPort(SerialPortName, BaudRate)
@@ -450,7 +394,8 @@ namespace coppercli.Core.Communication
                             WriteTimeout = Constants.SerialWriteTimeoutMs
                         };
 
-                        // Open with timeout to avoid hanging if port is stuck
+                        // Opened on a task with a deadline: SerialPort.Open can hang
+                        // outright on a stuck port.
                         var openTask = Task.Run(() => _serialPort.Open());
                         if (!openTask.Wait(SerialOpenTimeoutMs))
                         {
@@ -476,7 +421,6 @@ namespace coppercli.Core.Communication
 
                     ClientConnected?.Invoke();
 
-                    // Start forwarding threads
                     _serialToTcpThread = new Thread(SerialToTcpLoop)
                     {
                         Name = "ProxySerialToTcp",
@@ -491,11 +435,10 @@ namespace coppercli.Core.Communication
                     _serialToTcpThread.Start();
                     _tcpToSerialThread.Start();
 
-                    // Wait for forwarding threads to finish (client disconnect)
+                    // Both loops return when the client disconnects.
                     _serialToTcpThread.Join();
                     _tcpToSerialThread.Join();
 
-                    // Close serial port when client disconnects
                     try
                     {
                         _serialPort?.Close();
@@ -504,13 +447,11 @@ namespace coppercli.Core.Communication
                     }
                     catch
                     {
-                        // Ignore close errors
                     }
                     _serialPort = null;
                 }
                 catch (SocketException) when (_cts?.IsCancellationRequested == true)
                 {
-                    // Expected during shutdown
                     break;
                 }
                 catch (Exception ex)
@@ -523,9 +464,6 @@ namespace coppercli.Core.Communication
             }
         }
 
-        /// <summary>
-        /// Thread that forwards data from serial port to TCP client.
-        /// </summary>
         private void SerialToTcpLoop()
         {
             var buffer = new byte[Constants.ProxyBufferSize];
@@ -539,7 +477,6 @@ namespace coppercli.Core.Communication
                         break;
                     }
 
-                    // Check if client is still connected
                     lock (_clientLock)
                     {
                         if (_client == null || _networkStream == null)
@@ -574,16 +511,14 @@ namespace coppercli.Core.Communication
                 }
                 catch (TimeoutException)
                 {
-                    // Normal - serial read timeout
                 }
                 catch (IOException)
                 {
-                    // Serial port or network disconnected
                     break;
                 }
                 catch (InvalidOperationException)
                 {
-                    // Port closed
+                    // SerialPort throws this once the port has been closed.
                     break;
                 }
                 catch (Exception ex)
@@ -597,13 +532,10 @@ namespace coppercli.Core.Communication
             }
         }
 
-        /// <summary>
-        /// Thread that forwards data from TCP client to serial port.
-        /// </summary>
         private void TcpToSerialLoop()
         {
             var buffer = new byte[Constants.ProxyBufferSize];
-            long lastHeartbeatCheck = Environment.TickCount64;
+            long lastSilenceCheck = Environment.TickCount64;
 
             while (_cts != null && !_cts.IsCancellationRequested)
             {
@@ -622,14 +554,13 @@ namespace coppercli.Core.Communication
                         break;
                     }
 
-                    // Use Socket.Poll to check for data or disconnection
-                    // Poll returns true if: connection closed, data available, or error
+                    // Poll returns true for data available, connection closed or error
+                    // alike, so Available below is what separates them.
                     var socket = client.Client;
                     if (socket.Poll(Constants.SocketPollTimeoutMicroseconds, SelectMode.SelectRead))
                     {
                         if (socket.Available == 0)
                         {
-                            // Poll returned true but no data = connection closed
                             RaiseInfo("Client connection closed");
                             break;
                         }
@@ -637,12 +568,10 @@ namespace coppercli.Core.Communication
                         int count = stream.Read(buffer, 0, buffer.Length);
                         if (count == 0)
                         {
-                            // Client disconnected gracefully
                             RaiseInfo("Client disconnected gracefully");
                             break;
                         }
 
-                        // Update activity tracking - client is alive
                         _lastClientActivityMs = Environment.TickCount64;
                         _silentIntervals = 0;
 
@@ -654,13 +583,12 @@ namespace coppercli.Core.Communication
                     }
                     else
                     {
-                        // Poll timed out - check if we need to send a heartbeat
                         long now = Environment.TickCount64;
 
                         if (now - _lastClientActivityMs >= ClientSilenceIntervalMs
-                            && now - lastHeartbeatCheck >= ClientSilenceIntervalMs)
+                            && now - lastSilenceCheck >= ClientSilenceIntervalMs)
                         {
-                            lastHeartbeatCheck = now;
+                            lastSilenceCheck = now;
                             _silentIntervals++;
 
                             if (_silentIntervals >= MaxSilentIntervals)
@@ -680,17 +608,14 @@ namespace coppercli.Core.Communication
                 }
                 catch (IOException)
                 {
-                    // Client disconnected
                     break;
                 }
                 catch (SocketException)
                 {
-                    // Socket error (disconnection)
                     break;
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Stream closed
                     break;
                 }
                 catch (Exception ex)
@@ -703,12 +628,12 @@ namespace coppercli.Core.Communication
                 }
             }
 
-            // Client disconnected - clean up
             HandleClientDisconnect();
         }
 
         /// <summary>
-        /// Handles client disconnection. Sends feed hold to stop any in-progress movement.
+        /// Stops the machine before dropping the client, because GRBL keeps working through
+        /// whatever it has already buffered.
         /// </summary>
         private void HandleClientDisconnect()
         {
@@ -730,9 +655,7 @@ namespace coppercli.Core.Communication
             ClientDisconnected?.Invoke();
         }
 
-        /// <summary>
-        /// Sends a message to a client. Does not close the connection.
-        /// </summary>
+        /// <summary>Sends a message and leaves the connection open.</summary>
         private static void SendMessage(TcpClient client, string message)
         {
             try
@@ -744,14 +667,10 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore write errors
             }
         }
 
-        /// <summary>
-        /// Sends a message to a client and closes the connection.
-        /// Used for rejection messages before the client is fully accepted.
-        /// </summary>
+        /// <summary>Sends a rejection, before the client has been fully accepted.</summary>
         private static void SendMessageAndClose(TcpClient client, string message)
         {
             SendMessage(client, message);
@@ -761,13 +680,9 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore close errors
             }
         }
 
-        /// <summary>
-        /// Closes the current client connection.
-        /// </summary>
         private void CloseClient()
         {
             lock (_clientLock)
@@ -776,9 +691,7 @@ namespace coppercli.Core.Communication
             }
         }
 
-        /// <summary>
-        /// Closes the current client connection (must hold _clientLock).
-        /// </summary>
+        /// <summary>The caller must hold _clientLock.</summary>
         private void CloseClientUnlocked()
         {
             try
@@ -788,7 +701,6 @@ namespace coppercli.Core.Communication
             }
             catch
             {
-                // Ignore errors during close
             }
 
             _networkStream = null;

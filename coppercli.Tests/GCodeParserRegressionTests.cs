@@ -23,9 +23,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Comment stripping removed "(" through the char before ")", leaving the ")".
-        /// On the next pass that orphan was found before the second "(", so end &lt; start
-        /// and the whole file was rejected as having mismatched parentheses.
+        /// Comment stripping must remove the ")" along with the "(" before it. An orphan ")"
+        /// is found ahead of the next "(" on the following pass, so end &lt; start and the
+        /// whole file is rejected as having mismatched parentheses.
         /// </summary>
         [Fact]
         public void TwoCommentsOnOneLine_DoesNotFailTheLoad()
@@ -48,9 +48,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A full circle starts and ends at the same point. Treating that as a
-        /// zero-length move deleted drilled holes and circular isolation contours
-        /// from the job with no warning.
+        /// A full circle starts and ends at the same point. Treating that as a zero-length
+        /// move deletes drilled holes and circular isolation contours from the job with no
+        /// warning.
         /// </summary>
         [Fact]
         public void FullCircleArc_IsNotDeletedAsAZeroLengthMove()
@@ -73,9 +73,10 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The serial layer intercepts M6 with GrblProtocol.M6Pattern; the milling
-        /// controller decides whether to pause. If those disagree, the line is swallowed
-        /// but the job never pauses - it keeps cutting with the previous tool.
+        /// Machine intercepts an M6 line through GrblProtocol.M6Pattern and never sends it to
+        /// GRBL, while the pause comes from ClassifyPauseLine. A line that one matches and the
+        /// other does not is swallowed without a pause, and the job cuts on with the previous
+        /// tool.
         /// </summary>
         [Theory]
         [InlineData("M6", true)]
@@ -92,8 +93,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// pcb2gcode emits "G64 P&lt;tolerance&gt;" in the header, before any motion command.
-        /// Its P word must not fall through to the motion handler, where no motion mode
-        /// was active yet, and the whole file failed to load.
+        /// Its P word must not fall through to the motion handler, which has no motion mode
+        /// active yet and fails the whole load.
         /// </summary>
         [Fact]
         public void UnknownGCodeInHeader_DoesNotFailTheLoad()
@@ -110,7 +111,6 @@ namespace coppercli.Tests
             Assert.Contains(file.Warnings, w => w.Contains("G64"));
         }
 
-        /// <summary>An unknown code must not take a real cut down with it.</summary>
         [Fact]
         public void UnknownGCodeAlongsideAMove_KeepsTheMove()
         {
@@ -120,8 +120,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// G28 rapids to a stored position across whatever is clamped to the bed. The
-        /// parser cannot model where that is, so the block is refused outright - it must
+        /// G28 rapids to a stored position across whatever is clamped to the bed. The parser
+        /// cannot model where that is, so it drops the block with a warning: the block must
         /// neither reach the machine nor become an ordinary move.
         /// </summary>
         [Theory]
@@ -134,7 +134,7 @@ namespace coppercli.Tests
 
             Assert.DoesNotContain(file.GetGCode(), l => l.Contains("G28") || l.Contains("G30"));
             Assert.Contains(file.Warnings, w => w.Contains("Home"));
-            // ...and its axis words must not have become a move either.
+            // The axis words must not have become a move either.
             Assert.DoesNotContain(file.Toolpath.OfType<Line>(), l => l.End.Z == 0 && l.Start.Z == 5);
         }
     }

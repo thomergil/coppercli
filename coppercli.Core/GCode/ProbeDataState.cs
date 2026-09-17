@@ -1,7 +1,7 @@
 namespace coppercli.Core.GCode
 {
     /// <summary>
-    /// How much of the height map in hand is measured. Read <see cref="ProbeGrid.State"/>
+    /// How much of the loaded height map is measured. Read <see cref="ProbeGrid.State"/>
     /// for a map, or <see cref="ProbeGrid.StateOf"/> where there may not be one.
     /// </summary>
     public enum ProbeDataState

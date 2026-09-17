@@ -4,23 +4,17 @@ using coppercli.Helpers;
 
 namespace coppercli
 {
-    /// <summary>What a restore question is about.</summary>
     internal enum SessionRestoreTopic
     {
-        /// <summary>Reload the G-code file that was open last time.</summary>
         ReloadFile,
 
-        /// <summary>Trust the work origin stored from the previous session.</summary>
         SetWorkZeroTrusted,
 
-        /// <summary>Resolve a height map that was left part-measured.</summary>
         UnfinishedHeightMap,
 
-        /// <summary>Resolve a finished height map that was never saved to a file.</summary>
         UnsavedHeightMap
     }
 
-    /// <summary>One decision the operator has to make before the session is usable.</summary>
     internal sealed record SessionRestoreStep(
         SessionRestoreTopic Topic,
         string Question,
@@ -28,25 +22,19 @@ namespace coppercli
         bool DefaultYes);
 
     /// <summary>
-    /// The decisions carried over from a previous session, and what answering them does.
-    /// One place decides which questions apply and what each answer means; both front ends
-    /// only ask them.
+    /// The decisions carried over from a previous session. The terminal and the browser both
+    /// put these questions to the operator; neither works out which of them apply, nor what an
+    /// answer does.
     /// </summary>
     internal static class SessionRestore
     {
         /// <summary>
-        /// Puts each carried-over question to the operator once, in order, and applies the
-        /// answer. Asked one at a time, because answering one changes which of the rest
-        /// apply: declining to reload the file leaves a map measured for it describing
-        /// nothing.
-        ///
-        /// The set of topics already asked lives here, not in the caller. Termination cannot
-        /// rest on each answer clearing its own condition: reloading the file stores the same
-        /// path again, keeping a map leaves the autosave on disk, and trusting the origin
-        /// writes a different field from the one the question reads.
+        /// One question at a time, because each answer changes which of the rest apply:
+        /// declining to reload the file leaves a map measured for it describing nothing. The
+        /// loop ends on the set of topics already asked rather than on the conditions, because
+        /// no answer clears its own; reloading the file stores the same path again.
         /// </summary>
-        /// <param name="ask">Puts one question to the operator. Null means they quit.</param>
-        /// <param name="onFailure">Shown when an answer could not be carried out.</param>
+        /// <param name="ask">Puts one question to the operator; a null answer means they quit.</param>
         /// <returns>False once the operator quit.</returns>
         public static bool AskPendingSteps(
             Func<SessionRestoreStep, bool?> ask, Action<string> onFailure)
@@ -73,14 +61,11 @@ namespace coppercli
             return true;
         }
 
-        /// <summary>The next question not in <paramref name="answered"/>, or null.</summary>
         private static SessionRestoreStep? NextPendingStep(ISet<SessionRestoreTopic> answered) =>
             GetPendingSteps().FirstOrDefault(step => !answered.Contains(step.Topic));
 
         /// <summary>
-        /// The questions that still need answering, in the order they must be asked.
-        /// Ordering matters: the file is decided first because what a height map
-        /// describes is judged against it.
+        /// The file is decided first, because what a height map describes is judged against it.
         /// </summary>
         public static List<SessionRestoreStep> GetPendingSteps()
         {
@@ -105,8 +90,8 @@ namespace coppercli
                     DefaultYes: true));
             }
 
-            // Asked whatever the work-zero answer was. Gated on that answer, a map stays
-            // on disk undecided and is later reported as current.
+            // Read whatever the work-zero answer was: gated on that answer, a map stays on
+            // disk undecided and is later reported as current.
             var storedMap = AppState.ReadUsableAutosave();
 
             if (storedMap != null && !storedMap.HasCompleteData)
@@ -130,8 +115,8 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Applies an answer. Every "no" leaves nothing behind: a map the operator declines
-        /// to keep is deleted from disk, finished or not.
+        /// Every "no" leaves nothing behind: a map the operator declines to keep is deleted
+        /// from disk, finished or not.
         /// </summary>
         /// <returns>What went wrong, or null once the answer was carried out.</returns>
         public static string? Answer(SessionRestoreTopic topic, bool yes)
@@ -145,8 +130,9 @@ namespace coppercli
                     }
                     else
                     {
-                        // Forget it so we stop asking. The browse directory is kept so
-                        // the file picker still opens somewhere useful.
+                        // Forgetting the path is what stops the question coming back. The
+                        // browse directory is kept, so the file picker still opens somewhere
+                        // useful.
                         AppState.Session.LastLoadedGCodeFile = "";
                         Persistence.SaveSession();
                     }
@@ -175,8 +161,8 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Names the board a stored map was measured for, so it can be told apart from
-        /// one belonging to the job in hand.
+        /// Names the file a stored map was measured for, so the operator can tell it from one
+        /// measured for the loaded job.
         /// </summary>
         private static string DescribeStoredMap(ProbeGrid grid)
         {
@@ -224,8 +210,8 @@ namespace coppercli
         {
             try
             {
-                // Through the one adopter, so the map is checked against the current job
-                // here exactly as it is when the operator presses Recover.
+                // The same call the Recover button makes, so the map is checked against the
+                // current job the same way.
                 var (_, refused) = AppState.ForceLoadProbeFromAutosave();
                 if (refused != null)
                 {

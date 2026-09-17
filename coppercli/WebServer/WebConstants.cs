@@ -1,12 +1,7 @@
 namespace coppercli.WebServer;
 
-/// <summary>
-/// Constants for the web server.
-/// </summary>
 public static class WebConstants
 {
-    // --- WebSocket ---
-    /// <summary>WebSocket receive buffer size (bytes).</summary>
     public const int WebSocketBufferSize = 4096;
 
     /// <summary>
@@ -16,50 +11,35 @@ public static class WebConstants
     public const int WebSocketMaxMessageBytes = 64 * 1024;
 
     /// <summary>
-    /// Interval for broadcasting status updates to WebSocket clients.
-    /// Throttles high-frequency controller events to avoid overwhelming the connection.
+    /// Controller events arrive faster than the connection can carry them, so status goes
+    /// out at this interval instead of on every event.
     /// </summary>
     public const int WebSocketBroadcastIntervalMs = 300;
 
-    // --- Reconnection ---
     public const int ReconnectIntervalMs = 2000;
     public const int ReconnectMaxAttempts = 0;  // 0 = infinite
-    public const int ProxyRejectionCheckDelayMs = 100;  // Wait for proxy rejection message after connect
+    public const int ProxyRejectionCheckDelayMs = 100;
 
-    // --- Request handling ---
-    /// <summary>
-    /// Timeout for waiting on incoming HTTP requests. Prevents hanging forever.
-    /// </summary>
     public const int RequestPollTimeoutMs = 5000;
 
-    /// <summary>
-    /// Timeout for waiting for web server to start during server mode initialization.
-    /// </summary>
     public const int WebServerStartTimeoutMs = 5000;
 
     /// <summary>
-    /// Timeout for web server shutdown. Forces exit if shutdown hangs. Covers a run
-    /// unwinding (Constants.ControllerCancelTimeoutMs) and then stopping the machine.
+    /// Forces exit if shutdown hangs. Covers a run unwinding
+    /// (Constants.ControllerCancelTimeoutMs) and then stopping the machine.
     /// </summary>
     public const int ShutdownTimeoutMs = 20000;
 
-    /// <summary>
-    /// Time to wait for a client to establish WebSocket after being served the page.
-    /// After this timeout, the pending slot is freed for other clients.
-    /// </summary>
+    /// <summary>How long a client that was served the page has to open its WebSocket before
+    /// the pending slot is freed for another client.</summary>
     public const int PendingClientTimeoutMs = 10000;
 
-    /// <summary>How long a close frame is waited for before the client is dropped.</summary>
     public const int ForceDisconnectCloseTimeoutMs = 1000;
 
-    // --- Idle disconnect ---
-    /// <summary>
-    /// Time to wait before disconnecting Machine when no browser clients are connected
-    /// after an operation completes. Allows user to reconnect (e.g., phone screen went dark).
-    /// </summary>
-    public const int IdleDisconnectTimeoutMs = 5 * 60 * 1000;  // 5 minutes
+    /// <summary>How long the machine stays connected with no browser attached, so the
+    /// operator can come back after a phone screen goes dark.</summary>
+    public const int IdleDisconnectTimeoutMs = 5 * 60 * 1000;
 
-    // --- Request body limits ---
     /// <summary>
     /// Largest JSON request body accepted. Each is a handful of fields, and the whole body is
     /// held in memory while it is parsed.
@@ -75,17 +55,14 @@ public static class WebConstants
     /// <summary><see cref="UploadMaxBytes"/> in the megabytes an operator is told about.</summary>
     public const int UploadMaxMegabytes = UploadMaxBytes / (1024 * 1024);
 
-    /// <summary>How much of a request body is read at a time.</summary>
     public const int BodyReadChunkBytes = 64 * 1024;
 
-    // --- Content Types ---
     public const string ContentTypeJson = "application/json";
     public const string ContentTypeHtml = "text/html";
     public const string ContentTypeCss = "text/css";
     public const string ContentTypeJs = "application/javascript";
     public const string ContentTypeText = "text/plain";
 
-    // --- WebSocket Message Types ---
     public const string WsMessageTypeStatus = "status";
     public const string WsMessageTypeMillState = "mill:state";
     public const string WsMessageTypeMillProgress = "mill:progress";
@@ -101,44 +78,36 @@ public static class WebConstants
 
     /// <summary>
     /// Marks the prompt the browser shows for a plain program stop, so it can tell one
-    /// from the tool-change prompt arriving in the same field.
-    ///
-    /// A kind of prompt, not a run state. The browser draws the prompt from its own fields
-    /// and does not branch on this, so it is not published through /api/constants.
+    /// from the tool-change prompt arriving in the same field. The browser draws the prompt
+    /// from its own fields and does not branch on this, so it is not published through
+    /// /api/constants.
     /// </summary>
     public const string PromptKindOperatorPause = "WaitingForOperator";
 
-    // --- WebSocket Close Reasons ---
     public const string WsCloseReasonForceDisconnect = "Disconnected by another client";
 
     /// <summary>Sent to a client that has gone silent. The browser reconnects on it.</summary>
     public const string WsCloseReasonTimeout = "Timeout";
 
-    // --- Display formatting ---
     // Published to the browser through /api/constants and checked there by
     // validateConstants, so both sides read one definition.
 
-    /// <summary>Decimal places for a position shown in a compact readout.</summary>
     public const int PositionDecimalsBrief = 1;
 
-    /// <summary>Decimal places for a position shown in full.</summary>
     public const int PositionDecimalsFull = 3;
 
-    // --- Probe Parameter Limits ---
     public const double MinProbeMargin = 0.0;
     public const double MaxProbeMargin = 10.0;
     public const double MinProbeGridSize = 1.0;
     public const double MaxProbeGridSize = 50.0;
 
-    // --- Probe State Strings (API response values) ---
-    // What each state means, and which buttons it allows, is defined once in the remarks
-    // block at the top of coppercli.Core/Controllers/ProbeController.cs.
+    // What each state means, and which buttons it allows, is defined once at the top of
+    // coppercli.Core/Controllers/ProbeController.cs.
     public const string ProbeStateNone = "none";
     public const string ProbeStateReady = "ready";
     public const string ProbeStatePartial = "partial";
     public const string ProbeStateComplete = "complete";
 
-    // --- API Paths ---
     public const string ApiStatus = "/api/status";
     public const string ApiConfig = "/api/config";
     public const string ApiConstants = "/api/constants";
@@ -176,7 +145,7 @@ public static class WebConstants
     public const string ApiMillToolChangeAbort = "/api/mill/toolchange/abort";
     public const string ApiMillToolChangeUserInput = "/api/mill/toolchange/input";
     public const string ApiMillDepth = "/api/mill/depth";
-    public const string ApiMillGrid = "/api/mill/grid";  // Get visited grid cells (pass width/height as query params)
+    public const string ApiMillGrid = "/api/mill/grid";  // Takes width and height as query parameters
     public const string ApiFeedIncrease = "/api/feed-override/increase";
     public const string ApiFeedDecrease = "/api/feed-override/decrease";
     public const string ApiFeedReset = "/api/feed-override/reset";
@@ -203,7 +172,7 @@ public static class WebConstants
     public const string ApiSessionRestore = "/api/session/restore";
     public const string ApiProbeRecoverAutosave = "/api/probe/recover-autosave";
 
-    // --- WebSocket Commands (message types from browser) ---
+    // Sent by the browser; the WsMessageType* values go the other way.
     public const string WsCmdJogMode = "jog-mode";
     public const string WsCmdHome = "home";
     public const string WsCmdUnlock = "unlock";
@@ -217,27 +186,21 @@ public static class WebConstants
     public const string WsCmdGotoZ0 = "goto-z0";
     public const string WsCmdProbeZ = "probe-z";
 
-    /// <summary>
-    /// The browser's keep-alive. Receiving it is the point: it marks the client as still
-    /// there.
-    /// </summary>
+    /// <summary>The browser's keep-alive. Its arrival is what marks the client as still
+    /// there.</summary>
     public const string WsCmdPing = "ping";
 
-    // --- WebSocket Message Fields ---
-    // Protocol wire values, read only where a command carries one.
     public const string WsFieldType = "type";
     public const string WsFieldAxis = "axis";
     public const string WsFieldDirection = "direction";
     public const string WsFieldModeIndex = "modeIndex";
 
-    // --- Query String Parameter Keys ---
-    // Protocol wire values (like ApiXxx/WsCmdXxx), consumed only server-side.
     public const string QueryParamPath = "path";
     public const string QueryParamWidth = "width";
     public const string QueryParamHeight = "height";
     public const string QueryParamClientId = "clientId";
 
-    // --- Request Headers (see RequestGuard) ---
+    // Read by RequestPolicy, whose summary gives what each one decides.
     public const string HeaderOrigin = "Origin";
     public const string HeaderSecFetchSite = "Sec-Fetch-Site";
 
@@ -248,17 +211,16 @@ public static class WebConstants
     /// <summary>The mDNS namespace, which only the local network can answer for.</summary>
     public const string HostMdnsSuffix = ".local";
 
-    // --- Request Path Prefixes ---
     public const string WsPath = "/ws";
 
     /// <summary>
-    /// Names the browser that owns this session. The socket carries it as a query parameter
-    /// and the page carries it as a cookie, so both sides read it from here.
+    /// Identifies the browser holding this session. The socket carries it as a query
+    /// parameter and the page carries it as a cookie, so both sides read it from here.
     /// </summary>
     public const string ClientIdCookieName = "coppercli_client_id";
     public const string ApiPathPrefix = "/api/";
 
-    // --- Response Security Headers (see ApplySecurityHeaders) ---
+    // Set by ApplySecurityHeaders.
     public const string HeaderFrameOptions = "X-Frame-Options";
     public const string HeaderContentSecurityPolicy = "Content-Security-Policy";
     public const string HeaderContentTypeOptions = "X-Content-Type-Options";
@@ -268,11 +230,9 @@ public static class WebConstants
     public const string ContentTypeOptionsNoSniff = "nosniff";
     public const string ReferrerPolicyNone = "no-referrer";
 
-    // --- HTTP Methods ---
     public const string MethodPost = "POST";
     public const string MethodGet = "GET";
 
-    // --- HTTP Status Codes ---
     public const int HttpStatusBadRequest = 400;
     public const int HttpStatusForbidden = 403;
     public const int HttpStatusNotFound = 404;
@@ -281,9 +241,8 @@ public static class WebConstants
     public const int HttpStatusPayloadTooLarge = 413;
     public const int HttpStatusServerError = 500;
 
-    // Note: MillStopDelayMs is in CliConstants, SafeClearanceZ is in coppercli.Core.Util.Constants
+    // MillStopDelayMs is in CliConstants; SafeClearanceZ is in coppercli.Core.Util.Constants.
 
-    // --- API Error Messages ---
     public const string ErrorNoFileLoaded = "No file loaded";
     public const string ErrorNotFound = "Not found";
     public const string ErrorInvalidRequest = "Invalid request";
@@ -296,10 +255,8 @@ public static class WebConstants
         "Something went wrong. Try again; if it keeps happening, check the computer running coppercli.";
     public const string ErrorMachineNotConnected = "Machine not connected";
 
-    /// <summary>Resume was asked for on a machine that is not holding.</summary>
     public const string ErrorNothingToResume = "The machine is not holding, so there is nothing to resume.";
 
-    /// <summary>A door release was asked for on a machine that is not at the door.</summary>
     public const string ErrorNoDoorToRelease = "The machine is not at the door.";
     public const string ErrorCannotPauseNotRunning = "Cannot pause: not running";
     public const string ErrorCannotResumeNotPaused = "Cannot resume: not paused";
@@ -307,8 +264,8 @@ public static class WebConstants
     public const string ErrorProbingNotRunning = "Cannot pause: probing not running";
 
     /// <summary>
-    /// Shown when Pause arrives on a run that is already paused. The height check stops a
-    /// run on its own, so this is an ordinary thing to meet.
+    /// Shown when Pause arrives on a run that is already paused. The height check pauses a
+    /// run on its own, so this happens in normal use.
     /// </summary>
     public const string ErrorProbingAlreadyPaused = "Probing is already paused";
     public const string ErrorProbingNotPaused = "Cannot resume: probing not paused";
@@ -324,19 +281,15 @@ public static class WebConstants
     public const string ErrorMillingNotPaused = "Milling not paused";
     public const string ErrorNoPendingUserInput = "No pending user input request";
 
-    /// <summary>Shown when an answer is not one of the choices the question offered.</summary>
     public const string ErrorNotAnOption = "That is not one of the options offered.";
 
-    /// <summary>Shown when an answer names a prompt other than the one on screen.</summary>
     public const string ErrorPromptAlreadyAnswered =
         "That question has already been answered. Answer the one on screen now.";
 
     public const string ErrorMachineBusy = "The machine is busy with a job. Stop it first.";
 
-    /// <summary>A path naming another computer rather than this one.</summary>
     public const string ErrorPathNotOnThisComputer = "That path is not on this computer.";
 
-    /// <summary>A profile id that is not one of the machines coppercli knows.</summary>
     public const string ErrorUnknownMachineProfile = "Unknown machine profile.";
 
     /// <summary>A leading prefix Windows reads as a host name rather than a directory.</summary>
@@ -348,29 +301,24 @@ public static class WebConstants
     public const string ErrorNoProbeGrid = "No probe grid. Run Setup first.";
     public const string ErrorBodyTooLarge = "Too much data in one request. Nothing was sent to the machine.";
 
-    /// <summary>Formatted with the limit in megabytes, so the number has one home.</summary>
+    /// <summary>Formatted with <see cref="UploadMaxMegabytes"/>.</summary>
     public const string ErrorUploadTooLarge = "File too large to upload. The limit is {0} MB.";
 
     public const string ErrorAlreadyConnected = "Already connected. Close the existing connection first.";
     public const string ErrorPortInUse = "Serial port is in use by another connection. Close the existing connection first.";
     public const string ErrorNoStoredWorkZero = "No stored work zero to trust";
 
-    // --- API Error Message Formats ---
     public const string ErrorInvalidFileType = "Invalid file type: {0}";
 
-    // --- API Warnings ---
-    /// <summary>
-    /// Appended to CliConstants.SleepPreventionWarning, which names the condition.
-    /// </summary>
+    /// <summary>Appended to CliConstants.SleepPreventionWarning, which names the
+    /// condition.</summary>
     public const string WarningSleepPreventionAction =
         "Plug in the computer running coppercli, and turn sleep off.";
 
-    // --- Depth Adjustment Actions ---
     public const string DepthActionIncrease = "increase";
     public const string DepthActionDecrease = "decrease";
     public const string DepthActionReset = "reset";
 
-    // --- Reasons milling cannot start ---
     public const string MillBlockedNotConnected = "Machine not connected";
     public const string MillBlockedNoFile = "No G-Code file loaded";
     public const string MillBlockedProbeNotApplied = "Probe data exists but not applied";
@@ -382,6 +330,5 @@ public static class WebConstants
     public const string MillWarningNotHomed = "Machine not homed - will home before milling";
     public const string MillWarningNoProfile = "No machine profile selected";
 
-    /// <summary>Shown when the reason is a case nobody mapped.</summary>
     public const string MillBlockedUnknown = "Unknown error";
 }

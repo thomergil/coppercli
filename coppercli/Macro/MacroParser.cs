@@ -1,27 +1,13 @@
-// Macro file parser
-
 using System.Text.RegularExpressions;
 using coppercli.Helpers;
 using static coppercli.CliConstants;
 
 namespace coppercli.Macro
 {
-    /// <summary>
-    /// Represents a placeholder in a macro file.
-    /// </summary>
     public record MacroPlaceholder(string Name, int Index);
 
-    /// <summary>
-    /// Parses .cmacro files into a list of MacroCommands.
-    /// </summary>
     internal static class MacroParser
     {
-        /// <summary>
-        /// Parses a macro file and returns the list of commands.
-        /// </summary>
-        /// <param name="filePath">Path to the .cmacro file</param>
-        /// <returns>List of parsed commands</returns>
-        /// <exception cref="MacroParseException">Thrown when parsing fails</exception>
         public static List<MacroCommand> Parse(string filePath)
         {
             if (!File.Exists(filePath))
@@ -38,7 +24,6 @@ namespace coppercli.Macro
                 int lineNumber = i + 1;
                 var line = lines[i].Trim();
 
-                // Skip empty lines and comments
                 if (string.IsNullOrEmpty(line) || line[0] == MacroCommentChar)
                 {
                     continue;
@@ -61,7 +46,7 @@ namespace coppercli.Macro
         private static readonly Regex PlaceholderRegex = new(@"\[(\w+):file\]", RegexOptions.Compiled);
 
         /// <summary>
-        /// Extracts all unique [name:file] placeholders from commands, in order of first appearance.
+        /// `MacroMenu` prompts for the placeholders in this order.
         /// </summary>
         public static List<MacroPlaceholder> ExtractPlaceholders(List<MacroCommand> commands)
         {
@@ -87,9 +72,6 @@ namespace coppercli.Macro
             return placeholders;
         }
 
-        /// <summary>
-        /// Returns a new command list with placeholders replaced by values.
-        /// </summary>
         public static List<MacroCommand> SubstitutePlaceholders(
             List<MacroCommand> commands,
             Dictionary<string, string> values)
@@ -113,14 +95,10 @@ namespace coppercli.Macro
             return result;
         }
 
-        /// <summary>
-        /// Parses a single line into a MacroCommand.
-        /// </summary>
         private static MacroCommand ParseLine(string line, int lineNumber, string macroDir)
         {
             var (keyword, args) = TokenizeLine(line);
 
-            // Handle two-word commands like "probe z", "probe grid", "probe apply"
             string fullCommand = keyword.ToLower();
             if (fullCommand == "probe" && args.Length > 0)
             {
@@ -151,15 +129,14 @@ namespace coppercli.Macro
                 _ => throw new MacroParseException($"Line {lineNumber}: Unknown command '{keyword}'")
             };
 
-            // Resolve file paths for load command
             if (type == MacroCommandType.Load && args.Length > 0)
             {
                 var filePath = args[0];
 
-                // Expand ~ for home directory
                 filePath = PathHelpers.ExpandTilde(filePath);
 
-                // Resolve relative paths against macro directory
+                // A relative path in a macro file is relative to the macro file, not to the
+                // working directory coppercli was started from.
                 if (!Path.IsPathRooted(filePath))
                 {
                     filePath = Path.Combine(macroDir, filePath);
@@ -172,7 +149,7 @@ namespace coppercli.Macro
         }
 
         /// <summary>
-        /// Tokenizes a line into keyword and arguments, handling quoted strings.
+        /// A closing quote ends the token, so `"a"b` tokenizes as `a` then `b`.
         /// </summary>
         private static (string Keyword, string[] Args) TokenizeLine(string line)
         {
@@ -234,9 +211,6 @@ namespace coppercli.Macro
         }
     }
 
-    /// <summary>
-    /// Exception thrown when macro parsing fails.
-    /// </summary>
     public class MacroParseException : Exception
     {
         public MacroParseException(string message) : base(message) { }

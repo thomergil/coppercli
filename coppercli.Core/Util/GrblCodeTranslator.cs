@@ -11,18 +11,13 @@ namespace coppercli.Core.Util
         static Dictionary<int, string> GrblErrors = new Dictionary<int, string>();
         static Dictionary<int, string> GrblAlarms = new Dictionary<int, string>();
 
-        /// <summary>
-        /// setting name, unit, description
-        /// </summary>
+        /// <summary>Setting name, unit and description, keyed by the $n number.</summary>
         public static Dictionary<int, Tuple<string, string, string>> Settings = new Dictionary<int, Tuple<string, string, string>>();
 
         private static bool _initialized = false;
 
         /// <summary>
         /// Reads a quoted-CSV resource into a dictionary keyed by its first column.
-        ///
-        /// The two loaders differed only in how many columns they read and what they built
-        /// from them, so those are the two parameters.
         /// </summary>
         private static void LoadCsvResource<T>(
             Dictionary<int, T> dict, string resourceName, Regex lineParser, Func<Match, T> build)
@@ -75,7 +70,8 @@ namespace coppercli.Core.Util
             {
                 if (stream == null)
                 {
-                    // Try loading from file path relative to app directory
+                    // A build that copied the CSVs beside the binary rather than embedding
+                    // them.
                     string basePath = AppContext.BaseDirectory;
                     string filePath = Path.Combine(basePath, "Resources", resourceName);
                     if (System.IO.File.Exists(filePath))

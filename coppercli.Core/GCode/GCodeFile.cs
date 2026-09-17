@@ -15,9 +15,8 @@ namespace coppercli.Core.GCode
         public string FileName = string.Empty;
 
         /// <summary>
-        /// Full path this file was loaded from, or empty for a generated toolpath.
-        /// Carried on the file so anything that needs to know which board is loaded can
-        /// ask the file rather than depend on a separately-maintained session field.
+        /// Full path this file was loaded from, or empty for a generated toolpath. Held on
+        /// the file, so nothing keeps a second copy of which board is loaded.
         /// </summary>
         public string FilePath = string.Empty;
 
@@ -53,9 +52,9 @@ namespace coppercli.Core.GCode
         public bool ContainsMotion { get; private set; } = false;
 
         /// <summary>
-        /// Midpoint of the toolpath bounds in X and Y (Z left at 0). The natural place to
-        /// park the spindle for an accessible tool swap. Computed from Min/Max, which the
-        /// file already owns, so no caller recomputes (Min+Max)/2.
+        /// Midpoint of the toolpath bounds in X and Y, with Z left at 0, which is where the
+        /// spindle parks for a reachable tool change. Derived from Min and Max so no caller
+        /// recomputes (Min+Max)/2.
         /// </summary>
         public Vector3 Center => new Vector3((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2, 0);
 
@@ -64,9 +63,6 @@ namespace coppercli.Core.GCode
 
         public List<string> Warnings = new List<string>();
 
-        /// <summary>
-        /// Settings for GCode output generation
-        /// </summary>
         public static bool GCodeIncludeMEnd { get; set; } = true;
         public static bool GCodeIncludeSpindle { get; set; } = true;
         public static bool GCodeIncludeDwell { get; set; } = true;
@@ -82,12 +78,13 @@ namespace coppercli.Core.GCode
                     Motion m = (Motion)c;
 
                     // An arc that ends where it starts is a full circle - a real cut, and
-                    // exactly how a drilled hole or a circular isolation contour is
-                    // written. Only straight moves are no-ops at zero length, and only
-                    // when we actually know where they started.
+                    // exactly how a drilled hole or a circular isolation contour is written.
+                    // Only a straight move does nothing at zero length, and only when its
+                    // start is known.
                     if (m.Start == m.End && !(m is Arc) && m.StartTrusted)
                     {
-                        // Silently remove zero-length moves (common in CAM output, not actionable)
+                        // Common in CAM output, and nothing the operator can act on, so
+                        // this raises no warning.
                         toolpath.RemoveAt(i--);
                     }
                 }
@@ -188,8 +185,7 @@ namespace coppercli.Core.GCode
 
         public List<string> GetGCode()
         {
-            // Preamble on separate lines for standalone files
-            // G90=absolute, G91.1=arc incremental, G21=mm, G17=XY plane
+            // G90 absolute, G91.1 incremental arc centers, G21 mm, G17 XY plane.
             List<string> GCode = new List<string>(Toolpath.Count + 5) { "G90", "G91.1", "G21", "G17" };
 
             NumberFormatInfo nfi = new NumberFormatInfo();
@@ -213,7 +209,7 @@ namespace coppercli.Core.GCode
             }
 
             ParserState State = new ParserState();
-            State.Feed = firstFeed;  // Sync state so we don't duplicate the F value
+            State.Feed = firstFeed;  // So the first motion does not repeat this F
             var xyz = "XYZ";
 
             foreach (Command c in Toolpath)
@@ -283,9 +279,9 @@ namespace coppercli.Core.GCode
 
                     string code = a.Direction == ArcDirection.CW ? "G2" : "G3";
 
-                    // Always output X and Y for arcs. GRBL requires explicit endpoint
-                    // coordinates for full-circle arcs (where start == end in X/Y).
-                    // Without them, GRBL returns error:33 for helical full circles.
+                    // GRBL needs explicit endpoint coordinates for a full-circle arc, where
+                    // start and end match in X and Y; without them it returns error:33 for a
+                    // helical full circle.
                     code += string.Format(nfi, " X{0:0.###}", a.End.X);
                     code += string.Format(nfi, " Y{0:0.###}", a.End.Y);
                     if (State.Position.Z != a.End.Z)
@@ -526,9 +522,6 @@ namespace coppercli.Core.GCode
             return new GCodeFile(newFile) { FileName = this.FileName };
         }
 
-        /// <summary>
-        /// Get a summary of the G-code file
-        /// </summary>
         public string GetInfo()
         {
             return $"File: {FileName}\n" +

@@ -46,7 +46,7 @@ namespace coppercli.Tests
                 $"<point X='0' Y='0'>{height}</point>"));
         }
 
-        /// <summary>One node per axis has no spacing, so every point reads the same height.</summary>
+        /// <summary>An axis with fewer than two nodes has no spacing to interpolate across.</summary>
         [Theory]
         [InlineData("1", "1")]
         [InlineData("2", "1")]
@@ -56,7 +56,7 @@ namespace coppercli.Tests
             Refuses(Heightmap($"MinX='0' MinY='0' MaxX='10' MaxY='10' SizeX='{sizeX}' SizeY='{sizeY}'"));
         }
 
-        /// <summary>A grid this large is a request to allocate, not a board.</summary>
+        /// <summary>A size past MaxNodesPerAxis is refused before the array is allocated.</summary>
         [Fact]
         public void AGridLargerThanAnyBoard_IsRefused()
         {
@@ -88,9 +88,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A non-finite origin compares false against every tolerance, so a file carrying one
-        /// would be applicable to any job. A map that names a file must carry a readable
-        /// origin or it is refused: reading as "no setup recorded" would pass every check.
+        /// A non-finite origin fails every tolerance comparison in GetApplicability, so a file
+        /// carrying one would report Applicable for any job. A map that names a source file is
+        /// refused unless its origin is a finite number.
         /// </summary>
         [Theory]
         [InlineData("NaN")]
@@ -104,8 +104,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A map written before the setup was recorded carries no origin. Those still
-        /// load; the refusal above is for a file that records one it cannot express.
+        /// A map with no SourceFile carries no origin, loads, and reports an unknown context.
+        /// Only a map that names a source file has to carry a finite origin.
         /// </summary>
         [Fact]
         public void AMapWithNoRecordedSetup_StillLoads()
@@ -123,7 +123,6 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>A map that round-trips still loads; the refusals above are not a blanket.</summary>
         [Fact]
         public void AMapThisProgramWrote_LoadsBack()
         {

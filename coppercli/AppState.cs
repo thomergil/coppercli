@@ -11,15 +11,11 @@ using ControllerToolSetterConfig = coppercli.Core.Controllers.ToolSetterConfig;
 namespace coppercli
 {
     /// <summary>
-    /// Shared application state accessible to all menus.
-    /// This class holds the machine connection, settings, session state, and loaded files.
-    /// </summary>
-    /// <summary>
     /// What <see cref="AppState.LoadGCodeIntoMachine"/> did.
     /// </summary>
     /// <param name="Refused">Why the file was not loaded, or null once it was.</param>
     /// <param name="MapDiscardedBecause">
-    /// Why the height map in hand was dropped, or null if it was kept. Returned rather than
+    /// Why the loaded height map was dropped, or null if it was kept. Returned rather than
     /// stored, because two browser tabs load files on their own threads and a shared field
     /// would hand one load's reason to the other.
     /// </param>
@@ -27,15 +23,13 @@ namespace coppercli
 
     internal static class AppState
     {
-        // JSON serialization options (shared)
         public static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
-        // Machine and settings
         private static Machine _machine = null!;
 
         /// <summary>
-        /// The active machine connection. Assigning a new machine rewires the connection-state
-        /// subscription (below) so work-origin invalidation follows the machine that is live.
+        /// Assigning a new machine moves the ConnectionStateChanged subscription with it, so
+        /// the work origin is cleared for whichever machine is live.
         /// </summary>
         public static Machine Machine
         {
@@ -55,10 +49,9 @@ namespace coppercli
         }
 
         /// <summary>
-        /// A disconnect means the operator's asserted work origin can no longer be trusted: the
-        /// machine may be repositioned or power-cycled before it returns. Invalidate the zero
-        /// centrally here — mirroring how Core clears <c>IsHomed</c> inside <c>Machine.Disconnect</c> —
-        /// so every disconnect path behaves identically.
+        /// A disconnected machine may be repositioned or power-cycled before it returns, so the
+        /// asserted work origin cannot be trusted. Clearing it here covers every disconnect
+        /// path, as Core clears <c>IsHomed</c> inside <c>Machine.Disconnect</c>.
         /// </summary>
         private static void OnMachineConnectionStateChanged()
         {
@@ -71,7 +64,7 @@ namespace coppercli
         public static MachineSettings Settings { get; set; } = null!;
         public static SessionState Session { get; set; } = null!;
 
-        // Controllers (singletons - created after Machine is initialized)
+        // Created on first use, because Machine is assigned during startup.
         private static MillingController? _millingController;
         public static MillingController Milling =>
             _millingController ??= new MillingController(Machine);
@@ -89,8 +82,8 @@ namespace coppercli
             _probeController ??= new ProbeController(Machine);
 
         /// <summary>
-        /// Reset all controllers so they get recreated with the current Machine.
-        /// Call this when Machine is replaced (e.g., after reconnect).
+        /// Call this when Machine is replaced, so the next read builds the controllers on the
+        /// new one.
         /// </summary>
         public static void ResetControllers()
         {
@@ -99,19 +92,17 @@ namespace coppercli
             _probeController = null;
         }
 
-        // Loaded files
         public static GCodeFile? CurrentFile { get; set; }
         public static ProbeGrid? ProbePoints { get; private set; }
 
-        // AreProbePointsApplied has a private setter: only ApplyProbeData sets it true, and
-        // ResetProbeApplicationState is the one place it goes back to false.
+        // Only ApplyProbeData sets this true, and only ResetProbeApplicationState sets it
+        // back to false.
         public static bool AreProbePointsApplied { get; private set; } = false;
         /// <summary>
-        /// Whether the work origin is known. Written only through the setters below.
+        /// Whether the work origin is known, written only through the three setters below.
         /// </summary>
         public static bool IsWorkZeroSet { get; private set; } = false;
 
-        /// <summary>The machine was zeroed, so the origin is known.</summary>
         public static void MarkWorkZeroSet() => SetWorkZeroKnown(true, "zeroed on the machine");
 
         /// <summary>
@@ -121,7 +112,6 @@ namespace coppercli
         public static void SetWorkZeroTrusted(bool trusted) =>
             SetWorkZeroKnown(trusted, "trusted by the operator");
 
-        /// <summary>The origin is no longer known: the machine may have moved.</summary>
         public static void ClearWorkZero() => SetWorkZeroKnown(false, "machine disconnected");
 
         private static void SetWorkZeroKnown(bool known, string why)
@@ -135,13 +125,12 @@ namespace coppercli
             Logger.Log("AppState: IsWorkZeroSet = {0} ({1})", known, why);
         }
         /// <summary>
-        /// Whether a grid probe is running, read from the probe controller, so no front end
-        /// keeps a flag of its own.
+        /// Read from the probe controller, so no front end keeps a flag of its own.
         /// </summary>
         public static bool IsProbing => _probeController?.IsActive ?? false;
 
         /// <summary>
-        /// Whether any run owns the machine, parked at a prompt or not. Read from the backing
+        /// True while any run is under way, parked at a prompt or not. Read from the backing
         /// fields, so asking does not create a controller.
         /// </summary>
         public static bool IsRunInProgress =>
@@ -149,14 +138,12 @@ namespace coppercli
             || (_probeController?.IsRunInProgress ?? false)
             || (_toolChangeController?.IsRunInProgress ?? false);
 
-        /// <summary>Whether this zero moves the X or Y datum.</summary>
         public static bool ZeroTouchesXY(string axes)
         {
             string upper = axes.ToUpperInvariant();
             return upper.Contains('X') || upper.Contains('Y');
         }
 
-        /// <summary>Whether this zero sets all three axes, so it establishes a full origin.</summary>
         public static bool ZeroIsFullOrigin(string axes)
         {
             string upper = axes.ToUpperInvariant();
@@ -165,7 +152,8 @@ namespace coppercli
 
         /// <summary>
         /// Why the loaded file and the height map cannot change now, or null. A run streams
-        /// from Machine.File with the map baked in, and tracks its place by line number.
+        /// from Machine.File with the map's corrections already in it, and tracks its place by
+        /// line number.
         /// </summary>
         public static string? WhyTheFileCannotChange() =>
             IsRunInProgress ? CliConstants.ErrorFileChangeDuringRun : null;
@@ -178,65 +166,46 @@ namespace coppercli
         public static bool SuppressErrors { get; set; } = false;
         public static bool MacroMode { get; set; } = false;
 
-        // Depth adjustment for re-milling (negative = deeper, positive = shallower)
-        // Use the helper methods below to modify this value.
+        // Negative cuts deeper, positive shallower.
         public static double DepthAdjustment { get; private set; } = 0;
 
-        /// <summary>
-        /// Adjust depth to cut deeper (subtract increment, clamp to -max).
-        /// </summary>
         public static void AdjustDepthDeeper()
         {
             DepthAdjustment = Math.Max(DepthAdjustment - CliConstants.DepthAdjustmentIncrement, -CliConstants.DepthAdjustmentMax);
         }
 
-        /// <summary>
-        /// Adjust depth to cut shallower (add increment, clamp to +max).
-        /// </summary>
         public static void AdjustDepthShallower()
         {
             DepthAdjustment = Math.Min(DepthAdjustment + CliConstants.DepthAdjustmentIncrement, CliConstants.DepthAdjustmentMax);
         }
 
-        /// <summary>
-        /// Set depth adjustment to a specific value (clamped to valid range).
-        /// </summary>
         public static void SetDepthAdjustment(double value)
         {
             DepthAdjustment = Math.Clamp(value, -CliConstants.DepthAdjustmentMax, CliConstants.DepthAdjustmentMax);
         }
 
-        /// <summary>
-        /// Reset depth adjustment to zero.
-        /// </summary>
         public static void ResetDepthAdjustment()
         {
             DepthAdjustment = 0;
         }
 
-        // Jog state
         /// <summary>
-        /// Which jog preset is selected. Advance it with <see cref="CycleJogPreset"/> and
-        /// read the preset from <see cref="CurrentJogMode"/>, so the wrap-around and the
-        /// lookup are each defined once.
+        /// Advance it with <see cref="CycleJogPreset"/> and read the preset from
+        /// <see cref="CurrentJogMode"/>, so the wrap-around and the lookup are each defined once.
         /// </summary>
         public static int JogPresetIndex { get; private set; } = CliConstants.DefaultJogModeIndex;
 
-        /// <summary>The preset the index selects.</summary>
         public static CliConstants.JogMode CurrentJogMode => CliConstants.JogModes[JogPresetIndex];
 
-        /// <summary>Move to the next preset, wrapping at the end.</summary>
         public static void CycleJogPreset()
         {
             JogPresetIndex = (JogPresetIndex + 1) % CliConstants.JogModes.Length;
         }
 
         /// <summary>
-        /// The one path that loads a file into the machine. ApplyProbeData rewrites the same
-        /// file in place once a map is baked in; nothing else touches Machine.SetFile.
-        ///
-        /// Refused while a run is in progress: a run tracks its place in Machine.File by
-        /// line number, and a new file resets that to the start.
+        /// The one path that loads a file into the machine, apart from ApplyProbeData, which
+        /// rewrites the same file in place. Refused while a run is in progress: a run tracks
+        /// its place in Machine.File by line number, and a new file resets that to the start.
         /// </summary>
         /// <returns>What the load did: see <see cref="LoadOutcome"/>.</returns>
         public static LoadOutcome LoadGCodeIntoMachine(GCodeFile file)
@@ -252,16 +221,16 @@ namespace coppercli
             Machine?.SetFile(file.GetGCode());
             ResetProbeApplicationState();
 
-            // Record which board is loaded here, not at each of the callers - a height
-            // map's applicability is decided by comparing against this, and a caller
-            // that does not set it makes every later check wrong.
+            // Recorded here rather than at each caller: a height map's applicability is
+            // decided by comparing against this, so a caller that forgot it would make every
+            // later check wrong.
             if (!string.IsNullOrEmpty(file.FilePath))
             {
                 Session.LastLoadedGCodeFile = file.FilePath;
             }
 
-            // And decide here what that means for any height map in hand, so every entry
-            // point - menu, web, macro, session restore - behaves the same way.
+            // Decided here too, so the menu, the web UI, a macro and session restore all
+            // treat the loaded map the same way.
             string? mapDiscardedBecause = DiscardInapplicableProbeData();
 
             Logger.Log($"LoadGCodeIntoMachine: loaded {file.FileName}, AreProbePointsApplied=false");
@@ -270,14 +239,11 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Loads a probe grid from a file, replacing any current grid. If a grid was already
-        /// applied to the in-memory G-code, the original is reloaded first: ApplyProbeGrid
-        /// adds to Z, so a second grid on top would double the corrections.
+        /// A grid already applied to the in-memory G-code is taken back out first, by
+        /// reloading the original: ApplyProbeGrid adds to Z, so a second grid on top of the
+        /// first would double the corrections.
         /// </summary>
-        /// <returns>
-        /// The grid, or null with the reason it was refused. Refused before anything changes:
-        /// without the reload, the next apply doubles the corrections.
-        /// </returns>
+        /// <returns>The grid, or null with the reason it was refused.</returns>
         public static (ProbeGrid? Grid, string? Refused) LoadProbeGridFromFile(string path)
         {
             if (AreProbePointsApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
@@ -306,10 +272,8 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Whether the height map in hand describes the job in hand.
-        ///
-        /// Decided by the map itself, from the setup recorded on it, so every screen gets
-        /// the same result instead of inferring one from the session state.
+        /// Whether the loaded height map describes the loaded job. Decided from the setup
+        /// recorded on the map, so no screen infers it from the session state instead.
         /// </summary>
         internal static ProbeApplicability GetProbeApplicability() =>
             DescribeApplicability(ProbePoints);
@@ -332,7 +296,7 @@ namespace coppercli
                 : grid.GetApplicability(CurrentSetup.SourceFile, CurrentSetup.WorkOrigin);
 
         /// <summary>
-        /// Drops a height map that does not describe the job in hand, so it cannot be
+        /// Drops a height map that does not describe the loaded job, so it cannot be
         /// announced or applied to the wrong board or the wrong origin. Returns a phrase
         /// naming why it went, or null if nothing was dropped.
         /// </summary>
@@ -361,7 +325,7 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Why a height map does not describe the job in hand, as a phrase that finishes a
+        /// Why a height map does not describe the loaded job, as a phrase that finishes a
         /// sentence about it. Every screen that has to explain a dropped or refused map reads
         /// this, so none of them explains it differently.
         /// </summary>
@@ -371,9 +335,9 @@ namespace coppercli
                 : "the work origin has moved since it was measured";
 
         /// <summary>
-        /// The one place the height map in hand changes. Swapping the map clears the applied
-        /// flag, so a run streaming corrections would be left with AppState saying there are
-        /// none, and the next apply would double them.
+        /// The one place the loaded height map changes. Swapping the map clears the applied
+        /// flag, so it is refused during a run: the file being streamed would still hold the
+        /// corrections, and the next apply would double them.
         /// </summary>
         /// <param name="grid">The new map, or null to have none.</param>
         /// <returns>Why the map was left alone, or null once it was replaced.</returns>
@@ -391,9 +355,6 @@ namespace coppercli
             return null;
         }
 
-        /// <summary>
-        /// Resets probe application state. Called when probe grid changes.
-        /// </summary>
         public static void ResetProbeApplicationState()
         {
             Logger.Log($"ResetProbeApplicationState: was {AreProbePointsApplied}, setting to false");
@@ -401,20 +362,13 @@ namespace coppercli
             ResetDepthAdjustment();
         }
 
-        /// <summary>
-        /// Builds a new probe grid for the loaded job and takes it as the map in hand.
-        /// </summary>
-        /// <param name="fileMin">G-code file minimum bounds.</param>
-        /// <param name="fileMax">G-code file maximum bounds.</param>
-        /// <param name="margin">Margin to add around file bounds.</param>
-        /// <param name="gridSize">Grid cell size.</param>
         /// <returns>The new grid, or null with the reason it was refused.</returns>
         public static (ProbeGrid? Grid, string? Refused) SetupProbeGrid(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
         {
             var grid = ProbeGrid.ForJob(fileMin, fileMax, margin, gridSize);
 
-            // Stamped at creation from the machine's reported origin, so the map can later
-            // say whether it still describes this job.
+            // Stamped at creation from the machine's reported origin, so the map can later be
+            // compared against the setup it was measured in.
             grid.Context = CurrentSetup;
 
             string? notAdopted = AdoptProbeGrid(grid);
@@ -432,8 +386,8 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Applies probe data to the current G-code file, adopting the autosave as the live
-        /// map if none is in memory.
+        /// Adopts the autosave as the live map when none is in memory, then adds the map's
+        /// corrections to the loaded G-code.
         /// </summary>
         /// <returns>Null once the map is applied, or the reason it was refused.</returns>
         public static string? ApplyProbeData()
@@ -449,9 +403,8 @@ namespace coppercli
 
             Logger.Log($"ApplyProbeData: CurrentFile={CurrentFile != null}, ProbePoints={ProbePoints != null}, NotProbed={ProbePoints?.RemainingCount ?? -1}, AreProbePointsApplied={AreProbePointsApplied}");
 
-            // Adopt the autosave if that is where the map is, through the one adopter.
-            // Applying is an operator action, so it may take the data on; a status read may
-            // not. Assigned directly, this skipped ResetProbeApplicationState.
+            // Applying is an operator action, so it may adopt the autosave; a status read may
+            // not. Assigning ProbePoints directly here skipped ResetProbeApplicationState.
             if (ProbePoints == null && ReadUsableAutosave() is ProbeGrid autosave)
             {
                 string? notAdopted = AdoptProbeGrid(autosave);
@@ -482,10 +435,6 @@ namespace coppercli
             return null;
         }
 
-        /// <summary>
-        /// Convert from Helpers.ToolSetterConfig to Controllers.ToolSetterConfig.
-        /// Returns null if input is null.
-        /// </summary>
         private static ControllerToolSetterConfig? ConvertToolSetterConfig(HelperToolSetterConfig? config)
         {
             if (config == null)
@@ -512,7 +461,6 @@ namespace coppercli
         /// <returns>Why the autosave was left alone, or null if it was adopted or there was none.</returns>
         public static string? EnsureProbeDataLoaded()
         {
-            // Already have probe data in memory
             if (ProbePoints != null)
             {
                 return null;
@@ -532,16 +480,14 @@ namespace coppercli
 
             Logger.Log("EnsureProbeDataLoaded: adopted the autosave");
 
-            // Also load the G-code file that was used when probe was created
             LoadProbeSourceGCode();
             return null;
         }
 
         /// <summary>
-        /// The autosave on disk, if it describes the job in hand. Reads the file and adopts
-        /// nothing, so a status can ask without changing what the operator has. A map
-        /// measured on another board, or before the origin moved, comes back null: it must
-        /// never be announced as the operator's current data.
+        /// The autosave on disk, if it describes the loaded job; a map measured on another
+        /// board, or before the origin moved, comes back null. Reads the file and adopts
+        /// nothing, so a status can ask without changing what the operator has.
         /// </summary>
         public static ProbeGrid? ReadUsableAutosave()
         {
@@ -563,7 +509,7 @@ namespace coppercli
         }
 
         /// <summary>
-        /// The height map for the job in hand: the one loaded, or the autosave when nothing
+        /// The height map for the loaded job: the one loaded, or the autosave when nothing
         /// is loaded and it matches this job. Every check for probe data reads this, so none
         /// of them can disagree with the screen.
         /// </summary>
@@ -588,7 +534,7 @@ namespace coppercli
         /// <returns>The reason nothing was discarded, or null once it was.</returns>
         public static string? DiscardProbeDataAndAutosave()
         {
-            // Asked before the autosave is deleted, so a refusal leaves both copies where
+            // Checked before the autosave is deleted, so a refusal leaves both copies where
             // they are.
             string? blocked = WhyTheFileCannotChange();
             if (blocked != null)
@@ -612,12 +558,12 @@ namespace coppercli
         /// </summary>
         /// <returns>
         /// The recovered map, or null with the reason: there is no autosave, it does not
-        /// describe this job, or a run owns the file.
+        /// describe this job, or a run is streaming the file.
         /// </returns>
         public static (ProbeGrid? Grid, string? Refused) ForceLoadProbeFromAutosave()
         {
-            // Told apart, because "there is none" and "there is one that does not fit" are
-            // different things to the operator.
+            // "There is none" and "there is one that does not fit" are different answers to
+            // the operator, so they are told apart here.
             var candidate = Persistence.ReadProbeAutoSave();
             if (candidate == null)
             {
@@ -642,20 +588,12 @@ namespace coppercli
             return (candidate, null);
         }
 
-        /// <summary>
-        /// Checks if probe data exists but the source G-code file is missing.
-        /// Used to show warnings in TUI and Web UI.
-        /// </summary>
         public static bool IsProbeSourceGCodeMissing =>
             ProbePoints != null &&
             CurrentFile == null &&
             !string.IsNullOrEmpty(Session.ProbeSourceGCodeFile) &&
             !File.Exists(Session.ProbeSourceGCodeFile);
 
-        /// <summary>
-        /// Loads the G-code file the current probe data was measured for, so the map and the
-        /// job it describes are in hand together.
-        /// </summary>
         /// <returns>
         /// True once a file is loaded, including one that was already loaded. False when
         /// none is recorded, the recorded one is gone, or the load was refused.
@@ -664,12 +602,12 @@ namespace coppercli
         {
             if (CurrentFile != null)
             {
-                return true; // Already have a file loaded
+                return true;
             }
 
             if (string.IsNullOrEmpty(Session.ProbeSourceGCodeFile))
             {
-                return false; // No source file tracked
+                return false;
             }
 
             if (!File.Exists(Session.ProbeSourceGCodeFile))
@@ -699,11 +637,10 @@ namespace coppercli
         }
 
         /// <summary>
-        /// What the height map must become after the work zero changed.
-        ///
-        /// A Z zero reaches here during a run, because a tool change asks for one. Re-applying
-        /// the map reloads the G-code and takes the program back to line 0, so during a run
-        /// the file is left alone. An XY zero is refused earlier, in SetWorkZeroAndWait.
+        /// A Z zero reaches here during a run, because a tool change asks for one, and
+        /// re-applying the map would reload the G-code and take the program back to line 0, so
+        /// during a run the file is left alone. An XY zero is refused earlier, in
+        /// SetWorkZeroAndWait.
         /// </summary>
         /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
         /// <returns>What it did, for the screen that reports it to the operator.</returns>
@@ -745,8 +682,8 @@ namespace coppercli
 
             if (AreProbePointsApplied && ProbePoints != null)
             {
-                // The map's heights were measured against the old Z0, so it is reloaded and
-                // baked in again against the new one.
+                // The map's heights were measured against the old Z0, so the file is reloaded
+                // and the map applied again against the new one.
                 return ReapplyProbeGrid()
                     ? WorkZeroOutcome.MapReapplied
                     : WorkZeroOutcome.MapNotReapplied;
@@ -756,11 +693,7 @@ namespace coppercli
             return WorkZeroOutcome.NothingToDo;
         }
 
-        /// <summary>
-        /// Reloads original G-code and re-applies the probe grid.
-        /// Used when Z0 changes and probe grid was already applied.
-        /// </summary>
-        /// <returns>True once the map is baked into the reloaded G-code.</returns>
+        /// <returns>True once the map has been applied to the reloaded G-code.</returns>
         private static bool ReapplyProbeGrid()
         {
             if (ProbePoints == null || string.IsNullOrEmpty(Session.LastLoadedGCodeFile))
@@ -781,13 +714,12 @@ namespace coppercli
                 string? refused = LoadGCodeIntoMachine(file).Refused;
                 if (refused != null)
                 {
-                    // The map stays baked into the streaming file. Applying it again would
-                    // double the corrections.
+                    // The map's corrections stay in the file being streamed. Applying it again
+                    // would double them.
                     Logger.Log("ReapplyProbeGrid: {0}", refused);
                     return false;
                 }
 
-                // Re-apply probe grid with new Z0 reference
                 string? failed = ApplyProbeData();
                 if (failed != null)
                 {
@@ -816,9 +748,8 @@ namespace coppercli
                 return null;
             }
 
-            // Asked before anything is cleared. The reload takes the map back out of the
-            // G-code; clearing first and not reloading leaves the machine cutting a map
-            // AppState says is gone.
+            // Checked before anything is cleared: clearing first and then failing to reload
+            // would leave the machine cutting corrections AppState no longer records.
             string? blocked = WhyTheFileCannotChange();
             if (blocked != null)
             {
@@ -826,8 +757,8 @@ namespace coppercli
                 return blocked;
             }
 
-            // The reload takes the map back out of the G-code, and it runs before AppState
-            // forgets the map. A reload that fails then leaves the two still agreeing.
+            // The reload takes the map back out of the G-code, and runs before the map is
+            // dropped from memory, so a failed reload leaves the two still agreeing.
             if (AreProbePointsApplied)
             {
                 string? notRemoved = RemoveMapFromLoadedGCode();

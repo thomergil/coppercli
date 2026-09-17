@@ -9,13 +9,13 @@ using static coppercli.WebServer.WebConstants;
 namespace coppercli.Menus
 {
     /// <summary>
-    /// Server mode menu - runs serial proxy + web server.
+    /// Starts the serial proxy and the web server on one serial port, so `Machine` must
+    /// disconnect before either can open it.
     /// </summary>
     internal static class ServerMenu
     {
         private enum PortOption { UseSaved, Port, Manual, Back }
 
-        // Message buffer for activity log
         private const int MaxMessages = 5;
 
         public static void Show()
@@ -24,7 +24,6 @@ namespace coppercli.Menus
             string selectedPort;
             int selectedBaud;
 
-            // If connected, offer to disconnect and use current settings
             if (AppState.Machine.Connected)
             {
                 var currentPort = settings.SerialPortName;
@@ -51,9 +50,6 @@ namespace coppercli.Menus
             }
             else
             {
-                // Not connected - let user select port and baud
-
-                // Get available serial ports
                 string[] ports = Array.Empty<string>();
                 AnsiConsole.Status()
                     .Start("Enumerating serial ports...", ctx =>
@@ -67,10 +63,8 @@ namespace coppercli.Menus
                     return;
                 }
 
-                // Select serial port
                 var portMenu = new MenuDef<PortOption>();
 
-                // If we have saved settings, offer to use them
                 if (!string.IsNullOrEmpty(settings.SerialPortName))
                 {
                     portMenu.Add(new MenuItem<PortOption>(
@@ -114,41 +108,31 @@ namespace coppercli.Menus
                 }
             }
 
-            // Select ports
             int proxyPort = MenuHelpers.Ask("Proxy port (for TUI clients):", ProxyDefaultPort);
             int webPort = MenuHelpers.Ask("Web port (for browser):", WebDefaultPort);
 
-            // Run unified server mode
             RunServer(selectedPort, selectedBaud, proxyPort, webPort, exitToMenu: true);
         }
 
         /// <summary>
-        /// Runs server mode: SerialProxy on proxyPort, CncWebServer on webPort.
-        /// This is the canonical server implementation used by both --server flag and menu.
+        /// The `--server` flag and this menu both call this, so the proxy and the web server
+        /// start the same way from either route.
         /// </summary>
-        /// <param name="serialPort">Serial port name</param>
-        /// <param name="baudRate">Baud rate</param>
-        /// <param name="proxyPort">TCP port for proxy (TUI clients)</param>
-        /// <param name="webPort">TCP port for web server (browser)</param>
-        /// <param name="exitToMenu">If true, returns to menu on exit. If false, exits process.</param>
+        /// <param name="exitToMenu">True returns to the menu on exit; false exits the process.</param>
         public static void RunServer(string serialPort, int baudRate, int proxyPort, int webPort, bool exitToMenu)
         {
             Logger.Log("ServerMenu.RunServer: starting proxy={0}, web={1}", proxyPort, webPort);
             var messages = new List<string>();
 
-            // Start the serial proxy
             Logger.Log("ServerMenu.RunServer: creating SerialProxy");
             var proxy = new SerialProxy();
             SubscribeProxyEvents(proxy, messages);
 
-            // Callback to check if serial port is in use by web client
-            // This prevents the proxy from attempting to open the serial port when Machine is connected
+            // The proxy must not open the serial port while `Machine` or a web client holds it.
             proxy.IsSerialPortInUse = () => AppState.Machine.Connected || CncWebServer.HasWebClient;
 
-            // Callback to force-disconnect TUI client from proxy (for web UI "Force Disconnect")
             CncWebServer.ForceDisconnectProxyClient = () => proxy.ForceDisconnectClient();
 
-            // Callback to check if proxy has a TUI client (for web UI to detect and offer force disconnect)
             CncWebServer.HasProxyClient = () => proxy.HasClient;
 
             try
@@ -159,8 +143,8 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
-                // Only the menu waits for a keypress. Started with --server nobody is at the
-                // terminal, and waiting gives a supervisor a hung service instead of exit 1.
+                // Only the menu waits for a keypress. With --server nobody is at the terminal,
+                // so waiting would hang the service instead of exiting 1.
                 if (exitToMenu)
                 {
                     MenuHelpers.ShowFailureAndWait(CliConstants.FailedStartingTheProxy, ex);
@@ -171,7 +155,6 @@ namespace coppercli.Menus
                 Environment.Exit(1);
             }
 
-            // Start web server in background thread
             Logger.Log("ServerMenu.RunServer: starting web server thread");
             Exception? webServerError = null;
             var webServerStarted = new ManualResetEvent(false);
@@ -194,7 +177,6 @@ namespace coppercli.Menus
             };
             webServerThread.Start();
 
-            // Wait for web server to start (or fail)
             Logger.Log("ServerMenu.RunServer: waiting for web server to signal ready");
             webServerStarted.WaitOne(WebServerStartTimeoutMs);
             Logger.Log("ServerMenu.RunServer: web server signaled (error={0})", webServerError != null);
@@ -213,7 +195,6 @@ namespace coppercli.Menus
                 Environment.Exit(1);
             }
 
-            // Handle Ctrl+C to exit cleanly
             var exitRequested = false;
             Console.CancelKeyPress += (_, e) =>
             {
@@ -221,12 +202,10 @@ namespace coppercli.Menus
                 exitRequested = true;
             };
 
-            // Run server status display (blocks until q/Escape or Ctrl+C)
             MonitorServer(proxy, proxyPort, webPort, messages, () => exitRequested);
 
-            // Cleanup - stop both servers
             CncWebServer.Stop();
-            webServerThread.Join(2000);  // Wait up to 2s for web server to stop
+            webServerThread.Join(2000);
             proxy.Stop();
 
             if (!exitToMenu)
@@ -234,7 +213,6 @@ namespace coppercli.Menus
                 Environment.Exit(0);
             }
 
-            // Reconnect Machine when returning to menu
             if (!AppState.Machine.Connected)
             {
                 try
@@ -243,7 +221,8 @@ namespace coppercli.Menus
                 }
                 catch
                 {
-                    // Ignore connection errors - user can reconnect manually
+                    // A failed reconnect is not worth a message; the operator can reconnect
+                    // from the menu.
                 }
             }
         }
@@ -312,18 +291,15 @@ namespace coppercli.Menus
 
             Console.SetCursorPosition(0, 0);
 
-            // Header
             string header = $"{AnsiPrompt}Server{AnsiReset}";
             int headerPad = Math.Max(0, (winWidth - CalculateDisplayLength(header)) / 2);
             WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
             WriteLineTruncated("", winWidth);
 
-            // Connection info
             WriteLineTruncated($"  Serial Port:    {AnsiInfo}{proxy.SerialPortName}{AnsiReset}", winWidth);
             WriteLineTruncated($"  Baud Rate:      {AnsiInfo}{proxy.BaudRate}{AnsiReset}", winWidth);
             WriteLineTruncated("", winWidth);
 
-            // Show both ports
             var localIps = NetworkHelpers.GetLocalIPAddresses();
             if (localIps.Count > 0)
             {
@@ -338,7 +314,7 @@ namespace coppercli.Menus
             }
             WriteLineTruncated("", winWidth);
 
-            // Client status - only one client type can be connected at a time
+            // One client at a time: the proxy and the web server share the one serial port.
             if (proxy.HasClient)
             {
                 var clientAddr = proxy.ClientAddress ?? "";
@@ -360,12 +336,10 @@ namespace coppercli.Menus
                 WriteLineTruncated("", winWidth);
             }
 
-            // Traffic statistics
             WriteLineTruncated($"  Bytes to client:   {AnsiDim}{proxy.BytesToClient,10:N0}{AnsiReset}", winWidth);
             WriteLineTruncated($"  Bytes from client: {AnsiDim}{proxy.BytesFromClient,10:N0}{AnsiReset}", winWidth);
             WriteLineTruncated("", winWidth);
 
-            // Recent messages
             WriteLineTruncated($"  {AnsiInfo}Recent activity:{AnsiReset}", winWidth);
             lock (messages)
             {
@@ -383,7 +357,6 @@ namespace coppercli.Menus
             }
             WriteLineTruncated("", winWidth);
 
-            // Instructions
             WriteLineTruncated($"  {AnsiDim}Press {AnsiReset}{AnsiInfo}q{AnsiReset}{AnsiDim} or {AnsiReset}{AnsiInfo}Escape{AnsiReset}{AnsiDim} to stop server{AnsiReset}", winWidth);
         }
     }

@@ -12,19 +12,16 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Depth adjustment shifts the G54 Z origin so a re-mill cuts deeper.
-    ///
-    /// The regression these pin: ApplyDepthAdjustment read the LIVE work offset, added
-    /// the adjustment, and never restored it. Re-milling the same file without reloading
-    /// therefore stacked the adjustment on the already-shifted offset - two runs at
-    /// -0.05mm cut 0.10mm deep - while the UI still displayed -0.05. On 35um copper that
-    /// is straight through the trace.
+    /// Depth adjustment shifts the G54 Z origin so a re-mill cuts deeper, and the run takes
+    /// the shift back out when it ends. Added to an already-shifted origin instead, two runs
+    /// at -0.05mm cut 0.10mm deep while the display still reads -0.05, which on 35um copper
+    /// cuts through the trace.
     /// </summary>
     public class DepthAdjustmentTests
     {
         /// <summary>
-        /// The FIRST work-offset write of a run is the one that decides how deep this
-        /// job cuts. (The last one is the restore.)
+        /// The first work-offset write of a run sets the depth that run cuts at; the last one
+        /// is the restore.
         /// </summary>
         private static double? AppliedWorkOffsetZ(FakeMachine machine)
         {
@@ -52,8 +49,8 @@ namespace coppercli.Tests
                 Options = new MillingOptions { DepthAdjustment = adjustment, RequireHoming = false }
             };
 
-            // MillingController settles for PostIdleSettleMs (5s) before it touches the
-            // work offset, so this has to outlast that.
+            // MillingController waits PostIdleSettleMs before it writes the work offset, so
+            // this timeout has to outlast that.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             try
             {
@@ -61,14 +58,14 @@ namespace coppercli.Tests
             }
             catch (OperationCanceledException)
             {
-                // We only care about the offsets that were written.
+                // The cancellation is expected; only the offsets written matter here.
             }
         }
 
         /// <summary>
-        /// The adjustment is written into the work origin and taken back out when the run
-        /// ends. A machine that will not take it back out leaves every later job cutting by
-        /// that much too shallow, so the operator has to be told.
+        /// The adjustment is written into the work origin and taken back out when the run ends.
+        /// A refused restore leaves the shift in the origin, so every later job cuts that much
+        /// off the depth asked for, and the error names the amount left behind.
         /// </summary>
         [Fact]
         public async Task ADepthAdjustmentTheMachineWillNotGiveBack_IsReported()
@@ -84,7 +81,7 @@ namespace coppercli.Tests
             var errors = new List<ControllerError>();
             controller.ErrorOccurred += errors.Add;
 
-            // Taken at the start, refused at the end, as an alarmed GRBL does.
+            // The machine takes the adjustment and refuses the restore, as an alarmed GRBL does.
             controller.StateChanged += state =>
             {
                 if (state == ControllerState.Completing)
@@ -104,9 +101,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A run whose restore was refused leaves its adjustment in the origin. The next run
-        /// must still cut at the depth the operator asked for, measured from the zero they
-        /// touched off - not from the shifted origin the last run left.
+        /// A refused restore leaves that run's adjustment in the origin. The next run still
+        /// cuts the depth the operator asked for, measured from the zero they touched off
+        /// rather than from the shifted origin.
         /// </summary>
         [Fact]
         public async Task AfterARestoreTheMachineRefused_TheNextRunStillCutsWhatWasAskedFor()
@@ -121,7 +118,7 @@ namespace coppercli.Tests
                 Options = new MillingOptions { DepthAdjustment = -0.05f, RequireHoming = false }
             };
 
-            // The first run takes the adjustment and is refused when it tries to give it back.
+            // The restore at the end of the first run is refused.
             controller.StateChanged += state =>
             {
                 if (state == ControllerState.Completing)
@@ -138,7 +135,7 @@ namespace coppercli.Tests
 
             Assert.Equal(baseline - 0.05, machine.G54Offset.Z, precision: 4);
 
-            // The same controller, as AppState holds one for the session: it is the only
+            // AppState keeps one controller for the session, and that instance holds the only
             // record that the origin is still shifted.
             controller.Reset();
             machine.RefuseWorkOffsetWrites = false;
@@ -150,7 +147,7 @@ namespace coppercli.Tests
                 catch (OperationCanceledException) { }
             }
 
-            // Measured from the operator's zero, so still 0.05 - not 0.10.
+            // Measured from the operator's zero, so the second run targets 0.05, not 0.10.
             double? applied = AppliedWorkOffsetZ(machine);
             Assert.NotNull(applied);
             Assert.Equal(baseline - 0.05, applied!.Value, precision: 4);
@@ -173,8 +170,8 @@ namespace coppercli.Tests
             Assert.NotNull(afterFirst);
             Assert.NotNull(afterSecond);
 
-            // The second run must target the same absolute Z origin as the first, not
-            // one that is another 0.05mm deeper.
+            // The second run targets the same absolute Z origin as the first, rather than one
+            // another 0.05mm deeper.
             Assert.Equal(afterFirst!.Value, afterSecond!.Value, precision: 4);
         }
 
@@ -202,11 +199,10 @@ namespace coppercli.Tests
         }
     
         /// <summary>
-        /// A tool change during the job rewrites the same G54 Z to compensate the new
-        /// tool's length. Restoring an absolute snapshot at the end would throw that
-        /// compensation away and the next plunge would be off by the length difference,
-        /// so the restore has to take the adjustment back out relative to whatever the
-        /// origin is by then.
+        /// A tool change during the job rewrites the same G54 Z to compensate the new tool's
+        /// length. The restore subtracts the adjustment from whatever the origin holds by
+        /// then, since writing back an absolute snapshot would discard that compensation and
+        /// the next plunge would be off by the length difference.
         /// </summary>
         [Fact]
         public async Task ToolLengthCompensationAppliedMidJob_SurvivesTheRestore()
@@ -227,7 +223,8 @@ namespace coppercli.Tests
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
             var run = controller.StartAsync(cts.Token);
 
-            // Let the adjustment land, then simulate a tool change compensating Z.
+            // The adjustment is written after PostIdleSettleMs, so the tool change has to be
+            // simulated past that point.
             await Task.Delay(TimeSpan.FromSeconds(7));
             machine.SendLine(GrblProtocol.CmdSetWorkOffset + " Z" +
                 (machine.G54Offset.Z + toolCompensation).ToString("F3",
@@ -241,27 +238,12 @@ namespace coppercli.Tests
             {
             }
 
-            // The adjustment is gone; the tool compensation remains.
             Assert.Equal(before + toolCompensation, machine.G54Offset.Z, precision: 3);
         }
-
-        // =========================================================================
-        // _outstandingDepthAdjustment survives ResetRunState
-        //
-        // _depthAdjustment is this run's own snapshot of MillingOptions.DepthAdjustment
-        // and ResetRunState clears it every run. _outstandingDepthAdjustment measures
-        // something else - how much of that snapshot is still sitting in GRBL's G54 Z
-        // unrestored - and describes the machine, not the run, so ResetRunState leaves
-        // it alone. These tests drive one MillingController instance through two runs,
-        // the way the session singleton actually gets reused, to pin that a restore
-        // failure in run 1 is still taken back out in run 2 rather than forgotten the
-        // moment Reset() runs.
-        // =========================================================================
 
         private const int MillingReadyTimeoutMs = 20_000;
         private const int PhasePollIntervalMs = 10;
 
-        /// <summary>All G10 L2 P1 Z... writes sent so far, in order.</summary>
         private static List<double> WorkOffsetWrites(IEnumerable<string> sentCommands)
         {
             string prefix = GrblProtocol.CmdSetWorkOffset + " Z";
@@ -272,9 +254,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Polls until the controller reaches the given phase, so the caller can act at
-        /// a known point in the run (here: right after ApplyDepthAdjustmentAsync has
-        /// returned, and before the file monitor loop does anything of its own).
+        /// Waiting for MillingPhase.Milling puts the caller after ApplyDepthAdjustmentAsync
+        /// has returned and before the file monitor loop does anything of its own.
         /// </summary>
         private static async Task WaitUntilPhaseAsync(MillingController controller, MillingPhase phase, int timeoutMs)
         {
@@ -287,6 +268,11 @@ namespace coppercli.Tests
             Assert.Equal(phase, controller.Phase);
         }
 
+        /// <summary>
+        /// _depthAdjustment is one run's snapshot of MillingOptions.DepthAdjustment and
+        /// ResetRunState clears it. _outstandingDepthAdjustment records how much of that shift
+        /// is still in GRBL's G54 Z, so it survives Reset and the next run takes it back out.
+        /// </summary>
         [Fact]
         public async Task MillingAfterAFailedRestore_StillTakesOutTheOldAdjustmentNextRun()
         {
@@ -308,7 +294,6 @@ namespace coppercli.Tests
                 Options = new MillingOptions { DepthAdjustment = RunOneAdjustment, RequireHoming = false }
             };
 
-            // === Run 1: the adjustment applies, then the restore is refused ===
             using (var cts = new CancellationTokenSource())
             {
                 var run = controller.StartAsync(cts.Token);
@@ -316,10 +301,9 @@ namespace coppercli.Tests
                 {
                     await WaitUntilPhaseAsync(controller, MillingPhase.Milling, MillingReadyTimeoutMs);
 
-                    // RestoreDepthAdjustmentAsync, called from CleanupAsync once this run
-                    // is cancelled, reads G54 back before it can write anything - the
-                    // documented "could not restore" path, the same way GRBL not
-                    // answering $# after a soft reset behaves.
+                    // RestoreDepthAdjustmentAsync, called from CleanupAsync once this run is
+                    // cancelled, reads G54 back before it writes anything. A query that never
+                    // answers is what GRBL does with $# after a soft reset.
                     machine.WorkOffsetQuerySucceeds = false;
                 }
                 finally
@@ -331,9 +315,8 @@ namespace coppercli.Tests
 
             Assert.Equal(ControllerState.Cancelled, controller.State);
 
-            // Only the apply write landed - restore bailed out on the failed query
-            // before it ever called SendLine, so the shift is still sitting in G54 with
-            // only the outstanding field left to say so.
+            // The restore returns on the failed query before it calls SendLine, so only the
+            // apply write appears and the shift is still in G54.
             var run1Writes = WorkOffsetWrites(machine.SentCommands);
             Assert.Single(run1Writes);
             Assert.Equal(InitialG54Z + RunOneAdjustment, run1Writes[0], precision: 3);
@@ -341,7 +324,6 @@ namespace coppercli.Tests
             controller.Reset();
             Assert.Equal(ControllerState.Idle, controller.State);
 
-            // === Run 2: nothing of its own to apply, but the machine still owes -0.05 ===
             machine.ResetRecording();
             machine.WorkOffsetQuerySucceeds = true;
             controller.Options = new MillingOptions { DepthAdjustment = 0f, RequireHoming = false };
@@ -360,11 +342,9 @@ namespace coppercli.Tests
                 }
             }
 
-            // Run 2's own adjustment is 0, so ApplyDepthAdjustmentAsync touched nothing.
-            // The only write that can appear here is RestoreDepthAdjustmentAsync taking
-            // out what run 1 left behind - and it targets the ORIGINAL -0.05, not 0,
-            // which is exactly what clearing _outstandingDepthAdjustment in
-            // ResetRunState would break: run 2 would owe nothing and write nothing.
+            // Run 2's own adjustment is 0, so the only write is RestoreDepthAdjustmentAsync
+            // taking out the -0.05 run 1 left. Clearing _outstandingDepthAdjustment in
+            // ResetRunState would leave run 2 with nothing to write.
             var run2Writes = WorkOffsetWrites(machine.SentCommands);
             Assert.Single(run2Writes);
             Assert.Equal(InitialG54Z - RunOneAdjustment, run2Writes[0], precision: 3);

@@ -12,17 +12,15 @@ using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// Tests for ToolChangeController workflow behavior.
-    /// </summary>
+    // ToolChangeController: the constructor guards, the defaults on ToolChangeInfo,
+    // ToolSetterConfig and ToolChangeOptions, and HandleToolChangeAsync driven through the
+    // enclosure door. M6 has no reference implementation in OpenCNCPilot, so the GRBL door
+    // behavior these tests rely on comes from DoorModel, which MockMachine shares with the
+    // other doubles.
     public class ToolChangeControllerTests
     {
-        /// <summary>What this file calls the door prompt, which carries no title of its own.</summary>
+        /// <summary>The enclosure prompt has an empty Title, so this stands in for one.</summary>
         private const string DoorLabel = "<door>";
-
-        // =========================================================================
-        // Test helpers
-        // =========================================================================
 
         private static MockMachine CreateMockMachine()
         {
@@ -65,10 +63,6 @@ namespace coppercli.Tests
                 new Vector3(0, 0, 0),
                 10);
         }
-
-        // =========================================================================
-        // Constructor tests
-        // =========================================================================
 
         [Fact]
         public void Constructor_WithNullMachine_Throws()
@@ -117,10 +111,6 @@ namespace coppercli.Tests
                     null!));
         }
 
-        // =========================================================================
-        // Initial state tests
-        // =========================================================================
-
         [Fact]
         public void NewController_HasIdleState()
         {
@@ -158,29 +148,6 @@ namespace coppercli.Tests
             Assert.False(controller.HasToolSetter);
         }
 
-        // =========================================================================
-        // Session state tests
-        // =========================================================================
-
-
-
-        // =========================================================================
-        // Phase progression tests (synchronous verification)
-        // =========================================================================
-
-
-        // =========================================================================
-        // User input callback tests
-        // =========================================================================
-
-        // =========================================================================
-        // Error handling tests
-        // =========================================================================
-
-        // =========================================================================
-        // Tool setter path tests
-        // =========================================================================
-
         [Fact]
         public void WithToolSetter_HasToolSetterReturnsTrue()
         {
@@ -199,26 +166,16 @@ namespace coppercli.Tests
             Assert.False(controller.HasToolSetter);
         }
 
-        // =========================================================================
-        // Reset tests
-        // =========================================================================
-
         [Fact]
-        public void Reset_AfterCompletion_AllowsNewToolChange()
+        public void Reset_OnAnIdleController_LeavesItIdle()
         {
             using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
-            // Manually set to completed state via reflection or complete a tool change
-            // For now, just verify Reset is callable from Idle
             controller.Reset();
 
             Assert.Equal(ControllerState.Idle, controller.State);
         }
-
-        // =========================================================================
-        // ToolChangeInfo tests
-        // =========================================================================
 
         [Fact]
         public void ToolChangeInfo_CreatedWithAllFields()
@@ -239,10 +196,6 @@ namespace coppercli.Tests
 
             Assert.Null(info.ToolName);
         }
-
-        // =========================================================================
-        // ToolSetterConfig tests
-        // =========================================================================
 
         [Fact]
         public void ToolSetterConfig_AllPropertiesSettable()
@@ -272,10 +225,6 @@ namespace coppercli.Tests
 
             Assert.Null(config.Y);
         }
-
-        // =========================================================================
-        // ToolChangeOptions tests
-        // =========================================================================
 
         [Fact]
         public void ToolChangeOptions_HasDefaultValues()
@@ -312,7 +261,6 @@ namespace coppercli.Tests
             using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
-            // Verify Options is accessible and has defaults
             Assert.NotNull(controller.Options);
             Assert.Equal(5.0, controller.Options.ProbeMaxDepth);
         }
@@ -333,21 +281,12 @@ namespace coppercli.Tests
             Assert.Equal(75.0, controller.Options.ProbeFeed);
         }
 
-        // =========================================================================
-        // Enclosure door
-        //
-        // The operator opens the enclosure to reach the tool, which leaves GRBL holding.
-        // Releasing that hold restarts the spindle, so it needs the operator's consent - but
-        // closing the door and pressing Continue is that consent. A door already closed and
-        // holding at that moment is released without a second question; one still open is
-        // put to them once it closes.
-        // =========================================================================
+        // Reaching the tool means opening the enclosure, which leaves GRBL holding, and the
+        // cycle start that releases the hold restarts the spindle. Closing the door before
+        // pressing Continue is consent to that restart, so the hold is released without a
+        // second prompt; if the door is still open then, the operator is prompted once it
+        // closes.
 
-        /// <summary>
-        /// The operator changes the tool, closes the door, then presses Continue. The door is
-        /// closed and holding at that moment, so releasing it needs no second question: they
-        /// have just answered one about the same door.
-        /// </summary>
         [Fact]
         public async Task ContinuingWithTheDoorAlreadyClosed_AsksOnce()
         {
@@ -359,8 +298,6 @@ namespace coppercli.Tests
             {
                 prompts.Add(request);
 
-                // The operator opens the enclosure to reach the tool, and closes it before
-                // answering.
                 if (prompts.Count == 1)
                 {
                     machine.SimulateDoorClosedAndHolding();
@@ -375,10 +312,6 @@ namespace coppercli.Tests
             Assert.False(MachineWait.IsDoor(machine));
         }
 
-        /// <summary>
-        /// A door still open when they press Continue is a different thing: they have not
-        /// closed it, so once they do it is put to them.
-        /// </summary>
         [Fact]
         public async Task ADoorStillOpenWhenTheyContinue_IsPutToTheOperator()
         {
@@ -390,7 +323,6 @@ namespace coppercli.Tests
             {
                 prompts.Add(request);
 
-                // Answered with the enclosure still open.
                 if (prompts.Count == 1)
                 {
                     machine.SimulateDoorOpen();
@@ -398,7 +330,8 @@ namespace coppercli.Tests
                 request.OnResponse(OptionContinue);
             };
 
-            // The run announces "close the door" and waits; the operator closes it then.
+            // DoorOpenPrompt is the progress message raised while the run waits for the door
+            // to close, so this is where the operator closes it.
             controller.ProgressChanged += progress =>
             {
                 if (progress.Message == ControllerConstants.DoorOpenPrompt)
@@ -415,8 +348,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The operator opens the enclosure to jog to the surface, closes it, and answers the
-        /// zero-Z prompt. That call site releases the hold on its own.
+        /// The zero-Z prompt has its own EnsureDoorClosedAsync call, so a door closed and
+        /// holding when that prompt is answered is released there.
         /// </summary>
         [Fact]
         public async Task ZeroZPrompt_ReleasesTheDoorItWasAnsweredAt()
@@ -426,7 +359,6 @@ namespace coppercli.Tests
 
             controller.UserInputRequired += request =>
             {
-                // The door is held only at the second prompt, not the first.
                 if (request.Title == ToolChangeZeroZTitle)
                 {
                     machine.SimulateDoorClosedAndHolding();
@@ -441,8 +373,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The same for the tool-change prompt. Without a case that reaches only this call
-        /// site, either could be deleted and the other would cover it.
+        /// The tool-change prompt has its own EnsureDoorClosedAsync call. Without a case that
+        /// reaches only this one, either call could be deleted and the other would cover it.
         /// </summary>
         [Fact]
         public async Task ToolChangePrompt_ReleasesTheDoorBeforeTheZeroZPrompt()
@@ -487,8 +419,8 @@ namespace coppercli.Tests
                     return;
                 }
 
-                // Answered with the enclosure still open, so the door is put to them once
-                // it closes - which is the prompt this test abandons.
+                // Answering with the enclosure open is what raises the door prompt this test
+                // abandons.
                 machine.SimulateDoorOpen();
                 request.OnResponse(OptionContinue);
             };
@@ -503,8 +435,8 @@ namespace coppercli.Tests
 
             var toolChange = controller.HandleToolChangeAsync(CreateToolChangeInfo());
 
-            // Bounded: the door it abandons never closes, so a version that stopped
-            // aborting would hang the suite instead of failing it.
+            // The door it abandons never closes, so a version that stopped aborting would hang
+            // the suite instead of failing it.
             Assert.Same(
                 toolChange,
                 await Task.WhenAny(toolChange, Task.Delay(ControllerConstants.DoorResumeTimeoutMs)));
@@ -512,14 +444,14 @@ namespace coppercli.Tests
             Assert.False(await toolChange);
             Assert.Equal(0, machine.CycleStartCount);
 
-            // Stopped at the door: the soft reset cleared the hold, so the tool's position
-            // is unknown. The probe and the mill both report that.
+            // Stopped at the door: the soft reset cleared the hold, so the tool's position is
+            // unknown.
             Assert.Contains(
                 errors, e => e.Message == ControllerConstants.ErrorStopRetractFailed);
 
-            // The abort happens with the machine still holding, so a retract queued now
-            // would run when the hold is released. One G53 Z move belongs to the clearance
-            // raise at the start; cleanup must not add a second.
+            // The abort happens with the machine still holding, so a retract queued now would
+            // run when the hold is released. The one G53 Z move is the clearance raise at the
+            // start; cleanup must not add a second.
             Assert.Equal(1, machine.SentCommands.Count(
                 c => c.Contains(CmdMachineCoords) && c.Contains("Z")));
         }

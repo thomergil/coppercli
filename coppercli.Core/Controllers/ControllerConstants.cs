@@ -1,14 +1,16 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// What a run says to the operator, and the budgets it works to.
+    /// Every sentence a run puts in front of the operator, and the budgets it works to. Both
+    /// UIs read these, so a message is worded once.
     ///
-    /// SAFETY NOTE: CNC operations involve two coordinate systems:
-    /// - Machine coordinates (G53): Absolute positions relative to home. Z=0 at top, negative down.
-    /// - Work coordinates (G54 default): Relative to workpiece origin. Z=0 typically at PCB surface.
+    /// Two coordinate systems are in play:
+    /// - Machine coordinates (G53): absolute, relative to home. Z=0 at the top, negative down.
+    /// - Work coordinates (G54 by default): relative to the workpiece origin, Z=0 usually at
+    ///   the PCB surface.
     ///
-    /// Retracts and tool changes use machine coordinates (G53), so the destination does not move
-    /// when the work offset changes. Always set the coordinate mode explicitly before such a move.
+    /// Retracts and tool changes use G53, so the destination does not move when the work offset
+    /// changes. Set the coordinate mode explicitly before such a move.
     /// </summary>
     public static class ControllerConstants
     {
@@ -25,10 +27,6 @@ namespace coppercli.Core.Controllers
                 ? ex.Message
                 : ErrorRunFailed;
 
-        // =========================================================================
-        // Error messages
-        // =========================================================================
-
         public const string ErrorInvalidTransition = "Invalid state transition: {0} → {1}";
         public const string ErrorCannotStart = "Cannot start: controller is {0}";
         public const string ErrorCannotPause = "Cannot pause: controller is {0}";
@@ -36,18 +34,14 @@ namespace coppercli.Core.Controllers
         public const string ErrorCannotReset = "Cannot reset: controller is {0}";
         public const string ErrorHomingFailed = "Homing did not complete.";
 
-        /// <summary>Shown when the machine itself reports that homing is switched off.</summary>
         public const string ErrorHomingDisabledOnMachine =
             "Homing is disabled on the machine ($22). Enable it, then mill.";
 
-        /// <summary>Homing failed and the machine explained why.</summary>
         public const string ErrorHomingFailedBecause = "Homing did not complete. {0}";
         public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted. Stopped.";
 
-        /// <summary>Shown when a point could not be measured and the run carried on.</summary>
         public const string ErrorProbePointSkipped = "No contact at point {0} of {1}. Left unmeasured.";
 
-        /// <summary>Shown when a stopped run cannot confirm the tool reached safe height.</summary>
         public const string ErrorStopRetractFailed =
             "Stopped. Could not confirm the tool lifted - check it.";
         public const string ErrorWorkOffsetUnknown = "No work offsets from the machine. Stopped.";
@@ -57,7 +51,6 @@ namespace coppercli.Core.Controllers
         /// <summary>
         /// The depth adjustment is written into the work origin and taken back out when the
         /// run ends. Left in, every later job cuts by that much too deep or too shallow.
-        /// {0} is the amount still in the origin, in mm.
         /// </summary>
         public const string ErrorDepthAdjustmentNotRestored =
             "The {0:F2}mm depth adjustment is still in the work origin - the machine would "
@@ -82,15 +75,14 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public const string ErrorDoorWillNotRelease = "Door will not clear. Check the switch.";
 
-        /// <summary>Shown while GRBL still reports the door open.</summary>
         public const string DoorOpenPrompt = "Close the door.";
 
-        /// <summary>Shown once it is closed but the machine is still holding.</summary>
+        /// <summary>Shown once the door reads closed but the machine is still holding.</summary>
         public const string DoorHoldingPrompt = "Door closed. Continue?";
 
         /// <summary>
-        /// Shown while GRBL restores from the park. Says nothing about the tool or the
-        /// spindle: the same message is shown for a probe, where no spindle is running.
+        /// Shown while GRBL restores from the park. It mentions neither the tool nor the
+        /// spindle, because the same message is shown for a probe, where no spindle runs.
         /// </summary>
         public const string DoorResumingMessage = "Resuming...";
 
@@ -109,9 +101,6 @@ namespace coppercli.Core.Controllers
         public const string ErrorNoPromptHandler =
             "The job could not ask for an answer. Restart coppercli.";
 
-        /// <summary>
-        /// A run could not move because the machine is at the door, alarmed or asleep.
-        /// </summary>
         public const string ErrorMachineNotResponding =
             "Machine not accepting moves. Check door, alarm and sleep.";
 
@@ -127,7 +116,7 @@ namespace coppercli.Core.Controllers
             "The job did not start. Reconnect or reset, then try again.";
         public const string ErrorMillingAlarm = "Alarm during the job. Milling stopped.";
 
-        /// <summary>An alarm found while settling, before the job has started.</summary>
+        /// <summary>An alarm found while settling, before any cutting.</summary>
         public const string ErrorAlarmBeforeStart = "In alarm. Clear it, then unlock.";
 
         /// <summary>
@@ -144,10 +133,6 @@ namespace coppercli.Core.Controllers
         public const string ErrorProbeTimeout = "Probe timed out";
         public const string ErrorToolSetterNotConfigured = "Tool setter position not configured";
         public const string ErrorTraceHeightUnsafe = "Trace height must be positive (current: {0:F3}mm)";
-
-        // =========================================================================
-        // Log messages
-        // =========================================================================
 
         public const string LogStateTransition = "{0}: {1} → {2}";
         public const string LogPhaseChange = "{0} phase: {1}";
@@ -169,9 +154,8 @@ namespace coppercli.Core.Controllers
         public const string LogOperatorPauseContinued = "Operator continued past pause at line {0}";
         public const string LogProgramEndDetected = "Program end (M2/M30) detected at line {0}, ending stream";
 
-        // =========================================================================
-        // Phase names (for progress display)
-        // =========================================================================
+        // Values for ProgressInfo.Phase. Screens compare against them, so the text is
+        // part of the interface, not decoration.
 
         public const string PhaseSettling = "Settling";
         public const string PhaseHoming = "Homing";
@@ -183,17 +167,13 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Withdraws the message <see cref="PhaseWaitingForOperator"/> put on the screens.
-        /// A phase of its own rather than the run's next one, because the run does not know
-        /// where it is resuming to, and because the mill screen draws any phase but its own.
+        /// A phase of its own rather than the run's next one, because the run has not yet
+        /// picked the phase it resumes to, and the mill screen draws any phase but its own.
         /// </summary>
         public const string PhaseDoorCleared = "Door clear";
 
         /// <summary>How far past an M6 to look for the redundant M0 that follows it.</summary>
         public const int ToolChangeM0SearchLines = 8;
-
-        // =========================================================================
-        // Progress messages
-        // =========================================================================
 
         public const string MessageSettlingCountdown = "Settling... {0}s";
         public const string MessageWaitingForIdle = "Waiting for idle...";
@@ -203,17 +183,9 @@ namespace coppercli.Core.Controllers
         public const string MessageMillingProgress = "Line {0} of {1}";
         public const string MessageComplete = "Milling complete";
 
-        // =========================================================================
-        // User input options
-        // =========================================================================
-
         public const string OptionContinue = "Continue";
         public const string OptionAbort = "Abort";
 
-
-        // =========================================================================
-        // Tool change log messages
-        // =========================================================================
 
         public const string LogToolChangeStart = "Tool change started: T{0}";
         public const string LogToolChangeComplete = "Tool change complete";
@@ -221,10 +193,6 @@ namespace coppercli.Core.Controllers
         public const string LogToolChangeProbeFailed = "Tool change probe failed";
         public const string LogToolChangePhase = "Tool change phase: {0}";
         public const string LogToolChangeOffset = "Tool offset: ref={0:F3}, new={1:F3}, offset={2:F3}";
-
-        // =========================================================================
-        // Tool change progress messages
-        // =========================================================================
 
         public const string MessageToolChangeRaisingZ = "Raising Z to clearance...";
         public const string MessageToolChangeMovingToSetter = "Moving to tool setter...";
@@ -238,10 +206,6 @@ namespace coppercli.Core.Controllers
         public const string MessageToolChangeReturning = "Returning to work position...";
         public const string MessageToolChangeComplete = "Tool change complete";
 
-        // =========================================================================
-        // Tool change user prompts
-        // =========================================================================
-
         public const string ToolChangePromptTitle = "Tool Change";
         public const string ToolChangePrompt = "Change to tool T{0} and press Continue";
 
@@ -250,20 +214,15 @@ namespace coppercli.Core.Controllers
         public const string ToolChangePromptZeroZ = "Jog to PCB surface, set Z0, then press Continue";
         public const string ToolChangeZeroZTitle = "Set Z Zero";
 
-        // =========================================================================
-        // Operator pause (M0/M1) prompt
-        // =========================================================================
-
         /// <summary>Title for the M0/M1 pause dialog. It reuses the tool-change dialog
         /// (see MillingController.HandleOperatorPauseAsync), so it needs a title of its own
         /// rather than "Tool Change".</summary>
         public const string OperatorPauseTitle = "Program Paused";
 
         /// <summary>
-        /// Shown when the program pauses and carries no note saying why. Deliberately
-        /// carries no line number: the streamed program is regenerated from the parsed
-        /// toolpath, so its line numbering does not match the file the operator has open.
-        /// The progress line reports how far in they are.
+        /// Shown when the program pauses and carries no note saying why. It gives no line
+        /// number, because the streamed program is regenerated from the parsed toolpath and
+        /// its numbering does not match the file the operator has open.
         /// </summary>
         public const string OperatorPausePrompt =
             "The program paused. The tool is still down and the spindle is still running. "
@@ -277,7 +236,6 @@ namespace coppercli.Core.Controllers
         /// <summary>How far back to look for a comment explaining a pause.</summary>
         public const int PauseNoteSearchLines = 4;
 
-        /// <summary>The percentage a finished step reports.</summary>
         public const int ProgressPercentComplete = 100;
 
         /// <summary>How long to give GRBL to leave the door hold after a resume.</summary>
@@ -285,19 +243,17 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// How many status reports GRBL's reading of the door switch may lag behind the
-        /// operator's answer. The substate arrives on the status poll, so the report in hand
-        /// when they answer predates them closing the door. Not a wait for the door itself -
-        /// see <see cref="MachineWait.ReleaseDoorHoldAsync"/>.
+        /// operator's answer: the substate arrives on the status poll, so the report received
+        /// when they answer predates them closing the door. This is not a wait for the door
+        /// itself - see <see cref="MachineWait.ReleaseDoorHoldAsync"/>.
         /// </summary>
         public const int DoorReadingCatchUpReports = 3;
 
         /// <summary>
-        /// How far a probed height may sit from its measured neighbours before the run
-        /// pauses for the operator (mm).
-        ///
-        /// Adjacent nodes differ by the board's warp over one grid step plus probe
-        /// repeatability, which together stay well under 0.1mm. A tip that stopped on
-        /// something other than the board reads whole tenths away.
+        /// How far a probed height may sit from its measured neighbors before the run
+        /// pauses for the operator (mm). Adjacent nodes differ by the board's warp over one
+        /// grid step plus probe repeatability, which together stay well under 0.1mm, while a
+        /// tip that stopped on something other than the board reads whole tenths away.
         /// </summary>
         public const double ProbeHeightDeviationToleranceMm = 0.5;
     }

@@ -1,5 +1,3 @@
-// coppercli Web UI WebSocket
-
 import { state } from './state.js';
 import { showError, showInfo, showConfirm, postJson } from './helpers.js';
 import { updateStatus, showConnectionStatus } from './screens.js';
@@ -60,12 +58,11 @@ export function connectWebSocket() {
         state.reconnectAttempts = 0;
         showConnectionStatus(true);
 
-        // On reconnect after server restart, check if we should offer to trust previous work zero
         if (isReconnect) {
             checkAndShowTrustZero();
         }
 
-        // Start keep-alive pings to prevent server timeout during long operations
+        // Without a keep-alive the server drops a socket that goes quiet during a long run.
         if (pingInterval) {
             clearInterval(pingInterval);
         }
@@ -97,7 +94,8 @@ export function connectWebSocket() {
                     handleToolChangeControllerEvent(msg.type, msg.data);
                     break;
                 case MSG_TYPE_PROBE_ERROR:
-                    // A skipped point is worth reporting, but not as an error.
+                    // A skipped point is reported as information; only a fatal probe error
+                    // is shown as an error.
                     if (msg.data.isFatal === false) {
                         showInfo(msg.data.message);
                     } else {
@@ -117,7 +115,6 @@ export function connectWebSocket() {
         console.log('WebSocket disconnected:', event.code, event.reason, event.wasClean);
         showConnectionStatus(false);
 
-        // Stop keep-alive pings
         if (pingInterval) {
             clearInterval(pingInterval);
             pingInterval = null;
@@ -125,7 +122,7 @@ export function connectWebSocket() {
 
         if (state.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             state.reconnectAttempts++;
-            // Use longer delay if kicked by another client to let them connect first
+            // A take-over waits longer than an ordinary drop, so the other client connects first.
             const isForceDisconnect = event.reason === WS_CLOSE_REASON_FORCE_DISCONNECT;
             const delay = isForceDisconnect ? FORCE_DISCONNECT_RECONNECT_DELAY_MS : RECONNECT_DELAY_MS;
             console.log(`Reconnecting (attempt ${state.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}) in ${delay}ms...`);
@@ -149,10 +146,9 @@ export function sendCommand(type, data = {}) {
 async function handleConnectionError(data) {
     const error = data?.error;
 
-    // The server says whether another client holds the machine. Read from the value, not
-    // from the sentence: a reword would silently stop offering the take-over.
+    // Keyed on the otherClientConnected value rather than the message text, which could be
+    // reworded without anyone noticing that the take-over stopped being offered.
     if (data?.otherClientConnected === true) {
-        // Show force-disconnect confirmation using the standard modal
         if (await showConfirm(TEXT_FORCE_DISCONNECT_CONFIRM, TITLE_FORCE_DISCONNECT)) {
             // This drops the serial port, so a refusal is shown rather than reloaded past.
             const taken = await postJson(API_FORCE_DISCONNECT);
@@ -164,7 +160,6 @@ async function handleConnectionError(data) {
             setTimeout(() => location.reload(), FORCE_DISCONNECT_RELOAD_DELAY_MS);
         }
     } else {
-        // Generic connection error
         showError(error || TEXT_CONNECTION_ERROR);
     }
 }

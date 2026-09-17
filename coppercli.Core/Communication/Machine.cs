@@ -20,16 +20,14 @@ namespace coppercli.Core.Communication
     public class Machine : IMachine
     {
         /// <summary>
-        /// What the machine is being driven to do. Whether a link exists is
-        /// <see cref="Connected"/>, which is what a guard against a disconnected machine
-        /// reads.
+        /// What the machine is being driven to do. A guard against a disconnected machine
+        /// reads <see cref="Connected"/> instead; there is no mode for that.
         /// </summary>
         public enum OperatingMode
         {
             /// <summary>Accepting individual commands.</summary>
             Manual,
 
-            /// <summary>Streaming a G-code file.</summary>
             SendFile,
 
             /// <summary>A probe is running and the reply is outstanding.</summary>
@@ -39,11 +37,6 @@ namespace coppercli.Core.Communication
         public event Action<Vector3, bool> ProbeFinished;
         public event Action<string> NonFatalException;
 
-        /// <summary>
-        /// Raised when GRBL refuses a command, with the code and the command it refused.
-        /// Lets a caller distinguish "rejected" from "still running" - waiting for Idle
-        /// cannot, because a refused command never leaves Idle.
-        /// </summary>
         public event Action<GrblRejection> CommandRejected;
         public event Action<string> Info;
         public event Action<string> LineReceived;
@@ -62,18 +55,15 @@ namespace coppercli.Core.Communication
         public event Action FilePositionChanged;
         public event Action OverrideChanged;
 
-        // =========================================================================
-        // Compiled regex patterns for GRBL response parsing
-        // =========================================================================
         private static readonly Regex GCodeSplitter = new Regex(@"([GZ])\s*(\-?\d+\.?\d*)", RegexOptions.Compiled);
         private static readonly Regex StatusEx = new Regex(@"(?<=[<|])(\w+):?([^|>]*)?(?=[|>])", RegexOptions.Compiled);
         private static readonly Regex ProbeEx = new Regex(@"\[PRB:(?'Pos'\-?[0-9\.]*(?:,\-?[0-9\.]*)+):(?'Success'0|1)\]", RegexOptions.Compiled);
         private static readonly Regex StartupRegex = new Regex("grbl v([0-9])\\.([0-9])([a-z])", RegexOptions.Compiled);
 
-        // Vector3 is a 24-byte struct, so assigning one is several machine words and a
-        // reader on another thread can catch it half-updated - X and Y from the new
-        // status report, Z from the old. These values decide where the tool is told to
-        // go, so every read of them is made whole.
+        // Vector3 is a 24-byte struct, so one assignment is several machine words and a
+        // reader on another thread can catch it half-updated: X and Y from the new status
+        // report, Z from the old. These values decide where the next move goes, so every
+        // read of them takes _positionLock.
         private readonly object _positionLock = new object();
         private Vector3 _machinePosition = new Vector3();
         private Vector3 _workOffset = new Vector3();
@@ -91,8 +81,8 @@ namespace coppercli.Core.Communication
             private set { lock (_positionLock) { _workOffset = value; } }
         }
 
-        /// <summary>Work position, derived from a single consistent snapshot of both
-        /// machine position and work offset rather than two separate reads.</summary>
+        /// <summary>Machine position minus work offset, taken under one lock so the two
+        /// cannot come from different status reports.</summary>
         public Vector3 WorkPosition
         {
             get { lock (_positionLock) { return _machinePosition - _workOffset; } }
@@ -114,22 +104,22 @@ namespace coppercli.Core.Communication
         public bool PinStateLimitZ { get; private set; } = false;
 
         /// <summary>
-        /// Whether the machine has been homed since connection.
-        /// Set by HomeAndWait() or MillingController after successful homing.
+        /// Whether the machine has homed since it connected. Only MachineWait.HomeAsync
+        /// sets it true; connecting, disconnecting and a soft reset each clear it.
         /// </summary>
         public bool IsHomed { get; set; } = false;
 
         /// <summary>
-        /// Whether homing is currently in progress.
-        /// Set by MachineWait.HomeAsync - the single source of truth for homing.
+        /// True while MachineWait.HomeAsync is running. That method is the only writer, so
+        /// homing by any other route leaves this false.
         /// </summary>
         public bool IsHoming { get; set; } = false;
 
         private long _statusReportCount;
 
         /// <summary>
-        /// How many status reports have arrived. Monotonic, so callers can tell "GRBL is
-        /// still answering" from "GRBL has gone quiet" without trusting the wall clock.
+        /// Monotonic count of status reports, so a caller can separate GRBL still
+        /// answering from GRBL gone quiet without reading a clock.
         /// </summary>
         public long StatusReportCount => Interlocked.Read(ref _statusReportCount);
 
@@ -142,12 +132,10 @@ namespace coppercli.Core.Communication
         private TaskCompletionSource<bool> _g54Waiter;
 
         /// <summary>
-        /// The G54 offset as GRBL last reported it for $#.
-        ///
-        /// Distinct from <see cref="WorkOffset"/>, which is the combined WCO the status
-        /// report carries (G54 plus G92 plus tool length offset). Anything that writes
-        /// G54 back with G10 L2 P1 has to start from this, or it re-datums by whatever
-        /// the other two contribute.
+        /// The G54 offset as GRBL last reported it for $#, not the combined WCO in the
+        /// status report (<see cref="WorkOffset"/> is G54 plus G92 plus tool length
+        /// offset). A G10 L2 P1 write starts from this value, or the other two shift the
+        /// origin.
         /// </summary>
         public Vector3 G54Offset
         {
@@ -184,8 +172,8 @@ namespace coppercli.Core.Communication
         private int _mode = (int)OperatingMode.Manual;
 
         /// <summary>
-        /// What the machine is being driven for. Written by a controller and read from the
-        /// request threads that refuse a jog mid-probe, so reads and writes are atomic.
+        /// Written by a controller and read from the request threads that refuse a jog
+        /// mid-probe, so reads and writes here are atomic.
         /// </summary>
         public OperatingMode Mode
         {
@@ -202,10 +190,10 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// GRBL's state word and its substate, held as one value. Read separately they can
-        /// be torn across a write: a reader between the two stores would see a pair the
-        /// machine was never in, and "Door" with substate "0" is the one pair that says a
-        /// cycle start may go out.
+        /// GRBL's state word and its substate, held as one value. Stored separately they
+        /// tear across a write, and a reader landing between the two stores would see a
+        /// pair the machine was never in: "Door" with substate "0" is the one pair that
+        /// permits a cycle start.
         /// </summary>
         private sealed record StatusReading(string Word, string SubState);
 
@@ -216,9 +204,9 @@ namespace coppercli.Core.Communication
         private const int StateClearIntervalMs = 500;
 
         /// <summary>
-        /// When true, the machine clears an alarm itself while in Manual mode. It never
-        /// clears a door hold: only the operator may release that. Enable only in menus
-        /// that display status (MainMenu, JogMenu).
+        /// When true, an alarm is cleared automatically while in Manual mode; a door hold
+        /// never is, because only the operator may release it. Enable only in menus that
+        /// display status (MainMenu, JogMenu).
         /// </summary>
         public bool EnableAutoStateClear { get; set; } = false;
 
@@ -232,9 +220,9 @@ namespace coppercli.Core.Communication
         public string StatusSubState => Volatile.Read(ref _state).SubState;
 
         /// <summary>
-        /// Records the state and its substate together, announcing a change to either.
-        /// Closing the door moves GRBL from Door:1 to Door:0 without changing the word,
-        /// so comparing the word alone would leave every UI showing an open door.
+        /// Closing the door moves GRBL from Door:1 to Door:0 without changing the state
+        /// word, so a comparison on the word alone would leave every screen showing an
+        /// open door.
         /// </summary>
         private void SetStatus(string state, string subState)
         {
@@ -309,7 +297,7 @@ namespace coppercli.Core.Communication
                 if (!Connected)
                 {
                     // Back to the default mode, so a link that drops mid-stream does not
-                    // leave the next connection thinking a file is still sending.
+                    // leave the next connection still in SendFile.
                     Mode = OperatingMode.Manual;
                 }
 
@@ -409,7 +397,6 @@ namespace coppercli.Core.Communication
                 long LastFilePosUpdateMs = 0;
                 bool filePosChanged = false;
 
-                // Local function to send a line to GRBL and update state
                 void SendLineToGrbl(string line)
                 {
                     // // Log every line sent with hex dump for debugging
@@ -460,10 +447,9 @@ namespace coppercli.Core.Communication
                             {
                                 string sendLine = File[FilePosition];
 
-                                // Check if this is an M6 tool change line - don't send to GRBL
-                                // (GRBL doesn't support M6, we handle it in coppercli).
-                                // Through GCodeParser so this and MillingController cannot
-                                // disagree about what a tool change line is.
+                                // GRBL has no M6, so a tool change line never reaches it.
+                                // Classified through GCodeParser so this and MillingController
+                                // cannot disagree about what a tool change line is.
                                 bool isM6Line = GCodeParser.IsM6Line(sendLine);
 
                                 if (!isM6Line)
@@ -477,10 +463,9 @@ namespace coppercli.Core.Communication
                                     RecordLog($"> [M6] WorkPos=({WorkPosition.X:F3}, {WorkPosition.Y:F3}, {WorkPosition.Z:F3})");
                                 }
 
-                                // A tool change is not a hold preference: PauseFileOnHold governs
-                                // whether M0/M1/M2/M30 stop the stream, but skipping M6 would mean
-                                // cutting the rest of the job with the wrong tool, so M6 always
-                                // pauses regardless of that setting.
+                                // PauseFileOnHold governs whether M0/M1/M2/M30 stop the stream.
+                                // M6 pauses whichever way it is set, because carrying on would
+                                // cut the rest of the job with the wrong tool.
                                 if (PauseLines[FilePosition] && (isM6Line || _settings.PauseFileOnHold))
                                 {
                                     RecordLog($"> [PAUSE triggered at FilePosition={FilePosition}, PauseLines[{FilePosition}]=true]");
@@ -523,7 +508,6 @@ namespace coppercli.Core.Communication
 
                     string line = lineTask.Result;
 
-                    // Null line indicates connection was closed
                     if (line == null)
                     {
                         RaiseEvent(Info, "Connection closed by remote end");
@@ -548,8 +532,8 @@ namespace coppercli.Core.Communication
                             }
                             else
                             {
-                                // This can happen during startup (initial $G/$# aren't queued)
-                                // or if buffer state gets out of sync - just reset it
+                                // The $G and $# sent at startup go straight to the port
+                                // rather than the queue, so their ok arrives with Sent empty.
                                 BufferState = 0;
                             }
                         }
@@ -610,9 +594,9 @@ namespace coppercli.Core.Communication
                         }
                         else if (line.StartsWith(ResponseAlarmPrefix))
                         {
-                            // Logged here because an alarm ends whatever was running, and
-                            // the controller only reports that the machine stopped moving.
-                            // Without the code, the log cannot say which alarm it was.
+                            // An alarm ends whatever was running, and the controller reports
+                            // only that the machine stopped moving. Without this line the log
+                            // does not record which alarm fired.
                             Controllers.ControllerLog.Log("GRBL alarm: {0}", line);
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
@@ -727,9 +711,8 @@ namespace coppercli.Core.Communication
             ToSendPriority.Clear();
             Sent.Clear();
             
-            // A fresh connection knows nothing about where the machine is. Carrying a
-            // stale IsHomed across a reconnect would let milling skip homing and run
-            // every G53 move against a coordinate system that no longer exists.
+            // Carrying a stale IsHomed across a reconnect would let milling skip homing
+            // and run every G53 move against a coordinate system that no longer exists.
             IsHomed = false;
             IsHoming = false;
 
@@ -743,10 +726,9 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Whether GRBL may still have work queued, so the machine must be stopped before
-        /// the port closes. A port that never answered as GRBL is left alone. Idle alone is
-        /// not enough: a line just sent sits unparsed in GRBL's receive buffer while the
-        /// status still reads Idle.
+        /// True while GRBL may still have work queued, so the machine is stopped before the
+        /// port closes. Idle alone is not enough: a line just sent sits unparsed in GRBL's
+        /// receive buffer while the status still reads Idle.
         /// </summary>
         internal static bool NeedsStopBeforeDisconnect(bool connected, string status, int bytesSent) =>
             connected
@@ -754,9 +736,9 @@ namespace coppercli.Core.Communication
             && (status != GrblProtocol.StatusIdle || bytesSent > 0);
 
         /// <summary>
-        /// Stop the machine, because GRBL keeps working through its planner buffer after
-        /// the port closes. Written straight to the connection rather than queued: Connected is
-        /// already false, so the send queue is no longer being drained.
+        /// GRBL keeps working through its planner buffer after the port closes, so it is
+        /// stopped first. Written straight to the connection rather than queued, because
+        /// Connected is already false and the send queue is no longer drained.
         /// </summary>
         private void SendStop()
         {
@@ -801,7 +783,7 @@ namespace coppercli.Core.Communication
 
             Connected = false;
 
-            // Only join if we're not on the worker thread (to avoid deadlock)
+            // Joining from the worker thread itself would deadlock.
             if (WorkerThread != null && WorkerThread != Thread.CurrentThread)
             {
                 WorkerThread.Join();
@@ -821,7 +803,6 @@ namespace coppercli.Core.Communication
                     }
                     catch
                     {
-                        // Ignore close errors during disconnect - we're cleaning up anyway
                     }
                     Connection?.Dispose();
                     Connection = null;
@@ -834,7 +815,6 @@ namespace coppercli.Core.Communication
                     }
                     catch
                     {
-                        // Ignore close errors during disconnect - we're cleaning up anyway
                     }
                     Connection = null;
                     ClientEthernet = null;
@@ -883,9 +863,8 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Returns to Manual mode if the machine is idling in Probe mode. Used before a
-        /// job so a leftover Probe mode from the previous operation cannot silently stop
-        /// the file from streaming. Does nothing while a file is actively sending.
+        /// Clears a Probe mode left behind by the previous operation, which would otherwise
+        /// stop the next file from streaming.
         /// </summary>
         public void EnsureManualMode()
         {
@@ -949,12 +928,10 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Asks GRBL for its stored coordinate offsets and waits for the reply.
-        ///
-        /// <see cref="G54Offset"/> is otherwise only as fresh as the last $# - which,
-        /// in the usual connect-probe-zero-mill sequence, predates the operator setting
-        /// their Z zero. Anything that writes G54 back has to start from a current
-        /// value, or it moves the origin instead of restoring it.
+        /// <see cref="G54Offset"/> is otherwise only as fresh as the last $#, which in the
+        /// usual connect-probe-zero-mill sequence predates the operator setting their Z
+        /// zero. A caller writing G54 back has to start from a current value, or it moves
+        /// the origin instead of restoring it.
         /// </summary>
         /// <returns>False if GRBL did not answer in time; the caller must not rely on
         /// <see cref="G54Offset"/> in that case.</returns>
@@ -994,18 +971,18 @@ namespace coppercli.Core.Communication
             Mode = OperatingMode.Manual;
 
             // A soft reset while the machine is moving loses the position GRBL was
-            // tracking, so the homed origin no longer means anything. Saying so here
-            // makes the next job home again instead of trusting a stale reference for
-            // its G53 safety moves.
+            // tracking, so the homed origin no longer holds. Clearing IsHomed makes the
+            // next job home again rather than run its G53 safety moves against a stale
+            // reference.
             IsHomed = false;
 
             ToSend.Clear();
             ToSendPriority.Clear();
 
-            // Cleared together with the byte count they describe: the worker's
-            // read-modify-write of BufferState would otherwise race this to a negative
-            // value, and a negative count makes the send gate more permissive - which
-            // overruns GRBL's receive buffer and mangles a line mid-cut.
+            // Cleared together with the byte count they describe, or the worker's
+            // read-modify-write of BufferState races this to a negative value. A negative
+            // count makes the send gate more permissive, which overruns GRBL's receive
+            // buffer and mangles a line mid-cut.
             lock (_bufferLock)
             {
                 Sent.Clear();
@@ -1020,8 +997,8 @@ namespace coppercli.Core.Communication
 
             OverrideChanged?.Invoke();
 
-            // Nothing is asked of GRBL here: a $G or $# sent now queues before the soft
-            // reset finishes and comes back as a parse error. Connect sends both, with a wait.
+            // No $G or $# here: either one queues ahead of the soft reset finishing and
+            // comes back as a parse error. Connect sends both, after a wait.
         }
 
         public void SendControl(byte controlchar)
@@ -1571,12 +1548,9 @@ namespace coppercli.Core.Communication
                 StatusReceived?.Invoke(line);
             }
 
-            // Auto-clear Alarm (only in Manual mode, rate-limited, when enabled).
-            //
-            // Door is deliberately NOT auto-cleared. GRBL reports Door when the safety
-            // interlock opens, and a CycleStart there restarts the spindle and resumes
-            // motion while the operator may be reaching in. Only the operator may resume
-            // after the enclosure has been opened.
+            // Door is never cleared here. GRBL reports Door when the safety interlock
+            // opens, and a CycleStart there restarts the spindle and resumes motion while
+            // the operator may be reaching into the enclosure.
             if (Mode == OperatingMode.Manual && EnableAutoStateClear)
             {
                 long now = Environment.TickCount64;
@@ -1670,9 +1644,6 @@ namespace coppercli.Core.Communication
             NonFatalException?.Invoke($"Received Bad Status: '{line}'");
         }
 
-        /// <summary>
-        /// Trims a position string to 3 axes if IgnoreAdditionalAxes is enabled.
-        /// </summary>
         private string TrimToThreeAxes(string positionString)
         {
             if (_settings.IgnoreAdditionalAxes)
@@ -1687,7 +1658,6 @@ namespace coppercli.Core.Communication
             return positionString;
         }
 
-        // Event helpers - direct invocation instead of WPF Dispatcher
         private void RaiseEvent(Action<string> action, string param)
         {
             action?.Invoke(param);

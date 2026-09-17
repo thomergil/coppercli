@@ -5,15 +5,14 @@ using Xunit;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// A height map is Z heights indexed by X/Y in work coordinates. It describes one
-    /// board, measured from one origin. These pin that the map itself can say so.
-    ///
-    /// The regression behind this: validity was inferred from scattered session state -
-    /// chiefly "does an autosave file exist on disk" - so a leftover map from a previous
-    /// session was announced as the operator's current data, offered for application to
-    /// a different board, and warned about when zeroing.
-    /// </summary>
+    // A height map is Z heights indexed by X/Y in work coordinates, so it is valid only for
+    // the file and work origin it was measured against. ProbeContext records those two on the
+    // grid; these tests cover what GetApplicability returns for each mismatch, and that the
+    // record survives a save and load.
+    //
+    // Inferred from session state instead - chiefly whether an autosave file exists on disk -
+    // a map left over from an earlier session is announced as current data, offered for a
+    // different board, and warned about when zeroing.
     public class ProbeContextTests
     {
         private static ProbeGrid GridFor(string sourceFile, Vector3 origin)
@@ -54,9 +53,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The origin check is the one that catches a work zero moved by any route -
-        /// jogging and re-zeroing, another client, a G10 in a macro. Only the X/Y zero
-        /// path considers this.
+        /// Comparing the origin catches a work zero moved by any route: jogging and
+        /// re-zeroing, another client, a G10 in a macro.
         /// </summary>
         [Fact]
         public void MapIsNotApplicable_WhenTheWorkOriginHasMoved()
@@ -77,7 +75,6 @@ namespace coppercli.Tests
                 grid.GetApplicability("/tmp/board-a.ngc", new Vector3(-10, -20, -9.4)));
         }
 
-        /// <summary>A map from before this was recorded is questioned, not assumed good.</summary>
         [Fact]
         public void MapWithNoRecordedSetup_IsUnknownRatherThanUsable()
         {
@@ -88,7 +85,6 @@ namespace coppercli.Tests
                 grid.GetApplicability("/tmp/board-a.ngc", new Vector3(0, 0, 0)));
         }
 
-        /// <summary>The binding has to survive the round trip, or it protects nothing.</summary>
         [Fact]
         public void SetupSurvivesSaveAndLoad()
         {
@@ -114,7 +110,8 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>A map saved by an older version has no setup and must not claim one.</summary>
+        /// <summary>A map saved by an older version has no recorded context, and must not
+        /// load as though it had one.</summary>
         [Fact]
         public void MapWithoutSetup_RoundTripsAsUnknown()
         {

@@ -12,16 +12,12 @@ using static coppercli.Core.Communication.Machine;
 namespace coppercli.Tests.Fakes
 {
     /// <summary>
-    /// Simple mock implementation of IMachine for unit tests.
-    /// Allows direct control of all state - no simulation logic.
-    /// Use for testing controller FSM transitions and event handling.
+    /// An IMachine whose state a test sets directly. Nothing moves or changes on its own here
+    /// apart from the door rules and the Z rapid in <see cref="ApplyRapidZ"/>; a test that needs
+    /// a move to take time uses FakeMachine instead.
     /// </summary>
     public class MockMachine : IMachine, IDisposable
     {
-        // =========================================================================
-        // State (directly settable for tests)
-        // =========================================================================
-
         public OperatingMode Mode { get; set; } = OperatingMode.Manual;
         /// <inheritdoc/>
         public string StatusSubState { get; set; } = string.Empty;
@@ -41,7 +37,7 @@ namespace coppercli.Tests.Fakes
         public Vector3 WorkOffset { get; set; } = new Vector3();
         public Vector3 G54Offset { get; set; } = new Vector3();
 
-        /// <summary>Set false to simulate GRBL not answering $#.</summary>
+        /// <summary>Set false for a machine that does not reply to $#.</summary>
         public bool WorkOffsetQuerySucceeds { get; set; } = true;
         public int WorkOffsetQueryCount { get; private set; }
 
@@ -56,17 +52,9 @@ namespace coppercli.Tests.Fakes
 
         public long StatusReportCount { get; set; }
 
-        // =========================================================================
-        // File state
-        // =========================================================================
-
         private List<string> _fileLines = new();
         public ReadOnlyCollection<string> File => _fileLines.AsReadOnly();
         public int FilePosition { get; set; }
-
-        // =========================================================================
-        // Command recording (for verification)
-        // =========================================================================
 
         public List<string> SentCommands { get; } = new();
 
@@ -78,19 +66,11 @@ namespace coppercli.Tests.Fakes
         public int ProbeStartCount { get; private set; }
         public int ProbeStopCount { get; private set; }
 
-        // =========================================================================
-        // Probing state
-        // =========================================================================
-
         public Vector3 LastProbePosMachine { get; set; } = new Vector3();
 
-        // =========================================================================
-        // IMachine implementation
-        // =========================================================================
-
         /// <summary>
-        /// Called with every line the machine is handed, so a test can change the mock's
-        /// state in response to a command, the way the real machine does.
+        /// Raised for every line sent, so a test can change the mock's state in response to a
+        /// command.
         /// </summary>
         public event Action<string>? LineSent;
 
@@ -109,13 +89,13 @@ namespace coppercli.Tests.Fakes
             LineSent?.Invoke(line);
         }
 
-        /// <summary>A machine that takes the line and never gets there.</summary>
+        /// <summary>Set true for a machine that accepts a move and never reaches the target.</summary>
         public bool IgnoreMoves { get; set; }
 
         /// <summary>
-        /// Follow a machine-coordinate rapid in Z, so a caller that waits for the tool to
-        /// reach a height sees it get there. A line sent while the machine holds queues in
-        /// GRBL's planner instead, so a retract sent at the door runs when the hold lifts.
+        /// Follows a machine-coordinate rapid in Z, so a caller waiting for the tool to reach a
+        /// height sees it arrive. A line sent while the machine holds queues in GRBL's planner
+        /// instead, so a retract sent at the door only runs once the hold lifts.
         /// </summary>
         private void ApplyRapidZ(string line)
         {
@@ -136,7 +116,6 @@ namespace coppercli.Tests.Fakes
             MachinePosition = new Vector3(MachinePosition.X, MachinePosition.Y, target);
         }
 
-        /// <summary>Set true to simulate a machine that will not begin streaming.</summary>
         public bool RefuseFileStart { get; set; }
 
         public bool FileStart()
@@ -203,10 +182,6 @@ namespace coppercli.Tests.Fakes
             _door.CycleStart(Status, StatusSubState);
         }
 
-        /// <summary>
-        /// A mock GRBL already holding at the door in the given substate, for tests that
-        /// start in that state.
-        /// </summary>
         public static MockMachine AtADoor(string subState)
         {
             var machine = new MockMachine();
@@ -214,18 +189,16 @@ namespace coppercli.Tests.Fakes
             return machine;
         }
 
-        /// <summary>The enclosure is open and the machine is holding.</summary>
         public void SimulateDoorOpen() =>
             SetStatus(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar);
 
         /// <summary>
-        /// The enclosure is closed and the machine is still holding, waiting for a cycle
-        /// start. A job start must recover from this state.
+        /// The enclosure reads closed and GRBL keeps holding until it takes a cycle start.
         /// </summary>
         public void SimulateDoorClosedAndHolding() =>
             SetStatus(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed);
 
-        /// <summary>GRBL is restoring from the park after a cycle start.</summary>
+        /// <summary>GRBL is moving the parked axes back after a cycle start.</summary>
         public void SimulateDoorResuming() =>
             SetStatus(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateResuming);
 
@@ -252,7 +225,6 @@ namespace coppercli.Tests.Fakes
             OperatingModeChanged?.Invoke();
         }
 
-        /// <summary>Set false for a machine GRBL will not open a probe cycle on.</summary>
         public bool ProbeStartSucceeds { get; set; } = true;
 
         public bool ProbeStart()
@@ -266,10 +238,6 @@ namespace coppercli.Tests.Fakes
             ProbeStopCount++;
         }
 
-        // =========================================================================
-        // Events
-        // =========================================================================
-
 #pragma warning disable CS0067 // Event is never used (required by interface)
         public event Action<string>? StatusReceived;
         public event Action<Vector3, bool>? ProbeFinished;
@@ -282,11 +250,6 @@ namespace coppercli.Tests.Fakes
         public event Action? FilePositionChanged;
 #pragma warning restore CS0067
 
-        // =========================================================================
-        // Test helpers
-        // =========================================================================
-
-        /// <summary>Load G-code lines for the file.</summary>
         public void LoadFile(params string[] lines)
         {
             _fileLines = new List<string>(lines);
@@ -294,8 +257,8 @@ namespace coppercli.Tests.Fakes
         }
 
         /// <summary>
-        /// Simulate a status as GRBL writes it on the wire, e.g. "Door:1", splitting it
-        /// the way Machine does.
+        /// Takes a status as GRBL writes it on the wire, e.g. "Door:1", and splits it the way
+        /// Machine does.
         /// </summary>
         public void SimulateStatusChange(string newStatus)
         {
@@ -306,51 +269,46 @@ namespace coppercli.Tests.Fakes
             StatusReceived?.Invoke($"<{newStatus}|MPos:0,0,0|WPos:0,0,0>");
         }
 
-        /// <summary>Simulate mode change and fire event.</summary>
         public void SimulateModeChange(OperatingMode newMode)
         {
             Mode = newMode;
             OperatingModeChanged?.Invoke();
         }
 
-        /// <summary>Simulate probe completion.</summary>
         public void SimulateProbeFinished(Vector3 position, bool success)
         {
             ProbeFinished?.Invoke(position, success);
         }
 
-        /// <summary>Simulate GRBL refusing a command, the way a real controller does.</summary>
         public void SimulateRejection(int code, string command, string description = "")
         {
             CommandRejected?.Invoke(new GrblRejection(code, command, description));
         }
 
-        /// <summary>Simulate an error.</summary>
         public void SimulateError(string message)
         {
             NonFatalException?.Invoke(message);
         }
 
-        /// <summary>Simulate file progress (advance position).</summary>
         public void SimulateFileProgress(int newPosition)
         {
             FilePosition = newPosition;
             FilePositionChanged?.Invoke();
         }
 
-        /// <summary>Reset all recorded commands and counts.</summary>
         public void ResetRecording()
         {
             SentCommands.Clear();
             FeedHoldCount = 0;
             CycleStartCount = 0;
             SoftResetCount = 0;
+            ProbeStartCount = 0;
+            ProbeStopCount = 0;
         }
 
-        /// <summary>Check if a specific command was sent.</summary>
         public bool WasCommandSent(string command) => SentCommands.Contains(command);
 
-        /// <summary>Check if a command matching a pattern was sent.</summary>
+        /// <summary>Matches each line sent against a .NET regular expression.</summary>
         public bool WasCommandSentMatching(string pattern)
         {
             foreach (var cmd in SentCommands)

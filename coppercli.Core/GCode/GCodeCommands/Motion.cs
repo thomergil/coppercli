@@ -22,23 +22,13 @@ namespace coppercli.Core.GCode.GCodeCommands
             get { return End - Start; }
         }
 
-        /// <summary>
-        /// Total travel distance of tool
-        /// </summary>
         public abstract double Length { get; }
 
-        /// <summary>
-        /// Get intermediate point along the path
-        /// </summary>
-        /// <param name="ratio">ratio between intermediate point and end</param>
-        /// <returns>intermediate point</returns>
+        /// <param name="ratio">0 at <see cref="Start"/>, 1 at <see cref="End"/>.</param>
         public abstract Vector3 Interpolate(double ratio);
 
-        /// <summary>
-        /// Split motion into smaller fragments, still following the same path
-        /// </summary>
-        /// <param name="length">the maximum allowed length per returned segment</param>
-        /// <returns>collection of smaller motions that together form this motion</returns>
+        /// <summary>Splits the motion into fragments that still follow the same path.</summary>
+        /// <param name="length">The longest any returned segment may be.</param>
         public abstract IEnumerable<Motion> Split(double length);
     }
 }

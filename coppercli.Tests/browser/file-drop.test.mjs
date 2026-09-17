@@ -1,5 +1,5 @@
-// Loading a board can drop the height map that was in hand. The terminal says why; without
-// this the browser operator watches it vanish from the probe panel with no reason given.
+// Loading a board can drop the height map already probed. The terminal prints the reason;
+// without this the browser removes it from the probe panel and prints nothing.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +9,6 @@ const { TEXT_HEIGHT_MAP_DROPPED, TEXT_FILE_LOADED } = await load('constants.js')
 const { format } = await load('helpers.js');
 const { state } = await load('state.js');
 
-// Returns the page after a load whose reply carried `reply`.
 async function pageAfterLoad(reply) {
     const dom = installDom();
     globalThis.fetch = async () => ({ ok: true, json: async () => reply });

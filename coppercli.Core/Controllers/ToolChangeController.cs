@@ -12,19 +12,12 @@ using static coppercli.Core.Util.GCodeFormat;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Controller for tool change workflow (M6 handling).
-    ///
-    /// Phase is the state both front ends read to decide what to show, and
-    /// <see cref="ToolChangePhase"/> documents the two flows and what each phase means.
-    ///
-    /// After a page reload the browser asks /api/status, which reports the phase.
+    /// The tool change an M6 sets off. Phase is what both front ends read to decide what to
+    /// show - after a page reload the browser gets it from /api/status - and
+    /// <see cref="ToolChangePhase"/> carries the two flows and what each phase means.
     /// </summary>
     public class ToolChangeController : ControllerBase, IToolChangeController
     {
-        // =========================================================================
-        // Dependencies
-        // =========================================================================
-
         private readonly IMachine _machine;
 
         /// <inheritdoc/>
@@ -33,25 +26,16 @@ namespace coppercli.Core.Controllers
         private readonly Func<(double X, double? Y)?> _getToolSetterPosition;
         private readonly Func<ToolSetterConfig?> _getToolSetterConfig;
 
-        // =========================================================================
-        // State
-        // =========================================================================
-
         private ToolChangePhase _phase = ToolChangePhase.NotStarted;
         private readonly object _phaseLock = new();
         private ToolChangeInfo? _currentToolChange;
 
-        // The reference tool's length, measured at the start of a tool change, used to work
-        // out the new tool's offset. Cleared per tool change; see ResetRunState.
+        // The reference tool's length, measured at the start of a tool change and subtracted
+        // from the new tool's to give the offset. ResetRunState clears it for each change.
         private double _referenceToolLength;
 
-        // Return position after tool change
         private double _returnX;
         private double _returnY;
-
-        // =========================================================================
-        // Properties
-        // =========================================================================
 
         public ToolChangePhase Phase
         {
@@ -78,26 +62,14 @@ namespace coppercli.Core.Controllers
 
         public ToolChangeInfo? CurrentToolChange => _currentToolChange;
 
-        /// <summary>Configuration options for this tool change.</summary>
         public ToolChangeOptions Options { get; set; } = new();
-
-        // =========================================================================
-        // Events
-        // =========================================================================
 
         public event Action<ToolChangePhase>? PhaseChanged;
 
-        // =========================================================================
-        // Constructor
-        // =========================================================================
-
         /// <summary>
-        /// Create a ToolChangeController.
+        /// The tool setter is read through callbacks, not captured once, so a change to the
+        /// settings applies to the next tool change without rebuilding this controller.
         /// </summary>
-        /// <param name="machine">Machine interface</param>
-        /// <param name="hasToolSetter">Function to check if tool setter is configured</param>
-        /// <param name="getToolSetterPosition">Function to get tool setter XY position</param>
-        /// <param name="getToolSetterConfig">Function to get tool setter probing config</param>
         public ToolChangeController(
             IMachine machine,
             Func<bool> hasToolSetter,
@@ -109,10 +81,6 @@ namespace coppercli.Core.Controllers
             _getToolSetterPosition = getToolSetterPosition ?? throw new ArgumentNullException(nameof(getToolSetterPosition));
             _getToolSetterConfig = getToolSetterConfig ?? throw new ArgumentNullException(nameof(getToolSetterConfig));
         }
-
-        // =========================================================================
-        // IToolChangeController implementation
-        // =========================================================================
 
         public async Task<bool> HandleToolChangeAsync(ToolChangeInfo info, CancellationToken ct = default)
         {
@@ -132,20 +100,18 @@ namespace coppercli.Core.Controllers
             {
                 TransitionTo(ControllerState.Initializing);
 
-                // Wait for any buffered commands to complete
+                // Buffered commands finish first, so the position read below is where the
+                // M6 actually left the tool.
                 await MachineWait.WaitForIdleAsync(_machine, IdleWaitTimeoutMs, ct);
 
-                // Store return position
                 _returnX = _machine.WorkPosition.X;
                 _returnY = _machine.WorkPosition.Y;
 
-                // Raise Z to clearance
                 Phase = ToolChangePhase.RaisingZ;
                 await RaiseZToClearanceAsync(ct);
 
                 TransitionTo(ControllerState.Running);
 
-                // Route to appropriate workflow
                 bool success;
                 if (HasToolSetter)
                 {
@@ -163,7 +129,7 @@ namespace coppercli.Core.Controllers
 
                 if (success)
                 {
-                    // The run's state says it finished. Phase names the step of work and
+                    // The run has reached its terminal state. Phase names the step of work and
                     // there is no step left, so the completion message is emitted here.
                     EmitProgress(new ProgressInfo(
                         nameof(ControllerState.Completing), ProgressPercentComplete, MessageToolChangeComplete));
@@ -202,14 +168,9 @@ namespace coppercli.Core.Controllers
             }
         }
 
-        // =========================================================================
-        // IController implementation
-        // =========================================================================
-
         /// <inheritdoc/>
         protected override void ResetRunState()
         {
-            // NotStarted means no step is under way. ControllerState says whether a run is.
             lock (_phaseLock)
             {
                 _phase = ToolChangePhase.NotStarted;
@@ -219,14 +180,13 @@ namespace coppercli.Core.Controllers
             _returnX = 0;
             _returnY = 0;
 
-            // A tool length measured against one tool change says nothing about the next,
-            // where the operator has been free to fit anything.
+            // A tool length measured for one tool change does not apply to the next, where
+            // the operator has been free to fit anything.
             _referenceToolLength = 0;
         }
 
         protected override Task RunAsync(CancellationToken ct)
         {
-            // Not used - HandleToolChangeAsync is the entry point
             throw new NotImplementedException("Use HandleToolChangeAsync instead");
         }
 
@@ -252,14 +212,10 @@ namespace coppercli.Core.Controllers
             await StopAndLiftAsync(SafeClearanceZ, CancelRetractTimeoutMs).ConfigureAwait(false);
         }
 
-        // =========================================================================
-        // Workflow phases
-        // =========================================================================
-
         /// <summary>
-        /// Raise Z to the clearance height, and stop the run if it cannot be confirmed. The
-        /// only place this run sends that move. Every caller follows it with an XY rapid, and
-        /// an unconfirmed retract means the tool may still be down.
+        /// Raise Z to the clearance height, and stop the run if it cannot be confirmed. Every
+        /// caller follows it with an XY rapid, and an unconfirmed retract means the tool may
+        /// still be down.
         /// </summary>
         /// <exception cref="InvalidOperationException">The tool did not reach the height.</exception>
         private async Task RaiseZToClearanceAsync(CancellationToken ct)
@@ -274,9 +230,8 @@ namespace coppercli.Core.Controllers
 
         private async Task<bool> HandleWithToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
         {
-            // Always measure the reference tool: the user may have changed it manually
-            // between jobs, so a cached length cannot be trusted (which is also why it is
-            // not persisted across sessions).
+            // The reference tool is measured every time, and never persisted: the operator
+            // may have changed it by hand between jobs.
             Phase = ToolChangePhase.MovingToToolSetter;
             await MoveToToolSetterAsync(setterPos, ct);
 
@@ -290,21 +245,17 @@ namespace coppercli.Core.Controllers
 
             _referenceToolLength = refLength.Value;
 
-            // Raise Z after probing
             Phase = ToolChangePhase.RaisingZ;
             await RaiseZToClearanceAsync(ct);
 
-            // Move to work area center for tool swap
             Phase = ToolChangePhase.MovingToWorkArea;
             await MoveToWorkAreaCenterAsync(ct);
 
-            // Prompt user to change tool
             if (!await PromptForToolChangeAsync(ToolChangePrompt, ct))
             {
                 return false;
             }
 
-            // Measure new tool
             Phase = ToolChangePhase.MovingToToolSetter;
             await MoveToToolSetterAsync(setterPos, ct);
 
@@ -316,13 +267,11 @@ namespace coppercli.Core.Controllers
                 return false;
             }
 
-            // Calculate and apply offset
             Phase = ToolChangePhase.ApplyingOffset;
             double offset = newLength.Value - _referenceToolLength;
-            // Read G54 itself, not the combined WCO. WorkOffset is G54 + G92 + tool
-            // length offset, but the write below is G10 L2 P1, which sets G54 alone -
-            // so starting from the combined figure would re-datum Z by whatever the
-            // other two contribute, at every tool change.
+            // Read G54 itself, not the combined WCO: WorkOffset is G54 + G92 + tool length
+            // offset, while the write below is G10 L2 P1, which sets G54 alone. Starting from
+            // the combined figure would re-datum Z at every tool change.
             if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct))
             {
                 throw new InvalidOperationException(ErrorWorkOffsetUnknown);
@@ -342,7 +291,6 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(ErrorToolOffsetNotTaken);
             }
 
-            // Return to original position
             Phase = ToolChangePhase.Returning;
             await ReturnToPositionAsync(ct);
 
@@ -351,14 +299,11 @@ namespace coppercli.Core.Controllers
 
         private async Task<bool> HandleWithoutToolSetterAsync(CancellationToken ct)
         {
-            // First prompt: change tool
             if (!await PromptForToolChangeAsync(ToolChangePrompt, ct))
             {
                 return false;
             }
 
-            // Second prompt: user jogs to PCB surface and sets Z0
-            // User navigates to jog screen, sets Z0 manually, then presses Continue
             if (!await PromptForZeroZAsync(ct))
             {
                 return false;
@@ -368,9 +313,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Asks the operator to set Z0 by hand. Only on the path for a machine with no tool
-        /// setter; with one, HandleWithToolSetterAsync measures it instead.
-        /// User navigates to jog screen, jogs to PCB surface, sets Z0, returns and presses Continue.
+        /// Asks the operator to jog to the PCB surface and set Z0 by hand. Only on the path
+        /// for a machine with no tool setter; with one, HandleWithToolSetterAsync measures it.
         /// </summary>
         private async Task<bool> PromptForZeroZAsync(CancellationToken ct)
         {
@@ -390,14 +334,7 @@ namespace coppercli.Core.Controllers
             return true;
         }
 
-        // =========================================================================
-        // User interaction helpers
-        // =========================================================================
-
-        /// <summary>
-        /// Prompts user to change tool and handles abort.
-        /// Returns true if user chose to continue, false if aborted.
-        /// </summary>
+        /// <summary>Returns false when the operator aborted.</summary>
         private async Task<bool> PromptForToolChangeAsync(string promptFormat, CancellationToken ct)
         {
             Phase = ToolChangePhase.WaitingForToolChange;
@@ -421,10 +358,6 @@ namespace coppercli.Core.Controllers
             return true;
         }
 
-        // =========================================================================
-        // Movement helpers
-        // =========================================================================
-
         private async Task MoveToToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
         {
             string cmd = Inv($"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1}");
@@ -438,9 +371,6 @@ namespace coppercli.Core.Controllers
 
         private async Task MoveToWorkAreaCenterAsync(CancellationToken ct)
         {
-            // Move to work area center for accessible tool swap
-            // Use Options.WorkAreaCenter if provided (calculated from file bounds by caller)
-            // Otherwise fall back to return position (where M6 was encountered)
             double targetX = Options.WorkAreaCenter?.X ?? _returnX;
             double targetY = Options.WorkAreaCenter?.Y ?? _returnY;
 
@@ -456,10 +386,6 @@ namespace coppercli.Core.Controllers
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
         }
 
-        // =========================================================================
-        // Probing helpers
-        // =========================================================================
-
         private async Task<double?> ProbeToolSetterAsync(CancellationToken ct)
         {
             var config = _getToolSetterConfig();
@@ -468,25 +394,20 @@ namespace coppercli.Core.Controllers
             double slowFeed = config?.SlowFeed ?? ToolSetterProbeFeed;
             double retract = config?.Retract ?? ToolSetterRetract;
 
-            // No rapid pre-approach. The only height available to aim one at is the
-            // trigger height of the PREVIOUS probe, and within a tool change that probe
-            // was taken with the previous tool. A tool longer than the clearance margin
-            // would be driven into the setter at rapid speed. The seek probe below starts
-            // from wherever Z is, which is what it is for.
-
-            // Fast seek probe
+            // No rapid pre-approach: the only height to aim one at is the trigger height of
+            // the previous probe, taken with the previous tool, so a tool longer than the
+            // clearance margin would be driven into the setter at rapid speed. The seek probe
+            // starts from wherever Z is, which is what it is for.
             var (seekSuccess, seekZ) = await ExecuteProbeAsync(-probeDepth, fastFeed, ct);
             if (!seekSuccess)
             {
                 return null;
             }
 
-            // Retract
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{seekZ + retract:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
 
-            // Slow precise probe
             double slowTarget = seekZ - 1.0;
             var (probeSuccess, probeZ) = await ExecuteProbeToMachineZAsync(slowTarget, slowFeed, ct);
             if (!probeSuccess)
@@ -494,7 +415,6 @@ namespace coppercli.Core.Controllers
                 return null;
             }
 
-            // Retract after probing
             _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{probeZ + retract:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
 
@@ -537,10 +457,6 @@ namespace coppercli.Core.Controllers
             return await ExecuteProbeAsync(targetWorkZ, feed, ct);
         }
 
-        // =========================================================================
-        // Helpers
-        // =========================================================================
-
         private static string GetPhaseMessage(ToolChangePhase phase)
         {
             return phase switch
@@ -560,9 +476,6 @@ namespace coppercli.Core.Controllers
         }
     }
 
-    /// <summary>
-    /// Configuration for tool setter probing.
-    /// </summary>
     public class ToolSetterConfig
     {
         public double X { get; set; }

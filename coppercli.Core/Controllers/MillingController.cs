@@ -16,43 +16,32 @@ using static coppercli.Core.Util.GCodeFormat;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Controller for milling operations. Manages the complete milling workflow:
-    /// settling, homing, safety retract, initialization, file streaming, and M6 detection.
-    /// Both TUI and Web UI use this controller - logic is implemented here, not in UI.
-    /// Uses IMachine interface to enable unit testing with mocks.
+    /// The milling workflow: settle, home, retract, configure the machine, stream the file and
+    /// catch the M6 in it. Both front ends drive this one controller and neither holds any part
+    /// of the workflow itself.
     /// </summary>
     public class MillingController : ControllerBase, IMillingController
     {
-        // =========================================================================
-        // Dependencies
-        // =========================================================================
-
         private readonly IMachine _machine;
 
         /// <inheritdoc/>
         protected override IMachine Machine => _machine;
 
-        // =========================================================================
-        // State
-        // =========================================================================
-
         private MillingPhase _phase = MillingPhase.NotStarted;
         private readonly object _phaseLock = new();
         private CancellationTokenSource? _pauseCts;
 
-        // Snapshot of options at start (immutable during operation)
         private double _depthAdjustment;
 
-        // How much depth adjustment is currently sitting in GRBL's G54 Z and has not
-        // been taken back out again; 0 when the origin is clean. This describes the
-        // machine, not the run, so it outlives both - see ResetRunState.
+        // How much depth adjustment is sitting in GRBL's G54 Z and has not been taken back
+        // out; 0 when the origin is clean. It describes the machine rather than the run, so
+        // ResetRunState leaves it alone.
         private double _outstandingDepthAdjustment;
 
-        // Cutting path tracking for visualization (rounded to avoid explosion of points)
         private readonly HashSet<(double X, double Y)> _cuttingPathSet = new();
         private readonly List<(double X, double Y)> _cuttingPath = new();
         private readonly object _cuttingPathLock = new();
-        private const double CuttingPathRoundingMm = 0.1;  // Round to 0.1mm
+        private const double CuttingPathRoundingMm = 0.1;
 
         public MillingPhase Phase
         {
@@ -87,30 +76,14 @@ namespace coppercli.Core.Controllers
             }
         }
 
-        // =========================================================================
-        // Configuration
-        // =========================================================================
-
         public MillingOptions Options { get; set; } = new();
 
-        // =========================================================================
-        // Events
-        // =========================================================================
-
         public event Action<ToolChangeInfo>? ToolChangeDetected;
-
-        // =========================================================================
-        // Constructor
-        // =========================================================================
 
         public MillingController(IMachine machine)
         {
             _machine = machine ?? throw new ArgumentNullException(nameof(machine));
         }
-
-        // =========================================================================
-        // IController implementation
-        // =========================================================================
 
         protected override async Task RunAsync(CancellationToken ct)
         {
@@ -120,40 +93,31 @@ namespace coppercli.Core.Controllers
 
             ControllerLog.Log(LogMillingStart, _depthAdjustment);
 
-            // Start from a known mode. A probe run that ended just before this can leave
-            // the machine in Probe mode, in which every setup command still goes through
-            // but FileStart later refuses - so put it back to Manual up front rather than
-            // discover the problem at the point of streaming.
+            // A probe run that ended just before this leaves the machine in Probe mode, where
+            // every setup command still goes through but FileStart refuses. Put back to Manual
+            // up front, rather than finding out at the point of streaming.
             _machine.EnsureManualMode();
 
-            // === ENCLOSURE ===
             await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
 
-            // === SETTLING PHASE ===
             await SettleAsync(ct);
 
-            // === HOMING (if needed) ===
             if (Options.RequireHoming)
             {
                 await HomeIfNeededAsync(ct);
             }
 
-            // === SAFETY RETRACT ===
             await SafetyRetractAsync(ct);
 
-            // === INITIALIZE MACHINE STATE ===
             await InitializeMachineAsync(ct);
 
-            // === APPLY DEPTH ADJUSTMENT ===
             await ApplyDepthAdjustmentAsync(ct);
 
-            // === START MILLING ===
             TransitionTo(ControllerState.Running);
             Phase = MillingPhase.Milling;
 
             await MonitorMillingAsync(ct);
 
-            // === COMPLETION ===
             // A cancelled run has not completed. Falling through to CompleteAsync would
             // try to move Paused -> Completing, which the FSM forbids, so an operator
             // who abandoned a tool change would be told the job failed.
@@ -190,10 +154,9 @@ namespace coppercli.Core.Controllers
 
             _depthAdjustment = 0;
 
-            // _outstandingDepthAdjustment is deliberately NOT cleared: it measures what is
-            // still in GRBL's G54 Z, which no reset here can take back out. Clearing it
-            // would strand that shift in the origin, and the next run would measure its
-            // own adjustment from a zero that had already moved.
+            // _outstandingDepthAdjustment is deliberately not cleared: it measures what is
+            // still in GRBL's G54 Z, which no reset here can take back out. Clearing it would
+            // strand that shift, and the next run would measure from a zero that had moved.
         }
 
         public override void Pause()
@@ -206,10 +169,9 @@ namespace coppercli.Core.Controllers
 
             _machine.FeedHold();
 
-            // Phase is left alone: it names the step of work, which Resume reads to decide
-            // whether the M0 after an M6 is redundant. ControllerState carries paused.
-            // Transition before cancelling: cancelling wakes the monitor loop, which reads
-            // IsPaused immediately.
+            // Phase is left alone: Resume reads it to decide whether the M0 after an M6 is
+            // redundant, and ControllerState is what carries paused. Transition before
+            // cancelling, because cancelling wakes the monitor loop, which reads IsPaused at once.
             TransitionTo(ControllerState.Paused);
             _pauseCts?.Cancel();
         }
@@ -221,8 +183,6 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // Skip M0 if resuming from tool change (pcb2gcode generates M6+M0 sequence)
-            // The M0 is redundant since tool change already paused for user action
             if (Phase == MillingPhase.ToolChange)
             {
                 int m0Line = FindRedundantM0(_machine.FilePosition);
@@ -244,9 +204,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Finds the note explaining a pause. pcb2gcode writes one as a comment on or just
-        /// above the M0, so the prompt can say why the program stopped. Returns null when
-        /// there is no comment.
+        /// Finds the note explaining a pause: pcb2gcode writes one as a comment on or just
+        /// above the M0, so the prompt can quote it. Returns null when there is no comment.
         /// </summary>
         private string? FindPauseNote(int pauseLine)
         {
@@ -265,12 +224,10 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Finds the M0 that pcb2gcode emits just after an M6, looking past the comment
-        /// and blank lines it puts in between. The tool change has already prompted the
-        /// operator, so that M0 would prompt a second time for the same thing.
-        ///
-        /// Returns -1 unless the next actual instruction is the M0, so only a genuinely
-        /// redundant one is skipped and a deliberate pause further down still stops.
+        /// Finds the M0 that pcb2gcode emits just after an M6, past the comment and blank
+        /// lines it puts in between; the tool change already prompted, so that M0 would ask a
+        /// second time. Returns -1 unless the next actual instruction is the M0, so a
+        /// deliberate pause further down still stops the run.
         /// </summary>
         private int FindRedundantM0(int from)
         {
@@ -298,9 +255,8 @@ namespace coppercli.Core.Controllers
             MachineWait.IsDoor(_machine) ? ErrorDoorBlocksResume : ErrorMillingDidNotStart;
 
         /// <summary>
-        /// Restart the stream after a Pause or an acknowledged M0/M1. Releases a feed hold,
-        /// refuses a door hold, then restarts sending. Resume() and the M0/M1 continue path
-        /// both use this, so there is one copy.
+        /// Releases a feed hold, refuses a door hold, then restarts sending. Resume() and the
+        /// M0/M1 continue path both come through here, so the sequence is written once.
         /// </summary>
         private bool RestartStreaming()
         {
@@ -323,10 +279,6 @@ namespace coppercli.Core.Controllers
 
             return true;
         }
-
-        // =========================================================================
-        // Workflow phases
-        // =========================================================================
 
         private async Task SettleAsync(CancellationToken ct)
         {
@@ -374,7 +326,7 @@ namespace coppercli.Core.Controllers
                     ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
                     if (!await MachineWait.EnsureMachineReadyAsync(_machine, IdleWaitTimeoutMs, ct))
                     {
-                        // Door open, alarmed, or still moving - settling cannot proceed.
+                        // Door open, alarmed or still moving, so the settle count restarts.
                         ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
                     }
                     stableCount = 0;
@@ -404,8 +356,6 @@ namespace coppercli.Core.Controllers
 
             EmitProgress(new ProgressInfo(PhaseHoming, 0, MessageHoming));
 
-            // MachineWait.HomeAsync is the only place that decides whether the machine
-            // homed and sets IsHomed.
             var outcome = await MachineWait.HomeAsync(_machine, HomingTimeoutMs, ct);
 
             ControllerLog.Log("Homing: result={0}, status={1}, reason={2}",
@@ -413,7 +363,6 @@ namespace coppercli.Core.Controllers
 
             if (!outcome.Success)
             {
-                // Include what the machine reported.
                 throw new InvalidOperationException(outcome.Reason == null
                     ? ErrorHomingFailed
                     : string.Format(ErrorHomingFailedBecause, outcome.Reason));
@@ -449,7 +398,6 @@ namespace coppercli.Core.Controllers
 
             EmitProgress(new ProgressInfo(PhaseInitializing, 0, MessageInitializing));
 
-            // Set absolute mode and XY plane
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine(CmdPlaneXY);
 
@@ -480,10 +428,9 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(ErrorWorkOffsetUnknown);
             }
 
-            // The origin as the operator set it: whatever an earlier run left in there is
-            // taken off first. The adjustment is always measured from the zero they touched
-            // off, never from the last run's adjustment, so asking for 0.05 gives 0.05
-            // however the run before it ended.
+            // The origin as the operator set it, with whatever an earlier run left in there
+            // taken off first. The adjustment is measured from the zero they touched off, so
+            // asking for 0.05 gives 0.05 however the run before it ended.
             double baselineZ = _machine.G54Offset.Z - _outstandingDepthAdjustment;
             _outstandingDepthAdjustment = _depthAdjustment;
 
@@ -496,13 +443,10 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Takes the depth adjustment back out of the Z origin. Idempotent, and safe to
-        /// call from both the success and the cleanup path.
-        ///
-        /// Subtracts from the CURRENT G54 rather than writing back the value captured at
-        /// the start: a tool change during the job legitimately rewrites that same offset
-        /// to compensate the new tool's length, and restoring an absolute snapshot would
-        /// discard that compensation while reporting the job finished normally.
+        /// Takes the depth adjustment back out of the Z origin; idempotent, so both the
+        /// success path and the cleanup path may call it. It subtracts from the current G54
+        /// rather than writing back the value captured at the start, because a tool change
+        /// rewrites that same offset for the new tool's length and a snapshot would undo it.
         /// </summary>
         private async Task RestoreDepthAdjustmentAsync()
         {
@@ -539,8 +483,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Tells the operator the origin is still shifted. Logged only, the run reported
-        /// itself finished and every later job cut at the wrong depth with nothing said.
+        /// Reports to the operator that the origin is still shifted. A log line is not enough:
+        /// the run reports itself finished, and every later job would cut at the wrong depth.
         /// </summary>
         private void ReportDepthAdjustmentNotRestored(string why)
         {
@@ -571,9 +515,9 @@ namespace coppercli.Core.Controllers
                 // A run can start and stop again between two polls: an M6 near the top of
                 // the file is swallowed and pauses for the tool change, and a short file
                 // simply finishes. Both leave SendFile behind, so the position - which
-                // MonitorMillingAsync just rewound to zero - is what says lines were
-                // consumed. Without this a two-tool job whose first section is short
-                // enough is told it never started.
+                // MonitorMillingAsync just rewound to zero - is the evidence that lines were
+                // consumed; without it a two-tool job with a short first section is reported
+                // as never having started.
                 if (_machine.FilePosition > 0)
                 {
                     return true;
@@ -594,10 +538,9 @@ namespace coppercli.Core.Controllers
 
         private async Task MonitorMillingAsync(CancellationToken ct)
         {
-            // Start file sending. If it does not begin - the machine is not in Manual
-            // mode, for instance because a prior operation left it in Probe mode. The
-            // completion check below cannot tell "never started" from "finished", since
-            // both look like idle-and-not-running, so say so and stop here.
+            // The completion check below cannot tell "never started" from "finished", since
+            // both read as idle-and-not-running. A stream that does not begin - the machine is
+            // not in Manual mode, for instance - is reported here instead.
             _machine.FileGoto(0);
 
             if (!_machine.FileStart())
@@ -629,13 +572,11 @@ namespace coppercli.Core.Controllers
                     throw new InvalidOperationException(ErrorMillingAlarm);
                 }
 
-                // Check for completion
                 bool reachedEnd = _machine.FilePosition >= _machine.File.Count;
                 bool isRunning = _machine.Mode == OperatingMode.SendFile;
 
                 if (!isRunning && !IsPaused && reachedEnd)
                 {
-                    // Wait for stable idle to confirm completion
                     if (MachineWait.IsIdle(_machine))
                     {
                         stableIdleCount++;
@@ -655,7 +596,7 @@ namespace coppercli.Core.Controllers
                     stableIdleCount = 0;
                 }
 
-                // The enclosure opened mid-cut. The resume controls answer a feed hold, and
+                // The enclosure opened mid-cut. The resume controls apply to a feed hold, and
                 // this run is still Running, so neither screen can release it.
                 if (MachineWait.IsDoor(_machine))
                 {
@@ -663,13 +604,10 @@ namespace coppercli.Core.Controllers
                     continue;
                 }
 
-                // React to the stream having stopped mid-file (only once the machine is
-                // idle - buffered commands complete). Reaching true EOF is handled above;
-                // this is for M0/M1/M2/M30/M6, which stop the stream earlier than that. An
-                // M6 never reaches GRBL - it is swallowed here - so the machine drains its
-                // buffer and goes Idle. An M0 or M1 does reach GRBL, which treats it as a
-                // feed hold and reports Hold, so demanding Idle would leave that pause
-                // unanswered for the rest of the job.
+                // A stream stopped mid-file by M0/M1/M2/M30/M6, once the buffered commands
+                // have run; true EOF is handled above. An M6 never reaches GRBL - it is
+                // swallowed here - so the machine goes Idle, while an M0 or M1 does reach it
+                // and reports Hold, so demanding Idle would leave that pause unanswered.
                 bool stoppedAtPause = MachineWait.IsIdle(_machine) || MachineWait.IsHold(_machine);
 
                 if (!isRunning && !IsPaused && !reachedEnd && stoppedAtPause)
@@ -680,10 +618,8 @@ namespace coppercli.Core.Controllers
                     }
                 }
 
-                // Track cutting position for visualization
                 TrackCuttingPosition();
 
-                // Emit progress
                 float pct = TotalLines > 0 ? (100f * LinesCompleted / TotalLines) : 0;
                 EmitProgress(new ProgressInfo(
                     PhaseMilling,
@@ -716,18 +652,17 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Track current position if cutting (Z below threshold).
-        /// Coordinates are rounded to avoid storing excessive points.
+        /// Records the position only while Z is below the cutting threshold, rounded so a pass
+        /// does not store thousands of near-identical points.
         /// </summary>
         private void TrackCuttingPosition()
         {
             var pos = _machine.WorkPosition;
             if (pos.Z >= MillCuttingDepthThreshold)
             {
-                return;  // Not cutting
+                return;
             }
 
-            // Round to avoid explosion of nearly-identical points
             double x = Math.Round(pos.X / CuttingPathRoundingMm) * CuttingPathRoundingMm;
             double y = Math.Round(pos.Y / CuttingPathRoundingMm) * CuttingPathRoundingMm;
             var point = (x, y);
@@ -742,14 +677,10 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Handle a stream that stopped mid-file, classifying the line that stopped it with
-        /// the same GCodeParser.ClassifyPauseLine that Machine uses to pause there:
-        ///   - M6: <see cref="HandleToolChangePause"/>.
-        ///   - M0/M1: prompt the operator and wait
-        ///     (<see cref="HandleOperatorPauseAsync"/>).
-        ///   - M2/M30: the program is over, so the caller completes the run instead of
-        ///     waiting for more lines.
-        /// Returns true once the run should be treated as complete (M2/M30).
+        /// Classifies the line that stopped the stream with the same
+        /// GCodeParser.ClassifyPauseLine that Machine used to stop there. Returns true for
+        /// M2/M30, where the program is over and the caller completes the run rather than
+        /// waiting for more lines.
         /// </summary>
         private async Task<bool> HandlePausedStreamAsync(CancellationToken ct)
         {
@@ -783,18 +714,12 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Detects an M6 tool change and pauses the controller:
-        /// 1. Pauses, so the announcement finds the controller already paused
-        /// 2. Fires ToolChangeDetected
-        /// 3. A subscriber performs the tool change and calls Resume()
-        /// 4. Resume() skips the redundant M0 and restarts the stream
-        ///
-        /// The run stays parked until Resume() or cancellation, so a subscriber is free
-        /// to return at once and do the work elsewhere - both front ends do.
+        /// Pauses, then raises ToolChangeDetected, so a subscriber finds the controller
+        /// already paused. The run stays parked until Resume() or cancellation, so a subscriber
+        /// may return at once and do the work elsewhere, as both front ends do.
         /// </summary>
         private void HandleToolChangePause(int prevLine)
         {
-            // Extract tool number and name from G-code (searches nearby lines for comments)
             var (toolNumber, toolName) = GCodeParser.FindToolInfo(_machine.File, prevLine);
             int toolNum = toolNumber ?? 0;
 
@@ -810,9 +735,8 @@ namespace coppercli.Core.Controllers
             Phase = MillingPhase.ToolChange;
 
             // Announcing first leaves a window in which the run is still Running, and a
-            // subscriber that finishes the tool change inside it calls Resume() on a
-            // controller that was never paused, which throws on an unhandled thread. Pause
-            // first, so a subscriber always finds the state it expects.
+            // subscriber that finishes inside it calls Resume() on a controller that was never
+            // paused, which throws on an unhandled thread.
             var pauseCts = _pauseCts;
             TransitionTo(ControllerState.Paused);
             ToolChangeDetected?.Invoke(info);
@@ -831,11 +755,10 @@ namespace coppercli.Core.Controllers
         /// </summary>
         private async Task HandleOperatorPauseAsync(int prevLine, CancellationToken ct)
         {
-            // The machine stays where the hold left it. A tool change can retract because it
-            // tears the stream down and restarts it; a feed hold resumes the motion GRBL
-            // still has buffered, from wherever the machine is. Retracting here and returning
-            // would have to land on the same point to the micron or cut the rest of the pass
-            // from the wrong place, so the tool stays put and the prompt says so.
+            // The machine stays where the hold left it, because a feed hold resumes the
+            // motion GRBL still has buffered from wherever the tool is. Retracting and coming
+            // back would have to land on the same point to the micron, so the prompt warns
+            // that the tool is still down instead.
             string? note = FindPauseNote(prevLine);
             string message = note == null
                 ? OperatorPausePrompt
@@ -858,10 +781,8 @@ namespace coppercli.Core.Controllers
 
             if (response != OptionContinue)
             {
-                // The operator chose to stop rather than continue past the pause - end
-                // the run through the same cancellation path an external Stop takes, so
-                // cleanup (retract, spindle off) runs exactly once, from exactly one
-                // place, whichever way the operator asked for it.
+                // Ends the run through the same cancellation path an external Stop takes, so
+                // the retract and spindle-off run once, from one place, either way.
                 throw new OperationCanceledException();
             }
 

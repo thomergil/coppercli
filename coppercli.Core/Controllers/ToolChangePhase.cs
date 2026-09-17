@@ -1,9 +1,10 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// The step of work a tool change is on. Physical operations, not what the screen
-    /// shows, and never the run's own state: whether it finished is
-    /// <see cref="ControllerState"/>.
+    /// The step of work a tool change is on: physical operations, never the run's own state,
+    /// which is <see cref="ControllerState"/>. Two phases wait on the operator and each screen
+    /// shows something different - WaitingForToolChange prompts for the tool,
+    /// WaitingForZeroZ offers the jog screen - and in every other phase the machine is moving.
     ///
     /// With a tool setter, the offset is measured:
     ///   RaisingZ → MovingToToolSetter → MeasuringReference → RaisingZ
@@ -12,50 +13,33 @@ namespace coppercli.Core.Controllers
     ///
     /// Without one, the operator re-zeroes Z by hand:
     ///   RaisingZ → MovingToWorkArea → WaitingForToolChange → WaitingForZeroZ
-    ///
-    /// Two phases wait on the operator and each shows something different:
-    /// WaitingForToolChange prompts for the tool, WaitingForZeroZ offers the jog screen. In
-    /// every other phase the machine is moving.
     /// </summary>
     public enum ToolChangePhase
     {
-        /// <summary>Idle - no tool change in progress.</summary>
         NotStarted,
 
-        /// <summary>Raising Z to clearance height for safe travel.</summary>
+        /// <summary>Raising Z to the clearance height, so XY travel is safe.</summary>
         RaisingZ,
 
-        /// <summary>Moving XY to tool setter position (with a tool setter).</summary>
         MovingToToolSetter,
 
-        /// <summary>Probing reference tool on tool setter (with a tool setter).</summary>
         MeasuringReference,
 
-        /// <summary>Moving XY to work area center for user access.</summary>
+        /// <summary>Parking where the operator can reach the spindle.</summary>
         MovingToWorkArea,
 
-        /// <summary>
-        /// Waiting for user to change tool (both paths).
-        /// User prompt: "Change to tool T{N}, press Continue"
-        /// </summary>
         WaitingForToolChange,
 
-        /// <summary>
-        /// Waiting for user to set Z0 (without a tool setter).
-        /// User navigates to jog screen, sets Z0, clicks "Continue Milling".
-        /// </summary>
         WaitingForZeroZ,
 
-        /// <summary>Probing new tool on tool setter (with a tool setter).</summary>
         MeasuringNewTool,
 
-        /// <summary>Probing PCB surface after tool change.</summary>
         ProbingPCBSurface,
 
-        /// <summary>Calculating and applying Z work offset.</summary>
+        /// <summary>Applying the measured difference to the Z work offset.</summary>
         ApplyingOffset,
 
-        /// <summary>Returning XY to original position.</summary>
+        /// <summary>Moving XY back to where the M6 was reached.</summary>
         Returning
     }
 }

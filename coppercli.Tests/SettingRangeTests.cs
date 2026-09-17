@@ -24,7 +24,7 @@ namespace coppercli.Tests
 
                 Assert.Equal(Marker, binding.Read(settings));
 
-                // A row wired to a neighbour's property leaves that neighbour holding the
+                // A row wired to a neighbor's property leaves that neighbor holding the
                 // marker instead of its default.
                 var untouched = new MachineSettings();
                 foreach (var other in SettingRanges.All.Where(o => o.Range.Name != binding.Range.Name))
@@ -43,7 +43,7 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every default must be usable, or the loader would replace a bad value with another
+        /// A default outside its own range makes the loader replace a bad value with another
         /// bad one.
         /// </summary>
         [Fact]
@@ -69,8 +69,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The other side of the predicate. A Check that refused everything would pass a suite
-        /// that only asserts refusals, while the settings screen refused every edit.
+        /// A Check returning false for every value passes a suite that asserts only refusals,
+        /// and blocks every edit on the settings screen.
         /// </summary>
         [Fact]
         public void EverySetting_AcceptsAValueItsRangeAllows()

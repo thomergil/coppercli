@@ -5,15 +5,14 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Which browser connection the server keeps when a new one arrives. Nothing enforces a
-    /// single client, so this only decides what happens to the socket already stored.
+    /// IsSupersededClient governs which stored browser connection a new one replaces. Nothing
+    /// limits the server to one client, so it applies only to the socket already stored.
     /// </summary>
     public class WebClientConnectionTests
     {
         /// <summary>
-        /// A new connection from a browser replaces one it left behind, but not one still
-        /// open: that belongs to a second tab, which would be left sending commands with no
-        /// status.
+        /// A reconnecting browser replaces its own closed socket but not one still open: the
+        /// open socket is a second tab, which would then send commands and receive no status.
         /// </summary>
         [Theory]
         [InlineData(WebSocketState.Open, false)]
@@ -27,7 +26,6 @@ namespace coppercli.Tests
             Assert.Equal(superseded, CncWebServer.IsSupersededClient("abc", storedState, "abc"));
         }
 
-        /// <summary>Another browser's connection is never replaced.</summary>
         [Theory]
         [InlineData(WebSocketState.Open)]
         [InlineData(WebSocketState.Closed)]

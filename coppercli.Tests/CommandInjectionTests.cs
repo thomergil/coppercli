@@ -4,17 +4,15 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// One SendLine call must put exactly one command on the wire.
-    ///
-    /// The regression this pins: /api/zero interpolated a client-supplied axis list
-    /// straight into a G-code line. A newline in that list appended commands of the
-    /// caller's choosing - spindle on, then a plunge - to the line we meant to send.
-    /// GRBL's real-time bytes are the same hazard by another route.
+    /// ContainsControlCharacter is what holds one SendLine call to one command. A newline in
+    /// a client-supplied axis list appends a second command of the caller's choosing - spindle
+    /// on, then a plunge - to the G-code line, and GRBL's single-byte real-time commands reach
+    /// the machine the same way.
     /// </summary>
     public class CommandInjectionTests
     {
         [Theory]
-        [InlineData("X0\nM3 S24000")]        // a second command smuggled in
+        [InlineData("X0\nM3 S24000")]
         [InlineData("X0\r\nG1 Z-25 F800")]
         [InlineData("X0\u0018")]              // GRBL soft reset
         [InlineData("X0\u0085")]              // GRBL jog cancel

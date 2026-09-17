@@ -4,18 +4,12 @@ using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper for loading and querying machine profiles from YAML.
-    /// </summary>
     internal static class MachineProfiles
     {
         private const string ProfilesFileName = "machine-profiles.yaml";
 
         private static MachineProfilesFile? _cachedProfiles;
 
-        /// <summary>
-        /// Load machine profiles from YAML file.
-        /// </summary>
         public static MachineProfilesFile Load()
         {
             if (_cachedProfiles != null)
@@ -45,18 +39,12 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Get list of available machine profile IDs.
-        /// </summary>
         public static List<string> GetProfileIds()
         {
             var profiles = Load();
             return profiles.Machines?.Keys.ToList() ?? new List<string>();
         }
 
-        /// <summary>
-        /// Get a specific machine profile by ID.
-        /// </summary>
         public static MachineProfile? GetProfile(string id)
         {
             if (string.IsNullOrEmpty(id))
@@ -72,40 +60,29 @@ namespace coppercli.Helpers
             return null;
         }
 
-        /// <summary>
-        /// Check if a tool setter is configured (either from profile or manual settings).
-        /// </summary>
         public static bool HasToolSetter()
         {
             var settings = AppState.Settings;
 
-            // Manual override takes precedence
             if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
             {
                 return true;
             }
 
-            // Check selected profile
             var profile = GetProfile(settings.MachineProfile);
             return profile?.ToolSetter != null;
         }
 
-        /// <summary>
-        /// Get the effective tool setter configuration.
-        /// Manual settings override profile settings.
-        /// Returns null if no tool setter is configured.
-        /// </summary>
         public static ToolSetterConfig? GetToolSetterConfig()
         {
             var settings = AppState.Settings;
 
-            // Manual override takes precedence
+            // A manual position overrides the profile, and zero in both axes means none is set.
             if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
             {
                 return new ToolSetterConfig
                 {
                     X = settings.ToolSetterX,
-                    // Only set Y if non-zero (0 means "not configured" for manual override)
                     Y = settings.ToolSetterY != 0 ? settings.ToolSetterY : null,
                     ProbeDepth = ToolSetterProbeDepth,
                     FastFeed = ToolSetterSeekFeed,
@@ -114,16 +91,10 @@ namespace coppercli.Helpers
                 };
             }
 
-            // Fall back to profile
             var profile = GetProfile(settings.MachineProfile);
             return profile?.ToolSetter;
         }
 
-        /// <summary>
-        /// Get tool setter position (X, required; Y, optional).
-        /// Returns null if no tool setter is configured.
-        /// Y is null for machines where only X matters (e.g., moving-bed machines like Nomad 3).
-        /// </summary>
         public static (double X, double? Y)? GetToolSetterPosition()
         {
             var config = GetToolSetterConfig();
@@ -136,7 +107,6 @@ namespace coppercli.Helpers
 
         private static string GetProfilesPath()
         {
-            // Look for profiles file next to the executable
             string exeDir = AppDomain.CurrentDomain.BaseDirectory;
             string path = Path.Combine(exeDir, ProfilesFileName);
             if (File.Exists(path))
@@ -144,22 +114,17 @@ namespace coppercli.Helpers
                 return path;
             }
 
-            // Fall back to current directory (for development)
+            // A development build runs from the project directory, where the file is not
+            // beside the executable.
             return ProfilesFileName;
         }
     }
 
-    /// <summary>
-    /// Root structure of machine-profiles.yaml
-    /// </summary>
     public class MachineProfilesFile
     {
         public Dictionary<string, MachineProfile>? Machines { get; set; }
     }
 
-    /// <summary>
-    /// A single machine profile.
-    /// </summary>
     public class MachineProfile
     {
         public string? Name { get; set; }
@@ -167,21 +132,18 @@ namespace coppercli.Helpers
         public ToolSetterConfig? ToolSetter { get; set; }
     }
 
-    /// <summary>
-    /// Tool setter configuration including position and probe parameters.
-    /// </summary>
     public class ToolSetterConfig
     {
         public double X { get; set; }
         /// <summary>
-        /// Y position for tool setter. Nullable because some machines (e.g., Nomad 3)
-        /// have moving beds where only X matters to reach the tool setter.
+        /// Null on a machine with a moving bed, such as the Nomad 3, where only X is needed
+        /// to reach the tool setter.
         /// </summary>
         public double? Y { get; set; }
 
-        // Defaults come from the same constants the tool-change controller falls back to
-        // when a profile has no tool setter, so an omitted value and the fallback agree.
-        // Slow feed is the one that sets tool-length measurement accuracy.
+        // Defaults come from the same constants the tool-change controller falls back to when
+        // a profile has no tool setter, so an omitted value and the fallback agree. SlowFeed
+        // sets the accuracy of the tool-length measurement.
         public double ProbeDepth { get; set; } = Core.Util.Constants.ToolSetterProbeDepth;
         public double FastFeed { get; set; } = Core.Util.Constants.ToolSetterSeekFeed;
         public double SlowFeed { get; set; } = Core.Util.Constants.ToolSetterProbeFeed;

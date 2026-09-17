@@ -1,5 +1,3 @@
-// Macro menu for browsing and running macros
-
 using coppercli.Helpers;
 using coppercli.Menus;
 using Spectre.Console;
@@ -7,9 +5,6 @@ using static coppercli.CliConstants;
 
 namespace coppercli.Macro
 {
-    /// <summary>
-    /// Menu for browsing and running macro files.
-    /// </summary>
     internal static class MacroMenu
     {
         private enum MacroAction { Load, Run, Back }
@@ -55,9 +50,6 @@ namespace coppercli.Macro
             }
         }
 
-        /// <summary>
-        /// Browse for and select a macro file (does not run it).
-        /// </summary>
         private static void LoadMacro()
         {
             var path = BrowseForMacro();
@@ -69,18 +61,12 @@ namespace coppercli.Macro
             }
         }
 
-        /// <summary>
-        /// Browse for a macro file, starting from the last macro directory.
-        /// </summary>
         private static string? BrowseForMacro()
         {
             var session = AppState.Session;
             return FileMenu.BrowseForFile(new[] { MacroExtension }, startDirectory: session.LastMacroBrowseDirectory);
         }
 
-        /// <summary>
-        /// Saves macro path to session for "last used" tracking.
-        /// </summary>
         private static void SaveMacroSession(string path)
         {
             var session = AppState.Session;
@@ -93,17 +79,13 @@ namespace coppercli.Macro
             Persistence.SaveSession();
         }
 
-        /// <summary>
-        /// Run a macro from a file path, prompting for any placeholders.
-        /// </summary>
         public static void RunMacroFromPath(string path)
         {
             RunMacroFromPath(path, new Dictionary<string, string>());
         }
 
         /// <summary>
-        /// Run a macro from a file path with pre-provided placeholder values.
-        /// Missing placeholders will be prompted interactively.
+        /// A placeholder absent from `providedArgs` is browsed for before the run starts.
         /// </summary>
         public static void RunMacroFromPath(string path, Dictionary<string, string> providedArgs)
         {
@@ -114,7 +96,6 @@ namespace coppercli.Macro
                 var commands = MacroParser.Parse(path);
                 var macroName = Path.GetFileName(path);
 
-                // Extract placeholders and prompt for missing values
                 var placeholders = MacroParser.ExtractPlaceholders(commands);
                 if (placeholders.Count > 0)
                 {
@@ -127,7 +108,6 @@ namespace coppercli.Macro
                             continue;
                         }
 
-                        // Prompt for this placeholder
                         var displayName = ph.Name.Replace('_', ' ');
                         displayName = char.ToUpper(displayName[0]) + displayName[1..];
                         AnsiConsole.MarkupLine($"[{ColorWarning}]Select {Markup.Escape(displayName)}:[/]");
@@ -145,7 +125,6 @@ namespace coppercli.Macro
                     commands = MacroParser.SubstitutePlaceholders(commands, values);
                 }
 
-                // Save as last macro file
                 SaveMacroSession(path);
 
                 AnsiConsole.MarkupLine($"[{ColorDim}]Parsed {commands.Count} commands[/]");

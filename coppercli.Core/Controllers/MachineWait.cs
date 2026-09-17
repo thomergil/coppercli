@@ -14,39 +14,30 @@ using static coppercli.Core.Controllers.ControllerConstants;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Every derived answer about the machine, and every wait on one. It owns two
-    /// partitions of GRBL's status word - <see cref="DoorState"/> and
-    /// <see cref="MachineActivity"/> - and the answers the screens read from them, so no
-    /// screen works one out for itself. Takes IMachine so tests can drive it with a double.
+    /// Every derived answer about the machine, and every wait on one. It splits GRBL's status
+    /// word two ways - <see cref="DoorState"/> and <see cref="MachineActivity"/> - and holds
+    /// the answers the screens read from them, so no screen works one out for itself. It takes
+    /// IMachine rather than Machine so tests can drive it with a double.
     /// </summary>
     public static class MachineWait
     {
-        // =========================================================================
-        // Status checks
-        // =========================================================================
-
-        /// <summary>Checks if the machine is in Idle state.</summary>
         public static bool IsIdle(IMachine machine) => machine.Status == StatusIdle;
 
-        /// <summary>Checks if the machine is in Alarm state.</summary>
         public static bool IsAlarm(IMachine machine) => machine.Status.StartsWith(StatusAlarm);
 
-        /// <summary>Checks if the machine is in Hold state.</summary>
         public static bool IsHold(IMachine machine) => machine.Status.StartsWith(StatusHold);
 
-        /// <summary>Checks if the machine is in Door state.</summary>
         public static bool IsDoor(IMachine machine) => machine.Status.StartsWith(StatusDoor);
 
         /// <summary>
-        /// Door closed, machine parked, waiting for a cycle start. Callers use
-        /// <see cref="GetDoorState"/>.
+        /// Door closed, machine parked, waiting for a cycle start.
         /// </summary>
         private static bool IsDoorWaitingForResume(IMachine machine) =>
             IsDoor(machine) && machine.StatusSubState == DoorSubStateClosed;
 
         /// <summary>
         /// GRBL is restoring from the park after a cycle start. A second cycle start here
-        /// would land inside that move. Callers use <see cref="GetDoorState"/>.
+        /// would land inside that move.
         /// </summary>
         private static bool IsDoorResuming(IMachine machine) =>
             IsDoor(machine) && machine.StatusSubState == DoorSubStateResuming;
@@ -92,7 +83,6 @@ namespace coppercli.Core.Controllers
         /// <inheritdoc cref="CanReleaseDoorHold(DoorState)"/>
         public static bool CanReleaseDoorHold(IMachine machine) => CanReleaseDoorHold(GetDoorState(machine));
 
-        /// <summary>The message to show for a door state.</summary>
         public static string GetDoorMessage(DoorState state) => state switch
         {
             DoorState.Open => ControllerConstants.DoorOpenPrompt,
@@ -101,9 +91,8 @@ namespace coppercli.Core.Controllers
         };
 
         /// <summary>
-        /// Which <see cref="MachineActivity"/> the machine is in. Screens and controls read
-        /// this instead of GRBL's status word. The connected check is first because
-        /// Connected drops before the status word is rewritten.
+        /// Screens and controls read this instead of GRBL's status word. The connected check
+        /// comes first because Connected drops before the status word is rewritten.
         /// </summary>
         public static MachineActivity GetActivity(IMachine machine)
         {
@@ -222,16 +211,11 @@ namespace coppercli.Core.Controllers
         public static string? GetResumeBlocker(IMachine machine) =>
             IsDoor(machine) ? ControllerConstants.ErrorDoorBlocksResume : null;
 
-        // =========================================================================
-        // Blocking waits (async with cancellation)
-        // =========================================================================
-
         /// <summary>
-        /// Poll until a condition holds, the deadline passes, or the caller cancels. Every
-        /// wait here is this loop with a different predicate.
-        ///
-        /// Set <paramref name="abortWhenUnavailable"/> to false for waits whose subject is
-        /// an alarmed or held machine; the default returns false as soon as it sees one.
+        /// Poll until a condition holds, the deadline passes, or the caller cancels; every
+        /// wait here is this loop with a different predicate. Set
+        /// <paramref name="abortWhenUnavailable"/> to false for waits whose subject is an
+        /// alarmed or held machine, since the default returns false as soon as it sees one.
         /// </summary>
         private static async Task<bool> WaitUntilAsync(
             IMachine machine,
@@ -272,15 +256,12 @@ namespace coppercli.Core.Controllers
             return !ct.IsCancellationRequested && until(machine);
         }
 
-        /// <summary>
-        /// Wait for the machine to report Idle.
-        /// </summary>
         public static Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
             => WaitUntilAsync(machine, m => m.Status == StatusIdle, timeoutMs, ct);
 
         /// <summary>
-        /// Wait for the machine to stay idle. A single Idle report is not enough: GRBL
-        /// reports it while buffered motion is still about to start.
+        /// A single Idle report is not enough: GRBL reports Idle while buffered motion is
+        /// still about to start.
         /// </summary>
         private static Task<bool> WaitForStableIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
@@ -294,7 +275,7 @@ namespace coppercli.Core.Controllers
             }, timeoutMs, ct);
         }
 
-        /// <summary>Wait for machine Z position to reach target height (for G53 moves).</summary>
+        /// <summary>Machine Z, for a G53 move.</summary>
         private static Task<bool> WaitForMachineZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
             => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.MachinePosition.Z, ct);
 
@@ -310,9 +291,7 @@ namespace coppercli.Core.Controllers
                 timeoutMs,
                 ct);
 
-        /// <summary>
-        /// Wait for work Z position to reach target height.
-        /// </summary>
+        /// <summary>Work Z; <see cref="WaitForMachineZHeightAsync"/> is the G53 one.</summary>
         public static Task<bool> WaitForZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
             => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.WorkPosition.Z, ct);
 
@@ -332,25 +311,23 @@ namespace coppercli.Core.Controllers
         /// <see cref="WaitForIdleAsync"/>: that gives up as soon as the status reads Door,
         /// which it still does when the cycle start goes out.
         /// </summary>
-        /// <returns>True once the machine is out of the door state.</returns>
         private static Task<bool> WaitForDoorReleasedAsync(
             IMachine machine, int timeoutMs, CancellationToken ct = default)
             => WaitUntilAsync(machine, m => !IsDoor(m), timeoutMs, ct, abortWhenUnavailable: false);
 
         /// <summary>
         /// Wait for the machine to leave <paramref name="from"/>: either out of Door, or into
-        /// another door state. Not <see cref="WaitForDoorReleasedAsync"/>: closing the
-        /// enclosure moves GRBL from Door:1 to Door:0, which is still Door. A caller
-        /// watching for the door to clear waits out its whole timeout, and the screen tells
-        /// the operator to close a door they have already closed.
+        /// another door state. Not <see cref="WaitForDoorReleasedAsync"/>, because closing the
+        /// enclosure moves GRBL from Door:1 to Door:0, which is still Door, so a caller
+        /// watching for Door to clear waits out its whole timeout.
         /// </summary>
         /// <param name="onPoll">
         /// Runs on every poll, for a screen that redraws or reads a key. Returning true gives
         /// up on the wait.
         /// </param>
         /// <remarks>
-        /// Private: ClearDoorHoldAsync owns the loop that waits a door state out, so a screen
-        /// that waited on its own would be writing that policy again.
+        /// Private, because ClearDoorHoldAsync contains the one loop that waits a door state
+        /// out; a screen waiting on its own would write those rules a second time.
         /// </remarks>
         private static Task<bool> WaitForDoorStateChangeAsync(
             IMachine machine, DoorState from, int timeoutMs, CancellationToken ct = default,
@@ -358,10 +335,7 @@ namespace coppercli.Core.Controllers
             => WaitUntilAsync(machine, m => GetDoorState(m) != from, timeoutMs, ct,
                 abortWhenUnavailable: false, onPoll: onPoll);
 
-        /// <summary>
-        /// Wait for status to change from current value.
-        /// Returns the new status or null on timeout.
-        /// </summary>
+        /// <summary>Returns the new status, or null on timeout.</summary>
         public static async Task<string?> WaitForStatusChangeAsync(IMachine machine, string currentStatus, int timeoutMs, CancellationToken ct = default)
         {
             var elapsed = Stopwatch.StartNew();
@@ -379,18 +353,12 @@ namespace coppercli.Core.Controllers
             return null;
         }
 
-        // =========================================================================
-        // Reply awaiting
-        // =========================================================================
-
         /// <summary>
-        /// Await a reply, but not past a timeout. Cancellation surfaces as cancellation, not
-        /// as a timeout. Used for GRBL replies that may never arrive because the command was
-        /// rejected.
-        ///
-        /// Pass <paramref name="machine"/> to give up as soon as it stops responding: a
-        /// machine that parks at the door mid-probe never sends the reply, and the caller
-        /// would otherwise wait out the whole timeout with the tool still down.
+        /// Await a GRBL reply that may never arrive, because the command was rejected, and
+        /// give up at the timeout; cancellation surfaces as cancellation rather than as a
+        /// timeout. Pass <paramref name="machine"/> to give up as soon as it stops responding,
+        /// since a machine that parks at the door mid-probe never sends the reply and the
+        /// caller would otherwise wait out the whole timeout with the tool still down.
         /// </summary>
         public static async Task<T> AwaitReplyOrTimeoutAsync<T>(
             Task<T> reply, int timeoutMs, string timeoutMessage, CancellationToken ct,
@@ -422,15 +390,11 @@ namespace coppercli.Core.Controllers
             return await reply.ConfigureAwait(false);
         }
 
-        // =========================================================================
-        // Machine operations
-        // =========================================================================
-
         /// <summary>
-        /// Get the machine out of Door, or report why it is still there. Decides which door
-        /// states the operator can answer, how many refused releases are enough, and which
-        /// states are waited out. Callers supply how to ask and how to announce, and a way
-        /// out: a run its token, a screen an onPoll.
+        /// Get the machine out of Door, or report why it is still there. This one method
+        /// decides which door states the operator can answer, how many refused releases are
+        /// enough and which states are waited out; callers supply only how to ask, how to
+        /// announce, and a way out - a run its token, a screen an onPoll.
         /// </summary>
         /// <param name="ask">
         /// Puts the closed-door question to the operator. True sends the cycle start, which
@@ -470,7 +434,7 @@ namespace coppercli.Core.Controllers
                 if (!CanReleaseDoorHold(state))
                 {
                     // Nothing to answer: the operator closes the door, and the restore takes
-                    // as long as the machine's parking settings say. The wait ends on the
+                    // as long as the machine's parking settings specify. The wait ends on the
                     // next status report that shows a different state; the budget below is
                     // only there so a door nobody closes does not hold the loop forever.
                     announce(message);
@@ -573,9 +537,6 @@ namespace coppercli.Core.Controllers
                 abortWhenUnavailable: false);
         }
 
-        /// <summary>
-        /// Prepare machine for operation: wait for Idle and confirm nothing is wrong.
-        /// </summary>
         /// <returns>
         /// True only if the machine reached Idle and is not alarmed. A machine still running
         /// or held is not ready: motion sent to it queues behind what it is already doing.
@@ -595,15 +556,13 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Stop machine motion and clear command buffer.
-        /// Sends FeedHold and SoftReset, clears any resulting Alarm, then commands
-        /// spindle off.
-        /// Use when cancelling operations to prevent buffered commands from resuming.
+        /// Sends FeedHold then SoftReset, clears any alarm that follows, and commands the
+        /// spindle off. Use it when cancelling, so buffered commands cannot resume.
         /// </summary>
         /// <returns>
-        /// True if the machine was holding at the door when the stop was sent. The soft
-        /// reset below moves it from Door to Alarm, so this is the last chance to read it.
-        /// ControllerBase.RetractToSafeZAsync needs the answer.
+        /// True if the machine was holding at the door when the stop was sent, which
+        /// ControllerBase.RetractToSafeZAsync needs. The soft reset below moves it from Door
+        /// to Alarm, so this is the last chance to read it.
         /// </returns>
         public static async Task<bool> StopAndResetAsync(IMachine machine)
         {
@@ -653,7 +612,7 @@ namespace coppercli.Core.Controllers
         /// <returns>Why the offset was not written, or null once GRBL took it.</returns>
         public static async Task<string?> ZeroWorkOffsetAsync(IMachine machine, string axes, CancellationToken ct = default)
         {
-            // GRBL locks G-code out in Alarm and answers nothing at all when asleep or
+            // GRBL locks G-code out in Alarm and returns nothing at all when asleep or
             // disconnected, so the line would be dropped. A door hold is different: GRBL
             // keeps the line in its planner and runs it on the cycle start.
             var activity = GetActivity(machine);
@@ -677,7 +636,6 @@ namespace coppercli.Core.Controllers
             try
             {
                 machine.SendLine(Inv($"{CmdZeroWorkOffset} {axes}"));
-                // G10 L20 doesn't cause a state change, so wait for command to be processed
                 await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
                 await WaitForIdleAsync(machine, IdleSettleMs, ct).ConfigureAwait(false);
             }
@@ -709,9 +667,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Home the machine and wait for completion.
-        /// This is the SINGLE SOURCE OF TRUTH for homing - all code paths use this.
-        /// Sets machine.IsHoming during operation, machine.IsHomed = true on success.
+        /// The only code that sets `machine.IsHomed`, and it sets it only once the machine has
+        /// homed. `machine.IsHoming` stays true for the duration.
         /// </summary>
         public static async Task<HomingOutcome> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
@@ -742,10 +699,9 @@ namespace coppercli.Core.Controllers
 
                 if (started == null)
                 {
-                    // Two reasons for no state change. Still reporting and still Idle
-                    // means the $H was not accepted. Gone quiet means homing is under way
-                    // (some builds stop reporting during the cycle), so wait it out below.
-                    // Counted in reports, not milliseconds, so a slow clock cannot decide.
+                    // Still reporting and still Idle means the $H was not accepted; gone
+                    // quiet means homing is under way, since some builds stop reporting during
+                    // the cycle. Counted in reports, so a slow clock cannot decide.
                     bool stillReporting = machine.StatusReportCount > reportsBefore;
 
                     if (stillReporting)
@@ -809,9 +765,7 @@ namespace coppercli.Core.Controllers
             }
         }
 
-        /// <summary>
-        /// Safety retract Z to a machine coordinate using G53.
-        /// </summary>
+        /// <summary>Retracts Z with G53, so the work offset does not move the target.</summary>
         /// <returns>
         /// True only if Z is confirmed at the target. False means the retract did not
         /// happen (rejected, or timed out), so the caller must not start any XY motion:
@@ -826,11 +780,9 @@ namespace coppercli.Core.Controllers
 
             double startZ = machine.MachinePosition.Z;
 
-            // Enforce absolute mode and send retract command
             machine.SendLine(CmdAbsolute);
             machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{targetMachineZ:F3}"));
 
-            // If already at target, just wait briefly for command to process
             if (Math.Abs(startZ - targetMachineZ) < PositionToleranceMm)
             {
                 await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
@@ -838,8 +790,8 @@ namespace coppercli.Core.Controllers
                 return Math.Abs(machine.MachinePosition.Z - targetMachineZ) < PositionToleranceMm;
             }
 
-            // Wait for the move to start, then for Z to arrive. Arrival is what is
-            // reported: a move that never started fails the height check anyway.
+            // Arrival is what is reported, not the start: a move that never started fails
+            // the height check anyway.
             await WaitForMoveStartAsync(machine, startZ, timeoutMs, ct);
 
             return await WaitForMachineZHeightAsync(machine, targetMachineZ, timeoutMs, ct);

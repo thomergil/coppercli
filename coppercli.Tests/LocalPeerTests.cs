@@ -5,23 +5,23 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The web UI trusts every peer it serves, so who counts as a peer decides how far that
-    /// trust reaches. Getting this wrong in one direction puts a mill that moves a cutter on
-    /// the public internet; getting it wrong in the other locks the operator's own phone
-    /// out, which is the failure these tests exist to catch. The block boundaries are the
-    /// part worth pinning - an off-by-one in the mask does both at once.
+    /// The web server authenticates nothing, so IsLocalPeer is the only check on who may
+    /// drive the machine. An address admitted wrongly puts a running spindle on the public
+    /// internet, and one refused wrongly locks the operator's own phone out. The addresses
+    /// here are the first and last of each private block, where an off-by-one in a mask
+    /// produces both faults at once.
     /// </summary>
     public class LocalPeerTests
     {
         [Theory]
-        [InlineData("192.168.1.42")]     // the operator's phone, the ordinary case
+        [InlineData("192.168.1.42")]
         [InlineData("192.168.0.1")]
         [InlineData("10.0.0.5")]
         [InlineData("10.255.255.254")]
         [InlineData("172.16.0.1")]
         [InlineData("172.31.255.254")]
-        [InlineData("169.254.3.4")]      // link-local, when DHCP never answered
-        [InlineData("100.64.0.1")]       // carrier-grade NAT, handed out by VPN meshes
+        [InlineData("169.254.3.4")]      // link-local, assigned when DHCP does not respond
+        [InlineData("100.64.0.1")]       // carrier-grade NAT, used by VPN meshes
         [InlineData("100.127.255.254")]
         public void AddressesOnAPrivateNetwork_AreLocal(string address)
         {
@@ -40,7 +40,7 @@ namespace coppercli.Tests
         [InlineData("2001:4860:4860::8888")]
         public void AddressesOutsideAPrivateBlock_AreNotPrivate(string address)
         {
-            // IsLocalPeer may still admit one of these if it shares a subnet with a real
+            // IsLocalPeer may still admit one of these when it shares a subnet with a real
             // interface on the host, so only the block test is deterministic here.
             Assert.False(NetworkHelpers.IsPrivateAddress(IPAddress.Parse(address)));
         }
@@ -48,12 +48,11 @@ namespace coppercli.Tests
         [Theory]
         [InlineData("203.0.113.7")]        // TEST-NET-3
         [InlineData("198.51.100.7")]       // TEST-NET-2
-        [InlineData("2001:db8::1")]        // the IPv6 documentation range
+        [InlineData("2001:db8::1")]        // IPv6 documentation range
         public void AddressesReservedForDocumentation_AreRefused(string address)
         {
-            // The refusal path of the one check standing between the internet and the
-            // spindle. These ranges exist precisely so that nothing routes them, so no
-            // real interface can share a subnet with one and make this ambiguous.
+            // Nothing routes these ranges, so no interface on the host can share a subnet
+            // with one and make the result ambiguous.
             Assert.False(NetworkHelpers.IsLocalPeer(IPAddress.Parse(address)));
         }
 

@@ -34,8 +34,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The height check has no setting, so every run must get the default tolerance
-        /// rather than a zero, which would accept every reading.
+        /// The height check has no setting, so FromSettings must supply the default tolerance.
+        /// A zero tolerance accepts every reading.
         /// </summary>
         [Fact]
         public void ProbeOptions_FromSettings_CarriesTheDefaultHeightTolerance()

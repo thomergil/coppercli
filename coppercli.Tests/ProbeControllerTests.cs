@@ -10,15 +10,12 @@ using Xunit;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// Tests for ProbeController workflow behavior.
-    /// </summary>
+    // Covers ProbeController: grid setup, options, the run phases, and what a run does at a
+    // stop or an open door. MockMachine follows a machine-coordinate Z rapid and records
+    // every other command without moving, so a test that needs a position reached sets it on
+    // the mock.
     public class ProbeControllerTests
     {
-        // =========================================================================
-        // Test helpers
-        // =========================================================================
-
         private static MockMachine CreateMockMachine()
         {
             return new MockMachine
@@ -36,10 +33,10 @@ namespace coppercli.Tests
             return new ProbeController(machine);
         }
 
-        /// <summary>A height the mock reports, far enough from zero to be recognisable.</summary>
+        /// <summary>Distinct from zero, so an unmeasured node cannot pass for this.</summary>
         private const double MeasuredHeight = 0.25;
 
-        /// <summary>Where a command starting with the given text was sent, or -1.</summary>
+        /// <summary>Returns -1 when no command starts with the prefix.</summary>
         private static int IndexOfFirstStartingWith(IReadOnlyList<string> commands, string prefix)
         {
             for (int i = 0; i < commands.Count; i++)
@@ -53,19 +50,11 @@ namespace coppercli.Tests
             return -1;
         }
 
-        // =========================================================================
-        // Constructor tests
-        // =========================================================================
-
         [Fact]
         public void Constructor_WithNullMachine_Throws()
         {
             Assert.Throws<ArgumentNullException>(() => new ProbeController(null!));
         }
-
-        // =========================================================================
-        // Initial state tests
-        // =========================================================================
 
         [Fact]
         public void NewController_HasIdleState()
@@ -100,10 +89,6 @@ namespace coppercli.Tests
             Assert.Equal(50.0, controller.Options.ProbeFeed);
         }
 
-        // =========================================================================
-        // Grid setup tests
-        // =========================================================================
-
         [Fact]
         public void ForJob_CreatesGrid()
         {
@@ -135,11 +120,9 @@ namespace coppercli.Tests
             var grid = controller.Grid;
             Assert.NotNull(grid);
 
-            // Min should be fileMin - margin
             Assert.Equal(5.0, grid!.Min.X);
             Assert.Equal(5.0, grid.Min.Y);
 
-            // Max should be fileMax + margin
             Assert.Equal(55.0, grid.Max.X);
             Assert.Equal(55.0, grid.Max.Y);
         }
@@ -168,10 +151,6 @@ namespace coppercli.Tests
                 await run;
             }
         }
-
-        // =========================================================================
-        // LoadGrid tests
-        // =========================================================================
 
         [Fact]
         public void LoadGrid_SetsGrid()
@@ -204,7 +183,6 @@ namespace coppercli.Tests
 
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // Simulate some points already probed
             if (grid.TryPeekNext(out var point))
             {
                 grid.RecordMeasurement(point.X, point.Y, -0.5);
@@ -215,10 +193,6 @@ namespace coppercli.Tests
             Assert.Equal(grid.Progress, controller.PointsCompleted);
             Assert.Equal(grid.TotalPoints, controller.TotalPoints);
         }
-
-        // =========================================================================
-        // GetGrid tests
-        // =========================================================================
 
         [Fact]
         public void GetGrid_ReturnsNull_WhenNoGridSet()
@@ -240,10 +214,6 @@ namespace coppercli.Tests
             var grid = controller.GetGrid();
             Assert.Same(controller.Grid, grid);
         }
-
-        // =========================================================================
-        // Options tests
-        // =========================================================================
 
         [Fact]
         public void Options_CanBeModified()
@@ -267,25 +237,17 @@ namespace coppercli.Tests
             Assert.True(controller.Options.TraceOutline);
         }
 
-        // =========================================================================
-        // Phase enum tests
-        // =========================================================================
-
         /// <summary>
-        /// A phase names the step of work a run is on. Paused, waiting on the operator,
-        /// finishing, finished, cancelled and failed belong to ControllerState, and naming
-        /// one in both places lets the two be set separately and disagree.
-        ///
-        /// Matched on meaning rather than exact spelling, because a phase can name a state
-        /// in different words: WaitingForOperator against WaitingForUserInput.
+        /// ControllerState names the run lifecycle: paused, waiting on the operator,
+        /// finishing, finished, cancelled, failed. A phase enum that names one of those too
+        /// lets the two be set separately and disagree.
         /// </summary>
         [Fact]
         public void PhaseEnums_DoNotRestateTheRunLifecycle()
         {
-            // The lifecycle state names, plus spellings that mean the same on their own.
-            // WaitingForOperator is here because it meant the same as WaitingForUserInput;
+            // The lifecycle names, plus the spellings that mean the same on their own.
             // WaitingForZeroZ and WaitingForToolChange name what is being waited for, so
-            // they are steps of work.
+            // they are steps of work rather than lifecycle states.
             var lifecycleNames = new HashSet<string>(Enum.GetNames(typeof(ControllerState)))
             {
                 "Complete", "Finished", "Done", "Canceled", "Aborted", "Stopped",
@@ -305,14 +267,9 @@ namespace coppercli.Tests
             }
         }
 
-        // =========================================================================
-        // Event tests
-        // =========================================================================
-
         /// <summary>
-        /// Fires both events and asserts what they carried. A trace height of zero is
-        /// refused before any motion, so this reaches the phase changes and the error without
-        /// a machine that moves.
+        /// A trace height of zero is refused before any motion, so this reaches the phase
+        /// changes and the error without a machine that moves.
         /// </summary>
         [Fact]
         public async Task RefusedTraceOutline_RaisesPhaseChangesAndAnError()
@@ -346,10 +303,6 @@ namespace coppercli.Tests
                 error.Message);
         }
 
-        // =========================================================================
-        // ProbeOptions tests
-        // =========================================================================
-
         [Fact]
         public void ProbeOptions_HasReasonableDefaults()
         {
@@ -366,10 +319,6 @@ namespace coppercli.Tests
             Assert.False(options.TraceOutline);
         }
 
-        // =========================================================================
-        // ProbeGrid interaction tests
-        // =========================================================================
-
         [Fact]
         public void CurrentPointIndex_StartsAtZero()
         {
@@ -382,17 +331,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// LoadGrid sets _currentPointIndex to the grid's saved progress so an
-        /// interrupted board resumes where it stopped, and LoadGrid
-        /// run before StartAsync - exactly when ResetRunState fires. _grid and
-        /// _currentPointIndex are therefore excluded from ResetRunState: they describe
-        /// the grid the operator loaded, not the run about to start.
-        ///
-        /// The capture below reads CurrentPointIndex at the first phase change RunAsync
-        /// makes, before the probing loop gets anywhere near its own per-point
-        /// reassignment of the field - the one place remaining that a wrongly-cleared
-        /// index would still be visible. If ResetRunState cleared it, a half-probed
-        /// board would report starting over from point zero rather than resuming.
+        /// The capture below reads CurrentPointIndex at the run's first phase change, before
+        /// the probing loop reassigns the field per point. An index cleared by ResetRunState
+        /// would make a half-probed board start over from point zero instead of resuming.
         /// </summary>
         [Fact]
         public async Task StartingAPartiallyProbedGrid_ResumesFromItsSavedProgress()
@@ -402,8 +343,6 @@ namespace coppercli.Tests
 
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // Model an interrupted board: some points already measured, the rest still
-            // queued.
             if (grid.TryPeekNext(out var point))
             {
                 grid.RecordMeasurement(point.X, point.Y, -0.5);
@@ -426,9 +365,8 @@ namespace coppercli.Tests
             var run = controller.StartAsync(cts.Token);
             try
             {
-                // StartAsync runs synchronously up to and past this phase change before
-                // it can hit any await that would hand control back here, so the
-                // capture above has already happened by this point.
+                // StartAsync runs synchronously past this phase change before its first
+                // await, so the capture above has already happened.
                 Assert.NotNull(indexAtRunStart);
             }
             finally
@@ -543,8 +481,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The control for the test above: with the cycle open the move does go out, so that
-        /// one is not passing because nothing is ever sent.
+        /// The control for AProbeCycleThatWillNotOpen_IsNotSentAProbeMove: with the cycle
+        /// open the move does go out, so that test is not passing on nothing being sent.
         /// </summary>
         [Fact]
         public async Task AProbeCycleThatOpens_DoesSendTheProbeMove()
@@ -561,9 +499,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The trace's first move after the retract is an XY rapid, so an unconfirmed
-        /// retract would drag the probe across the board. Returned rather than thrown, the
-        /// run reports Completed instead.
+        /// The trace's first move after the retract is an XY rapid, so an unconfirmed retract
+        /// would drag the probe across the board. The failure has to throw: returned instead,
+        /// the run reports Completed.
         /// </summary>
         [Fact]
         public async Task ATraceWhoseSafetyRetractIsNotConfirmed_NeverReportsItFinished()
@@ -593,11 +531,6 @@ namespace coppercli.Tests
             Assert.Contains(errors, e => e.Message == ControllerConstants.ErrorSafetyRetractFailed);
         }
 
-        /// <summary>
-        /// The trace moves the tool but measures nothing, so a progress display reads the
-        /// grid probe instead. The controller holds the phase, so it reports whether a trace
-        /// is running.
-        /// </summary>
         [Fact]
         public async Task TracingTheOutline_ReportsTracingNotProbing()
         {
@@ -626,8 +559,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stop then start is the normal sequence. A stopped run must leave nothing claiming
-        /// the machine, or the next start is refused as one already running.
+        /// A stopped run must leave no run in progress, or the next start is refused as one
+        /// already running.
         /// </summary>
         [Fact]
         public async Task StoppingARun_LeavesTheNextOneAbleToStart()
@@ -654,10 +587,6 @@ namespace coppercli.Tests
             Assert.False(controller.IsRunInProgress);
         }
 
-        /// <summary>
-        /// A grid probe reports measuring and not tracing, so the progress window appears
-        /// only for the run that has progress to show.
-        /// </summary>
         [Fact]
         public async Task MeasuringTheGrid_ReportsMeasuringNotTracing()
         {
@@ -665,8 +594,8 @@ namespace coppercli.Tests
             var controller = CreateController(machine);
             controller.LoadGrid(new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20)));
 
-            // MockMachine records commands without moving, so set the height a machine that
-            // obeyed the safety retract would report. The run then reaches the next phase.
+            // The height a machine that obeyed the safety retract would report, so the run
+            // reaches the next phase.
             machine.MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ);
 
             using var cts = new CancellationTokenSource();
@@ -689,10 +618,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The run pauses on a height outside tolerance and tells the operator to check for
-        /// debris. Resuming means they dealt with it, not that the reading was good, so the
-        /// reading must not reach the map, the autosave or PointCompleted, and the point must
-        /// stay queued.
+        /// A resume means the operator cleared the debris, not that the height outside
+        /// tolerance was good. That height must not reach the map, the autosave or
+        /// PointCompleted, and its point must stay queued - rule `resume-is-not-approval`.
         /// </summary>
         [Fact]
         public async Task ARejectedHeight_IsNotRecordedOnResume()
@@ -702,8 +630,8 @@ namespace coppercli.Tests
             controller.LoadGrid(ProbeGrid.ForJob(new Vector2(0, 0), new Vector2(10, 10), 0.0, 10.0));
             var grid = controller.Grid!;
 
-            // MockMachine records commands without moving, so the Z waits would each sit out
-            // their full timeout. Report the heights a machine that executed them would.
+            // The heights a machine that executed the Z moves would report; without them each
+            // Z wait sits out its full timeout.
             machine.MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ);
             machine.WorkPosition = new Vector3(0, 0, controller.Options.SafeHeight);
 
@@ -756,10 +684,6 @@ namespace coppercli.Tests
             try { await pump; } catch (OperationCanceledException) { }
         }
 
-        // =========================================================================
-        // Reset tests
-        // =========================================================================
-
         [Fact]
         public void Reset_FromIdle_RemainsIdle()
         {
@@ -772,9 +696,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A probe run at an open door used to fail at the first safety retract, with a
-        /// message about the tool that did not mention the door. It now waits for the door
-        /// without prompting, because an open door has nothing to answer.
+        /// A probe started at an open door waits for the door and does not prompt: an open
+        /// door leaves the operator nothing to answer. Without the wait the first safety
+        /// retract fails, with a message about the tool that never mentions the door.
         /// </summary>
         [Fact]
         public async Task ProbeStartAtOpenDoor_WaitsInsteadOfFailing()
@@ -818,17 +742,16 @@ namespace coppercli.Tests
         {
             using var machine = CreateMockMachine();
 
-            // The mock records commands without moving, so it reports the heights a machine
-            // that obeyed both retracts would: the safety retract is in machine coordinates
-            // and the run's own retract is in work coordinates.
+            // The height a machine that obeyed both retracts would report: the safety retract
+            // is in machine coordinates, the run's own in work coordinates.
             machine.MachinePosition = new Vector3(-50, -50, Constants.SafeClearanceZ);
 
             var controller = CreateController(machine);
             controller.Options = new ProbeOptions { SafeHeight = machine.WorkPosition.Z };
             controller.LoadGrid(new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20)));
 
-            // The enclosure opens as the first probe goes out, and is closed again before
-            // the run looks: the machine is then parked, waiting for a cycle start.
+            // The enclosure opens as the first probe goes out and is closed again before the
+            // next status read, which leaves the machine parked and waiting for a cycle start.
             bool parked = false;
             machine.LineSent += line =>
             {
@@ -871,9 +794,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A door park aborts GRBL's probe cycle, so the point it interrupted is measured
-        /// again on resume - the rule `resume-is-not-approval` states for the height check,
-        /// on the door's path. A point already measured keeps its height: it left the queue
-        /// when it was recorded, so the re-probe cannot reach it.
+        /// again on resume - rule `resume-is-not-approval` on the door's path. A point
+        /// already recorded keeps its height, because recording took it off the queue.
         /// </summary>
         [Fact]
         public async Task DoorDuringAProbe_KeepsThePointsAlreadyMeasured()
@@ -922,9 +844,9 @@ namespace coppercli.Tests
 
             Assert.True(probes >= 2, "the run did not reach a second point");
 
-            // Both halves, and only together do they mean anything. The height itself,
-            // because a skipped point also leaves the queue; and the interrupted point still
-            // queued, because a door park aborts GRBL's probe cycle and measures nothing.
+            // A skipped point also leaves the queue, so the recorded height itself has to be
+            // checked. The interrupted point stays queued: a door park aborts GRBL's probe
+            // cycle and measures nothing.
             var measured = System.Linq.Enumerable.ToList(grid.MeasuredNodes());
             Assert.Equal(MeasuredHeight, Assert.Single(measured).Height, 3);
             Assert.Equal(grid.TotalPoints - 1, grid.RemainingCount);
@@ -932,8 +854,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A move sent while GRBL holds at the door sits in its planner and runs when the
-        /// hold is released, so the tool would rise as the operator cleared the door rather
-        /// than at the stop. ToolChangeController already handled this; the probe did not.
+        /// hold is released, so the tool rises as the operator clears the door rather than at
+        /// the stop.
         /// </summary>
         [Fact]
         public async Task ProbeStopAtDoor_QueuesNoRetract()
@@ -956,17 +878,17 @@ namespace coppercli.Tests
                 // The abort ends the run; the retract is what is under test.
             }
 
-            // The retract is G90 then a rapid to the safe height. Neither may be queued
-            // behind a door hold, because GRBL runs them when the hold is released.
+            // The retract is G90 then a rapid to the safe height; neither may go out behind
+            // a door hold.
             Assert.DoesNotContain(machine.SentCommands,
                 c => c.StartsWith(GrblProtocol.CmdRapidMove + " Z"));
         }
 
         /// <summary>
-        /// A run waiting on the enclosure prompt still owns the machine. Built on IsActive,
-        /// which excludes WaitingForUserInput, this went false every time the door was asked
-        /// about - and the browser reads it going false as the run having finished, so it
-        /// tore the probe screen down with the tool at probe depth.
+        /// A run waiting on the enclosure prompt still holds the machine. Derived from
+        /// IsActive, which excludes WaitingForUserInput, this reads false at the prompt, and
+        /// the browser takes that for a finished run and tears the probe screen down with the
+        /// tool at probe depth.
         /// </summary>
         [Fact]
         public async Task AProbeWaitingOnTheDoorPrompt_StillReportsItIsMeasuring()
@@ -1000,8 +922,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The same for a trace. Built on IsActive, both flags went the wrong way at the
-        /// enclosure prompt, and the browser drew the grid-probe window over a trace.
+        /// The same for a trace: derived from IsActive, both flags read the wrong way at the
+        /// enclosure prompt and the browser draws the grid-probe window over a trace.
         /// </summary>
         [Fact]
         public async Task ATraceWaitingOnTheDoorPrompt_StillReportsItIsTracing()

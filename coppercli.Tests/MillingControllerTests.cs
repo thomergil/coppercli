@@ -15,9 +15,10 @@ using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// Tests for MillingController workflow behavior.
-    /// </summary>
+    // MillingController driven end to end through StartAsync: M6 detection, the M0/M1/M2/M30
+    // stops, the settling phase and the enclosure door. Tests that need a running stream use
+    // FakeMachine, which simulates motion and GRBL replies; the rest use MockMachine, whose
+    // state each test sets directly.
     public class MillingControllerTests
     {
         private MockMachine CreateMachineWithFile(params string[] lines)
@@ -33,20 +34,13 @@ namespace coppercli.Tests
             return machine;
         }
 
-        // =========================================================================
-        // FakeMachine helpers - drive a real MillingController end to end through
-        // StartAsync. Speeds/homing duration are tuned up front so a test only pays
-        // for the fixed Core-side delays (5s settle, 1s idle-settle, etc.) that no
-        // test double can shorten - not also for FakeMachine's own simulated move and
-        // homing time on top of them.
-        // =========================================================================
-
+        // FakeMachine's simulated move and homing time, tuned down so a run costs only the
+        // fixed Core-side settle delays that no test double can shorten.
         private const double FastMoveSpeedMmPerSec = 10000.0;
         private const int FastHomingDurationMs = 50;
 
-        // Far above the real time a run needs (dominated by the fixed settle/idle-settle/
-        // homing delays above), so a controller that never reaches the event under test
-        // fails the test instead of hanging the suite.
+        // Far above the time a run needs, so a controller that never reaches the event under
+        // test fails on a timeout instead of hanging the suite.
         private const int ToolChangeWaitTimeoutMs = 20_000;
         private const int CompletionWaitTimeoutMs = 30_000;
         private const int StateTransitionWaitTimeoutMs = 5_000;
@@ -78,8 +72,7 @@ namespace coppercli.Tests
         };
 
         /// <summary>
-        /// Enough cutting moves that a test can pause or open the door while the stream is
-        /// still running, whatever else the suite is doing.
+        /// Long enough that the stream is still running when a test pauses or opens the door.
         /// </summary>
         private static readonly string[] ALongCut =
             new[] { "G21", "G90" }
@@ -99,8 +92,7 @@ namespace coppercli.Tests
         private const string ToolChangeTimeoutMessage = "Timed out waiting for ToolChangeDetected.";
 
         /// <summary>
-        /// Waits for ToolChangeDetected, bounded so a controller that never fires it -
-        /// the regression these tests guard against - fails the test with a
+        /// Bounded so a controller that never fires ToolChangeDetected fails the test with a
         /// TimeoutException instead of hanging it.
         /// </summary>
         private static async Task<ToolChangeInfo> WaitForToolChangeOrTimeoutAsync(
@@ -121,7 +113,7 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>Polls until <paramref name="condition"/> is true or the deadline passes.</summary>
+        /// <summary>Returns when the condition holds or the deadline passes; never throws.</summary>
         private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs)
         {
             var stopwatch = Stopwatch.StartNew();
@@ -132,9 +124,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Drives a run up to its first M6, then aborts exactly the way an operator
-        /// does when they refuse the tool change: cancel the token, and never call
-        /// Resume(). Leaves the controller Reset() back to Idle, ready for reuse.
+        /// Models a refused tool change: the token is cancelled and Resume() is never called.
+        /// Returns with the controller Reset() to Idle, so the caller can start a second run.
         /// </summary>
         private static async Task AbortDuringToolChangeAsync(MillingController controller, int toolNumber)
         {
@@ -145,10 +136,8 @@ namespace coppercli.Tests
                 var toolChange = await WaitForToolChangeOrTimeoutAsync(controller, ToolChangeWaitTimeoutMs);
                 Assert.Equal(toolNumber, toolChange.ToolNumber);
 
-                // MillingController transitions to Paused before firing the event, so
-                // this resolves immediately - kept as a guard rather than an
-                // assumption, so the cancel below still races nothing if that
-                // ordering ever changes.
+                // MillingController transitions to Paused before firing the event, so this
+                // returns at once. It guards the cancel below if that order ever changes.
                 await WaitUntilAsync(() => controller.State == ControllerState.Paused, StateTransitionWaitTimeoutMs);
             }
             finally
@@ -161,10 +150,6 @@ namespace coppercli.Tests
             controller.Reset();
             Assert.Equal(ControllerState.Idle, controller.State);
         }
-
-        // =========================================================================
-        // Initial state tests
-        // =========================================================================
 
         [Fact]
         public void NewController_HasIdleState()
@@ -181,10 +166,6 @@ namespace coppercli.Tests
         {
             Assert.Throws<ArgumentNullException>(() => new MillingController(null!));
         }
-
-        // =========================================================================
-        // M6 detection tests
-        // =========================================================================
 
         [Fact]
         public async Task Milling_DrivenThroughAnM6File_FiresToolChangeDetected()
@@ -205,8 +186,7 @@ namespace coppercli.Tests
             }
             finally
             {
-                // Let the run settle to a terminal state rather than leaving it
-                // dangling in Paused for the next test.
+                // Cancel so the run reaches a terminal state instead of staying Paused.
                 cts.Cancel();
                 await run;
             }
@@ -218,7 +198,6 @@ namespace coppercli.Tests
         [Fact]
         public void M6Pattern_MatchesVariousFormats()
         {
-            // Test the M6 detection regex patterns
             var testCases = new[]
             {
                 ("M6 T1", true, 1),
@@ -231,8 +210,8 @@ namespace coppercli.Tests
 
             foreach (var (line, shouldMatch, expectedTool) in testCases)
             {
-                // Against production, not a copy of it: the copy kept passing while the
-                // real recogniser was wrong about "T1 M6".
+                // Assert against GCodeParser, not a copy of the regex: a copy can keep passing
+                // while the production recognizer is wrong.
                 Assert.Equal(shouldMatch, GCodeParser.IsM6Line(line));
 
                 if (shouldMatch)
@@ -243,11 +222,8 @@ namespace coppercli.Tests
             }
         }
 
-        // =========================================================================
-        // Regression: an aborted tool change must not disable the controller for the
-        // rest of the session. IsPaused derives from ControllerState, which Reset()
-        // returns to Idle, so "paused" cannot outlive the run that set it.
-        // =========================================================================
+        // An aborted tool change must not leave the controller unusable for the rest of the
+        // session: IsPaused derives from ControllerState, which Reset() returns to Idle.
 
         [Fact]
         public async Task MillingAfterAnAbortedToolChange_StillDetectsTheNextOne()
@@ -260,8 +236,8 @@ namespace coppercli.Tests
 
             await AbortDuringToolChangeAsync(controller, FirstAbortedToolNumber);
 
-            // Same controller instance as the abort above: pins that M6 detection
-            // still works on this second run.
+            // Reuse the controller from the abort above: M6 detection must still fire on this
+            // second run.
             machine.LoadFile(FileWithToolChange(SecondRunToolNumber));
             using var secondRunCts = new CancellationTokenSource();
             var secondRun = controller.StartAsync(secondRunCts.Token);
@@ -292,8 +268,8 @@ namespace coppercli.Tests
 
             await AbortDuringToolChangeAsync(controller, FirstAbortedToolNumber);
 
-            // Same controller instance as the abort above, now running a file with no
-            // M6 at all: pins that completion detection still works too.
+            // Reuse the controller from the abort above, now with a file that has no M6:
+            // completion must still be detected.
             machine.LoadFile(FileWithoutToolChange);
             using var secondRunCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(CompletionWaitTimeoutMs));
             await controller.StartAsync(secondRunCts.Token);
@@ -301,21 +277,15 @@ namespace coppercli.Tests
             Assert.Equal(ControllerState.Completed, controller.State);
         }
 
-        // =========================================================================
-        // Operator pause (M0/M1) and program end (M2/M30) tests
-        //
-        // Machine.SetFile marks M0/M1/M2/M30 as pause lines alongside M6, so the stream
-        // stops at all of them. Every kind of stop must produce an outcome the operator
-        // can see: a prompt, or a completed job. A stop nobody reacts to is a job frozen
-        // mid-cut with nothing on screen to say so.
-        // =========================================================================
+        // Machine.SetFile marks M0/M1/M2/M30 as pause lines alongside M6, so the stream stops
+        // at all of them. Each stop must end in a prompt or a completed job, or the run sits
+        // mid-cut with nothing on screen.
 
         private const string UserInputTimeoutMessage = "Timed out waiting for UserInputRequired.";
 
         /// <summary>
-        /// Waits for UserInputRequired, bounded so a controller that never fires it -
-        /// the M0/M1 regression these tests guard against - fails with a
-        /// TimeoutException instead of hanging the test.
+        /// Bounded so a controller that never fires UserInputRequired fails the test with a
+        /// TimeoutException instead of hanging it.
         /// </summary>
         private static async Task<UserInputRequest> WaitForUserInputOrTimeoutAsync(
             MillingController controller, int timeoutMs)
@@ -336,9 +306,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Collects every prompt a run raises, so a test can subscribe before the run starts
-        /// and read them in order. The one-shot waiter above cannot: a prompt raised before
-        /// it subscribes is lost, and the door prompt is raised immediately.
+        /// Queues every prompt a run raises, so a test can subscribe before StartAsync. The
+        /// one-shot waiter above loses a prompt raised before it subscribes, and the door
+        /// prompt is the first one raised.
         /// </summary>
         private sealed class PromptRecorder
         {
@@ -349,7 +319,6 @@ namespace coppercli.Tests
                 controller.UserInputRequired += _requests.Enqueue;
             }
 
-            /// <summary>Every prompt raised so far, for asserting none was.</summary>
             public IReadOnlyCollection<UserInputRequest> All => _requests;
 
             public async Task<UserInputRequest> NextAsync(int timeoutMs)
@@ -364,22 +333,17 @@ namespace coppercli.Tests
             }
         }
 
-        // =========================================================================
-        // Door tests
-        //
-        // Opening the enclosure makes GRBL park and hold, and closing it does not end the
-        // hold (GetDoorState returns WaitingForResume for Door:0). An open door is waited
-        // out; a closed one raises a prompt, because only then does a cycle start do
-        // anything, and it restarts the spindle. A job start that refuses the state leaves
-        // the operator with no way to send that cycle start.
-        // =========================================================================
+        // Opening the enclosure makes GRBL park and hold, and closing it does not end the hold
+        // (GetDoorState returns WaitingForResume for Door:0). A run waits out an open door and
+        // prompts for a closed one, because the cycle start that releases it restarts the
+        // spindle.
 
         [Fact]
         public async Task MachineThatWillNotSettle_FailsTheRunWithAReason()
         {
-            // The readiness gate that used to refuse a moving machine was removed, because
-            // it also refused a door hold the controller can release. Settling catches it
-            // now, so it has to report what it found.
+            // Nothing checks for a moving machine before settling, because such a check also
+            // blocks a door hold the controller can release. The settling phase is what
+            // reports it.
             var machine = CreateMachineWithFile("G21", "G90", "G1 X1 Y1 F100");
             machine.Status = GrblProtocol.StatusRun;
 
@@ -389,7 +353,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task AnAlarmBeforeTheJob_SaysToClearIt()
+        public async Task AnAlarmBeforeTheJob_ReportsThatItMustBeCleared()
         {
             var machine = CreateMachineWithFile("G21", "G90", "G1 X1 Y1 F100");
             machine.Status = GrblProtocol.StatusAlarm;
@@ -402,10 +366,10 @@ namespace coppercli.Tests
         [Fact]
         public async Task ResumeAtADoorHold_IsRefusedNotQueued()
         {
-            // A machine holding at the door takes lines into its planner and runs them when
-            // the hold is released. Restarting the stream here would leave a full buffer and
-            // three screens reporting a running job. Reported rather than thrown: the
-            // terminal calls Resume straight from a key press with nothing to catch it.
+            // GRBL holding at the door takes lines into its planner and runs them when the
+            // hold is released, so restarting the stream here fills the buffer and leaves every
+            // screen reporting a running job. The refusal is reported, not thrown: the terminal
+            // calls Resume from a key press with nothing to catch it.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
             var controller = new MillingController(machine)
@@ -441,8 +405,7 @@ namespace coppercli.Tests
         public async Task DoorOpenedWhileSettling_IsPromptedNotTimedOut()
         {
             // The enclosure prompt is raised once before settling. A door opened during
-            // settling used to cost the whole settle timeout and then fail; now it prompts
-            // again and restarts the timeout.
+            // settling prompts again and restarts the settle timeout.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
             var controller = new MillingController(machine)
@@ -471,14 +434,13 @@ namespace coppercli.Tests
         [Fact]
         public async Task TheSettleTimeout_RestartsAfterTheDoorIsHandled()
         {
-            // The operator's time at the enclosure must not count against the machine's
-            // settle timeout, or a slow walk back reports "the machine did not stop moving"
-            // for a machine that is stopped.
+            // The time the operator spends at the enclosure must not count against the settle
+            // timeout, or a slow answer fails a machine that is already stopped.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = SettleableBudgetMs }
+                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = SettleWaitMs }
             };
 
             var prompts = new PromptRecorder(controller);
@@ -491,10 +453,10 @@ namespace coppercli.Tests
                 StateTransitionWaitTimeoutMs);
             machine.SimulateDoorClosedAndHolding();
 
-            var request = await prompts.NextAsync(SettleableBudgetMs);
+            var request = await prompts.NextAsync(SettleWaitMs);
 
             // Answer only after the whole settle timeout would have run out.
-            await Task.Delay(SettleableBudgetMs + TestPollIntervalMs * 10);
+            await Task.Delay(SettleWaitMs + TestPollIntervalMs * 10);
             request.OnResponse(OptionContinue);
 
             await WaitUntilAsync(() => controller.State == ControllerState.Running,
@@ -510,11 +472,8 @@ namespace coppercli.Tests
         [Fact]
         public async Task DoorOpenedMidCut_IsPromptedNotStalled()
         {
-            // GRBL holds and the stream stalls. Neither screen's resume can release a door
-            // hold, so without this the only exits are Stop or a soft reset, and the job is
-            // lost.
-            // A cut long enough that the stream is still running when the door opens. A
-            // three-line file can finish first, making the result depend on timing.
+            // GRBL holds and the stream stalls. Neither screen's resume releases a door hold,
+            // so without the prompt the only exits are Stop or a soft reset.
             using var machine = CreateFastFakeMachine(ALongCut);
 
             var controller = new MillingController(machine)
@@ -522,8 +481,8 @@ namespace coppercli.Tests
                 Options = new MillingOptions { RequireHoming = false }
             };
 
-            // The door opens off the stream's own progress rather than a delay, so the cut
-            // is always still running when it happens.
+            // Open the door off the stream's own progress rather than a delay, so the cut is
+            // always still running when it happens.
             machine.FilePositionChanged += () =>
             {
                 if (machine.FilePosition == DoorOpensAtLine)
@@ -556,9 +515,9 @@ namespace coppercli.Tests
         private const int DoorOpensAtLine = 10;
 
         /// <summary>
-        /// The M0 prompt tells the operator the tool is still down, so this is when they open
-        /// the enclosure. Closing it and answering the pause is consent to restart, so the
-        /// hold is released without asking about the same door again.
+        /// An M0 pause leaves the tool down, so this is where the operator opens the enclosure.
+        /// Answering the pause with the door closed is consent to restart, so the hold is
+        /// released without a second prompt for the same door.
         /// </summary>
         [Fact]
         public async Task ContinuingPastAnM0_ReleasesTheDoorWithoutAskingAgain()
@@ -576,8 +535,6 @@ namespace coppercli.Tests
             {
                 var pause = await prompts.NextAsync(CompletionWaitTimeoutMs);
 
-                // The operator opens the enclosure to do what the pause asked, closes it,
-                // then answers.
                 machine.SimulateDoorClosedAndHolding();
                 pause.OnResponse(OptionContinue);
 
@@ -592,9 +549,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Abandoning the enclosure prompt ends the run, and a run that ends at the door
-        /// queues no retract: GRBL keeps the move in its planner and runs it the moment the
-        /// operator clears the hold, with nobody watching.
+        /// A run that ends at the door queues no retract: GRBL keeps the move in its planner
+        /// and runs it when the operator clears the hold.
         /// </summary>
         [Fact]
         public async Task AbandoningTheDoorPrompt_QueuesNoRetract()
@@ -620,25 +576,24 @@ namespace coppercli.Tests
             request.OnResponse(OptionAbort);
             await AwaitRunOutcomeAsync(run);
 
-            // G53 G0 Z, the machine-coordinate retract: the work-coordinate form never
+            // G53 G0 Z is the machine-coordinate retract; the work-coordinate form never
             // appears on this path, so matching on it would assert nothing.
             Assert.DoesNotContain(machine.SentCommands,
                 c => c.StartsWith(GrblProtocol.CmdMachineCoords, StringComparison.Ordinal)
                     && c.Contains(" Z", StringComparison.Ordinal));
         }
 
-        /// <summary>Time a settle test is willing to spend on a machine that never settles.</summary>
+        /// <summary>How long a settle test spends on a machine that never settles.</summary>
         private const int ShortSettleMs = 1_500;
 
         /// <summary>
-        /// A timeout a machine can settle within: the phase needs PostIdleSettleMs of
-        /// unbroken idle, so anything shorter fails however the machine behaves.
+        /// The settling phase needs PostIdleSettleMs of unbroken idle, so a shorter budget
+        /// than this fails however the machine behaves.
         /// </summary>
-        private const int SettleableBudgetMs = PostIdleSettleMs + 3_000;
+        private const int SettleWaitMs = PostIdleSettleMs + 3_000;
 
         /// <summary>
-        /// Runs a job until it fails and returns the message shown. The run is expected to
-        /// fail: these cover the states the settling phase refuses.
+        /// Runs a job that is expected to fail and returns the message reported.
         /// </summary>
         private static async Task<string?> RunAndCaptureErrorAsync(MockMachine machine)
         {
@@ -663,7 +618,7 @@ namespace coppercli.Tests
             }
             catch (InvalidOperationException)
             {
-                // The refusal the test is about; its text arrives through ErrorOccurred.
+                // The refusal under test; its text arrives through ErrorOccurred.
             }
             catch (OperationCanceledException)
             {
@@ -681,8 +636,8 @@ namespace coppercli.Tests
                 Options = new MillingOptions { RequireHoming = false }
             };
 
-            // The door prompt is the first thing a run does, so the subscription has to
-            // be in place before it starts.
+            // The door prompt is the first thing a run raises, so the subscription has to be
+            // in place before it starts.
             var prompts = new PromptRecorder(controller);
             var run = controller.StartAsync();
 
@@ -713,13 +668,14 @@ namespace coppercli.Tests
             var prompts = new PromptRecorder(controller);
             var run = controller.StartAsync();
 
-            // An open door has nothing to answer, so the run waits without prompting. GRBL
-            // would ignore a cycle start here anyway.
+            // An open door gives the operator nothing to answer, so the run waits without
+            // prompting. GRBL would ignore a cycle start here anyway.
             await Task.Delay(DoorResumeTimeoutMs + StateTransitionWaitTimeoutMs);
             Assert.True(MachineWait.IsDoor(machine));
             Assert.Empty(prompts.All);
 
-            // A closed door raises a prompt, because the cycle start restarts the spindle.
+            // The run prompts once the door is closed, because the cycle start restarts the
+            // spindle.
             machine.SimulateDoorClosedAndHolding();
 
             var asked = await prompts.NextAsync(DoorResumeTimeoutMs * 3);
@@ -734,9 +690,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A move sent while GRBL holds at the door sits in its planner and runs when the
-        /// hold is released, so the tool would rise as the operator cleared the door rather
-        /// than at the stop. The stop reports the door because its soft reset clears it.
+        /// A move sent while GRBL holds at the door sits in its planner and runs when the hold
+        /// is released, so the tool would rise as the operator cleared the door.
         /// </summary>
         [Fact]
         public async Task StopAtDoor_QueuesNoRetract()
@@ -754,7 +709,7 @@ namespace coppercli.Tests
             await WaitUntilAsync(() => controller.IsRunInProgress, StateTransitionWaitTimeoutMs);
             machine.ClearSentCommands();
 
-            // Cancelling is how a Stop reaches the run, and cleanup runs as it unwinds.
+            // Cancelling is how Stop reaches the run; cleanup runs as it unwinds.
             cts.Cancel();
             try { await run; } catch (OperationCanceledException) { }
 
@@ -786,9 +741,8 @@ namespace coppercli.Tests
         [Fact]
         public async Task M2NotOnFinalLine_CompletesRatherThanHanging()
         {
-            // The M2 sits mid-file - a trailing line follows it - so a controller that
-            // only knows how to finish at true end-of-file would sit here forever,
-            // waiting for a line the program never meant to run.
+            // The M2 sits mid-file with a line after it, so a controller that only finishes at
+            // end-of-file waits forever for a line the program never runs.
             using var machine = CreateFastFakeMachine("G21", "G90", "M2", "G1 X1 Y1 F100");
             var controller = new MillingController(machine)
             {
@@ -804,9 +758,8 @@ namespace coppercli.Tests
         [Fact]
         public async Task M6_PausesForToolChangeEvenWhenPauseFileOnHoldIsFalse()
         {
-            // PauseFileOnHold is a feed-hold preference. Turning it off must not make a
-            // tool change silently swallowed - the job would carry on cutting with the
-            // wrong tool.
+            // PauseFileOnHold is a feed-hold preference. Turning it off must not skip the tool
+            // change, or the job carries on cutting with the wrong tool.
             using var machine = CreateFastFakeMachine(FileWithToolChange(SingleRunToolNumber));
             machine.PauseFileOnHold = false;
             var controller = new MillingController(machine)
@@ -831,10 +784,6 @@ namespace coppercli.Tests
             Assert.Equal(SingleRunToolNumber, detected.ToolNumber);
         }
 
-        // =========================================================================
-        // Progress tests
-        // =========================================================================
-
         [Fact]
         public void LinesCompleted_ReflectsFilePosition()
         {
@@ -854,20 +803,14 @@ namespace coppercli.Tests
             Assert.Equal(3, controller.TotalLines);
         }
 
-        // =========================================================================
-        // StopAsync tests
-        // =========================================================================
-
         [Fact]
         public async Task StopAsync_WhenIdle_DoesNothing()
         {
-            // StopAsync on an idle controller is a no-op (never started)
             var machine = CreateMachineWithFile("G0 X0");
             var controller = new MillingController(machine);
 
             await controller.StopAsync();
 
-            // No commands sent - controller was never running
             Assert.Empty(machine.SentCommands);
         }
     }

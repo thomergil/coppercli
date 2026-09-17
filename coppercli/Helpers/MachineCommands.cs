@@ -1,5 +1,3 @@
-// Extracted from Program.cs - Repeated G-code command patterns
-
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
@@ -9,15 +7,8 @@ using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper methods for common machine command patterns.
-    /// These consolidate repeated G-code sequences into reusable methods.
-    /// </summary>
     internal static class MachineCommands
     {
-        /// <summary>
-        /// Moves to a safe Z height in absolute mode.
-        /// </summary>
         public static void MoveToSafeHeight(Machine machine, double height)
         {
             Logger.Log($"MoveToSafeHeight: sending {CmdAbsolute} then {CmdRapidMove} Z{height:F3}");
@@ -26,8 +17,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Sends the home command ($H) without waiting.
-        /// Prefer HomeAndWait() which also waits for completion and sets IsHomed.
+        /// Returns as soon as the command is queued; prefer HomeAndWait, which waits for the
+        /// machine to finish and sets IsHomed.
         /// </summary>
         public static void Home(Machine machine)
         {
@@ -35,10 +26,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Homes the machine and waits for completion.
-        /// Calls MachineWait.HomeAsync which is the single source of truth.
-        /// Sets machine.IsHomed = true on success.
-        /// Returns true if homing succeeded, false on timeout or alarm.
+        /// MachineWait.HomeAsync is the only code that sets Machine.IsHomed, so every sync
+        /// caller goes through here rather than sending $H itself.
         /// </summary>
         public static bool HomeAndWait(Machine machine, int timeoutMs = HomingTimeoutMs)
         {
@@ -46,25 +35,21 @@ namespace coppercli.Helpers
             return MachineWait.HomeAsync(machine, timeoutMs).GetAwaiter().GetResult().Success;
         }
 
-        /// <summary>
-        /// Sends the unlock command ($X).
-        /// </summary>
         public static void Unlock(Machine machine)
         {
             machine.SendLine(CmdUnlock);
         }
 
         /// <summary>
-        /// Zeros the work offset, waits for it, records that the origin is known, and hands
-        /// the height map to AppState.HandleWorkZeroChange. The one place a front end sets
-        /// the work zero.
+        /// The one place a front end sets the work zero, so the height map passes through
+        /// AppState.HandleWorkZeroChange every time the datum moves.
         /// </summary>
         /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
         /// <returns>Why nothing was sent, and what became of the height map.</returns>
         public static WorkZeroResult SetWorkZeroAndWait(Machine machine, string axes)
         {
-            // Refused before the offset is written. Moving the datum invalidates the height
-            // map baked into the file the run is streaming.
+            // Checked before the offset is written: moving the datum invalidates the height
+            // map whose corrections are already in the file the run is streaming.
             if (AppState.IsRunInProgress && AppState.ZeroTouchesXY(axes))
             {
                 Logger.Log("SetWorkZeroAndWait: refused, a run owns the machine (axes={0})", axes);
@@ -86,8 +71,8 @@ namespace coppercli.Helpers
             AppState.MarkWorkZeroSet();
             var outcome = AppState.HandleWorkZeroChange(axes);
 
-            // Zeroing all three axes establishes a full origin worth offering to trust on
-            // the next launch. Saved here, so neither front end has to remember to.
+            // Only all three axes make a full origin, which the next launch offers to trust.
+            // Saved here so neither front end has to.
             if (AppState.ZeroIsFullOrigin(axes))
             {
                 AppState.Session.HasStoredWorkZero = true;
@@ -98,19 +83,14 @@ namespace coppercli.Helpers
             return new WorkZeroResult(null, outcome);
         }
 
-        /// <summary>
-        /// Rapid move to specified XY position.
-        /// </summary>
         public static void RapidMoveXY(Machine machine, double x, double y)
         {
             machine.SendLine(Inv($"{CmdRapidMove} X{x:F3} Y{y:F3}"));
         }
 
         /// <summary>
-        /// Rapid move to an absolute XY target, guarded against moving while the probe
-        /// is in contact (which would drag the probe tip sideways across the workpiece).
-        /// Returns false without moving if the probe is in contact. Single source of truth
-        /// for the guarded "goto XY" workflow shared by the TUI and web front ends.
+        /// Returns false without moving while the probe is in contact, because an X/Y move
+        /// would drag the tip sideways across the workpiece. Z is left where it is.
         /// </summary>
         public static bool GotoAbsoluteXY(Machine machine, double x, double y)
         {
@@ -124,18 +104,11 @@ namespace coppercli.Helpers
             return true;
         }
 
-        /// <summary>
-        /// Guarded rapid move to work origin (X0 Y0). Does not change Z.
-        /// </summary>
         public static bool GotoWorkOriginXY(Machine machine)
         {
             return GotoAbsoluteXY(machine, 0, 0);
         }
 
-        /// <summary>
-        /// Guarded rapid move to the center of the loaded file. No-op (returns false)
-        /// when no file is loaded. Does not change Z.
-        /// </summary>
         public static bool GotoFileCenterXY(Machine machine, GCodeFile? file)
         {
             if (file == null)
@@ -145,18 +118,11 @@ namespace coppercli.Helpers
             return GotoAbsoluteXY(machine, file.Center.X, file.Center.Y);
         }
 
-        /// <summary>
-        /// Sets absolute distance mode (G90).
-        /// </summary>
         public static void SetAbsoluteMode(Machine machine)
         {
             machine.SendLine(CmdAbsolute);
         }
 
-        /// <summary>
-        /// Release a door hold and report the door state left behind. Wraps
-        /// MachineWait.ReleaseDoorHoldAsync for sync callers.
-        /// </summary>
         public static DoorState ReleaseDoorHold(Machine machine)
         {
             return MachineWait.ReleaseDoorHoldAsync(machine, ControllerConstants.DoorResumeTimeoutMs)

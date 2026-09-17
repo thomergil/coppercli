@@ -8,12 +8,10 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The questions carried over from a previous session are computed in one place and
-    /// asked by both interfaces. These pin the rules that the two copies disagreed on.
-    ///
-    /// Driven through the fixture's connected machine, because the work-origin question is
-    /// only raised for one: on a disconnected machine two of the four topics never appear
-    /// and the sequence is only half tested.
+    /// Covers SessionRestore.AskPendingSteps, the one place the questions carried over from a
+    /// previous session are derived; both interfaces ask them from there. Runs against the
+    /// fixture's connected machine because the work-origin question is raised only for a
+    /// connected one, and on a disconnected machine two of the four topics never appear.
     /// </summary>
     [Collection(WebServerCollection.Name)]
     public class SessionRestoreTests
@@ -26,15 +24,12 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The height-map question must not depend on the work-zero answer. The terminal
-        /// must not be skipped when the operator declines to trust the stored origin, or
-        /// the data was never resolved - and later announced itself as current.
+        /// Declining the stored origin must still leave the map question asked. Tying the two
+        /// together leaves a stored map unresolved and later treated as current.
         /// </summary>
         [Fact]
         public void HeightMapQuestion_DoesNotDependOnTheWorkZeroAnswer()
         {
-            // Expressed against the grid model the sequence is built on: a stored map is
-            // a question in its own right, not a consequence of trusting an origin.
             var grid = new ProbeGrid(5.0, new Vector2(0, 0), new Vector2(10, 10))
             {
                 Context = new ProbeContext("/tmp/board.ngc", new Vector3(-1, -2, -3))
@@ -50,8 +45,6 @@ namespace coppercli.Tests
 
             Assert.True(grid.HasCompleteData);
 
-            // Whatever was decided about the origin, the map still describes the board it
-            // names - that is what makes it a separate question.
             Assert.Equal(ProbeApplicability.Applicable,
                 grid.GetApplicability("/tmp/board.ngc", new Vector3(-1, -2, -3)));
             Assert.Equal(ProbeApplicability.OriginMoved,
@@ -59,9 +52,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Answering one question changes which of the rest apply. Declining to reload the
-        /// file leaves a map measured for it describing nothing, so asking about that map
-        /// afterwards offers the operator a yes that can only fail.
+        /// Declining to reload the file leaves its height map describing a file that is not
+        /// loaded. Asking about that map afterwards offers the operator a yes that can only
+        /// fail.
         /// </summary>
         [Fact]
         public void DecliningTheFile_StopsTheMapQuestionBeingAsked()
@@ -74,9 +67,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The sequence must run out whatever the operator answers, and the rule that ends
-        /// it lives inside the sequence so no front end can leave it out. Every answer used
-        /// to leave the state its question was derived from unchanged.
+        /// Each answer must change the state its question was derived from, or the sequence
+        /// asks the same topic forever. The rule that ends it sits inside the sequence, so no
+        /// front end can leave it out.
         /// </summary>
         [Theory]
         [InlineData(true)]
@@ -91,14 +84,14 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Runs the whole sequence against a remembered board with a part-measured map, and
-        /// returns the topics it put to the operator.
+        /// Returns the topics the sequence put to the operator. The stored map has one point
+        /// of the grid measured, which is what raises the unfinished-map topic.
         /// </summary>
         private List<SessionRestoreTopic> WhileABoardAndItsMapAreRemembered(
             bool storedWorkZero, bool yes)
         {
-            // AppState is process-wide and another test in this collection may have left a
-            // disconnected machine behind, which raises no work-origin question at all.
+            // AppState is process-wide, and another test in this collection may leave a
+            // disconnected machine behind, which raises no work-origin question.
             _web.TakeBackAppState();
 
             string board = System.IO.Path.GetTempFileName();
@@ -127,8 +120,8 @@ namespace coppercli.Tests
                 Assert.True(SessionRestore.AskPendingSteps(
                     step =>
                     {
-                        // Bounded: the defect is a sequence that never ends, and an
-                        // unbounded walk would hang the suite rather than fail it.
+                        // Without this bound a sequence that never ends hangs the suite
+                        // instead of failing it.
                         Assert.True(
                             asked.Count < topics,
                             "the sequence asked more questions than there are topics: "

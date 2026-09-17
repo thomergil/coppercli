@@ -4,9 +4,6 @@ using System.Net.Sockets;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper methods for network operations.
-    /// </summary>
     internal static class NetworkHelpers
     {
         /// <summary>
@@ -24,11 +21,10 @@ namespace coppercli.Helpers
         };
 
         /// <summary>
-        /// True if <paramref name="address"/> is on a network this machine is also on.
-        /// Being able to reach us is not the same as being local: a forwarded port or a
-        /// globally routable IPv6 address carries requests here from anywhere, and the web
-        /// UI trusts whoever it lets in. Everyone genuinely sharing the network is trusted,
-        /// which is the owner's decision - a hotspot or a cafe LAN counts as sharing it.
+        /// True if <paramref name="address"/> is on a network this machine is also on, which
+        /// is narrower than being able to reach us: a forwarded port or a globally routable
+        /// IPv6 address carries requests here from anywhere. Everyone on the same network is
+        /// trusted by the web UI, a hotspot or a cafe LAN included.
         /// </summary>
         public static bool IsLocalPeer(IPAddress address)
         {
@@ -42,7 +38,6 @@ namespace coppercli.Helpers
                    || SharesSubnetWithLocalInterface(address);
         }
 
-        /// <summary>True if the address falls in a block reserved for private networks.</summary>
         public static bool IsPrivateAddress(IPAddress address)
         {
             if (address.AddressFamily == AddressFamily.InterNetworkV6)
@@ -69,9 +64,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// True if the address sits in the same subnet as one of this machine's own
-        /// interfaces. This is what admits a LAN peer holding a globally routable IPv6
-        /// address, which no fixed list of private blocks can recognise.
+        /// This is what admits a LAN peer holding a globally routable IPv6 address, which no
+        /// fixed list of private blocks can recognize.
         /// </summary>
         private static bool SharesSubnetWithLocalInterface(IPAddress address)
         {
@@ -90,9 +84,9 @@ namespace coppercli.Helpers
 
             foreach (var iface in interfaces)
             {
-                // Scoped to one interface: an adapter going down mid-scan - a VPN, a
-                // docker bridge, Wi-Fi roaming - must not decide the question for the
-                // others, or a peer this is meant to admit is refused at random.
+                // The try covers one interface, because an adapter going down mid-scan - a
+                // VPN, a docker bridge, Wi-Fi roaming - must not end the scan of the rest,
+                // which would refuse a peer meant to be admitted.
                 try
                 {
                     if (iface.OperationalStatus != OperationalStatus.Up)
@@ -122,11 +116,10 @@ namespace coppercli.Helpers
             return false;
         }
 
-        /// <summary>Compares the leading <paramref name="bits"/> of two addresses.</summary>
         private static bool MatchesPrefix(byte[] address, byte[] prefix, int bits)
         {
-            // A zero-length prefix would match every address on earth. An interface that
-            // reports one tells us nothing about who is local, so it vouches for nobody.
+            // A zero-length prefix matches every address, so an interface reporting one
+            // would admit every peer.
             if (address.Length != prefix.Length || bits <= 0 || bits > address.Length * 8)
             {
                 return false;
@@ -152,10 +145,6 @@ namespace coppercli.Helpers
             return true;
         }
 
-        /// <summary>
-        /// Gets the local IPv4 addresses for display to the user.
-        /// Filters out loopback and link-local addresses.
-        /// </summary>
         public static List<string> GetLocalIPAddresses()
         {
             var addresses = new List<string>();
@@ -164,7 +153,6 @@ namespace coppercli.Helpers
             {
                 foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
                 {
-                    // Skip loopback, down interfaces, and virtual adapters
                     if (iface.OperationalStatus != OperationalStatus.Up)
                     {
                         continue;
@@ -177,7 +165,6 @@ namespace coppercli.Helpers
                     var props = iface.GetIPProperties();
                     foreach (var addr in props.UnicastAddresses)
                     {
-                        // Only IPv4 addresses
                         if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
                         {
                             continue;
@@ -185,7 +172,6 @@ namespace coppercli.Helpers
 
                         var ip = addr.Address.ToString();
 
-                        // Skip loopback and link-local
                         if (ip.StartsWith("127.") || ip.StartsWith("169.254."))
                         {
                             continue;
@@ -200,7 +186,6 @@ namespace coppercli.Helpers
             }
             catch
             {
-                // If we can't enumerate interfaces, try the simpler approach
                 try
                 {
                     var hostName = System.Net.Dns.GetHostName();
@@ -219,7 +204,7 @@ namespace coppercli.Helpers
                 }
                 catch
                 {
-                    // Give up - caller will handle empty list
+                    // The caller handles an empty list.
                 }
             }
 

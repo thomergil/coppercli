@@ -1,5 +1,3 @@
-// Extracted from Program.cs - Menu display helpers
-
 using System.Linq;
 using System.Text.RegularExpressions;
 using coppercli.Core.Communication;
@@ -11,13 +9,8 @@ using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
-    // =========================================================================
-    // Whether a mill job can start, shared by the terminal and the web server
-    // =========================================================================
-
     /// <summary>
-    /// What stops a mill job from starting.
-    /// Used to decouple validation logic from UI-specific error messages.
+    /// What stops a mill job from starting; GetMillBlockerReason holds the words for each case.
     /// </summary>
     public enum MillBlocker
     {
@@ -45,40 +38,29 @@ namespace coppercli.Helpers
         NoMachineProfile
     }
 
-    /// <summary>
-    /// Whether a mill job can start, and why not.
-    /// </summary>
-    /// <param name="Error">Primary error preventing start, or None.</param>
-    /// <param name="Warnings">List of warnings (non-blocking).</param>
-    /// <param name="ProbeProgress">Probe progress if ProbeIncomplete (e.g., "5/20").</param>
-    /// <param name="DangerousWarnings">List of dangerous file warnings if DangerousCommands warning.</param>
+    /// <param name="Warnings">Shown to the operator, but none of them stops the job.</param>
+    /// <param name="ProbeProgress">Set only for ProbeIncomplete, in the form "5/20".</param>
+    /// <param name="DangerousWarnings">Set only when Warnings holds DangerousCommands.</param>
     public record MillStartCheck(
         MillBlocker Error,
         List<MillWarning> Warnings,
         string? ProbeProgress = null,
         List<string>? DangerousWarnings = null)
     {
-        /// <summary>Whether a mill job can start, derived from the blocker.</summary>
         public bool CanStart => Error == MillBlocker.None;
     }
 
-    /// <summary>One line of a menu.</summary>
     /// <param name="Blocker">
-    /// Why this item cannot be chosen, or null when it can. One definition answers both
-    /// whether the item is selectable and what to say about it.
+    /// Why this item cannot be chosen, or null when it can. One definition settles both
+    /// whether the item is selectable and the words shown beside it.
     /// </param>
     public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<string?>? Blocker = null)
     {
-        /// <summary>Whether this item can be chosen.</summary>
         public bool IsEnabled => CurrentDisabledReason == null;
 
-        /// <summary>Why it cannot be chosen, or null when it can.</summary>
         public string? CurrentDisabledReason => Blocker?.Invoke();
     }
 
-    /// <summary>
-    /// A menu definition that builds labels and provides lookup by option type.
-    /// </summary>
     public class MenuDef<T> where T : notnull
     {
         private readonly List<MenuItem<T>> _items = new();
@@ -93,9 +75,8 @@ namespace coppercli.Helpers
         public int Count => _items.Count;
 
         /// <summary>
-        /// Gets labels for all items, including disabled reasons where applicable.
-        /// Format: "1. Label [m] (reason)" where reason only appears for disabled items.
-        /// Use GetEnabledStates() in conjunction for rendering disabled items dimmed.
+        /// ShowMenu needs GetEnabledStates alongside these, or a disabled item is drawn like
+        /// any other and can be chosen.
         /// </summary>
         public string[] Labels => _items.Select((item, i) =>
         {
@@ -106,13 +87,10 @@ namespace coppercli.Helpers
         }).ToArray();
 
         /// <summary>
-        /// Gets the enabled state for each item at the current moment.
+        /// Each Blocker runs again on every call, so the states follow the machine.
         /// </summary>
         public bool[] GetEnabledStates() => _items.Select(item => item.IsEnabled).ToArray();
 
-        /// <summary>
-        /// Gets the mnemonic keys for all items.
-        /// </summary>
         public char[] Mnemonics => _items.Select(item => item.Mnemonic).ToArray();
 
         public int IndexOf(T option) => _items.FindIndex(item => EqualityComparer<T>.Default.Equals(item.Option, option));
@@ -120,15 +98,12 @@ namespace coppercli.Helpers
         public MenuItem<T> this[int index] => _items[index];
     }
 
-    /// <summary>
-    /// Helper methods for displaying menus.
-    /// </summary>
     internal static class MenuHelpers
     {
         /// <summary>
-        /// What about the machine stops a job being started, or None. Probing and milling
-        /// both call this, so neither can be offered while the other is refused. The door is
-        /// excluded: the run handles the enclosure and can release the hold.
+        /// Probing and milling both call this, so neither is offered while the other is
+        /// refused. A door hold is not counted, because the run prompts about the enclosure
+        /// and releases the hold itself.
         /// </summary>
         public static MillBlocker GetMachineBlocker()
         {
@@ -167,9 +142,9 @@ namespace coppercli.Helpers
                 return machineReason;
             }
 
-            // The probe screen loads, applies and discards the height map, all of which
-            // rewrite the file a run is streaming. The menu says it in fewer words than a
-            // refusal does, but it asks the one predicate.
+            // Loading, applying and discarding a height map all rewrite the file a run is
+            // streaming, so the menu asks the same predicate a refusal would and shows a
+            // shorter reason.
             if (AppState.WhyTheFileCannotChange() != null)
             {
                 return DisabledRunInProgress;
@@ -187,12 +162,12 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Whether milling can start. One check, shared by the terminal and the web server.
-        /// Used by both TUI (GetMillDisabledReason) and WebServer (HandleMillCanStart).
+        /// One check for both front ends: GetMillDisabledReason in the terminal and
+        /// HandleMillCanStart in the web server.
         /// </summary>
         /// <param name="probeGrid">
-        /// The map to judge against, which the caller has already read. Required: null here
-        /// means the job has no map, and a default would make that indistinguishable from a
+        /// The map to judge against, which the caller has already read. Required, because null
+        /// here means the job has no map, which a default would make indistinguishable from a
         /// caller that did not look.
         /// </param>
         public static MillStartCheck CheckMillCanStart(ProbeGrid? probeGrid)
@@ -208,13 +183,12 @@ namespace coppercli.Helpers
                 return new MillStartCheck(machineBlocker, warnings);
             }
 
-            // Check file loaded
             if (AppState.Machine.File.Count == 0)
             {
                 return new MillStartCheck(MillBlocker.NoFile, warnings);
             }
 
-            // Check for dangerous warnings in file (collect early, always returned)
+            // Collected before the early returns below, so every outcome carries them.
             var currentFile = AppState.CurrentFile;
             if (currentFile?.Warnings.Count > 0)
             {
@@ -227,7 +201,7 @@ namespace coppercli.Helpers
                 }
                 else
                 {
-                    dangerousWarnings = null;  // Empty list → null
+                    dangerousWarnings = null;
                 }
             }
 
@@ -243,9 +217,8 @@ namespace coppercli.Helpers
                 return new MillStartCheck(MillBlocker.ProbeNotApplied, warnings, null, dangerousWarnings);
             }
 
-            // A map already baked into the toolpath carries its corrections in every cutting
-            // move, so if the setup has moved since it was measured the whole job cuts at the
-            // wrong depth.
+            // An applied map has added its corrections to every cutting move, so if the setup
+            // has moved since it was measured the whole job cuts at the wrong depth.
             if (probeGrid != null && AppState.AreProbePointsApplied)
             {
                 if (!AppState.GetProbeApplicability().IsUsable())
@@ -259,13 +232,12 @@ namespace coppercli.Helpers
                 return new MillStartCheck(machineBlocker, warnings, null, dangerousWarnings);
             }
 
-            // Check if homed (warning only - will home before milling)
+            // A warning rather than a blocker, because the run homes first.
             if (!AppState.Machine.IsHomed)
             {
                 warnings.Add(MillWarning.NotHomed);
             }
 
-            // Check if machine profile is selected (warning only)
             if (MachineProfiles.GetProfile(AppState.Settings.MachineProfile) == null)
             {
                 warnings.Add(MillWarning.NoMachineProfile);
@@ -274,10 +246,6 @@ namespace coppercli.Helpers
             return new MillStartCheck(MillBlocker.None, warnings, null, dangerousWarnings);
         }
 
-        /// <summary>
-        /// Asks for a baud rate, offering the rates this project supports and an entry that
-        /// keeps the one already set.
-        /// </summary>
         /// <returns>The chosen rate, or <paramref name="current"/> if it was kept.</returns>
         public static int AskBaudRate(int current)
         {
@@ -289,24 +257,18 @@ namespace coppercli.Helpers
             return choice < CommonBaudRates.Length ? CommonBaudRates[choice] : current;
         }
 
-        /// <summary>Reads the map for a caller that has not, then asks the check above.</summary>
         public static MillStartCheck CheckMillCanStart() =>
             CheckMillCanStart(AppState.CurrentProbeGrid);
 
-        /// <summary>
-        /// Returns the reason milling is disabled, or null if milling is allowed.
-        /// Wrapper around CheckMillCanStart() for simple menu disabled state.
-        /// </summary>
         public static string? GetMillDisabledReason(ProbeGrid? probeGrid) =>
             GetMillBlockerReason(CheckMillCanStart(probeGrid));
 
-        /// <inheritdoc cref="GetMillDisabledReason(ProbeGrid?)"/>
         public static string? GetMillDisabledReason() =>
             GetMillBlockerReason(CheckMillCanStart());
 
         /// <summary>
-        /// The reason milling is blocked, or null. One mapping, so the menu entry and the
-        /// reason beside it cannot list different cases.
+        /// One mapping from blocker to words, so the menu entry and the reason beside it
+        /// cannot disagree.
         /// </summary>
         public static string? GetMillBlockerReason(MillStartCheck result) => result.Error switch
         {
@@ -322,10 +284,9 @@ namespace coppercli.Helpers
         };
 
         /// <summary>
-        /// Whether the machine is answering. Shows the reason and waits for a keypress if not:
-        /// an open port GRBL has not replied on is not a machine to send a command to.
+        /// Shows the reason and waits for a keypress when it is not: an open port GRBL has not
+        /// replied on is not a machine to send commands to.
         /// </summary>
-        /// <returns>True if connected, false otherwise.</returns>
         public static bool RequireConnection()
         {
             if (!MachineWait.IsResponding(AppState.Machine))
@@ -337,36 +298,31 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Displays an error message and waits for Enter.
+        /// Waits for Enter, so the message survives the caller's next redraw.
         /// </summary>
-        /// <param name="message">The error message to display (without markup).</param>
+        /// <param name="message">Plain text: it is escaped, so Spectre markup in it is not
+        /// rendered.</param>
         public static void ShowError(string message)
         {
             AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(message)}[/]");
             WaitEnter();
         }
 
-        /// <summary>
-        /// Prompts the user for input.
-        /// </summary>
         public static T Ask<T>(string prompt, T defaultValue)
         {
             return AnsiConsole.Ask<T>(prompt, defaultValue);
         }
 
-        /// <summary>
-        /// Prompts the user for input (no default value).
-        /// </summary>
         public static T Ask<T>(string prompt)
         {
             return AnsiConsole.Ask<T>(prompt);
         }
 
-        // Lines used by menu chrome (title + help text + scroll indicators)
-        private const int MenuChromeLines = 4; // title, help, possible top/bottom indicators
+        private const int MenuChromeLines = 4; // title, help, top and bottom scroll indicators
 
         /// <summary>
-        /// Writes a markup line and clears to end of line (prevents ghost text when redrawing).
+        /// Clears to end of line, so a shorter line does not leave the last frame's text
+        /// standing beyond it.
         /// </summary>
         internal static void MarkupLineClear(string markup)
         {
@@ -375,34 +331,32 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Displays a menu and returns the selected index. Supports arrow navigation, number keys, and mnemonic keys.
-        /// Automatically scrolls when there are more options than fit in the terminal.
+        /// Returns the chosen index, or -1 when the machine status changed and the caller has
+        /// to redraw. The list scrolls once it is taller than the terminal.
         /// </summary>
-        /// <param name="enabledStates">Optional array indicating which items are enabled. Disabled items shown dim and not selectable.</param>
-        /// <param name="mnemonicKeys">Optional array of mnemonic characters for each option. If null, extracts from option text.</param>
+        /// <param name="enabledStates">Null makes every item selectable; a false entry is drawn
+        /// dim and skipped.</param>
+        /// <param name="mnemonicKeys">Null falls back to the bracketed letter in the option
+        /// text.</param>
         public static int ShowMenu(string title, string[] options, int initialSelection = 0, bool[]? enabledStates = null, char[]? mnemonicKeys = null)
         {
             int selected = Math.Clamp(initialSelection, 0, options.Length - 1);
 
-            // If initial selection is disabled, find first enabled item
             if (enabledStates != null && !enabledStates[selected])
             {
                 selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
             }
 
-            // Build mnemonic dictionary - use provided keys or extract from text
             var mnemonics = new Dictionary<char, int>();
             var leadingKeys = new Dictionary<char, int>();
             for (int i = 0; i < options.Length; i++)
             {
-                // Use provided mnemonic if available
                 if (mnemonicKeys != null && i < mnemonicKeys.Length && mnemonicKeys[i] != '\0')
                 {
                     mnemonics[char.ToLower(mnemonicKeys[i])] = i;
                 }
                 else
                 {
-                    // Fall back to extracting from brackets (e.g., "[c]")
                     var match = Regex.Match(options[i], @"\[(\w)\]");
                     if (match.Success)
                     {
@@ -410,11 +364,10 @@ namespace coppercli.Helpers
                     }
                 }
 
-                // Check for leading number/letter (e.g., "0. " or "A. " or "10. ")
+                // A leading "0. ", "A. " or "10. " in the label.
                 var leadingMatch = Regex.Match(options[i], @"^(\w+)\.");
                 if (leadingMatch.Success)
                 {
-                    // For single char, use as key; for multi-char numbers, use last digit
                     string prefix = leadingMatch.Groups[1].Value;
                     if (prefix.Length == 1)
                     {
@@ -423,8 +376,7 @@ namespace coppercli.Helpers
                 }
             }
 
-            // Right-align numeric prefixes for cleaner display
-            // Find max prefix width (e.g., "10." is wider than "1.")
+            // Right-aligned, so "9." and "10." line up in a list long enough to need both.
             int maxPrefixWidth = 0;
             foreach (var opt in options)
             {
@@ -435,7 +387,6 @@ namespace coppercli.Helpers
                 }
             }
 
-            // Create display versions with right-aligned numbers
             var displayOptions = new string[options.Length];
             for (int i = 0; i < options.Length; i++)
             {
@@ -452,32 +403,28 @@ namespace coppercli.Helpers
                 }
             }
 
-            // Calculate viewport size based on terminal height
             var (_, termHeight) = DisplayHelpers.GetSafeWindowSize();
             int maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - Console.CursorTop);
             bool needsScrolling = options.Length > maxVisibleItems;
             int viewStart = 0;
 
-            // Adjust view to show initial selection
             if (needsScrolling && selected >= maxVisibleItems)
             {
                 viewStart = Math.Min(selected - maxVisibleItems + 1, options.Length - maxVisibleItems);
             }
 
-            // Remember starting position for redraw after status change
+            // Every redraw starts here, instead of stacking another copy down the screen.
             int startTop = Console.CursorTop;
 
             while (true)
             {
-                // Reset cursor to start position for clean redraw
                 Console.SetCursorPosition(0, startTop);
 
-                // Recalculate in case terminal was resized
+                // Recomputed each pass, because the terminal can be resized while the menu is up.
                 (_, termHeight) = DisplayHelpers.GetSafeWindowSize();
                 maxVisibleItems = Math.Max(3, termHeight - MenuChromeLines - startTop);
                 needsScrolling = options.Length > maxVisibleItems;
 
-                // Ensure viewStart is valid after resize
                 if (!needsScrolling)
                 {
                     viewStart = 0;
@@ -487,7 +434,6 @@ namespace coppercli.Helpers
                     viewStart = Math.Clamp(viewStart, 0, options.Length - maxVisibleItems);
                 }
 
-                // Adjust view to keep selection visible
                 if (needsScrolling)
                 {
                     if (selected < viewStart)
@@ -504,20 +450,16 @@ namespace coppercli.Helpers
                 bool hasMoreAbove = viewStart > 0;
                 bool hasMoreBelow = viewEnd < options.Length;
 
-                // Calculate actual lines we'll draw (for cursor repositioning)
-                int linesDrawn = 1; // title
+                int linesDrawn = 1; // the title line
 
-                // Draw menu (cursor already positioned at start of menu area)
                 MarkupLineClear($"[{ColorBold}]{Markup.Escape(title)}[/]");
 
-                // Show "more above" indicator
                 if (hasMoreAbove)
                 {
                     MarkupLineClear($"[{ColorDim}]  ▲ {viewStart} more above[/]");
                     linesDrawn++;
                 }
 
-                // Draw visible options (use displayOptions for right-aligned numbers)
                 for (int i = viewStart; i < viewEnd; i++)
                 {
                     bool isEnabled = enabledStates?[i] ?? true;
@@ -538,7 +480,6 @@ namespace coppercli.Helpers
                     linesDrawn++;
                 }
 
-                // Show "more below" indicator
                 if (hasMoreBelow)
                 {
                     MarkupLineClear($"[{ColorDim}]  ▼ {options.Length - viewEnd} more below[/]");
@@ -551,13 +492,14 @@ namespace coppercli.Helpers
                 var keyOrNull = InputHelpers.ReadKeyPolling();
                 if (keyOrNull == null)
                 {
-                    return -1; // Status changed, signal caller to redraw
+                    return -1;
                 }
                 var key = keyOrNull.Value;
 
                 char pressedKey = char.ToUpper(key.KeyChar);
 
-                // Check leading keys first (e.g., "0. Back" responds to '0') - only if enabled
+                // Leading keys are matched first, so "0. Back" answers to '0' even when another
+                // item carries '0' as its mnemonic.
                 if (leadingKeys.TryGetValue(pressedKey, out int leadingIdx))
                 {
                     if (enabledStates == null || enabledStates[leadingIdx])
@@ -566,7 +508,6 @@ namespace coppercli.Helpers
                     }
                 }
 
-                // Mnemonic keys (from parentheses at end of option) - only if enabled
                 if (mnemonics.TryGetValue(char.ToLower(key.KeyChar), out int idx))
                 {
                     if (enabledStates == null || enabledStates[idx])
@@ -584,14 +525,12 @@ namespace coppercli.Helpers
                         selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
                         break;
                     case ConsoleKey.PageUp:
-                        // Move up by a page
                         for (int i = 0; i < maxVisibleItems && selected > 0; i++)
                         {
                             selected = FindNextEnabled(selected, -1, options.Length, enabledStates);
                         }
                         break;
                     case ConsoleKey.PageDown:
-                        // Move down by a page
                         for (int i = 0; i < maxVisibleItems && selected < options.Length - 1; i++)
                         {
                             selected = FindNextEnabled(selected, 1, options.Length, enabledStates);
@@ -611,8 +550,8 @@ namespace coppercli.Helpers
                         break;
                     case ConsoleKey.Escape:
                         // Every caller's last entry is the one that changes nothing - Back,
-                        // Cancel, or keep-what-you-have - so Escape picks it, if it is
-                        // enabled. Returning a blocked entry would run a refused action.
+                        // Cancel, or keep-what-you-have - so Escape picks it. A blocked last
+                        // entry is left alone, because returning it would run a refused action.
                         if (enabledStates == null || enabledStates[options.Length - 1])
                         {
                             return options.Length - 1;
@@ -620,14 +559,14 @@ namespace coppercli.Helpers
                         break;
                 }
 
-                // Move cursor back up to redraw
                 int newTop = Math.Max(0, Console.CursorTop - linesDrawn);
                 Console.SetCursorPosition(0, newTop);
             }
         }
 
         /// <summary>
-        /// Finds the next enabled item in the given direction, wrapping around.
+        /// Wraps around the ends, and returns <paramref name="current"/> when no item is
+        /// enabled.
         /// </summary>
         private static int FindNextEnabled(int current, int direction, int count, bool[]? enabledStates)
         {
@@ -645,31 +584,28 @@ namespace coppercli.Helpers
                     return next;
                 }
             }
-            return current; // No enabled items found, stay put
+            return current;
         }
 
         /// <summary>
-        /// Displays a menu from a MenuDef and returns the selected MenuItem.
-        /// Disabled items are shown dimmed and not selectable, with the reason beside them.
+        /// Returns null when the machine status changed and the caller has to redraw.
         /// </summary>
         public static MenuItem<T>? ShowMenuWithRefresh<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
             int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates(), menu.Mnemonics);
             if (index < 0)
             {
-                return null; // Status changed, caller should redraw
+                return null;
             }
             return menu[index];
         }
 
         public static MenuItem<T> ShowMenu<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
-            // Capture start position so redraws don't stack
             int startTop = Console.CursorTop;
 
             while (true)
             {
-                // Reset to start position before each draw
                 Console.SetCursorPosition(0, startTop);
 
                 int index = ShowMenu(title, menu.Labels, initialSelection, menu.GetEnabledStates(), menu.Mnemonics);
@@ -677,17 +613,14 @@ namespace coppercli.Helpers
                 {
                     return menu[index];
                 }
-                // Status changed (index == -1), redraw and try again
+                // An index of -1 means the status changed: redraw and ask again.
             }
         }
 
         /// <summary>
-        /// Block until the door is closed and the hold released, drawing the enclosure
-        /// message over the current screen.
-        ///
-        /// The policy is MachineWait.ClearDoorHoldAsync, the same one a run follows; this
-        /// supplies the overlay it asks and announces through. A screen with a run behind it
-        /// draws what that run publishes and never calls this.
+        /// MachineWait.ClearDoorHoldAsync does the work, the same sequence a run follows; this
+        /// supplies the overlay it prompts and announces through. A screen with a run behind it
+        /// draws what the run publishes and never calls this.
         /// </summary>
         /// <returns>
         /// True once the machine is out of Door. False if the operator backed out, or if the
@@ -699,8 +632,8 @@ namespace coppercli.Helpers
                 machine,
                 ask: message =>
                 {
-                    // Keys typed while a message was up are still buffered, and one of them
-                    // would answer this prompt before the operator has read it.
+                    // Keys typed while an earlier message was up are still buffered, and one of
+                    // them would answer this prompt before the operator has read it.
                     InputHelpers.FlushKeyboard();
 
                     // Defaults to yes: this prompt only appears once GRBL reports the door
@@ -710,7 +643,7 @@ namespace coppercli.Helpers
                 },
                 announce: message => DisplayHelpers.ShowOverlay(
                     message, messageColor: DisplayHelpers.AnsiWarning),
-                // Escape while waiting out an open door or a park restore is the way out.
+                // Escape is the way out while waiting on an open door or a park restore.
                 onPoll: EscapePressed)
                 .GetAwaiter().GetResult();
 
@@ -723,10 +656,9 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Report a caught exception to the operator. Its text names files, offsets and
-        /// types they cannot act on, so that goes to the log and the screen gets a sentence.
-        /// The one path a caught exception takes to the terminal, as WriteFailure is for the
-        /// browser.
+        /// An exception's text names files, offsets and types the operator cannot act on, so it
+        /// goes to the log and the screen gets a sentence. This is the one path a caught
+        /// exception takes to the terminal, as WriteFailure is for the browser.
         /// </summary>
         /// <param name="what">What was being done, named the way the operator asked for it.</param>
         public static void ShowFailure(string what, System.Exception ex)
@@ -737,8 +669,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Show what a run reported. ControllerError carries the run's own wording, written
-        /// for the operator, so it is shown as it stands.
+        /// ControllerError carries the run's own wording, written for the operator, so it goes
+        /// to the screen as it stands.
         /// </summary>
         public static void ShowRunError(ControllerError fromTheRun)
         {
@@ -746,8 +678,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// ShowFailure, then waits for a keypress. For a screen that redraws straight
-        /// afterwards and would otherwise wipe the message before it is read.
+        /// For a screen that redraws straight afterwards and would otherwise wipe the message
+        /// before it is read.
         /// </summary>
         /// <inheritdoc cref="ShowFailure" path="/param"/>
         public static void ShowFailureAndWait(string what, System.Exception ex)
@@ -757,35 +689,31 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Whether the operator has pressed Escape. Does not wait for a key, so a screen can
-        /// offer a way out of a wait it is polling. Any other key waiting is read and
-        /// dropped, so a screen that also reads keys must not call this.
+        /// Does not wait for a key, so a screen polling a wait can offer a way out of it. Any
+        /// other key waiting is read and dropped, so a screen that also reads keys must not
+        /// call this.
         /// </summary>
         internal static bool EscapePressed() =>
             Console.KeyAvailable && InputHelpers.IsEscapeKey(Console.ReadKey(true));
 
         /// <summary>
-        /// A prompt as one block of text: title, then message. A prompt with no title is
-        /// just its message, so no empty heading is drawn.
+        /// A prompt with no title is just its message, so no empty heading is drawn above it.
         /// </summary>
         public static string FormatPrompt(string title, string message) =>
             string.IsNullOrEmpty(title) ? message : $"{title}\n\n{message}";
 
         /// <summary>
-        /// Draw a run's prompt over the current screen and answer it. The caller redraws
-        /// its own content afterwards.
-        ///
-        /// The door prompt defaults to yes, because it only appears once GRBL reports the
-        /// door closed. Every other prompt defaults to no, so a reflex Enter cannot resume
-        /// motion. ShowOverlayConfirm renders [Y/n] or [y/N] to match.
+        /// The door prompt defaults to yes, because it only appears once GRBL reports the door
+        /// closed; every other prompt defaults to no, so a reflex Enter cannot resume motion.
+        /// The caller redraws its own content afterwards.
         /// </summary>
         /// <returns>True if the operator chose to continue.</returns>
         public static bool ShowPromptOverlay(UserInputRequest request)
         {
             string text = FormatPrompt(request.Title, request.Message);
 
-            // A run answers one prompt and can publish the next from inside that call, so a
-            // keystroke still in the buffer would answer a prompt nobody has read.
+            // A run can publish its next prompt from inside the call that answers this one, so
+            // a keystroke still in the buffer would answer a prompt nobody has read.
             InputHelpers.FlushKeyboard();
 
             bool? proceed = DisplayHelpers.ShowOverlayConfirm(text, defaultYes: request.IsDoorPrompt);
@@ -798,25 +726,20 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Displays a confirmation dialog. Returns true for yes, false for no.
-        /// Escape returns the default value.
-        /// Responds immediately on keypress (no Enter required).
+        /// Escape returns the default, and the first keypress answers, with no Enter needed.
         /// </summary>
         public static bool Confirm(string message, bool defaultYes = false) =>
             AskYesNo(message, defaultYes, offerQuit: false) ?? defaultYes;
 
         /// <summary>
-        /// Displays a confirmation dialog with quit option.
-        /// Returns true for yes, false for no, null for quit/Escape.
-        /// Responds immediately on keypress (no Enter required).
+        /// Null for quit or Escape, and the first keypress answers, with no Enter needed.
         /// </summary>
         public static bool? ConfirmOrQuit(string message, bool defaultYes = false) =>
             AskYesNo(message, defaultYes, offerQuit: true);
 
         /// <summary>
-        /// Prompts yes/no and returns on the first keypress. The hint lists which key does
-        /// what, including quit when the caller offers it, so what is drawn and what is
-        /// accepted are set together.
+        /// The hint and the keys accepted are built from the same <paramref name="offerQuit"/>,
+        /// so the prompt cannot offer a key it then refuses.
         /// </summary>
         /// <returns>Null where the operator quit, which only <paramref name="offerQuit"/>
         /// allows.</returns>
@@ -859,9 +782,6 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Prompts for a number, offering <paramref name="defaultValue"/>.
-        /// </summary>
         /// <returns>
         /// The number typed, the default for an empty line, or null if Escape was pressed.
         /// </returns>
@@ -888,9 +808,6 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Prompts for text, offering <paramref name="defaultValue"/>.
-        /// </summary>
         /// <returns>
         /// The text typed, the default for an empty line, or null if Escape was pressed.
         /// </returns>
@@ -902,8 +819,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Reads a line of input with Escape to cancel and Backspace support.
-        /// Returns the input string, or null if Escape was pressed.
+        /// Returns null when Escape was pressed. <paramref name="acceptChar"/> decides which
+        /// characters are echoed and kept.
         /// </summary>
         private static string? ReadLineWithEscape(Func<char, bool> acceptChar)
         {
@@ -943,8 +860,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Displays a message and waits for Enter to continue.
-        /// Used by macro system for user prompts.
+        /// Waits for Enter, and is what the macro prompt command puts on the screen.
         /// </summary>
         public static void ShowPrompt(string message)
         {
@@ -953,9 +869,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Waits for Enter, Escape, or Q key to be pressed.
+        /// Escape and Q continue as well, not only Enter.
         /// </summary>
-        /// <param name="message">Optional custom message. Default: "Press Enter to continue"</param>
         public static void WaitEnter(string? message = null)
         {
             AnsiConsole.MarkupLine($"[{ColorDim}]{message ?? CliConstants.PromptEnter}[/]");

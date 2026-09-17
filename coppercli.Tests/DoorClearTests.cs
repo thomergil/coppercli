@@ -11,10 +11,10 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// MachineWait.ClearDoorHoldAsync is the policy a run, the terminal and the browser all
-    /// follow: which door states the operator can answer, how many refused releases are
-    /// enough, and which states are waited out instead. ControllerBaseTests covers the run's
-    /// side; these are the answers only the terminal reaches.
+    /// MachineWait.ClearDoorHoldAsync is the one door-clearing loop a run, the terminal and the
+    /// browser all call: which door states the operator can answer, how many refused releases
+    /// end it, and which states are waited out instead. ControllerBaseTests covers the run's
+    /// path through it; these cover the callback path only the terminal takes.
     /// </summary>
     public class DoorClearTests
     {
@@ -38,8 +38,8 @@ namespace coppercli.Tests
             Assert.Single(asked);
             Assert.Equal(1, machine.CycleStartCount);
 
-            // The question is replaced as soon as it is answered, so the operator does not
-            // sit looking at a prompt they have already answered.
+            // Releasing announces at once; without it the screen keeps showing a prompt the
+            // operator has already answered.
             Assert.Equal(ControllerConstants.DoorResumingMessage, Assert.Single(announced));
         }
 
@@ -62,8 +62,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A hold that survives the allowed releases points to the switch or its wiring, so
-        /// the operator is told that instead of being asked again.
+        /// A hold that survives MachineClearAttempts releases points at the switch or its
+        /// wiring, so the loop returns WillNotRelease rather than asking again.
         /// </summary>
         [Fact]
         public async Task AHoldThatWillNotLift_StopsAsking()
@@ -82,9 +82,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// An open door and a park restore have nothing the operator can answer: the cycle
-        /// start would be refused. They are announced and waited out, and Escape ends the
-        /// wait on the poll it was pressed.
+        /// An open door and a park restore have nothing the operator can answer: GRBL refuses
+        /// the cycle start. They are announced and waited out, and onPoll returning true ends
+        /// the wait on that poll.
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.DoorSubStateAjar, ControllerConstants.DoorOpenPrompt)]
@@ -107,8 +107,8 @@ namespace coppercli.Tests
                 // Stands in for the operator pressing Escape rather than waiting it out.
                 onPoll: () => true);
 
-            // Bounded: giving up must end the wait on the poll it was asked. Awaited without
-            // this, a version that ignored onPoll would hang the suite instead of failing.
+            // A version that ignored onPoll would hang the suite if awaited directly, so this
+            // races the call against a deadline instead.
             Assert.Same(
                 clearing,
                 await Task.WhenAny(clearing, Task.Delay(ControllerConstants.DoorResumeTimeoutMs / 2)));
@@ -121,9 +121,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A run whose token is already cancelled must not be left waiting out a door. The
-        /// waits return at once on a cancelled token without awaiting, so a loop that did not
-        /// check the token itself spun with nothing to yield to.
+        /// The waits return at once on a cancelled token without awaiting, so a loop that does
+        /// not check the token itself spins without ever yielding.
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.DoorSubStateAjar)]
@@ -142,8 +141,8 @@ namespace coppercli.Tests
                 announce: _ => Interlocked.Increment(ref announced),
                 ct: cancelled.Token));
 
-            // On its own thread, because the defect is a loop with no await: called directly
-            // it would never yield and the deadline below would never be reached.
+            // Task.Run because the defect is a loop with no await: called directly it never
+            // yields, so the deadline below is never reached.
             Assert.Same(
                 clearing,
                 await Task.WhenAny(clearing, Task.Delay(ControllerConstants.DoorResumeTimeoutMs)));

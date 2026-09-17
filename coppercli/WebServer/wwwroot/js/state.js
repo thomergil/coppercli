@@ -1,15 +1,12 @@
-// coppercli Web UI State
-
-// Global state object - exported for access from other modules
 export const state = {
     ws: null,
     jogModes: [],      // Loaded from server config
     jogModeIndex: 0,   // Set by loadConfig before the jog screen opens
     connected: false,
-    hasFile: false,    // Whether a G-code file is loaded
+    hasFile: false,
 
-    // What the server last said about the two runs it owns. Only updateStatus writes these,
-    // and the screen lock derives from them.
+    // What the server last reported about the two runs. Only updateStatus writes these, and
+    // the screen lock derives from them.
     isMilling: false,
     isProbing: false,
 
@@ -21,11 +18,10 @@ export const state = {
     tracingOutline: false,
 
     selectedFile: null,
-    currentScreen: null, // Current screen ID (for redirect logic)
+    currentScreen: null,
     reconnectAttempts: 0,
     isProbePollRunning: false,
-    probeDataDisplayed: false,  // Prevent repeated probe data display
-    // Server-provided config (loaded at startup to avoid duplicating constants)
+    probeDataDisplayed: false,
     probeDefaults: { margin: 0.5, gridSize: 5 },  // Fallbacks, overwritten by loadConfig
     millGrid: { maxWidth: 50, maxHeight: 20 }     // Fallbacks, overwritten by loadConfig
 };

@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 
-// Enough of a page for the status modules to run against. Elements are created on demand
-// and kept, so a test can read back what the code wrote.
+// A stub page for the wwwroot modules to run against under node --test. Elements are created
+// on demand and kept, so a test can read back what the code wrote; their ids come from
+// index.html, so a write to an id the page does not have throws instead of creating one.
 
 class ClassList {
     constructor() { this._names = new Set(); }
@@ -12,7 +13,7 @@ class ClassList {
 }
 
 // Text assigned through textContent becomes a text node, so markup in it is shown rather
-// than parsed. Modelled, because a label written over an icon is the defect under test.
+// than parsed. Modeled here because a label written over an icon is the defect under test.
 const escapeMarkup = text =>
     text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -33,19 +34,17 @@ class El {
         this.value = '';
     }
     // textContent and innerHTML are one field in a browser: writing either replaces
-    // everything inside the element. Kept separate here, a test could not see an icon being
-    // destroyed by a label change.
+    // everything inside the element. Kept as one field here, so a test sees an icon removed
+    // by a label change.
     get innerHTML() { return this._html; }
     set innerHTML(value) { this._html = String(value); this.children.length = 0; }
     get textContent() { return unescapeMarkup(this._html.replace(/<[^>]*>/g, '')); }
     set textContent(value) { this._html = escapeMarkup(String(value)); this.children.length = 0; }
 
-    // Handlers are kept so a test can drive a control the page binds this way, rather than
-    // through the onclick property.
     addEventListener(type, handler) { (this.handlers ??= {})[type] = handler; }
 
-    // Fire the handler bound for this event, whichever way it was bound. Throws when
-    // nothing is bound, so a test cannot pass by never reaching the code it names.
+    // Throws when nothing is bound for the event, so a test cannot pass without reaching the
+    // code it names.
     fire(type) {
         const handler = this.handlers?.[type] ?? (type === 'click' ? this.onclick : null);
         if (!handler) {
@@ -67,14 +66,12 @@ class El {
 const elements = new Map();
 const lists = new Map();
 
-// Ids come from the page, not from the test. Otherwise an element the code asks for that
-// index.html does not have would be created here and the mismatch never noticed.
 const pageIds = new Set(
     [...readFileSync(new URL('../../coppercli/WebServer/wwwroot/index.html', import.meta.url), 'utf8')
         .matchAll(/id="([A-Za-z0-9_-]+)"/g)].map(m => m[1]));
 
-// Empty, byId would reject every element and the stub would be useless - but a test that
-// only reads would still pass. Fail here instead, where the cause is visible.
+// With no ids, byId rejects every element the code asks for. Throw here, where the cause is
+// visible, rather than at the first getElementById.
 if (pageIds.size === 0) {
     throw new Error('no element ids found on index.html; the stub page would reject everything');
 }
@@ -101,13 +98,10 @@ const document = {
     body: new El('body')
 };
 
-// The one way a browser test reaches a wwwroot module, so the three test files do not each
-// spell the path out.
 export async function load(module) {
     return import(`../../coppercli/WebServer/wwwroot/js/${module}`);
 }
 
-/// The toast most recently shown, or undefined if none was.
 export function lastToast() {
     return globalThis.document.body.children.at(-1);
 }
@@ -124,12 +118,11 @@ function modeButton(mode) {
     return btn;
 }
 
-// Installs the stub as the page and returns the handles tests read back.
 export function installDom() {
     elements.clear();
     lists.clear();
-    // The body is created once, so toasts from an earlier test would still be on it and a
-    // test reading the last one would read someone else's.
+    // The body is created once for the module, so without this a test reading the last toast
+    // reads one an earlier test left.
     document.body.children.length = 0;
 
     const jogButtons = list('.jog-btn[data-axis]', [jogButton('X'), jogButton('Y'), jogButton('Z')]);

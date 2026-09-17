@@ -26,18 +26,14 @@ if [[ ! -f "$FORMULA" ]]; then
 fi
 
 echo "Updating formula for version $VERSION..."
-
-# Base URL for downloads
 BASE_URL="https://github.com/thomergil/coppercli/releases/download/$VERSION"
-
-# Download and compute SHA256 for each platform
 echo "Downloading and computing checksums..."
 
 ARM64_URL="$BASE_URL/coppercli-$VERSION-osx-arm64.tar.gz"
 X64_URL="$BASE_URL/coppercli-$VERSION-osx-x64.tar.gz"
 LINUX_URL="$BASE_URL/coppercli-$VERSION-linux-x64.tar.gz"
 
-# Use wget for checksums (curl adds extra byte when piping)
+# wget, not curl: curl adds a byte when piping, which changes the checksum.
 echo "  Fetching macOS ARM64..."
 ARM64_SHA=$(wget -qO- "$ARM64_URL" | shasum -a 256 | cut -d' ' -f1)
 echo "    SHA256: $ARM64_SHA"
@@ -49,11 +45,7 @@ echo "    SHA256: $X64_SHA"
 echo "  Fetching Linux x64..."
 LINUX_SHA=$(wget -qO- "$LINUX_URL" | shasum -a 256 | cut -d' ' -f1)
 echo "    SHA256: $LINUX_SHA"
-
-# Update the formula
 echo "Updating formula..."
-
-# Use sed to update version and URLs/checksums
 sed -i.bak \
     -e "s|version \".*\"|version \"$VERSION\"|" \
     -e "s|/download/v[^/]*/coppercli-v[^-]*-osx-arm64|/download/$VERSION/coppercli-$VERSION-osx-arm64|" \
@@ -61,8 +53,7 @@ sed -i.bak \
     -e "s|/download/v[^/]*/coppercli-v[^-]*-linux-x64|/download/$VERSION/coppercli-$VERSION-linux-x64|" \
     "$FORMULA"
 
-# Update SHA256 checksums (these are on separate lines, so we need a different approach)
-# Create a temporary file with the updates
+# The checksums sit on their own lines, so sed cannot update them with the version.
 awk -v arm64="$ARM64_SHA" -v x64="$X64_SHA" -v linux="$LINUX_SHA" '
     /sha256.*ARM64/ || /sha256.*PLACEHOLDER_ARM64/ || (prev_arm64 && /sha256/) {
         if (prev_arm64) { sub(/sha256 ".*"/, "sha256 \"" arm64 "\""); prev_arm64=0 }

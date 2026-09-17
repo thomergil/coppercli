@@ -21,9 +21,12 @@ using Xunit;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// The sequences an operator performs, driven through the real HTTP API.
-    /// </summary>
+    // Drives CncWebServer end to end over HTTP: the probe, mill, door, settings and work-zero
+    // endpoints, and the /api/status payload the browser renders from. The server, the fake
+    // GRBL and AppState are shared across the collection, so a test that moves the machine
+    // restores it in a finally block. Several tests read
+    // coppercli/WebServer/wwwroot/js/constants.js directly, because it keeps its own copy of
+    // the C# enum names and nothing else compares the two outside a running browser.
     [Collection(WebServerCollection.Name)]
     public class WebServerSequenceTests
     {
@@ -34,10 +37,6 @@ namespace coppercli.Tests
             _web = web;
             _web.TakeBackAppState();
         }
-
-        // =====================================================================
-        // Helpers
-        // =====================================================================
 
         private HttpClient Client => _web.Client;
 
@@ -66,8 +65,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Runs <paramref name="body"/> with a mill run holding at the enclosure prompt, then
-        /// stops it and clears the hold. The fixture's machine is shared, so the teardown
-        /// runs whether the body passed or not.
+        /// stops the run and releases the hold. The fixture's machine is shared, so the
+        /// teardown runs in a finally block whether the body passed or not.
         /// </summary>
         private async Task WhileAMillRunHoldsAtTheDoor(Func<Task> body)
         {
@@ -100,8 +99,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loads a board and sets up a grid, keeping the file on disk. The discard and
-        /// re-apply paths reload it, so a test of those needs it to still be there.
+        /// Loads a board and sets up a grid, leaving the G-code file on disk. Discard and
+        /// re-apply reload that file, so a test of either needs it to still exist.
         /// </summary>
         private async Task<string> GivenAGridIsReadyAndTheBoardStays()
         {
@@ -125,16 +124,14 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loads a board and sets up a grid, then deletes the board. A test that needs the
-        /// original G-code still on disk - a discard or a re-apply reloads it - calls
-        /// GivenAGridIsReadyAndTheBoardStays instead.
+        /// Loads a board and sets up a grid, then deletes the G-code file. A test that needs
+        /// that file on disk calls GivenAGridIsReadyAndTheBoardStays instead.
         /// </summary>
         private async Task GivenAGridIsReady()
         {
             File.Delete(await GivenAGridIsReadyAndTheBoardStays());
         }
 
-        /// <summary>A finished map stamped for the board that is loaded.</summary>
         private static ProbeGrid CompleteMapForThisJob()
         {
             var complete = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20))
@@ -153,7 +150,6 @@ namespace coppercli.Tests
             return complete;
         }
 
-        /// <summary>Puts a finished map for this job in the autosave, and nothing in memory.</summary>
         private static void GivenACompleteAutosaveForThisJob()
         {
             var complete = CompleteMapForThisJob();
@@ -168,11 +164,6 @@ namespace coppercli.Tests
                 "the probe controller to stop claiming the machine");
         }
 
-        // =====================================================================
-        // The sequences
-        // =====================================================================
-
-        /// <summary>Stop then start is the operator's ordinary loop, so it has to work.</summary>
         [Fact]
         public async Task StartingAProbe_StoppingIt_AndStartingAgain_IsAllowed()
         {
@@ -190,8 +181,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The trace and the grid probe drive one controller, so a stopped trace must leave
-        /// it ready for the next run.
+        /// The trace and the grid probe run on the same controller, so a stopped trace has to
+        /// leave it able to start the next run.
         /// </summary>
         [Fact]
         public async Task TracingTheOutline_StoppingIt_AndStartingAProbe_IsAllowed()
@@ -210,8 +201,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A trace moves the tool but measures nothing, so it must not read as probing. Both
-        /// endpoints must report it the same way.
+        /// A trace moves the tool but records no measurements, so neither /api/status nor
+        /// /api/probe/status may report it as probing.
         /// </summary>
         [Fact]
         public async Task WhileTracing_TheStatusReportsTracingNotProbing()
@@ -227,7 +218,6 @@ namespace coppercli.Tests
             Assert.True(status.GetProperty("tracingOutline").GetBoolean(), "status did not report the trace");
             Assert.False(status.GetProperty("probing").GetBoolean(), "a trace reported itself as probing");
 
-            // The probe endpoint reports the same thing.
             var probeStatus = await GetJson(WebConstants.ApiProbeStatus);
             Assert.False(probeStatus.GetProperty("active").GetBoolean(),
                 "the probe status called a trace an active probe");
@@ -235,11 +225,8 @@ namespace coppercli.Tests
             await StopTheProbeAndWaitForIdle();
         }
 
-        /// <summary>
-        /// A second start is refused while the first run owns the machine, with a reason.
-        /// </summary>
         [Fact]
-        public async Task StartingTwice_IsRefusedWhileTheFirstRunOwnsTheMachine()
+        public async Task StartingTwice_IsRefusedWhileTheFirstRunIsActive()
         {
             await GivenAGridIsReady();
 
@@ -256,9 +243,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stopping has to reach the machine, not just the software, so this asserts on the
-        /// bytes sent. GRBL works through its planner buffer whether or not anyone is
-        /// listening.
+        /// GRBL keeps executing the moves in its planner buffer after the host stops
+        /// streaming, so a stop that only changes controller state leaves the tool cutting.
         /// </summary>
         [Fact]
         public async Task StoppingAProbe_SendsAFeedHoldAndASoftResetToTheMachine()
@@ -276,8 +262,8 @@ namespace coppercli.Tests
             WebServerFixture.WaitUntil(() => _web.Grbl.SoftResetCount > resetsBefore,
                 "a soft reset to reach the machine");
 
-            // Order matters: the hold decelerates and the reset then ends the job. A reset
-            // first would stop the machine where it stands.
+            // Order matters: the feed hold decelerates the tool and the reset then ends the
+            // job. A reset first would stop the machine where it stands.
             var sent = _web.Grbl.Received;
             int hold = sent.ToList().FindLastIndex(l => l == FakeGrbl.FeedHoldMark);
             int reset = sent.ToList().FindLastIndex(l => l == FakeGrbl.SoftResetMark);
@@ -286,16 +272,15 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A map measured on another board is not this job's data, so the status does not
-        /// report it. Reporting it would offer recovery of a height map that would cut this
-        /// board at the wrong depth.
+        /// Reporting an autosave measured on another board would offer the operator recovery
+        /// of a height map that cuts this board at the wrong depth.
         /// </summary>
         [Fact]
         public async Task AnAutosaveMeasuredForAnotherBoard_IsNotReportedAsProbeData()
         {
             await GivenAGridIsReady();
 
-            // Clear what setup left in memory, so the status has only the autosave to read.
+            // Clear what setup left in memory, so only the autosave is left to read.
             var (discardCode, _) = await Post(WebConstants.ApiProbeDiscard);
             Assert.Equal(HttpStatusCode.OK, discardCode);
 
@@ -310,13 +295,13 @@ namespace coppercli.Tests
 
             Assert.Equal(WebConstants.ProbeStateNone, status.GetProperty("state").GetString());
 
-            // The same response must not offer Recover for the map it just excluded.
+            // The same response must not offer Recover for the map it excluded.
             Assert.False(status.GetProperty("hasUnsavedData").GetBoolean());
         }
 
         /// <summary>
-        /// Probing from an unset origin drives the tool to arbitrary XY, so the server
-        /// refuses it as the terminal does.
+        /// With no work zero set, the grid's coordinates put the tool at arbitrary XY, so the
+        /// start returns 409 as the terminal's own check does.
         /// </summary>
         [Fact]
         public async Task StartingAProbe_IsRefusedWhenNoWorkZeroIsSet()
@@ -331,8 +316,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A complete map the status reports is one every other check can act on. While it
-        /// is unapplied the mill must refuse, or the job runs with no height correction.
+        /// A complete map that is not applied blocks the mill. Without that check the job
+        /// runs with no height correction.
         /// </summary>
         [Fact]
         public async Task ACompleteMapTheStatusReports_StopsTheMillUntilApplied()
@@ -349,7 +334,8 @@ namespace coppercli.Tests
                 "the mill was cleared to run uncorrected while a complete map sat unapplied");
         }
 
-        /// <summary>Reading the status adopts nothing - see rule no-side-effect-on-get.</summary>
+        /// <summary>The GET reports the autosave without adopting it; see rule
+        /// no-side-effect-on-get in ARCHITECTURE.md.</summary>
         [Fact]
         public async Task ReadingTheProbeStatus_DoesNotAdoptTheAutosave()
         {
@@ -371,8 +357,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A map is distinguished from one measured elsewhere by the setup stamped on it at
-        /// creation. Without that stamp every later check returns Unknown and accepts it.
+        /// A grid records its source file and G54 offset when it is created. Without that
+        /// record every later applicability check returns Unknown and the map is accepted.
         /// </summary>
         [Fact]
         public async Task ANewGrid_RecordsTheSetupItWasMeasuredIn()
@@ -389,8 +375,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The mill refuses a complete map until it is applied, so Apply has to work on the
-        /// map the status reported, or the refusal has no way out.
+        /// The mill is blocked while a complete map is unapplied, so /api/probe/apply has to
+        /// apply the map /api/probe/status reported from the autosave. Otherwise the block
+        /// has no way out.
         /// </summary>
         [Fact]
         public async Task ACompleteMapTheStatusReports_CanBeApplied()
@@ -411,8 +398,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser draws what it was sent, so every derived answer is in the payload.
-        /// This catches a missing field, or a door boolean coming back.
+        /// The status payload carries every derived value, so no screen works one out from
+        /// the raw GRBL status. A missing field, or one of the old door booleans, fails here.
         /// </summary>
         [Fact]
         public async Task TheStatus_CarriesEveryDerivedAnswer()
@@ -430,13 +417,13 @@ namespace coppercli.Tests
                     $"the status no longer answers {answer}, so a screen has to work it out");
             }
 
-            // Named cases, not raw status: a screen comparing this to a GRBL word is the
-            // defect, so it has to be a name the browser can look up.
+            // machineActivity is a MachineActivity name, not a raw GRBL word, so the browser
+            // looks its text up by name instead of comparing status strings.
             Assert.True(System.Enum.TryParse<MachineActivity>(
                     status.GetProperty("machineActivity").GetString(), out _),
                 "machineActivity is not one of the names MachineActivity defines");
 
-            // Three door booleans the payload must not carry: the browser reads machineActivity.
+            // The browser reads machineActivity for the door, so these three stay out.
             foreach (string gone in new[] { "doorOpen", "doorWaitingForResume", "doorResuming" })
             {
                 Assert.False(status.TryGetProperty(gone, out _),
@@ -445,8 +432,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// With no run behind it, the door overlay's Continue is the operator's confirmation
-        /// and the hold is released. This is the path the terminal's jog screen takes too.
+        /// With no run in progress, /api/door/release is the operator's confirmation and
+        /// sends the cycle start itself rather than answering a run's prompt.
         /// </summary>
         [Fact]
         public async Task AClosedDoorWithNoRun_IsReleasedByTheOverlay()
@@ -466,9 +453,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// An open door cannot be released: ReleaseDoorHoldAsync would wait for the reading
-        /// to catch up, and a switch that flipped closed inside that wait would take the
-        /// cycle start the operator asked for while the door was open.
+        /// An open door is rejected before ReleaseDoorHoldAsync, which would wait for the
+        /// status reading to catch up. A switch that flipped closed inside that wait would
+        /// take the cycle start the operator asked for while the door was open.
         /// </summary>
         [Fact]
         public async Task AnOpenDoor_IsNotReleasedByTheOverlay()
@@ -496,8 +483,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The words for a door state are Core's, sent with the status. A browser that had
-        /// its own copy of the mapping could show the wrong sentence for a state.
+        /// The text for a door state comes from ControllerConstants through the status
+        /// payload. A second copy in the browser could show the wrong sentence for a state.
         /// </summary>
         [Fact]
         public async Task TheDoorMessage_ComesFromTheStatus()
@@ -522,8 +509,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A machine that is not at the door has no door text to send, so the overlay has
-        /// nothing to draw and stays down.
+        /// doorMessage is null away from the door, which is what keeps the browser's overlay
+        /// hidden.
         /// </summary>
         [Fact]
         public async Task AMachineAwayFromTheDoor_SendsNoDoorMessage()
@@ -534,9 +521,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser looks its text up by MachineActivity name, from its own copy of those
-        /// names. validateConstants compares the two, but only in a running browser, so a
-        /// rename in C# would reach the operator as GRBL's raw word first.
+        /// constants.js holds its own copy of the MachineActivity names the browser looks its
+        /// text up by. validateConstants compares the two only in a running browser, so
+        /// without this a rename in C# reaches the operator as GRBL's raw word.
         /// </summary>
         [Fact]
         public void EveryBrowserActivityName_MatchesTheEnum()
@@ -557,9 +544,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The warning before an X or Y zero is one wording, published so both front ends say
-        /// it. Written twice they drifted on the article, the axes and one conjunction, and
-        /// the operator read a different sentence depending on which screen they were on.
+        /// The warning before an X or Y zero is published through /api/constants so the
+        /// terminal and the browser use one wording. Two copies drift, and the operator then
+        /// reads a different sentence depending on which screen they are on.
         /// </summary>
         [Fact]
         public async Task TheZeroWarning_ReachesTheBrowserWordForWord()
@@ -577,13 +564,12 @@ namespace coppercli.Tests
             Assert.Contains(SingleQuoted(CliConstants.CompleteMap), constants);
         }
 
-        /// <summary>The way constants.js spells a string, for comparing against a C# one.</summary>
         private static string SingleQuoted(string text) => $"'{text}'";
 
         /// <summary>
-        /// And the other direction: an outcome added to the enum but not to constants.js
-        /// leaves the browser looking up words under a name it does not have, so the operator
-        /// reads the bare axes line.
+        /// An outcome added to WorkZeroOutcome but not to constants.js leaves the browser
+        /// looking up text under a name it does not define, and the operator reads the bare
+        /// axes line.
         /// </summary>
         [Fact]
         public void EveryHeightMapOutcome_HasABrowserName()
@@ -597,7 +583,7 @@ namespace coppercli.Tests
 
             foreach (var outcome in Enum.GetValues<WorkZeroOutcome>())
             {
-                // NothingToDo needs no words: nothing happened to the map.
+                // NothingToDo needs no text: the map did not change.
                 if (outcome == WorkZeroOutcome.NothingToDo)
                 {
                     continue;
@@ -608,9 +594,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The same for the height-map outcomes. A typo in the value leaves the browser
-        /// looking up words under a name the server never sends, and the operator reads
-        /// "undefined" where the map's fate should be.
+        /// The browser looks its text up under the ZEROED_ values in constants.js, so one
+        /// that no longer matches a WorkZeroOutcome name leaves the operator reading
+        /// "undefined" in place of what became of the map.
         /// </summary>
         [Fact]
         public void EveryBrowserHeightMapOutcomeName_MatchesTheEnum()
@@ -631,9 +617,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The values in the status, not just their presence: a value that parses but is
-        /// wrong gives a button that does the opposite of its label. MachineWaitTests covers
-        /// the activity's own answers; this covers which field each one is sent in.
+        /// MachineWaitTests covers what MachineWait derives; this covers which status field
+        /// each value is sent in. A value that parses but is wrong gives the browser a button
+        /// that does the opposite of its label.
         /// </summary>
         [Fact]
         public async Task TheStatus_ReportsWhichControlsApply()
@@ -641,11 +627,11 @@ namespace coppercli.Tests
             try
             {
             WebServerFixture.WaitUntil(() => MachineWait.IsIdle(AppState.Machine), "the machine to be idle");
-            await AssertStatusSays(MachineActivity.Idle, needsAttention: false, canPause: false, canResume: false);
+            await AssertStatusReports(MachineActivity.Idle, needsAttention: false, canPause: false, canResume: false);
 
             await Post(WebConstants.ApiFeedhold);
             WebServerFixture.WaitUntil(() => MachineWait.IsHold(AppState.Machine), "the feed hold");
-            await AssertStatusSays(MachineActivity.Hold, needsAttention: false, canPause: false, canResume: true);
+            await AssertStatusReports(MachineActivity.Hold, needsAttention: false, canPause: false, canResume: true);
 
             await Post(WebConstants.ApiResume);
             WebServerFixture.WaitUntil(() => MachineWait.IsIdle(AppState.Machine), "the hold to lift");
@@ -653,24 +639,24 @@ namespace coppercli.Tests
             _web.Grbl.SimulateDoorOpen();
             WebServerFixture.WaitUntil(
                 () => MachineWait.GetDoorState(AppState.Machine) == DoorState.Open, "the open door");
-            await AssertStatusSays(MachineActivity.DoorOpen, needsAttention: true, canPause: false, canResume: false);
+            await AssertStatusReports(MachineActivity.DoorOpen, needsAttention: true, canPause: false, canResume: false);
 
             _web.Grbl.SimulateDoorClosedAndHolding();
             WebServerFixture.WaitUntil(
                 () => MachineWait.GetDoorState(AppState.Machine) == DoorState.WaitingForResume, "the door hold");
-            await AssertStatusSays(
+            await AssertStatusReports(
                 MachineActivity.DoorHolding, needsAttention: true, canPause: false, canResume: false);
 
             }
             finally
             {
-                // The fixture's machine is shared, so put it back even if an assertion failed.
+                // The fixture's machine is shared, so restore it even when an assertion failed.
                 await MachineWait.ReleaseDoorHoldAsync(AppState.Machine, ControllerConstants.DoorResumeTimeoutMs);
                 WebServerFixture.WaitUntil(() => MachineWait.IsIdle(AppState.Machine), "the machine to settle");
             }
         }
 
-        private async Task AssertStatusSays(
+        private async Task AssertStatusReports(
             MachineActivity expected, bool needsAttention, bool canPause, bool canResume)
         {
             var status = await GetJson(WebConstants.ApiStatus);
@@ -684,9 +670,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A prompt the browser recovers after a reload carries the workflow's own text.
-        /// Without it the overlay falls back to its tool-change heading, and the operator
-        /// answers what looks like a prompt about the tool but restarts the spindle.
+        /// A prompt recovered from the status carries the run's own message text. Without it
+        /// the overlay falls back to its tool-change heading, and the operator answers what
+        /// reads as a prompt about the tool while the machine restarts the spindle.
         /// </summary>
         [Fact]
         public async Task AProbeRunsDoorPrompt_IsRecoverableFromTheStatus()
@@ -701,9 +687,8 @@ namespace coppercli.Tests
             try
             {
                 await Post(WebConstants.ApiProbeStart);
-                // Wait on the prompt reaching the slot, not on the run's state: the run
-                // transitions first and publishes a moment later, and a status read in
-                // between would see no prompt for a reason this test is not about.
+                // The run transitions to WaitingForUserInput before it publishes the prompt,
+                // so a status read taken on the state alone can find no prompt yet.
                 WebServerFixture.WaitUntil(
                     () => PendingPrompt.Current?.IsDoorPrompt == true,
                     "the probe run to ask about the enclosure");
@@ -726,9 +711,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// While a run is parked on its own enclosure prompt, the door overlay's release must
-        /// not send the cycle start: the machine would resume while the run still waits on an
-        /// answer that can no longer arrive.
+        /// While a run waits on its own enclosure prompt, /api/door/release must not send the
+        /// cycle start. The machine would resume while the run still waits on an answer that
+        /// can no longer arrive.
         /// </summary>
         [Fact]
         public async Task ARunWaitingOnTheDoor_RefusesTheOverlaysRelease()
@@ -743,9 +728,8 @@ namespace coppercli.Tests
             try
             {
                 await Post(WebConstants.ApiProbeStart);
-                // Wait on the prompt reaching the slot, not on the run's state: the run
-                // transitions first and publishes a moment later, and a status read in
-                // between would see no prompt for a reason this test is not about.
+                // The run transitions to WaitingForUserInput before it publishes the prompt,
+                // so a status read taken on the state alone can find no prompt yet.
                 WebServerFixture.WaitUntil(
                     () => PendingPrompt.Current?.IsDoorPrompt == true,
                     "the probe run to ask about the enclosure");
@@ -768,9 +752,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser's mapping of a blocked start covers the same errors the terminal's
-        /// does. Only the terminal's is checked by MenuEnableTests, so without this a new
-        /// error reaches the browser as the fallback text.
+        /// MenuEnableTests checks only the terminal's mapping, so without this a new
+        /// MillBlocker reaches the browser as the fallback text.
         /// </summary>
         [Fact]
         public void EveryMillBlocker_HasBrowserText()
@@ -788,8 +771,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Resume releases a feed hold. A door hold restarts the spindle, so it goes through
-        /// the workflow's prompt instead.
+        /// Resume releases a feed hold. Releasing a door hold restarts the spindle, so that
+        /// path goes through the run's prompt instead.
         /// </summary>
         [Fact]
         public async Task ResumeDoesNotReleaseADoorHold()
@@ -809,7 +792,7 @@ namespace coppercli.Tests
                 Assert.Equal(ControllerConstants.ErrorDoorBlocksResume,
                     body.GetProperty("error").GetString());
 
-                // A cycle start that was sent would show up by the next report.
+                // A cycle start already sent would have reached the fake by the next report.
                 WebServerFixture.WaitUntil(
                     () => AppState.Machine.StatusReportCount > reportsBefore, "a status report");
                 Assert.Equal(before, _web.Grbl.CycleStartCount);
@@ -823,10 +806,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The probe behaves like the mill. A door blocks neither menu entry: the run
-        /// prompts about the enclosure and releases the hold, and closing the door leaves
-        /// GRBL holding, so a check in front would still refuse after the operator had done
-        /// what it asked.
+        /// Closing the enclosure leaves GRBL holding until a cycle start, so a check in front
+        /// of the run would still block after the operator did what it asked. The run prompts
+        /// about the enclosure and releases the hold instead.
         /// </summary>
         [Fact]
         public async Task ADoorHoldDoesNotBlockTheProbe_TheRunPromptsInstead()
@@ -862,12 +844,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The reported bug, reproduced through the HTTP API. Opening the enclosure and
-        /// closing it again leaves GRBL parked in Door, waiting for a cycle start. A gate in
-        /// front of the milling controller refused that state and told the operator to wait
-        /// for the machine to stop moving and clear an alarm, neither of which applied and
-        /// neither of which sends the cycle start. The controller prompts and releases it, so
-        /// nothing may refuse the job first.
+        /// Opening the enclosure and closing it again leaves GRBL in Door, waiting for a
+        /// cycle start. Nothing the operator can do at the machine clears that state, so the
+        /// start has to reach the milling controller, which prompts and sends the cycle start.
         /// </summary>
         [Fact]
         public async Task ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead()
@@ -891,16 +870,14 @@ namespace coppercli.Tests
                     "the mill refused a door hold the controller would have asked about: "
                     + (started.TryGetProperty("error", out var why) ? why.GetString() : "no reason given"));
 
-                // The job is now holding at the door prompt, which the operator can
-                // answer.
                 WebServerFixture.WaitUntil(
                     () => AppState.Milling.State == ControllerState.WaitingForUserInput,
                     "the run to ask about the enclosure");
             }
             finally
             {
-                // The fixture's machine is shared, so this restores it whatever happened
-                // above. Left in Door, it fails every test that runs after this one.
+                // The fixture's machine is shared; left in Door it fails every test that runs
+                // after this one.
                 await Post(WebConstants.ApiMillStop);
                 WebServerFixture.WaitUntil(() => !AppState.Milling.IsRunInProgress, "the run to end");
                 await MachineWait.ReleaseDoorHoldAsync(AppState.Machine, ControllerConstants.DoorResumeTimeoutMs);
@@ -909,8 +886,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The file browser lists this computer's directories. A path naming another host
-        /// sends the request thread to that host's file server.
+        /// A UNC path names another host, and listing it sends the request thread to that
+        /// host's file server.
         /// </summary>
         [Theory]
         [InlineData(@"\\attacker.example\share")]
@@ -933,10 +910,6 @@ namespace coppercli.Tests
             Assert.Equal(Path.Combine("/tmp", "board.nc"), path);
         }
 
-        /// <summary>
-        /// A bare "~" is a path the operator can type, so it resolves to the home directory
-        /// rather than throwing.
-        /// </summary>
         [Theory]
         [InlineData("~")]
         [InlineData("~/")]
@@ -966,9 +939,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// With no probe run in progress, a probe stop resets GRBL. During a mill run that
-        /// aborts the cut, and the unlock after it clears the alarm before the milling
-        /// monitor sees it.
+        /// A probe stop with no probe run in progress sends a soft reset. During a mill run
+        /// that aborts the cut, and the unlock after it clears the alarm before the milling
+        /// monitor reads it.
         /// </summary>
         [Fact]
         public async Task AProbeStopDuringAMillRun_LeavesTheMachineAlone()
@@ -987,9 +960,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every setting reaches the machine as a number in a G-code line or a move. A feed
-        /// of zero and a height that is not a number are both refused before anything is
-        /// stored.
+        /// Each of these settings reaches the machine as a number in a G-code line or a move,
+        /// so a zero feed or a negative height returns 400 before anything is stored.
         /// </summary>
         [Theory]
         [InlineData("probeFeed", 0.0, "Probe feed", "mm/min")]
@@ -1010,7 +982,8 @@ namespace coppercli.Tests
 
             Assert.Equal(HttpStatusCode.BadRequest, code);
 
-            // The exact message, so a request the server could not read cannot satisfy this.
+            // The exact message, so a request that failed to parse - also a 400 - cannot
+            // satisfy this.
             Assert.Equal(
                 string.Format(SettingsText.MustBePositive, name, unit),
                 body.GetProperty("error").GetString());
@@ -1018,9 +991,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every field the request carries reaches its own setting. The handler pairs request
-        /// fields with settings by hand, and a crossed pair stores one value in another's
-        /// place with nothing to show for it.
+        /// The settings handler pairs request fields with properties by hand, so a crossed
+        /// pair stores a value in another setting's place with nothing to show for it.
         /// </summary>
         [Fact]
         public async Task EverySettingInARequest_LandsOnItsOwnSetting()
@@ -1053,8 +1025,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// An unknown profile turns the tool setter off, so the next tool change stops using
-        /// it without saying so.
+        /// An unknown profile would turn the tool setter off, and the next tool change would
+        /// stop using it with no message to the operator.
         /// </summary>
         [Fact]
         public async Task AProfileTheMachineDoesNotHave_IsRefused()
@@ -1071,8 +1043,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// One bad value refuses the whole request. Applied one at a time, the machine would
-        /// work to a mix of old and new settings.
+        /// The whole request is validated before any of it is stored. Applied one field at a
+        /// time, the machine would work to a mix of old and new settings.
         /// </summary>
         [Fact]
         public async Task OneUnusableSettingInARequest_StoresNoneOfIt()
@@ -1087,10 +1059,6 @@ namespace coppercli.Tests
             Assert.Equal(feedBefore, AppState.Settings.ProbeFeed);
         }
 
-        /// <summary>
-        /// What the zero did to the height map decides whether the next cut is at the right
-        /// depth, so each outcome is reported for the case it names.
-        /// </summary>
         [Fact]
         public async Task ZeroingWithNoMap_ReportsNothingToDo()
         {
@@ -1122,8 +1090,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser draws what became of the height map from this field. Without it the
-        /// operator is never told the corrections in the file are wrong.
+        /// The browser draws what became of the height map from the heightMap field. Without
+        /// it the operator is not told the corrections in the file are wrong.
         /// </summary>
         [Fact]
         public async Task TheZeroResponse_CarriesWhatBecameOfTheMap()
@@ -1150,8 +1118,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Zeroing Y alone moves the datum exactly as zeroing X does. The map's coordinates
-        /// are measured from the origin, so it no longer describes the board.
+        /// Zeroing Y alone moves the datum as zeroing X does. The map's points are measured
+        /// from the origin, so it no longer describes the board.
         /// </summary>
         [Fact]
         public async Task ZeroingOnlyY_DiscardsTheMap()
@@ -1164,8 +1132,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// And it is refused during a run for the same reason an X zero is: the map is baked
-        /// into the file the run is streaming.
+        /// A Y zero during a run is refused for the same reason an X zero is: the map is
+        /// baked into the file the run is streaming.
         /// </summary>
         [Fact]
         public async Task ZeroingOnlyYDuringARun_IsRefused()
@@ -1180,8 +1148,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Only a full origin is worth offering to trust on the next launch. A Z-only zero
-        /// leaves X and Y wherever they were.
+        /// A Z-only zero leaves X and Y wherever they were, so only a full X, Y and Z origin
+        /// is stored for the next session.
         /// </summary>
         [Theory]
         [InlineData("X0 Y0 Z0", true)]
@@ -1191,17 +1159,16 @@ namespace coppercli.Tests
             await GivenAGridIsReady();
             AppState.Session.HasStoredWorkZero = false;
 
-            // Asserted, because a refused zero also leaves HasStoredWorkZero false and would
-            // pass the row below for the wrong reason.
+            // A refused zero also leaves HasStoredWorkZero false, so the Z0 row would pass
+            // for the wrong reason.
             Assert.Null(MachineCommands.SetWorkZeroAndWait(AppState.Machine, axes).Refused);
 
             Assert.Equal(remembered, AppState.Session.HasStoredWorkZero);
         }
 
         /// <summary>
-        /// Every way the height map in hand can change is refused while a run streams the
-        /// file the map is baked into. Swapping it would leave AppState saying no map is
-        /// applied while the machine cuts one, and the next apply would double it.
+        /// Swapping the map during a run leaves AppState recording no applied map while the
+        /// machine cuts one, and the next apply doubles the corrections.
         /// </summary>
         [Fact]
         public async Task EveryWayToChangeTheMapDuringARun_IsRefused()
@@ -1225,8 +1192,8 @@ namespace coppercli.Tests
                 Assert.Equal(why, AppState.SetupProbeGrid(
                     new Vector2(0, 0), new Vector2(10, 10), margin: 1.0, gridSize: 5.0).Refused);
 
-                // With a map in hand there is nothing to adopt, so this one does nothing
-                // rather than being refused.
+                // With a map already loaded there is nothing to adopt, so this one does
+                // nothing instead of returning the refusal.
                 Assert.Null(AppState.EnsureProbeDataLoaded());
 
                 Assert.Same(map, AppState.ProbePoints);
@@ -1241,9 +1208,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The probe panel and the Mill button are built from one read of the map. Read
-        /// twice, one payload could say a complete map is ready while the other says there
-        /// is none - and the autosave would be parsed twice on every broadcast.
+        /// The probe panel and the Mill button in one status payload are built from a single
+        /// read of the map. Two reads could report a complete map in one field and none in
+        /// the other, and would parse the autosave twice per broadcast.
         /// </summary>
         [Fact]
         public async Task TheStatus_DescribesOneMapToEveryPartOfItself()
@@ -1258,16 +1225,17 @@ namespace coppercli.Tests
                 WebConstants.ProbeStateComplete,
                 status.GetProperty("probe").GetProperty("state").GetString());
 
-            // A complete map that is not applied is exactly what stops the mill, so the
-            // button must be reading the same map the panel just described.
+            // A complete map that is not applied is what blocks the mill, so the button field
+            // has to come from the same read as the panel field.
             Assert.False(
                 status.GetProperty("buttons").GetProperty("mill").GetProperty("enabled").GetBoolean(),
                 "the Mill button was cleared while the probe panel reported an unapplied map");
         }
 
         /// <summary>
-        /// Saving the height map must not take it out of the job. The Mill button refuses a
-        /// complete map nobody applied, and with the map gone it had nothing to refuse.
+        /// Saving the height map to a file has to leave the autosave in place. The mill is
+        /// blocked by a complete map that is not applied, and a save that consumed the map
+        /// would clear that block.
         /// </summary>
         [Fact]
         public async Task SavingAMapThatLivesOnlyInTheAutosave_KeepsItInTheJob()
@@ -1296,11 +1264,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loading a board drops a map measured for another one, and the reply says why.
-        /// Without the field the browser has no reason to show.
+        /// Loading a board drops a map measured for another one, and the droppedMap field
+        /// carries the reason. Without it the browser has no reason to show.
         /// </summary>
         [Fact]
-        public async Task ALoadThatDropsTheMap_SaysSoOnTheWire()
+        public async Task ALoadThatDropsTheMap_IsReportedInTheResponse()
         {
             string first = await GivenAGridIsReadyAndTheBoardStays();
             string second = Path.Combine(
@@ -1326,8 +1294,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The check judges the map it was handed. Reading the autosave again instead lets
-        /// the status describe one map in its probe panel and another in its Mill button.
+        /// CheckMillCanStart judges the map passed to it. A second read of the autosave
+        /// inside the check lets the status describe one map in the probe panel and another
+        /// in the Mill button.
         /// </summary>
         [Fact]
         public async Task CheckMillCanStart_JudgesTheMapItWasHanded()
@@ -1336,21 +1305,20 @@ namespace coppercli.Tests
             AppState.DiscardProbeData();
             Persistence.ClearProbeAutoSave();
 
-            // Nothing in memory and nothing on disk, so a check that reads for itself finds
-            // no map and lets the mill start.
+            // With nothing in memory and nothing on disk, a check that reads for itself finds
+            // no map and clears the mill to start.
             Assert.Null(AppState.CurrentProbeGrid);
             Assert.Equal(MillBlocker.None, MenuHelpers.CheckMillCanStart().Error);
 
-            // Handed a finished map nobody has applied, it must refuse.
             Assert.Equal(
                 MillBlocker.ProbeNotApplied,
                 MenuHelpers.CheckMillCanStart(CompleteMapForThisJob()).Error);
         }
 
         /// <summary>
-        /// A single Z probe runs with no controller behind it, so nothing derived from one
-        /// can see it. The machine's own mode is what says the tool is descending, and a
-        /// command of the operator's own must be refused while it is.
+        /// A single Z probe runs with no controller behind it, so IsRunInProgress stays
+        /// false. OperatingMode.Probe on the machine is the record that the tool is
+        /// descending, and a command of the operator's own returns 409 while it is set.
         /// </summary>
         [Fact]
         public async Task WhileAProbeCycleIsOpen_ACommandOfTheOperatorsOwnIsRefused()
@@ -1378,9 +1346,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The same refusal over HTTP, in the same words. Every endpoint that changes the map
-        /// answers 409 with the one sentence, so the operator does not get a different reason
-        /// depending on which button they pressed.
+        /// Every endpoint that changes the map returns 409 with ErrorFileChangeDuringRun, so
+        /// the operator reads the same reason whichever button they pressed.
         /// </summary>
         [Fact]
         public async Task EveryEndpointThatChangesTheMapDuringARun_RefusesInTheSameWords()
@@ -1416,11 +1383,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The probe screen loads, applies and discards the map, so it is closed while a run
-        /// owns the file rather than refusing each choice one at a time.
+        /// The probe screen loads, applies and discards the map, so it is disabled for the
+        /// whole of a run rather than refusing each choice one at a time.
         /// </summary>
         [Fact]
-        public async Task TheProbeScreen_IsClosedWhileARunOwnsTheFile()
+        public async Task TheProbeScreen_IsClosedWhileARunIsStreamingTheFile()
         {
             await WhileAMillRunHoldsAtTheDoor(() =>
             {
@@ -1430,12 +1397,12 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser turns the confirmation into a warning from this field. Without it the
-        /// operator reads an ordinary confirmation and cuts with the old origin's
-        /// corrections.
+        /// The browser turns its confirmation into a warning from the reloadTheFile field.
+        /// Without it the operator reads an ordinary confirmation and cuts with the old
+        /// origin's corrections.
         /// </summary>
         [Fact]
-        public async Task TheZeroResponse_SaysToReloadWhenTheGCodeIsWrong()
+        public async Task TheZeroResponse_RequiresAReloadWhenTheGCodeIsWrong()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
@@ -1453,8 +1420,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every outcome the run can produce is published. One added to the enum and not to
-        /// the payload tells the browser nothing about what became of the map.
+        /// An outcome added to WorkZeroOutcome but missing from /api/constants leaves the
+        /// browser with no text for what became of the map.
         /// </summary>
         [Fact]
         public async Task EveryHeightMapOutcome_IsPublished()
@@ -1467,7 +1434,7 @@ namespace coppercli.Tests
 
             foreach (var outcome in Enum.GetValues<WorkZeroOutcome>())
             {
-                // NothingToDo needs no words: nothing happened to the map.
+                // NothingToDo needs no text: the map did not change.
                 if (outcome == WorkZeroOutcome.NothingToDo)
                 {
                     continue;
@@ -1477,9 +1444,6 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>
-        /// With no map in hand there is nothing to discard, whichever axes are zeroed.
-        /// </summary>
         [Fact]
         public async Task ZeroingXYWithNoMap_ReportsNothingToDo()
         {
@@ -1490,8 +1454,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A finished map in the autosave with nothing in memory is still a map. The browser
-        /// warns the operator it will be invalidated, so it must actually go.
+        /// A finished map in the autosave counts with nothing in memory. The browser warns
+        /// the operator the map will be invalidated, so the zero has to delete the autosave.
         /// </summary>
         [Fact]
         public async Task ZeroingXYWithOnlyAnAutosavedMap_DiscardsIt()
@@ -1507,12 +1471,12 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The map is applied to the loaded G-code and the original is gone, so the
-        /// corrections cannot be taken back out. Saying it was discarded would leave the
-        /// operator cutting with them.
+        /// With the map applied and the source file gone, the corrections cannot be taken
+        /// back out of the loaded G-code. Reporting MapDiscarded would leave the operator
+        /// cutting with them.
         /// </summary>
         [Fact]
-        public async Task ZeroingXYWhenTheMapCannotComeOut_SaysSo()
+        public async Task ZeroingXYWhenTheMapCannotBeRemoved_IsReported()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
@@ -1529,9 +1493,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The G-code is reloaded from the source file to strip the old Z0's corrections. If
-        /// that file is gone the map cannot be re-applied, and the loaded G-code still holds
-        /// them, so the operator has to be told.
+        /// A Z zero reloads the G-code from the source file to strip the old corrections.
+        /// With that file gone the map cannot be re-applied and the loaded G-code still holds
+        /// them, so the outcome is MapNotReapplied.
         /// </summary>
         [Fact]
         public async Task ZeroingZWhenTheSourceFileIsGone_ReportsTheMapWasNotReapplied()
@@ -1574,8 +1538,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Discarding deletes the saved map and then reloads the G-code without it. Refused
-        /// during a run before the delete, so a refusal leaves both copies where they are.
+        /// Discarding deletes the autosave and then reloads the G-code without the map. The
+        /// refusal during a run comes before the delete, so both copies stay.
         /// </summary>
         [Fact]
         public async Task DiscardingAMapDuringARun_KeepsTheSavedCopy()
@@ -1608,8 +1572,8 @@ namespace coppercli.Tests
                 var loaded = AppState.Machine.File;
                 AppState.Machine.FileGoto(1);
 
-                // The rule itself, at the one funnel every loader goes through. Even the file
-                // already loaded is refused, because loading it again resets the line count.
+                // LoadGCodeIntoMachine is the one path every loader takes. Even the file
+                // already loaded is refused there, because reloading resets the line count.
                 Assert.Equal(
                     CliConstants.ErrorFileChangeDuringRun,
                     AppState.LoadGCodeIntoMachine(AppState.CurrentFile!).Refused);
@@ -1621,8 +1585,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A probe run owns the machine like a mill run does. Without it the probe term of
-        /// IsRunInProgress could be dropped and nothing would say so.
+        /// A probe run blocks the same changes a mill run does. Without this the probe term
+        /// of IsRunInProgress could be dropped with nothing failing.
         /// </summary>
         [Fact]
         public async Task AProbeRunInProgress_KeepsTheFileAndTheMap()
@@ -1660,8 +1624,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Zeroing changes what the height map is measured against, so outside a run the map
-        /// is discarded or re-applied. During one it is left alone, because it is baked into
-        /// the file the run is streaming.
+        /// is discarded or re-applied. During a run it is left alone, because it is baked
+        /// into the file being streamed.
         /// </summary>
         [Fact]
         public async Task ZeroingDuringARun_KeepsTheMapTheRunIsCutting()
@@ -1681,7 +1645,7 @@ namespace coppercli.Tests
                 Assert.True(AppState.AreProbePointsApplied,
                     "the map was removed while a run was cutting with it");
 
-                // Z is what a tool change asks for, so it goes through; the file stays.
+                // A tool change needs a Z zero, so Z alone goes through and the file stays.
                 var zeroed = MachineCommands.SetWorkZeroAndWait(AppState.Machine, "Z0");
                 Assert.Null(zeroed.Refused);
                 Assert.Equal(WorkZeroOutcome.FileLeftAlone, zeroed.Outcome);
@@ -1693,8 +1657,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The heights in a map measured from a different origin land elsewhere, so it is
-        /// not usable for this job either.
+        /// The points in a map measured from a different G54 offset land elsewhere on the
+        /// board, so the status does not report it.
         /// </summary>
         [Fact]
         public async Task AnAutosaveMeasuredBeforeTheOriginMoved_IsNotReportedAsProbeData()
@@ -1716,7 +1680,6 @@ namespace coppercli.Tests
             Assert.False(status.GetProperty("hasUnsavedData").GetBoolean());
         }
 
-        /// <summary>A stop always leaves the probe startable, even with no run going.</summary>
         [Fact]
         public async Task StoppingWhenNothingIsRunning_LeavesTheProbeStartable()
         {

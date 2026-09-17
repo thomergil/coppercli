@@ -13,8 +13,8 @@ const modules = readdirSync(JS_DIR).filter(f => f.endsWith('.js')).sort();
 const pageIds = new Set(
     [...readFileSync(HTML, 'utf8').matchAll(/id="([A-Za-z0-9_-]+)"/g)].map(m => m[1]));
 
-// Every test below asserts inside a loop over these two. Empty, they all pass having checked
-// nothing, which is what a moved directory or a renamed page would do to this file.
+// Every test below asserts inside a loop over these two lists. Empty, the loops pass having
+// checked nothing, which is what a moved directory or a renamed page would do here.
 assert.ok(modules.length > 0, 'no JavaScript modules found; every check below would be empty');
 assert.ok(pageIds.size > 0, 'no element ids found on index.html; every check below would be empty');
 

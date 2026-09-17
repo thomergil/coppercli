@@ -1,5 +1,3 @@
-// coppercli Web UI Settings Screen
-
 import { $, showError, showInfo } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
@@ -11,7 +9,6 @@ import {
     TEXT_SETTINGS_SAVE_FAILED
 } from './constants.js';
 
-// Settings field definitions for DRY iteration
 const SETTINGS_FIELDS = [
     { id: 'setting-probe-feed', key: 'probeFeed' },
     { id: 'setting-probe-depth', key: 'probeMaxDepth' },
@@ -27,7 +24,6 @@ let machineProfiles = [];
 
 export async function loadSettings() {
     try {
-        // Load profiles and settings in parallel
         const [profilesRes, settingsRes] = await Promise.all([
             fetch(API_PROFILES),
             fetch(API_SETTINGS)
@@ -73,13 +69,11 @@ function populateSettings(data) {
 export async function saveSettings() {
     const settings = {};
 
-    // Machine profile
     const profileSelect = $('setting-machine-profile');
     if (profileSelect) {
         settings.machineProfile = profileSelect.value;
     }
 
-    // Numeric fields
     SETTINGS_FIELDS.forEach(field => {
         const el = $(field.id);
         if (el) {
@@ -117,7 +111,7 @@ export function initSettingsScreen() {
     if (saveBtn) saveBtn.addEventListener('click', saveSettings);
     if (backBtn) backBtn.addEventListener('click', () => showScreen(SCREEN_DASHBOARD));
 
-    // Load settings when entering screen
+    // No event fires when a screen becomes active, so its class attribute is observed instead.
     const screen = $('settings-screen');
     if (screen) {
         const observer = new MutationObserver((mutations) => {

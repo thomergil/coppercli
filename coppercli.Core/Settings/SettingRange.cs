@@ -49,8 +49,8 @@ namespace coppercli.Core.Settings
         Action<MachineSettings, double> Write);
 
     /// <summary>
-    /// Every numeric setting whose value reaches the machine. The terminal, the web API and
-    /// the settings file all read this. Only bounds that hold for any machine are here: an
+    /// Every numeric setting whose value reaches the machine, read by the terminal, the web
+    /// API and the settings file alike. Only bounds that hold for any machine are here: an
     /// upper limit would come from the machine's travel and maximum rate, which coppercli
     /// does not read.
     /// </summary>

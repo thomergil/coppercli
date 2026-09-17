@@ -1,5 +1,3 @@
-// coppercli Web UI File Browser
-
 import { state } from './state.js';
 import { $, showError, showInfo, FileBrowser, format, whileBusy } from './helpers.js';
 import { showScreen } from './screens.js';
@@ -24,7 +22,6 @@ import {
     TEXT_SIZE_MB,
 } from './constants.js';
 
-// Shared file browser instance
 let fileBrowser = null;
 
 function formatSize(bytes) {
@@ -39,10 +36,9 @@ function formatSize(bytes) {
 
 function onFileSelect(path) {
     state.selectedFile = path;
-    // Show file info panel
     document.getElementById('selected-file-name').textContent = path.split(/[/\\]/).pop();
     document.getElementById('file-info').classList.remove(CLASS_HIDDEN);
-    // Clear details (we don't have preview API)
+    // There is no preview endpoint, so the detail fields are blanked.
     document.getElementById('file-lines').textContent = '';
     document.getElementById('file-time').textContent = '';
     document.getElementById('file-bounds').textContent = '';
@@ -67,7 +63,6 @@ export async function loadFiles(path) {
         });
     }
     await fileBrowser.load(path);
-    // Hide file info until selection
     document.getElementById('file-info').classList.add(CLASS_HIDDEN);
     state.selectedFile = null;
 }
@@ -101,8 +96,8 @@ export async function loadFile() {
     }
 }
 
-// Loading a file can drop the height map that was in hand. The terminal says so; without
-// this the browser operator watches it vanish from the probe panel with no reason given.
+// Loading a file can drop the loaded height map. The terminal reports that, and without
+// this the browser operator would see it vanish from the probe panel with no reason given.
 function reportDroppedMap(data) {
     if (data.droppedMap) {
         showError(format(TEXT_HEIGHT_MAP_DROPPED, data.droppedMap));
@@ -142,14 +137,13 @@ function handleFileInputChange(event) {
     if (file) {
         uploadFile(file);
     }
-    // Reset input so same file can be selected again
+    // Without this, picking the same file again fires no change event.
     event.target.value = '';
 }
 
 export function initFileScreen() {
     $('load-file-btn').addEventListener('click', loadFile);
 
-    // Upload button triggers hidden file input
     const uploadBtn = $('upload-file-btn');
     const fileInput = $('file-upload-input');
     if (uploadBtn && fileInput) {

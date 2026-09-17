@@ -5,28 +5,20 @@ using coppercli.Core.Util;
 namespace coppercli.Core.Communication
 {
     /// <summary>
-    /// Interface for machine communication. Enables testing controllers
-    /// without physical hardware by injecting mock implementations.
+    /// The machine operations a controller needs, so a controller can be tested against a
+    /// stub instead of a connected machine.
     /// </summary>
     public interface IMachine
     {
-        // =========================================================================
-        // Connection
-        // =========================================================================
-
         bool Connected { get; }
-
-        // =========================================================================
-        // State
-        // =========================================================================
 
         Machine.OperatingMode Mode { get; }
         string Status { get; }
 
         /// <summary>
-        /// The number GRBL appends to a state, e.g. the "1" in "Door:1"; empty when the
-        /// state carries none. Kept because it is the only thing distinguishing an open
-        /// door from a closed one - see GrblProtocol.DoorSubState*.
+        /// The number GRBL appends to a state, such as the "1" in "Door:1"; empty when the
+        /// state carries none. It is the only thing that separates an open door from a
+        /// closed one - see GrblProtocol.DoorSubState*.
         /// </summary>
         string StatusSubState { get; }
         Vector3 WorkPosition { get; }
@@ -36,50 +28,33 @@ namespace coppercli.Core.Communication
         /// <summary>The G54 offset alone, as reported by $# - not the combined WCO.</summary>
         Vector3 G54Offset { get; }
 
-        /// <summary>Whether the machine has been homed since connection.</summary>
         bool IsHomed { get; set; }
-
-        /// <summary>Whether homing is currently in progress.</summary>
         bool IsHoming { get; set; }
-
 
         /// <summary>Monotonic count of status reports received.</summary>
         long StatusReportCount { get; }
 
-        // =========================================================================
-        // Probing
-        // =========================================================================
-
-        /// <summary>Last probe position in machine coordinates.</summary>
         Vector3 LastProbePosMachine { get; }
 
-        /// <summary>Start probe mode. Must be called before sending probe commands.</summary>
         /// <summary>
-        /// Opens GRBL's probe cycle. Returns false when it could not - the machine is
-        /// disconnected, or something else already owns it - in which case no probe move
-        /// may be sent: nothing would be watching for the trigger.
+        /// Takes the machine into Probe mode, which every probe move requires first.
+        /// Returns false when it could not - not connected, or already in another mode -
+        /// and no probe move may be sent then, because nothing would watch for the trigger.
         /// </summary>
         bool ProbeStart();
 
-        /// <summary>Stop probe mode. Call after probing completes.</summary>
         void ProbeStop();
-
-        // =========================================================================
-        // File streaming
-        // =========================================================================
 
         ReadOnlyCollection<string> File { get; }
         int FilePosition { get; }
-        /// <summary>Begins streaming the loaded file. False if it could not start.</summary>
+        /// <summary>Begins streaming the loaded file, and returns false when it could not
+        /// start.</summary>
         bool FileStart();
 
-        /// <summary>Returns to Manual mode if idling in Probe mode.</summary>
+        /// <summary>Returns to Manual mode only when idling in Probe mode; a file that is
+        /// streaming is left alone.</summary>
         void EnsureManualMode();
         void FileGoto(int line);
-
-        // =========================================================================
-        // Commands
-        // =========================================================================
 
         void SendLine(string line);
 
@@ -90,15 +65,9 @@ namespace coppercli.Core.Communication
         void CycleStart();
         void SoftReset();
 
-        // =========================================================================
-        // Events
-        // =========================================================================
-
         event Action<string> StatusReceived;
         event Action<Vector3, bool> ProbeFinished;
         event Action<string> NonFatalException;
-
-        /// <summary>Raised when GRBL refuses a command, with the reason.</summary>
         event Action<GrblRejection> CommandRejected;
         event Action<string> Info;
         event Action ConnectionStateChanged;

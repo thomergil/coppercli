@@ -1,5 +1,3 @@
-// Extracted from Program.cs - Settings and session persistence
-
 using coppercli.Core.GCode;
 using coppercli.Core.Settings;
 using coppercli.Core.Util;
@@ -10,14 +8,8 @@ using static coppercli.CliConstants;
 
 namespace coppercli
 {
-    /// <summary>
-    /// Handles loading and saving of settings and session state.
-    /// </summary>
     internal static class Persistence
     {
-        /// <summary>
-        /// Gets the application data directory, creating it if it doesn't exist.
-        /// </summary>
         private static string GetAppDataDir()
         {
             var appDataDir = Path.Combine(
@@ -44,8 +36,8 @@ namespace coppercli
 
         /// <summary>
         /// The parsed autosave, or null if there is none or it cannot be read. A new object
-        /// each time: callers adopt it as the live grid and probe into it, so a shared
-        /// instance would report memory rather than the file.
+        /// each time, because callers adopt it as the live grid and probe into it, so a shared
+        /// instance would hand back points measured since the file was written.
         /// </summary>
         public static ProbeGrid? ReadProbeAutoSave()
         {
@@ -66,23 +58,13 @@ namespace coppercli
             }
         }
 
-        // =====================================================================
-        // Settings migrations
-        //
-        // When a settings property is renamed in MachineSettings, add an entry
-        // here so existing users' values are preserved on upgrade. Migrations
-        // run once on load and rewrite the settings file with the new names.
-        //
-        // Format: (OldJsonPropertyName, NewJsonPropertyName)
-        //
-        // Migration history:
-        //   v0.4.0  OutlineTraverseHeight → OutlineTraceHeight
-        //   v0.4.0  OutlineTraverseFeed   → OutlineTraceFeed
-        // =====================================================================
+        // A property renamed in `MachineSettings` needs an entry here, tagged with the version
+        // that renamed it, or an existing user's value is dropped on upgrade. `MigrateSettings`
+        // skips an entry whose new name is already in the file, so entries can stay forever.
         private static readonly (string Old, string New)[] SettingsMigrations =
         {
-            ("OutlineTraverseHeight", "OutlineTraceHeight"),
-            ("OutlineTraverseFeed", "OutlineTraceFeed"),
+            ("OutlineTraverseHeight", "OutlineTraceHeight"),   // v0.4.0
+            ("OutlineTraverseFeed", "OutlineTraceFeed"),       // v0.4.0
         };
 
         public static MachineSettings LoadSettings()
@@ -101,7 +83,7 @@ namespace coppercli
             }
             catch (Exception ex)
             {
-                QuarantineUnreadableFile(GetSettingsPath(), ex);
+                RenameUnreadableFile(GetSettingsPath(), ex);
             }
             return new MachineSettings();
         }
@@ -127,13 +109,6 @@ namespace coppercli
             }
         }
 
-        /// <summary>
-        /// Applies settings migrations by renaming old JSON property names to their
-        /// current names. This preserves user-configured values across upgrades when
-        /// properties are renamed in MachineSettings. Only migrates when the old name
-        /// exists and the new name doesn't (safe to run repeatedly). Rewrites the
-        /// settings file after migration so it only runs once.
-        /// </summary>
         private static string MigrateSettings(string json)
         {
             bool migrated = false;
@@ -156,7 +131,7 @@ namespace coppercli
                 }
                 catch
                 {
-                    // Non-fatal: will re-migrate on next load
+                    // Not fatal: the next load migrates again.
                 }
             }
 
@@ -193,7 +168,7 @@ namespace coppercli
             }
             catch (Exception ex)
             {
-                QuarantineUnreadableFile(GetSessionPath(), ex);
+                RenameUnreadableFile(GetSessionPath(), ex);
             }
             return new SessionState();
         }
@@ -217,11 +192,11 @@ namespace coppercli
         /// and records why. Silently falling back to defaults would reset probe feeds,
         /// depths and the tool-setter position with nothing said.
         /// </summary>
-        private static void QuarantineUnreadableFile(string path, Exception ex)
+        private static void RenameUnreadableFile(string path, Exception ex)
         {
             Logger.Log("Could not read {0} ({1}); using defaults", path, ex.Message);
 
-            // Shown on screen, not only logged (the log is off without --debug): the
+            // Shown on screen, not only logged, because the log is off without --debug: the
             // operator is about to run with default probe feeds, depths and tool-setter
             // position.
             AnsiConsole.MarkupLine(
@@ -258,8 +233,8 @@ namespace coppercli
                     probePoints.Progress, probePoints.TotalPoints, path);
                 probePoints.Save(path);
 
-                // Remember which G-Code file was loaded when this probe was created
-                // This allows recovering the G-Code along with the probe data
+                // `SessionRestore` offers the G-code back with the probe data, so record which
+                // file was loaded when the probe started.
                 if (string.IsNullOrEmpty(AppState.Session.ProbeSourceGCodeFile) &&
                     !string.IsNullOrEmpty(AppState.Session.LastLoadedGCodeFile))
                 {
@@ -300,13 +275,13 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Saves the height map to the operator's chosen file, then deletes the autosave, so
-        /// nothing offers the same map back as unsaved work.
+        /// Deletes the autosave once the map is written, so nothing offers the same map back
+        /// as unsaved work.
         /// </summary>
         public static bool SaveProbeToFile(string newPath)
         {
             // The map the screens offered to save: the one in memory, or the autosave when
-            // nothing is loaded. Read from the raw file state, this saved a map measured for
+            // nothing is loaded. Reading the raw file state instead saved a map measured for
             // another board.
             var grid = AppState.CurrentProbeGrid;
 
@@ -318,7 +293,6 @@ namespace coppercli
 
             try
             {
-                // Ensure target directory exists
                 var targetDir = Path.GetDirectoryName(newPath);
                 if (!string.IsNullOrEmpty(targetDir))
                 {
@@ -327,9 +301,9 @@ namespace coppercli
 
                 grid.Save(newPath);
 
-                // The autosave only goes once the map is in hand. Deleted while the map
-                // lived only there, the save took it out of the job, and the Mill button -
-                // which had been refusing an unapplied map - cleared.
+                // The autosave goes only once the grid is held in memory. Deleting it while
+                // the map lived only in that file dropped the map from the job, and the Mill
+                // button stopped refusing an unapplied map.
                 if (AppState.ProbePoints == null && AppState.AdoptProbeGrid(grid) != null)
                 {
                     Logger.Log("SaveProbeToFile: wrote {0}, keeping the autosave", newPath);

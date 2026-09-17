@@ -1,20 +1,11 @@
-// Extracted from Program.cs - Input helper methods
-
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Helpers
 {
-    /// <summary>
-    /// Helper methods for user input and keyboard handling.
-    /// </summary>
     internal static class InputHelpers
     {
-        /// <summary>
-        /// Maps ConsoleKey values to their expected character equivalents.
-        /// Used for non-QWERTY keyboard compatibility.
-        /// </summary>
         private static readonly Dictionary<ConsoleKey, char> KeyToChar = new()
         {
             { ConsoleKey.A, 'a' }, { ConsoleKey.B, 'b' }, { ConsoleKey.C, 'c' },
@@ -32,8 +23,8 @@ namespace coppercli.Helpers
             { ConsoleKey.D9, '9' },
         };
         /// <summary>
-        /// Reads a key while polling for machine status changes and terminal resize.
-        /// Returns the key pressed, or null if status/size changed (caller should redraw).
+        /// Returns null when the machine status or the terminal size changed, which means the
+        /// caller redraws instead of acting on a key.
         /// </summary>
         public static ConsoleKeyInfo? ReadKeyPolling()
         {
@@ -44,30 +35,26 @@ namespace coppercli.Helpers
                 Thread.Sleep(StatusPollIntervalMs);
                 if (AppState.Machine?.Status != lastStatus)
                 {
-                    return null; // Status changed, caller should redraw
+                    return null;
                 }
                 var (width, height) = DisplayHelpers.GetSafeWindowSize();
                 if (width != lastWidth || height != lastHeight)
                 {
-                    return null; // Terminal resized, caller should redraw
+                    return null;
                 }
             }
             return Console.ReadKey(true);
         }
 
-        /// <summary>
-        /// Waits for any key while polling for machine status changes.
-        /// Returns true if a key was pressed, false if status changed (caller should redraw).
-        /// </summary>
         public static bool WaitForKeyPolling()
         {
             return ReadKeyPolling() != null;
         }
 
         /// <summary>
-        /// Throws away anything already typed. Call it before drawing a prompt that replaced
-        /// another in the same place: the keystroke that answered the first would otherwise
-        /// answer the second, which the operator has not read.
+        /// Call before drawing a prompt that replaced another in the same place: the keystroke
+        /// that answered the first would otherwise answer the second, which the operator has
+        /// not read.
         /// </summary>
         public static void FlushKeyboard()
         {
@@ -78,14 +65,11 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Checks if a key press matches a given ConsoleKey.
-        /// Handles cross-platform compatibility where key.Key or key.KeyChar may work differently.
-        /// For non-QWERTY keyboards (e.g., Dvorak), the character check is prioritized since
-        /// ConsoleKey values may map to physical key positions rather than logical characters.
+        /// On a non-QWERTY layout such as Dvorak, ConsoleKey follows the physical key position
+        /// rather than the character printed on it, so KeyChar is compared first.
         /// </summary>
         public static bool IsKey(ConsoleKeyInfo key, ConsoleKey consoleKey)
         {
-            // Check character first (more reliable for non-QWERTY layouts)
             if (KeyToChar.TryGetValue(consoleKey, out char c))
             {
                 if (char.ToLower(key.KeyChar) == c)
@@ -93,39 +77,24 @@ namespace coppercli.Helpers
                     return true;
                 }
             }
-            // Fall back to ConsoleKey check
             return key.Key == consoleKey;
         }
 
-        /// <summary>
-        /// Checks if a key press is Escape.
-        /// </summary>
         public static bool IsEscapeKey(ConsoleKeyInfo key)
         {
             return key.Key == ConsoleKey.Escape;
         }
 
-        /// <summary>
-        /// Checks if a key press is Enter.
-        /// </summary>
         public static bool IsEnterKey(ConsoleKeyInfo key)
         {
             return key.Key == ConsoleKey.Enter;
         }
 
-        /// <summary>
-        /// Checks if a key press is an exit key (Escape or Q).
-        /// </summary>
         public static bool IsExitKey(ConsoleKeyInfo key)
         {
             return IsEscapeKey(key) || IsKey(key, ConsoleKey.Q);
         }
 
-        /// <summary>
-        /// Returns the menu key character for a given index, or null if beyond limit.
-        /// 0-8 use digits '1'-'9', index 9 uses '0', indices 10-35 use 'A'-'Z'.
-        /// Returns null for indices >= MaxMenuShortcuts (36).
-        /// </summary>
         public static char? GetMenuKey(int index)
         {
             if (index < MenuShortcutZeroIndex)

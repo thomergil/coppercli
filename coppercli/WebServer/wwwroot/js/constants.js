@@ -1,34 +1,27 @@
-// coppercli Web UI Constants
+// Three kinds of constant live here.
 //
-// Constants are organized into three categories:
-//
-// 1. JS-ONLY: No server counterpart. Used only by the web UI.
-//
-// 2. DUPLICATED FROM SERVER: These values MUST match their C# counterparts.
-//    JS needs static values for switch statements and module initialization.
-//    Validated against /api/constants at startup - mismatches log warnings.
-//    Source of truth: WebConstants.cs, GrblProtocol.cs, ControllerState enum
-//
-// 3. FETCHED FROM SERVER: Loaded at runtime via /api/config to avoid duplication.
-//    See state.js for runtime values (jogModes, probeDefaults, millGrid).
+// 1. JS-only: no server counterpart.
+// 2. Duplicated from the server: the value must match its C# counterpart, because the
+//    modules need it at load time. validateConstants compares them against /api/constants
+//    at startup and logs a mismatch. Sources: WebConstants.cs, GrblProtocol.cs,
+//    ControllerState.
+// 3. Fetched at run time through /api/config; see the foot of this file.
 
-// =============================================================================
-// JS-ONLY: Timing (no server counterpart)
-// =============================================================================
+// JS-only: timing.
 export const MAX_RECONNECT_ATTEMPTS = 120;  // Together with RECONNECT_DELAY_MS, how long to keep trying
 export const RECONNECT_DELAY_MS = 1000;
-export const FORCE_DISCONNECT_RECONNECT_DELAY_MS = 5000;  // Longer delay when kicked by another client
+export const FORCE_DISCONNECT_RECONNECT_DELAY_MS = 5000;
 
 // How long the page waits before reloading into the machine it just took over, so the
 // server has finished closing the other client's socket.
 export const FORCE_DISCONNECT_RELOAD_DELAY_MS = 500;
 export const WEBSOCKET_PING_INTERVAL_MS = 10000;  // Keep-alive ping; must stay under the server's WebSocketTimeoutMs
 export const JOG_TOUCH_REPEAT_MS = 200;
-export const DOUBLE_TAP_DELAY_MS = 300;  // Max time between taps for double-tap detection
+export const DOUBLE_TAP_DELAY_MS = 300;
 
 // How long a newly drawn prompt refuses to be answered. A run publishes its next prompt in
 // the same place as soon as the last is answered, so a double-tap would answer one the
-// operator has not read. Longer than DOUBLE_TAP_DELAY_MS.
+// operator has not read; this is therefore longer than DOUBLE_TAP_DELAY_MS.
 export const PROMPT_SETTLE_MS = 600;
 
 // Stands in for a prompt id when the operator releases a door hold with no run behind it.
@@ -46,9 +39,7 @@ export const TRACE_BUTTON_SETTLE_MS = 500;
 // unreachable, rather than holding the screen locked.
 export const TRACE_POLL_MAX_FAILURES = 20;
 
-// =============================================================================
-// JS-ONLY: Display formatting (no server counterpart)
-// =============================================================================
+// JS-only: display formatting.
 export const PROGRESS_PERCENT_MULTIPLIER = 100;
 export const PROBE_GRID_CELL_SIZE_PX = 20;
 export const BYTES_PER_KB = 1024;
@@ -61,14 +52,10 @@ export const TEXT_SIZE_KB = '{0} KB';
 export const TEXT_SIZE_MB = '{0} MB';
 export const BYTES_PER_MB = 1024 * 1024;
 
-// =============================================================================
-// JS-ONLY: UI defaults (no server counterpart)
-// =============================================================================
+// JS-only: UI defaults.
 export const PROBE_FILE_EXTENSION = '.pgrid';
 
-// =============================================================================
-// JS-ONLY: Screen IDs (HTML element IDs)
-// =============================================================================
+// JS-only: screen ids, which are element ids in index.html.
 export const SCREEN_DASHBOARD = 'dashboard-screen';
 export const SCREEN_JOG = 'jog-screen';
 export const SCREEN_FILE = 'file-screen';
@@ -77,12 +64,11 @@ export const SCREEN_PROBE = 'probe-screen';
 export const SCREEN_PROBE_FILES = 'probe-files-screen';
 export const SCREEN_SUFFIX = '-screen';
 
-// =============================================================================
-// JS-ONLY: CSS classes (no server counterpart)
-// =============================================================================
+// JS-only: CSS class names.
 export const CLASS_HIDDEN = 'hidden';
 
-// The door overlay with nothing to answer: a banner, not a layer over the page.
+// The door overlay when there is nothing to answer: a banner across the page rather than a
+// layer over it.
 export const CLASS_DOOR_MESSAGE = 'door-overlay-message';
 export const CLASS_ACTIVE = 'active';
 export const CLASS_CONNECTED = 'connected';
@@ -100,8 +86,8 @@ export const DISABLED_REASON_SELECTOR = '.' + CLASS_DISABLED_REASON;
 export const CLASS_NONE = '';
 export const CLASS_LOADING = 'loading';
 
-// How the mill picture is drawn. The colours come from the stylesheet at run time; these
-// are its measurements, in canvas pixels.
+// How the mill picture is drawn. The colors come from the stylesheet at run time; these are
+// its measurements, in canvas pixels.
 export const MILL_GRID_PADDING_PX = 10;
 export const MILL_GRID_CELL_GAP_PX = 1;
 export const MILL_MARKER_CELL_FRACTION = 3;
@@ -109,9 +95,7 @@ export const CLASS_PROBE_OPEN = 'open';
 export const CLASS_PROBE_CONTACT = 'contact';
 export const CLASS_CLICKABLE = 'clickable';
 
-// =============================================================================
-// JS-ONLY: UI text (no server counterpart)
-// =============================================================================
+// JS-only: text the operator reads.
 export const TEXT_DISCONNECTED = 'Disconnected';
 export const TEXT_CONNECTED = 'Connected';
 export const TEXT_RECONNECTING = 'Reconnecting...';
@@ -120,7 +104,6 @@ export const TEXT_LOAD = 'Load';
 export const TEXT_PAUSE = 'Pause';
 export const TEXT_RESUME = 'Resume';
 
-// SVG Icons (14x14 for inline buttons)
 export const ICON_PAUSE = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>';
 export const ICON_RESUME = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 export const TEXT_START_PROBING = 'Start Probing';
@@ -191,7 +174,7 @@ export const TEXT_FILE_LOADED = 'Loaded: {0} ({1} lines)';
 export const TEXT_LINE_COUNT = '{0} lines';
 export const TEXT_POINT_COUNT = '{0}/{1} points';
 export const TEXT_LINE_PROGRESS = '{0} / {1}';
-// Shown when loading a file dropped the height map that was in hand.
+// Shown when loading a file dropped the loaded height map.
 export const TEXT_HEIGHT_MAP_DROPPED =
     'Height map discarded - {0}. Probe again before milling.';
 export const TEXT_ZERO_TITLE = 'Zero';
@@ -231,32 +214,20 @@ export const TEXT_FORCE_DISCONNECT_CONFIRM = 'Another client is connected. Take 
 export const TEXT_FORCE_DISCONNECT_FAILED = 'Could not disconnect the other client';
 export const TITLE_FORCE_DISCONNECT = 'Take over the machine';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: Display decimals
-// Source: GetSharedConstants() in CncWebServer.cs
-// =============================================================================
+// Duplicated from GetSharedConstants() in CncWebServer.cs.
 export const POSITION_DECIMALS_BRIEF = 1;
 export const POSITION_DECIMALS_FULL = 3;
 
-// =============================================================================
-// DUPLICATED FROM SERVER: Visualization thresholds
-// Source: Constants.cs (HeightRangeEpsilon, MillMinRangeThreshold)
-// =============================================================================
+// Duplicated from Constants.cs (HeightRangeEpsilon, MillMinRangeThreshold).
 export const HEIGHT_RANGE_EPSILON = 0.0001;  // Minimum height range for color gradient
-export const MILL_MIN_RANGE_THRESHOLD = 0.001;  // Minimum coordinate range
+export const MILL_MIN_RANGE_THRESHOLD = 0.001;
 
-// =============================================================================
-// DUPLICATED FROM SERVER: What the machine is doing
-// Source: MachineActivity enum in coppercli.Core/Controllers/MachineActivity.cs
-// =============================================================================
+// Duplicated from the MachineActivity enum in coppercli.Core/Controllers/MachineActivity.cs.
 export const MACHINE_ACTIVITY_DOOR_OPEN = 'DoorOpen';
 export const MACHINE_ACTIVITY_DOOR_HOLDING = 'DoorHolding';
 export const MACHINE_ACTIVITY_DOOR_RESUMING = 'DoorResuming';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: Controller states
-// Source: ControllerState enum in coppercli.Core/Controllers/ControllerState.cs
-// =============================================================================
+// Duplicated from the ControllerState enum in coppercli.Core/Controllers/ControllerState.cs.
 export const CONTROLLER_STATE_IDLE = 'Idle';
 export const CONTROLLER_STATE_INITIALIZING = 'Initializing';
 export const CONTROLLER_STATE_RUNNING = 'Running';
@@ -267,11 +238,9 @@ export const CONTROLLER_STATE_COMPLETED = 'Completed';
 export const CONTROLLER_STATE_FAILED = 'Failed';
 export const CONTROLLER_STATE_CANCELLED = 'Cancelled';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: The workflow phases this UI changes its display for.
-// Source: GetSharedConstants() in CncWebServer.cs (MillingPhase, ProbePhase,
-// ToolChangePhase). Every other phase is shown as it arrives, so only these must agree.
-// =============================================================================
+// The workflow phases this UI changes its display for, duplicated from GetSharedConstants()
+// in CncWebServer.cs (MillingPhase, ProbePhase, ToolChangePhase). Every other phase is shown
+// as it arrives, so only these must agree.
 export const PHASE_MILLING = 'Milling';
 export const PHASE_TRACING_OUTLINE = 'TracingOutline';
 export const PHASE_WAITING_FOR_ZERO_Z = 'WaitingForZeroZ';
@@ -319,11 +288,9 @@ export const ERROR_DOOR_NOT_RELEASED = ERROR_RESUME_NOT_SENT;
 
 export const ERROR_ZERO_NOT_SENT = 'Could not reach coppercli. Work zero is not set.';
 
-// =============================================================================
-// Mirrors WebConstants.cs; validateConstants checks them against /api/constants at
-// startup. What each state means is defined once, in the remarks block at the top of
+// Mirrors WebConstants.cs; validateConstants checks them against /api/constants at startup.
+// What each state means is defined once at the top of
 // coppercli.Core/Controllers/ProbeController.cs.
-// =============================================================================
 export const PROBE_STATE_NONE = 'none';
 export const PROBE_STATE_READY = 'ready';
 export const PROBE_STATE_PARTIAL = 'partial';
@@ -348,10 +315,7 @@ export const WS_PATH = '/ws';
 export const WS_QUERY_PARAM_CLIENT_ID = 'clientId';
 export const CLIENT_ID_COOKIE_NAME = 'coppercli_client_id';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: WebSocket message types
-// Source: WebConstants.cs (WsMessageType* constants)
-// =============================================================================
+// Duplicated from WebConstants.cs (WsMessageType*).
 export const MSG_TYPE_STATUS = 'status';
 export const MSG_TYPE_MILL_STATE = 'mill:state';
 export const MSG_TYPE_MILL_PROGRESS = 'mill:progress';
@@ -365,16 +329,10 @@ export const MSG_TYPE_TOOLCHANGE_ERROR = 'toolchange:error';
 export const MSG_TYPE_PROBE_ERROR = 'probe:error';
 export const MSG_TYPE_CONNECTION_ERROR = 'connection:error';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: WebSocket close reasons
-// Source: WebConstants.cs (WsCloseReason* constants)
-// =============================================================================
+// Duplicated from WebConstants.cs (WsCloseReason*).
 export const WS_CLOSE_REASON_FORCE_DISCONNECT = 'Disconnected by another client';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: WebSocket commands (sent from browser)
-// Source: WebConstants.cs (WsCmd* constants)
-// =============================================================================
+// Duplicated from WebConstants.cs (WsCmd*), sent from the browser.
 export const CMD_PING = 'ping';
 export const CMD_JOG_MODE = 'jog-mode';
 export const CMD_HOME = 'home';
@@ -389,11 +347,8 @@ export const CMD_PROBE_Z = 'probe-z';
 export const CMD_FEEDHOLD = 'feedhold';
 export const CMD_RESUME = 'resume';
 
-// =============================================================================
-// DUPLICATED FROM SERVER: API paths
-// Source: WebConstants.cs (Api* constants)
-// Note: These must match exactly for fetch() calls to work.
-// =============================================================================
+// Duplicated from WebConstants.cs (Api*). A path that does not match exactly reaches no
+// handler.
 export const API_STATUS = '/api/status';
 export const API_CONFIG = '/api/config';
 export const API_CONSTANTS = '/api/constants';
@@ -434,10 +389,6 @@ export const API_TRUST_WORK_ZERO = '/api/trust-work-zero';
 export const API_PROBE_RECOVER_AUTOSAVE = '/api/probe/recover-autosave';
 export const API_FORCE_DISCONNECT = '/api/force-disconnect';
 
-// =============================================================================
-// FETCHED FROM SERVER: These are loaded at runtime via /api/config
-// See state.js for the runtime values:
-//   - state.jogModes: Jog speed modes with names and distances
-//   - state.probeDefaults: Default margin and grid size for probing
-//   - state.millGrid: Max width/height for mill grid visualization
-// =============================================================================
+// Fetched at run time through /api/config and held in state.js: jogModes (names and
+// distances), probeDefaults (margin and grid size), millGrid (the mill picture's largest
+// width and height).

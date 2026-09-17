@@ -1,5 +1,3 @@
-// Extracted from Program.cs
-
 using coppercli.Core.Settings;
 using Spectre.Console;
 using coppercli.Helpers;
@@ -8,9 +6,6 @@ using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Menus
 {
-    /// <summary>
-    /// Settings menu for editing configuration values.
-    /// </summary>
     internal static class SettingsMenu
     {
         private enum SettingAction
@@ -54,7 +49,6 @@ namespace coppercli.Menus
                 table.AddColumn("Setting");
                 table.AddColumn("Value");
 
-                // Machine profile
                 var profile = MachineProfiles.GetProfile(settings.MachineProfile);
                 string machineDisplay = profile != null ? profile.Name ?? settings.MachineProfile : $"[{ColorDim}]Not selected[/]";
                 table.AddRow("Machine", machineDisplay);
@@ -70,7 +64,6 @@ namespace coppercli.Menus
                 table.AddRow("Outline Trace Feed", settings.OutlineTraceFeed.ToString());
                 table.AddRow("Debug Logging", settings.EnableDebugLogging ? "On" : "Off");
 
-                // Tool setter position
                 if (settings.ToolSetterX != 0 || settings.ToolSetterY != 0)
                 {
                     table.AddRow("Tool Setter Position", $"X{settings.ToolSetterX:F1} Y{settings.ToolSetterY:F1}");
@@ -136,8 +129,8 @@ namespace coppercli.Menus
         }
 
         /// <summary>
-        /// Ask for a setting and keep asking until the value is in range. The ranges are
-        /// Core's, so the terminal and the web API refuse the same values.
+        /// The ranges come from Core's `SettingRanges`, so the terminal and the web API
+        /// reject the same values.
         /// </summary>
         private static void AskInRange(SettingBinding setting)
         {
@@ -160,9 +153,6 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Select machine profile from available options.
-        /// </summary>
         private static void SelectMachine(Action saveSettings)
         {
             var settings = AppState.Settings;
@@ -179,21 +169,18 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine($"[{ColorDim}]Select your CNC machine to load tool setter configuration.[/]");
             AnsiConsole.WriteLine();
 
-            // Build menu options from profiles
             var options = new List<string>();
             for (int i = 0; i < profileIds.Count; i++)
             {
                 var profile = MachineProfiles.GetProfile(profileIds[i]);
                 string name = profile?.Name ?? profileIds[i];
                 string toolSetter = profile?.ToolSetter != null ? "(has tool setter)" : "(no tool setter)";
-                // Use index+1 as menu number, first letter of name as mnemonic
                 char mnemonic = char.ToLower(name[0]);
                 options.Add($"{i + 1}. {name} {toolSetter} ({mnemonic})");
             }
             options.Add($"{profileIds.Count + 1}. Clear selection (c)");
             options.Add($"0. Cancel (q)");
 
-            // Find current selection index
             int currentIndex = profileIds.IndexOf(settings.MachineProfile);
             if (currentIndex < 0)
             {
@@ -202,13 +189,12 @@ namespace coppercli.Menus
 
             int selectedIndex = MenuHelpers.ShowMenu("Select machine:", options.ToArray(), currentIndex);
 
-            // Cancel (last option, or Escape which also returns last)
+            // Escape also returns the last index, which is Cancel.
             if (selectedIndex == options.Count - 1)
             {
                 return;
             }
 
-            // Clear selection
             if (selectedIndex == profileIds.Count)
             {
                 settings.MachineProfile = "";
@@ -218,7 +204,6 @@ namespace coppercli.Menus
                 return;
             }
 
-            // Machine selected
             if (selectedIndex >= 0 && selectedIndex < profileIds.Count)
             {
                 settings.MachineProfile = profileIds[selectedIndex];
@@ -240,10 +225,6 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Interactive setup for tool setter position.
-        /// User jogs to the tool setter and presses S to save.
-        /// </summary>
         private static void SetupToolSetter(Action saveSettings)
         {
             var machine = AppState.Machine;
@@ -306,7 +287,6 @@ namespace coppercli.Menus
 
                     if (InputHelpers.IsEnterKey(key))
                     {
-                        // Save current machine position as tool setter
                         settings.ToolSetterX = mpos.X;
                         settings.ToolSetterY = mpos.Y;
                         saveSettings();
@@ -317,7 +297,6 @@ namespace coppercli.Menus
 
                     if (InputHelpers.IsKey(key, ConsoleKey.C))
                     {
-                        // Clear tool setter position
                         settings.ToolSetterX = 0;
                         settings.ToolSetterY = 0;
                         saveSettings();
@@ -332,7 +311,6 @@ namespace coppercli.Menus
                         continue;
                     }
 
-                    // Handle jog keys
                     JogHelpers.HandleJogKey(key, machine, mode.Feed, mode.BaseDistance);
                 }
             }

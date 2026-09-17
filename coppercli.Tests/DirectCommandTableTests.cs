@@ -11,8 +11,8 @@ namespace coppercli.Tests
     public class DirectCommandTableTests
     {
         /// <summary>
-        /// A message with no type matches no command. Matching null would select the entries
-        /// with no WebSocket command, which include the feed override.
+        /// Matching on null would select the entries that carry no WebSocket command, among
+        /// them the feed override.
         /// </summary>
         [Theory]
         [InlineData(null)]
@@ -23,7 +23,6 @@ namespace coppercli.Tests
             Assert.Null(CncWebServer.FindWsCommand(type));
         }
 
-        /// <summary>Every command the browser is told about is one this server runs.</summary>
         [Theory]
         [InlineData(WsCmdHome)]
         [InlineData(WsCmdUnlock)]
@@ -41,10 +40,6 @@ namespace coppercli.Tests
             Assert.NotNull(CncWebServer.FindWsCommand(type));
         }
 
-        /// <summary>
-        /// Stop, hold, resume, unlock and the feed override are the controls used during a
-        /// job, so only they are allowed while one is running.
-        /// </summary>
         [Theory]
         [InlineData(WsCmdReset, true)]
         [InlineData(WsCmdFeedhold, true)]

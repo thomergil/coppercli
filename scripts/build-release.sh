@@ -5,8 +5,6 @@
 #
 
 set -e
-
-# Get version from CliConstants.cs
 VERSION=$(grep 'AppVersion = ' coppercli/CliConstants.cs | sed 's/.*"\(.*\)".*/\1/')
 if [[ -z "$VERSION" ]]; then
     echo "ERROR: Could not extract version from CliConstants.cs"
@@ -20,12 +18,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELEASE_DIR="$REPO_ROOT/release"
 PROJECT="$REPO_ROOT/coppercli/coppercli.csproj"
-
-# Clean previous builds
 rm -rf "$RELEASE_DIR"
 mkdir -p "$RELEASE_DIR"
-
-# Find dotnet
 find_dotnet() {
     if command -v dotnet &> /dev/null; then
         echo "dotnet"
@@ -54,8 +48,6 @@ DOTNET=$(find_dotnet) || {
 }
 echo "Using: $DOTNET"
 echo ""
-
-# Build function
 build_platform() {
     local rid=$1
     local archive_name=$2
@@ -71,28 +63,21 @@ build_platform() {
         -p:EnableCompressionInSingleFile=true \
         -o "$publish_dir" \
         --verbosity quiet
-
-    # Create archive
     cd "$publish_dir"
     if [[ "$rid" == win-* ]]; then
-        # For Windows, just copy the exe (Inno Setup handles the installer)
+        # Windows gets the bare exe; Inno Setup builds the installer from it.
         cp coppercli.exe "$RELEASE_DIR/$archive_name"
         echo "  Created: $archive_name"
     else
-        # For Unix, create tarball
         tar -czf "$RELEASE_DIR/$archive_name" coppercli
         echo "  Created: $archive_name"
     fi
     cd "$REPO_ROOT"
 }
-
-# Build all platforms
 build_platform "win-x64"       "coppercli-$VERSION-windows-x64.exe"
 build_platform "osx-arm64"     "coppercli-$VERSION-macos-arm64.tar.gz"
 build_platform "osx-x64"       "coppercli-$VERSION-macos-x64.tar.gz"
 build_platform "linux-x64"     "coppercli-$VERSION-linux-x64.tar.gz"
-
-# Build Windows installer if on Windows or if Inno Setup available
 if [[ -f "$REPO_ROOT/installer/build-installer.ps1" ]]; then
     if command -v pwsh &> /dev/null || command -v powershell &> /dev/null; then
         echo ""
@@ -108,8 +93,6 @@ if [[ -f "$REPO_ROOT/installer/build-installer.ps1" ]]; then
         cd "$REPO_ROOT"
     fi
 fi
-
-# Clean up intermediate directories
 rm -rf "$RELEASE_DIR/win-x64" "$RELEASE_DIR/osx-arm64" "$RELEASE_DIR/osx-x64" "$RELEASE_DIR/linux-x64"
 
 echo ""

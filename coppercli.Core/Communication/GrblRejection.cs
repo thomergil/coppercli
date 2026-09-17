@@ -1,11 +1,9 @@
 namespace coppercli.Core.Communication
 {
     /// <summary>
-    /// A command GRBL refused, and why.
-    ///
-    /// Delivered to the caller that sent the command, so a controller can tell refused from
-    /// still running. Waiting for Idle cannot: a refused command never moved the machine, so
-    /// that wait succeeds immediately.
+    /// A command GRBL refused, and why. Waiting for Idle cannot separate a refusal from a
+    /// command still running, because a refused command never moved the machine and that
+    /// wait succeeds at once.
     /// </summary>
     public readonly record struct GrblRejection(int Code, string Command, string Description)
     {

@@ -9,11 +9,10 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// ApplyProbeGrid is additive (commanded Z += interpolated height). So loading a second
-    /// height map over one that was already applied, without first restoring the un-corrected
-    /// G-code, stacks both corrections and cuts at the wrong depth.
-    /// AppState.LoadProbeGridFromFile reloads the original before adopting a new map, for
-    /// both front ends.
+    /// ApplyProbeGrid is additive (commanded Z += interpolated height), so loading a second
+    /// height map over an applied one without first restoring the un-corrected G-code stacks
+    /// both corrections and cuts at the wrong depth. AppState.LoadProbeGridFromFile reloads
+    /// the original before adopting a new map, for both front ends.
     /// </summary>
     [Collection(WebServerCollection.Name)]
     public class ProbeLoadDoubleApplyTests
@@ -32,8 +31,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A zero discards the map, and the operator is warned first. A screen that asks
-        /// ProbePoints alone deletes an autosaved map with no warning.
+        /// Zeroing discards the height map, so the operator is warned first. A check against
+        /// ProbePoints alone misses a map that exists only in the autosave.
         /// </summary>
         [Fact]
         public void AMapThatLivesOnlyInTheAutosave_IsStillWarnedAboutBeforeAZero()
@@ -62,9 +61,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loading a board drops a height map measured for another one, and says why. Both
-        /// front ends report that, so neither has to work out for itself what the load did to
-        /// the map.
+        /// Loading a board discards a height map measured for a different one, and the load
+        /// result carries the reason. Both front ends display that reason rather than deriving
+        /// one of their own.
         /// </summary>
         [Fact]
         public void LoadingAnotherBoard_ReportsTheMapItDropped()
@@ -101,9 +100,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loading a partly measured map from a file clears the autosave, so a menu that asked
-        /// the autosave offered no way to resume it. Both front ends judge the map the resume
-        /// would act on, which is the one in memory.
+        /// Loading a partly measured map from a file clears the autosave, so a check against
+        /// the autosave finds nothing to resume. The resume acts on the map in memory, so that
+        /// is the one both front ends check.
         /// </summary>
         [Fact]
         public void APartlyMeasuredMapLoadedFromAFile_CanStillBeResumed()
@@ -123,13 +122,10 @@ namespace coppercli.Tests
 
                 Assert.Null(AppState.LoadProbeGridFromFile(map).Refused);
 
-                // Loading a grid from a file clears the autosave, so the only map is in memory.
                 Assert.Null(Persistence.ReadProbeAutoSave());
                 Assert.NotNull(AppState.CurrentProbeGrid);
                 Assert.False(AppState.CurrentProbeGrid!.HasCompleteData);
 
-                // The screen itself, not just the helper behind it: asked of the autosave
-                // alone, the probe menu offered no way to resume this map.
                 Assert.True(
                     Menus.ProbeMenu.HasIncompleteProbeData(),
                     "Continue probing was not offered for the map the screen would act on");
@@ -145,8 +141,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// "There is no saved map" and "the saved map is for another board" are different
-        /// things to the operator, and both callers now relay whichever comes back rather
-        /// than asking first. Interchangeable arms would read as one message.
+        /// refusals, and both callers relay whichever one comes back. One message for both
+        /// leaves the operator unable to tell the two apart.
         /// </summary>
         [Fact]
         public void RecoveringWithNoAutosave_AndOneThatDoesNotFit_SaySoDifferently()
@@ -158,8 +154,8 @@ namespace coppercli.Tests
                 AppState.Session = new SessionState { LastLoadedGCodeFile = Path.GetFullPath(board) };
                 Persistence.ClearProbeAutoSave();
 
-                // Whatever ran before this left its own map behind; a refusal must adopt
-                // nothing, which only means something from a known starting point.
+                // AppState is process-wide, so start from an empty map: otherwise "adopted
+                // nothing" cannot be told from a map another test left behind.
                 AppState.DiscardProbeData();
                 Assert.Null(AppState.ProbePoints);
 
@@ -167,7 +163,6 @@ namespace coppercli.Tests
                     CliConstants.ProbeErrorNoAutosave,
                     AppState.ForceLoadProbeFromAutosave().Refused);
 
-                // Present, and measured for a different board.
                 var elsewhere = ConstantHeightGrid(1.0);
                 elsewhere.Context = new ProbeContext("/some/other/board.ngc", AppState.Machine.G54Offset);
                 elsewhere.Save(Persistence.GetProbeAutoSavePath());
@@ -179,7 +174,7 @@ namespace coppercli.Tests
             }
             finally
             {
-                // Process-wide, so what this test adopted must not reach the next one.
+                // AppState is process-wide, so what this test adopted must not reach the next.
                 AppState.DiscardProbeData();
                 Persistence.ClearProbeAutoSave();
                 File.Delete(board);
@@ -187,8 +182,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Loading a grid from a file clears the autosave, so there is nothing to move. The
-        /// menu offers Save from the map in memory, so Save writes that.
+        /// Loading a grid from a file clears the autosave, so Save has to write the map held
+        /// in memory rather than copy the autosave file.
         /// </summary>
         [Fact]
         public void SavingAMapThatCameFromAFile_WritesIt()
@@ -228,7 +223,7 @@ namespace coppercli.Tests
             string grid2Path = Path.GetTempFileName();
             try
             {
-                // A single cutting move inside the grid bounds, so ApplyProbeGrid actually shifts it.
+                // One cutting move inside the grid extents, so ApplyProbeGrid shifts its Z.
                 File.WriteAllLines(nc, new[] { "G21", "G90", "G0 X0 Y0 Z5", "G1 X10 Y10 Z-1 F100" });
                 ConstantHeightGrid(1.0).Save(grid1Path);
                 ConstantHeightGrid(0.2).Save(grid2Path);
@@ -239,20 +234,17 @@ namespace coppercli.Tests
 
                 string originalGCode = string.Join("\n", GCodeFile.Load(nc).GetGCode());
 
-                // Apply the first grid: its correction is now baked into CurrentFile.
                 Assert.Null(AppState.AdoptProbeGrid(ProbeGrid.Load(grid1Path)));
                 Assert.Null(AppState.ApplyProbeData());
                 Assert.NotEqual(originalGCode, string.Join("\n", AppState.CurrentFile!.GetGCode()));
 
-                // Load a second grid. The fix must reload the original before this grid can be
-                // applied; otherwise grid2 would stack on top of grid1's already-baked-in Z.
                 Assert.Null(AppState.LoadProbeGridFromFile(grid2Path).Refused);
 
                 Assert.False(AppState.AreProbePointsApplied);
                 Assert.Equal(originalGCode, string.Join("\n", AppState.CurrentFile!.GetGCode()));
 
-                // A grid from a file is already saved, so the autosave goes: left behind, it
-                // is offered later as unsaved work belonging to a map nobody has.
+                // A grid loaded from a file is already saved, so the autosave is cleared. Left
+                // behind, it would be offered later as unsaved work for a map that is gone.
                 Assert.Null(Persistence.ReadProbeAutoSave());
             }
             finally

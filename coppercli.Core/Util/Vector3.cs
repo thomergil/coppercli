@@ -307,10 +307,8 @@ namespace coppercli.Core.Util
         private const string NEGATIVE_MAGNITUDE = "The magnitude of a Vector3 must be a positive value";
         private const string ORAGIN_VECTOR_MAGNITUDE = "Cannot change the magnitude of Vector3(0,0,0)";
 
-        // Tolerance for floating-point equality comparison.
-        // Using 1e-9 (one billionth) rather than double.Epsilon (~5e-324) because
-        // double.Epsilon is too small for practical comparison - floating-point
-        // arithmetic errors routinely exceed it, making equality checks fail.
+        // double.Epsilon (~5e-324) sits far below the error ordinary floating-point
+        // arithmetic accumulates, so an equality check against it never succeeds.
         public const double EqualityTolerance = 1e-9;
         public static readonly Vector3 MinValue = new Vector3(double.MinValue, double.MinValue, double.MinValue);
         public static readonly Vector3 MaxValue = new Vector3(double.MaxValue, double.MaxValue, double.MaxValue);

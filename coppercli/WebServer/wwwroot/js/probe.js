@@ -1,5 +1,3 @@
-// coppercli Web UI Probe Screen
-
 import { state } from './state.js';
 import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson, format } from './helpers.js';
 import { showScreen } from './screens.js';
@@ -127,7 +125,6 @@ export async function traceOutline() {
 
     traceOverride = true;
 
-    // Turns the start button into Stop and disables everything else.
     applyProbeRunLock();
 
     try {
@@ -137,12 +134,10 @@ export async function traceOutline() {
             return;
         }
 
-        // Poll until trace is complete
         await pollTraceStatus();
     } finally {
         traceOverride = false;
 
-        // Reset every control from the state the server reports: label, colour, enabled.
         await refreshProbeState();
 
         // Keep the start button disabled a moment longer in case of a second tap on STOP,
@@ -153,7 +148,7 @@ export async function traceOutline() {
 }
 
 async function stopTrace() {
-    // Prevent status updates from showing probe progress view after trace stops
+    // Stops the status poll putting the probe progress view up once the trace ends.
     state.probeDataDisplayed = true;
 
     // The server reports whether it confirmed the machine stopped, the same value
@@ -200,12 +195,11 @@ export async function startProbing() {
 
     document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
     document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
-    state.probeDataDisplayed = false;  // Reset for new probing session
+    state.probeDataDisplayed = false;
 
     pollProbeStatus();
 }
 
-// Reset probe UI to initial state (shared by stop and dismiss)
 function resetProbeUI() {
     setText('probe-progress-title', TEXT_PROBING_TITLE);
     removeClass('probe-stop-btn', CLASS_HIDDEN);
@@ -213,7 +207,6 @@ function resetProbeUI() {
     addClass('probe-done-btn', CLASS_HIDDEN);
     removeClass('probe-setup', CLASS_HIDDEN);
     addClass('probe-progress', CLASS_HIDDEN);
-    // Reset pause button to default state
     updateProbePauseButton(false);
 }
 
@@ -243,20 +236,18 @@ export async function toggleProbePause() {
     // The next status sets the button text.
 }
 
-// Update pause button based on probe status
 export function updateProbePauseButton(isPaused) {
     updatePauseButton($('probe-pause-btn'), isPaused, CLASS_BTN_WARNING, CLASS_BTN_SUCCESS);
 }
 
 export async function showProbeComplete() {
-    // Show completion state - keep grid visible, swap Pause/Stop for Done button
     setText('probe-progress-title', TEXT_PROBING_DONE_TITLE);
     addClass('probe-pause-btn', CLASS_HIDDEN);
     addClass('probe-stop-btn', CLASS_HIDDEN);
     removeClass('probe-done-btn', CLASS_HIDDEN);
-    state.probeDataDisplayed = true;  // Mark as displayed to prevent loops
+    state.probeDataDisplayed = true;
 
-    // Auto-apply probe data to G-code (matches TUI default behavior)
+    // Applied without asking, as the terminal does by default.
     const { ok, error } = await postJson(API_PROBE_APPLY);
     if (ok) {
         showInfo(TEXT_PROBE_APPLIED_TO_GCODE);
@@ -270,7 +261,6 @@ export function dismissProbeComplete() {
     showScreen(SCREEN_DASHBOARD);
 }
 
-// Update probe UI from status data (shared by poll and reconnect)
 function displayProbeStatus(data) {
     document.getElementById('probe-progress-text').textContent =
         `${data.progress} / ${data.total}`;
@@ -280,29 +270,26 @@ function displayProbeStatus(data) {
             `Z: ${data.minHeight.toFixed(POSITION_DECIMALS_FULL)} to ${data.maxHeight.toFixed(POSITION_DECIMALS_FULL)}`;
     }
 
-    // Ensure grid is created with correct dimensions (needed when browser connects mid-probe or on reconnect)
+    // The grid may not exist yet: this page can connect in the middle of a probe.
     if (data.sizeX && data.sizeY) {
         const grid = document.getElementById('probe-grid');
         const expectedCells = data.sizeX * data.sizeY;
-        // Re-render if grid is empty OR has wrong number of cells (stale from page sleep)
+        // A page that slept can come back with a grid of the wrong size.
         if (grid.children.length !== expectedCells) {
             renderProbeGrid(data.sizeX, data.sizeY);
         }
     }
 
-    // Update grid visualization with height-based colors
     if (data.points) {
-        updateProbeGridDisplay(data.points, data.colours);
+        updateProbeGridDisplay(data.points, data.colors);
     }
 
-    // Update pause button based on paused state
     if (data.paused !== undefined) {
         updateProbePauseButton(data.paused);
     }
 }
 
 export async function pollProbeStatus() {
-    // Prevent multiple poll loops
     if (state.isProbePollRunning) return;
     state.isProbePollRunning = true;
 
@@ -329,19 +316,19 @@ export async function pollProbeStatus() {
     } finally {
         state.isProbePollRunning = false;
     }
-    // Note: completion handling is done in updateStatus based on status.probing flag
+    // Completion is handled in updateStatus, from the status broadcast.
 }
 
-// Paints the measured cells in the colours the server computed. The gradient itself
-// lives in HeightGradient.cs, so this view and the terminal's draw the same board.
-function updateProbeGridDisplay(points, colours) {
+// Paints the measured cells in the colors the server computed. The gradient itself lives in
+// HeightGradient.cs, so this view and the terminal's draw the same board.
+function updateProbeGridDisplay(points, colors) {
     document.querySelectorAll('.probe-cell').forEach(cell => {
         const x = parseInt(cell.dataset.x);
         const y = parseInt(cell.dataset.y);
 
         if (points[x] && points[x][y] !== null) {
             cell.classList.add(CLASS_PROBED);
-            cell.style.backgroundColor = colours?.[x]?.[y] ?? '';
+            cell.style.backgroundColor = colors?.[x]?.[y] ?? '';
         }
     });
 }
@@ -355,26 +342,21 @@ export async function fetchAndDisplayProbeData() {
             const isComplete = data.state === PROBE_STATE_COMPLETE;
 
             if (isComplete) {
-                // Complete probe: show progress view with Done button
                 document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
                 document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
                 displayProbeStatus(data);
                 await showProbeComplete();
             } else {
-                // Partial probe: show setup view with grid and Continue button
                 document.getElementById('probe-setup').classList.remove(CLASS_HIDDEN);
                 document.getElementById('probe-progress').classList.add(CLASS_HIDDEN);
                 updateProbeInfoDisplay(data.sizeX, data.sizeY, data.total, data.progress);
                 renderProbeGrid(data.sizeX, data.sizeY);
-                // Update grid cells with existing probe data
                 if (data.points) {
-                    updateProbeGridDisplay(data.points, data.colours);
+                    updateProbeGridDisplay(data.points, data.colors);
                 }
-                // State machine will enable Continue button via status updates
                 updateProbeButtonsFromState(data.state, data.hasUnsavedData);
             }
 
-            // Warn if the source G-Code file is missing
             if (data.sourceGCodeMissing) {
                 showError(TEXT_SOURCE_GCODE_MISSING);
             }
@@ -384,7 +366,6 @@ export async function fetchAndDisplayProbeData() {
     }
 }
 
-// --- Probe Data Save/Load/Clear ---
 
 export function saveProbeData() {
     showProbeFileBrowser('save');
@@ -396,7 +377,6 @@ function generateDefaultProbeName() {
     return `probe-${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}${PROBE_FILE_EXTENSION}`;
 }
 
-// Normalize probe filename: add extension if missing
 function normalizeProbeFilename(filename) {
     if (!filename.endsWith(PROBE_FILE_EXTENSION)) {
         return filename + PROBE_FILE_EXTENSION;
@@ -404,7 +384,6 @@ function normalizeProbeFilename(filename) {
     return filename;
 }
 
-// Save probe data to path, returns true on success
 async function saveProbeDataToPath(path) {
     const { ok, error } = await postJson(API_PROBE_SAVE, { path });
     if (!ok) {
@@ -416,7 +395,6 @@ async function saveProbeDataToPath(path) {
     return true;
 }
 
-// Reset probe UI to initial setup state (clear grid, show setup view)
 function clearProbeGridUI() {
     $('probe-grid').innerHTML = '';
     $('probe-info').textContent = '';
@@ -425,7 +403,6 @@ function clearProbeGridUI() {
     state.probeDataDisplayed = false;
 }
 
-/** Discards the probe data, and says whether the server agreed to. */
 async function discardOnServer() {
     const { ok, error } = await postJson(API_PROBE_DISCARD);
     if (!ok) {
@@ -462,9 +439,6 @@ export async function recoverAutosave() {
 }
 
 
-// --- Probe File Browser ---
-
-// Probe file browser state (mode-specific behavior beyond FileBrowser)
 let probeFileBrowserMode = 'load'; // 'load' or 'save'
 let probeFileBrowser = null;
 
@@ -485,11 +459,9 @@ function getProbeFileBrowser() {
 
 function onProbeFileSelect(path) {
     if (probeFileBrowserMode === 'save') {
-        // In save mode, populate filename input with selected file's name
         const filename = path.split(/[/\\]/).pop();
         $('probe-save-input').value = filename;
     } else {
-        // In load mode, enable the action button
         $('probe-file-action-btn').disabled = false;
     }
 }
@@ -501,7 +473,6 @@ function onProbeFileLoad(path) {
 export async function showProbeFileBrowser(mode = 'load') {
     probeFileBrowserMode = mode;
 
-    // Update UI for mode
     const titleEl = $('probe-files-title');
     const saveRow = $('probe-save-row');
     const actionBtn = $('probe-file-action-btn');
@@ -511,7 +482,7 @@ export async function showProbeFileBrowser(mode = 'load') {
         titleEl.textContent = TEXT_SAVE_PROBE_DATA;
         saveRow.classList.remove(CLASS_HIDDEN);
         actionBtn.textContent = TEXT_SAVE;
-        actionBtn.disabled = false; // Enable immediately for save (can type filename)
+        actionBtn.disabled = false; // A name can be typed, so nothing has to be selected
         saveInput.value = generateDefaultProbeName();
         saveInput.focus();
     } else {
@@ -539,17 +510,16 @@ export async function loadSelectedProbeFile() {
         const { ok, error, data } = await postJson(API_PROBE_LOAD, { path: selectedFile });
 
         if (ok) {
-            // Mark as displayed to prevent auto-navigate when user goes to dashboard
-            // (user explicitly loaded a file, they're in control)
+            // The operator loaded this file, so the dashboard must not navigate away from it.
             state.probeDataDisplayed = true;
 
             if (data.complete) {
-                // Complete grid: go to dashboard (user likely wants to mill)
+                // A complete grid: the next step is milling.
                 showScreen(SCREEN_DASHBOARD);
                 const appliedMsg = data.applied ? TEXT_PROBE_DATA_APPLIED : '';
                 showInfo(`${TEXT_PROBE_DATA_LOADED}: ${data.sizeX}x${data.sizeY} points${appliedMsg}`);
             } else {
-                // Partial grid: stay on probe screen (user likely wants to continue probing)
+                // A partial grid: the next step is more probing.
                 showScreen(SCREEN_PROBE);
                 showInfo(`${TEXT_PROBE_DATA_LOADED}: ${data.progress}/${data.totalPoints} points probed`);
             }
@@ -586,8 +556,8 @@ export function updateProbeInfoDisplay(sizeX, sizeY, totalPoints, progress) {
 export function initProbeScreen() {
     $('probe-setup-btn').addEventListener('click', setupProbeGrid);
     $('probe-trace-btn').addEventListener('click', traceOutline);
-    // One handler: the button is a stop during a trace and a start otherwise, and that
-    // is one fact. A second handler slot on the same button fires alongside this one.
+    // One handler: the button stops a trace, and starts a probe otherwise. A second handler
+    // on the same button would fire alongside this one.
     $('probe-start-btn').addEventListener('click', () => {
         if (getIsTracing()) {
             stopTrace();
@@ -599,7 +569,6 @@ export function initProbeScreen() {
     $('probe-stop-btn').addEventListener('click', stopProbing);
     $('probe-done-btn').addEventListener('click', dismissProbeComplete);
 
-    // Probe data management buttons
     const saveBtn = $('probe-save-btn');
     const loadBtn = $('probe-load-btn');
     const recoverBtn = $('probe-recover-btn');
@@ -610,7 +579,6 @@ export function initProbeScreen() {
     if (recoverBtn) recoverBtn.addEventListener('click', recoverAutosave);
     if (discardBtn) discardBtn.addEventListener('click', discardProbeData);
 
-    // Update button states based on probe state
     refreshProbeState();
 }
 
@@ -641,7 +609,6 @@ async function saveProbeToFile() {
 
     const filename = normalizeProbeFilename(rawFilename);
 
-    // Prepend current path if not absolute
     let fullPath = filename;
     const currentPath = getProbeFileBrowser().currentPath;
     if (currentPath && !filename.startsWith('/')) {
@@ -654,7 +621,7 @@ async function saveProbeToFile() {
 
     try {
         if (await saveProbeDataToPath(fullPath)) {
-            // Go to Dashboard after save - probe data stays in memory
+            // Saving does not clear the probe data.
             showScreen(SCREEN_DASHBOARD, true);
         }
     } catch (err) {
@@ -667,8 +634,8 @@ async function saveProbeToFile() {
 }
 
 /**
- * Holds the probe screen while a trace owns the machine: the start button becomes the stop
- * and nothing else takes a tap. Returns true when it took the screen, so the caller stops.
+ * Holds the probe screen while a trace is running: the start button becomes the stop and
+ * nothing else takes a tap. Returns true when it took the screen, so the caller stops.
  */
 export function applyProbeRunLock() {
     const setup = $('probe-setup');
@@ -724,7 +691,6 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
     const discardBtn = $('probe-discard-btn');
     const loadBtn = $('probe-load-btn');
 
-    // Recover button: enabled when autosave exists
     if (recoverBtn) recoverBtn.disabled = !hasUnsavedData;
 
     // Trace button: there has to be a grid to walk the outline of.
@@ -732,7 +698,6 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
 
     switch (probeState) {
         case PROBE_STATE_NONE:
-            // No grid - need to set up first
             if (setupBtn) setupBtn.disabled = false;
             if (startBtn) {
                 startBtn.textContent = TEXT_START_PROBING;
@@ -747,7 +712,6 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
             break;
 
         case PROBE_STATE_READY:
-            // Grid exists, ready to start probing
             if (setupBtn) setupBtn.disabled = false;
             if (startBtn) {
                 startBtn.textContent = TEXT_START_PROBING;
@@ -762,7 +726,6 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
             break;
 
         case PROBE_STATE_PARTIAL:
-            // Incomplete: [Continue] [Discard if unsaved]
             if (setupBtn) setupBtn.disabled = true;
             if (startBtn) {
                 startBtn.textContent = TEXT_CONTINUE_PROBING;
@@ -777,7 +740,6 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
             break;
 
         case PROBE_STATE_COMPLETE:
-            // Complete: [Save]* / [Clear]
             if (setupBtn) setupBtn.disabled = false;
             if (startBtn) {
                 startBtn.textContent = TEXT_START_PROBING;
@@ -794,14 +756,13 @@ export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) 
 
 }
 
-// Fetch probe state from server and update buttons
 export async function refreshProbeState() {
     try {
         const response = await fetch(API_PROBE_STATUS);
         const data = await response.json();
         if (data.state) {
             updateProbeButtonsFromState(data.state, data.hasUnsavedData);
-            // Clear stale grid if server has no probe data (e.g., discarded via zeroing)
+            // The grid goes stale when something else discarded the data, such as zeroing X/Y.
             if (data.state === PROBE_STATE_NONE) {
                 clearProbeGridUI();
             }
@@ -811,7 +772,6 @@ export async function refreshProbeState() {
     }
 }
 
-// --- Probe Save Modal (for unsaved completed probes) ---
 
 export function showProbeSaveModal() {
     const modal = $('probe-save-modal');
@@ -824,7 +784,6 @@ export function hideProbeSaveModal() {
 }
 
 function handleProbeSaveConfirm() {
-    // Hide modal and open file browser in save mode
     hideProbeSaveModal();
     showProbeFileBrowser('save');
 }
@@ -851,11 +810,8 @@ export function initProbeSaveModal() {
     }
 }
 
-// Check for unsaved/incomplete probe on startup and show appropriate modal
-// Only shows modal if probing/milling is NOT actively running
 export async function checkAndShowUnsavedProbe() {
     try {
-        // First check if milling is in progress - don't show probe modals during milling/tool change
         const statusResponse = await fetch(API_STATUS);
         const status = await statusResponse.json();
         if (status.milling) {
@@ -871,13 +827,11 @@ export async function checkAndShowUnsavedProbe() {
         }
 
         if (data.state === PROBE_STATE_PARTIAL) {
-            // Incomplete probe: show recovery modal
             showProbeRecoveryModal();
             return true;
         }
 
         if (data.state === PROBE_STATE_COMPLETE && data.hasUnsavedData) {
-            // Complete probe with unsaved data: show save modal
             showProbeSaveModal();
             return true;
         }
@@ -887,7 +841,6 @@ export async function checkAndShowUnsavedProbe() {
     return false;
 }
 
-// --- Probe Recovery Modal (for incomplete probes) ---
 
 function showProbeRecoveryModal() {
     const modal = $('probe-recovery-modal');
@@ -901,7 +854,6 @@ function hideProbeRecoveryModal() {
 
 async function handleProbeRecoveryContinue() {
     hideProbeRecoveryModal();
-    // Navigate to probe screen and show the partial grid
     showScreen(SCREEN_PROBE, true);
     await fetchAndDisplayProbeData();
 }

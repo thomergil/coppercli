@@ -6,8 +6,9 @@ using static coppercli.CliConstants;
 namespace coppercli.Helpers
 {
     /// <summary>
-    /// Prevents system sleep during long-running operations (milling, probing).
-    /// Uses caffeinate on macOS, SetThreadExecutionState on Windows.
+    /// Keeps the host awake for the length of a mill or probe run: SetThreadExecutionState on
+    /// Windows, caffeinate on macOS, systemd-inhibit on Linux, and nothing on any other
+    /// platform, where Start returns false and the operator is warned instead.
     /// </summary>
     internal static class SleepPrevention
     {
@@ -16,19 +17,13 @@ namespace coppercli.Helpers
         private static bool _isAvailable;
         private static bool _isActive;
 
-        // Windows API for preventing sleep
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint SetThreadExecutionState(uint esFlags);
 
-        // Execution state flags
         private const uint ES_CONTINUOUS = 0x80000000;
         private const uint ES_SYSTEM_REQUIRED = 0x00000001;
-        // ES_DISPLAY_REQUIRED = 0x00000002 - not needed, allow display to sleep
+        // ES_DISPLAY_REQUIRED is left out on purpose, so the display may still sleep.
 
-        /// <summary>
-        /// Creates a ProcessStartInfo configured for background execution.
-        /// Consolidates common setup to avoid duplication across platform-specific methods.
-        /// </summary>
         private static ProcessStartInfo CreateProcessStartInfo(string fileName, string arguments, bool redirectStdErr = false)
         {
             return new ProcessStartInfo
@@ -42,9 +37,6 @@ namespace coppercli.Helpers
             };
         }
 
-        /// <summary>
-        /// Check if a program exists on Unix-like systems using 'which'.
-        /// </summary>
         private static bool IsProgramAvailable(string programName)
         {
             try
@@ -65,9 +57,6 @@ namespace coppercli.Helpers
             }
         }
 
-        /// <summary>
-        /// Check if sleep prevention is available on this platform.
-        /// </summary>
         public static bool IsAvailable()
         {
             if (_checkedAvailability)
@@ -84,12 +73,12 @@ namespace coppercli.Helpers
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             {
-                // Check if caffeinate exists (should always be present on macOS)
+                // caffeinate ships with macOS, so this check almost always passes.
                 _isAvailable = IsProgramAvailable(CaffeinateCommand);
             }
             else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             {
-                // Check if systemd-inhibit exists (available on most modern Linux distros)
+                // systemd-inhibit is missing on a distro that does not run systemd.
                 _isAvailable = IsProgramAvailable(SystemdInhibitCommand);
             }
             else
@@ -103,8 +92,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Start preventing sleep. Safe to call multiple times.
-        /// Returns true if sleep prevention is active, false if not available.
+        /// A second call while already active returns true without starting anything.
         /// </summary>
         public static bool Start()
         {
@@ -143,7 +131,6 @@ namespace coppercli.Helpers
         {
             try
             {
-                // Request system stay awake (but allow display to sleep)
                 uint result = SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED);
                 _isActive = result != 0;
                 Logger.Log("SleepPrevention: SetThreadExecutionState result={0}, active={1}", result, _isActive);
@@ -219,7 +206,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Stop preventing sleep. Safe to call multiple times or when not started.
+        /// Safe to call when nothing was started.
         /// </summary>
         public static void Stop()
         {
@@ -249,7 +236,6 @@ namespace coppercli.Helpers
         {
             try
             {
-                // Clear the execution state flags
                 SetThreadExecutionState(ES_CONTINUOUS);
                 Logger.Log("SleepPrevention: Cleared execution state");
             }
@@ -294,26 +280,19 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Check if we're in network mode (TCP/IP connection).
-        /// Sleep is more dangerous in network mode because disconnection can leave machine in unknown state.
+        /// Sleep costs more here: losing the TCP connection mid-run leaves the machine in a
+        /// state coppercli cannot read back.
         /// </summary>
         public static bool IsNetworkMode()
         {
             return AppState.Settings.ConnectionType == ConnectionType.Ethernet;
         }
 
-        /// <summary>
-        /// Check if we should warn the user about sleep prevention.
-        /// Returns true if in network mode AND sleep prevention is not available.
-        /// </summary>
         public static bool ShouldWarn()
         {
             return IsNetworkMode() && !IsAvailable();
         }
 
-        /// <summary>
-        /// Returns true if sleep prevention is currently active.
-        /// </summary>
         public static bool IsActive => _isActive;
     }
 }

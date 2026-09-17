@@ -8,11 +8,10 @@ namespace coppercli.Tests
 {
     /// <summary>
     /// Non-motion G-codes (G53, G10, G43.1, G38.x, G28, G30) carry axis words that must
-    /// never be reinterpreted as ordinary work-coordinate motion.
-    ///
-    /// The regression these pin: G53 means "this block is in machine coordinates". If the
-    /// G53 is stripped but "Z-1" survives, the retract becomes a work-coordinate G0 Z-1 —
-    /// on a PCB job, work Z0 is the copper surface, so that is a rapid 1mm into the board.
+    /// never be reinterpreted as ordinary work-coordinate motion. G53 means the block is in
+    /// machine coordinates, so a stripped G53 with "Z-1" still on the line turns a retract
+    /// into a work-coordinate G0 Z-1 - on a PCB job work Z0 is the copper surface, which
+    /// makes that a rapid 1mm into the board.
     /// </summary>
     public class GCodeParserPassThroughTests
     {
@@ -30,7 +29,6 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>The emitted program must not contain a work-coordinate move to the G53 depth.</summary>
         [Theory]
         [InlineData("G53 G0 Z-1")]
         [InlineData("G53 G0 X0 Y0")]
@@ -42,8 +40,8 @@ namespace coppercli.Tests
         {
             var file = ParseLines("G21", "G90", "G0 X0 Y0 Z5", line);
 
-            // Any G0/G1 the parser emits must come from our own setup line, not from the
-            // axis words of the non-motion block.
+            // Any G0/G1 the parser emits must come from the setup line, not from the axis
+            // words of the non-motion block.
             var motionLines = file.GetGCode()
                 .Where(l => l.StartsWith("G0 ") || l.StartsWith("G1 ") ||
                             l == "G0" || l == "G1")
@@ -59,7 +57,7 @@ namespace coppercli.Tests
             });
         }
 
-        /// <summary>The block must survive verbatim — losing a safety retract is also unsafe.</summary>
+        /// <summary>Dropping the block rather than re-emitting it loses a safety retract.</summary>
         [Fact]
         public void G53Retract_IsPreservedVerbatim()
         {
@@ -69,11 +67,10 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// After a block we could not model, the machine is somewhere we cannot compute.
-        /// The file's own recovery move must survive intact. When the parser believed Z was
-        /// still where it had been before the G53, "G0 Z5" looked like a move to where the
-        /// tool already was and was deleted, leaving the next cut to run at the retract
-        /// depth.
+        /// After a block the parser cannot model, the tool position is unknown, so the file's
+        /// own recovery move has to survive. Carrying the pre-G53 Z forward makes "G0 Z5" look
+        /// like a move to where the tool already is, and deleting it leaves the next cut at
+        /// the retract depth.
         /// </summary>
         [Fact]
         public void RecoveryMoveAfterG53_IsNotDeletedAsZeroLength()
@@ -85,15 +82,13 @@ namespace coppercli.Tests
                 "G0 Z5",
                 "G1 X10 Y10 F100");
 
-            // Three motions must survive: the setup move, the recovery, and the cut.
-            // The recovery move is the one that must survive.
+            // The three motions are the setup move, the recovery, and the cut.
             var motions = file.Toolpath.OfType<Line>().ToList();
 
             Assert.Equal(3, motions.Count);
             Assert.Contains(motions, m => !m.StartTrusted);
         }
 
-        /// <summary>A genuine no-op move is still dropped when we do know the start.</summary>
         [Fact]
         public void ZeroLengthMoveWithKnownStart_IsStillDropped()
         {

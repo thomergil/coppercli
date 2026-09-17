@@ -7,9 +7,9 @@ import { load } from './dom-stub.mjs';
 
 const constants = await load('constants.js');
 
-// Read from the module, not listed here: a list would need editing alongside every new
-// outcome, which is the omission this test exists to catch. TEXT_ZEROED_* are the words for
-// the axes and start with a different prefix.
+// Read from the module rather than listed here: a list would need editing alongside every new
+// outcome, which is the omission this test catches. TEXT_ZEROED_* are the words for the axes
+// and start with a different prefix.
 const outcomes = Object.entries(constants).filter(([name]) => name.startsWith('ZEROED_'));
 
 test('every height map outcome has words', () => {

@@ -1,5 +1,3 @@
-// coppercli Web UI DOM Helpers
-
 import { state } from './state.js';
 import {
     JOG_TOUCH_REPEAT_MS,
@@ -12,7 +10,6 @@ import {
     API_CONSTANTS,
     PROMPT_OPTION_CONTINUE,
     PROMPT_OPTION_ABORT,
-    // Duplicated constants (validated against server)
     PROBE_STATE_NONE,
     PROBE_STATE_READY,
     PROBE_STATE_PARTIAL,
@@ -91,7 +88,6 @@ import {
     ZEROED_FILE_LEFT_ALONE,
 } from './constants.js';
 
-// Get element by ID with null safety
 /**
  * Fill a `{0}`-style template. The text lives in constants.js; this puts the values in, so
  * no module writes a sentence at the point of use.
@@ -104,31 +100,26 @@ export function $(id) {
     return document.getElementById(id);
 }
 
-// Set text content safely
 export function setText(id, text) {
     const el = $(id);
     if (el) el.textContent = text;
 }
 
-// Toggle class on element
 export function toggleClass(id, className, enabled) {
     const el = $(id);
     if (el) el.classList.toggle(className, enabled);
 }
 
-// Add class to element
 export function addClass(id, className) {
     const el = $(id);
     if (el) el.classList.add(className);
 }
 
-// Remove class from element
 export function removeClass(id, className) {
     const el = $(id);
     if (el) el.classList.remove(className);
 }
 
-// Update pause/resume button state (sets data-paused, innerHTML, and optional classes)
 export function updatePauseButton(btn, isPaused, pauseClass = null, resumeClass = null) {
     if (!btn) return;
     btn.dataset.paused = isPaused;
@@ -162,12 +153,10 @@ export async function postJson(url, body = null) {
     }
 }
 
-// Check if WebSocket is ready
 export function isWsReady() {
     return state.ws && state.ws.readyState === WebSocket.OPEN;
 }
 
-// Add touch-repeat behavior to a button (for jog buttons)
 export function addTouchRepeat(btn, action) {
     let interval = null;
     const clear = () => {
@@ -218,7 +207,6 @@ export function whileBusy(btn, busyText) {
     };
 }
 
-// Toast notifications (DRY helper)
 function showToast(message, type, duration) {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -243,13 +231,14 @@ export function showInfo(message) {
 /** The question currently on screen, so a second one does not strand it. */
 let pendingConfirm = null;
 
-// Confirm dialog (replaces browser confirm())
-// Returns a Promise that resolves to true (yes) or false (no)
-// Options: { danger: true } adds warning styling (red text, warning icon)
+/**
+ * Asks the operator, in place of the browser's own confirm(). `options.danger` adds the
+ * warning icon and the red text.
+ */
 export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
     return new Promise((resolve) => {
         // One modal and one pair of buttons, so a second question overwrites the first's
-        // handlers. Answered false first, or the first promise never settles.
+        // handlers. The first is answered false here, or its promise never settles.
         if (pendingConfirm) {
             const stranded = pendingConfirm;
             pendingConfirm = null;
@@ -263,7 +252,6 @@ export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
         const yesBtn = $('confirm-yes-btn');
         const noBtn = $('confirm-no-btn');
 
-        // Apply danger styling if requested
         titleEl.textContent = title;
         if (options.danger) {
             messageEl.innerHTML = '⚠️ ' + escapeMarkup(message);
@@ -288,17 +276,14 @@ export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
     });
 }
 
-/**
- * Shared file browser component. Handles rendering, navigation, selection, and double-tap.
- * Used by both G-code file browser and probe file browser.
- */
+/** The file list for both the G-code browser and the probe browser. */
 export class FileBrowser {
     /**
      * @param {Object} config
      * @param {string} config.listElementId - ID of the list container element
      * @param {string} config.pathElementId - ID of the path display element
      * @param {string} config.apiEndpoint - API endpoint for fetching files
-     * @param {string} config.fileIcon - Icon for files (default: '📄')
+     * @param {string} config.fileIcon - Icon for files
      * @param {string} config.metaField - Which field to show as meta ('size' or 'modified')
      * @param {Function} config.onFileSelect - Called when file is selected (path)
      * @param {Function} config.onFileLoad - Called on double-tap to load file (path)
@@ -369,7 +354,6 @@ export class FileBrowser {
         });
     }
 
-    // Handle file load action (dblclick on desktop, double-tap on touch)
     _handleFileLoad(e, item) {
         e.preventDefault();
         this._selectItem(item);
@@ -382,13 +366,12 @@ export class FileBrowser {
         const isFile = item.dataset.isdir !== 'true';
         const now = Date.now();
 
-        // Double-tap detection for touch devices
+        // Touch fires no dblclick, so a second tap is timed instead.
         if (isFile && this._lastTapItem === item && (now - this._lastTapTime) < DOUBLE_TAP_DELAY_MS) {
             this._handleFileLoad(e, item);
             this._lastTapTime = 0;
             this._lastTapItem = null;
         } else {
-            // Single click
             if (item.dataset.isdir === 'true') {
                 this.load(item.dataset.path);
             } else {
@@ -416,9 +399,8 @@ export class FileBrowser {
 }
 
 /**
- * Validate that duplicated JS constants match server values.
- * Called during app initialization to catch mismatches early.
- * Only logs warnings - doesn't break functionality.
+ * Compares the constants duplicated here against the server's own. A mismatch is logged
+ * and nothing else.
  */
 export async function validateConstants() {
     try {
@@ -427,14 +409,12 @@ export async function validateConstants() {
 
         const mismatches = [];
 
-        // Helper to check and report mismatch
         const check = (jsValue, serverValue, name) => {
             if (jsValue !== serverValue) {
                 mismatches.push(`${name}: JS="${jsValue}" server="${serverValue}"`);
             }
         };
 
-        // Probe states
         if (server.probeStates) {
             check(PROBE_STATE_NONE, server.probeStates.none, 'PROBE_STATE_NONE');
             check(PROBE_STATE_READY, server.probeStates.ready, 'PROBE_STATE_READY');
@@ -456,20 +436,17 @@ export async function validateConstants() {
             }
         }
 
-        // Depth adjustment actions
         if (server.depthActions) {
             check(DEPTH_ACTION_INCREASE, server.depthActions.increase, 'DEPTH_ACTION_INCREASE');
             check(DEPTH_ACTION_DECREASE, server.depthActions.decrease, 'DEPTH_ACTION_DECREASE');
             check(DEPTH_ACTION_RESET, server.depthActions.reset, 'DEPTH_ACTION_RESET');
         }
 
-        // Display decimals
         if (server.decimals) {
             check(POSITION_DECIMALS_BRIEF, server.decimals.brief, 'POSITION_DECIMALS_BRIEF');
             check(POSITION_DECIMALS_FULL, server.decimals.full, 'POSITION_DECIMALS_FULL');
         }
 
-        // Visualization thresholds
         if (server.thresholds) {
             check(HEIGHT_RANGE_EPSILON, server.thresholds.heightRangeEpsilon, 'HEIGHT_RANGE_EPSILON');
             check(MILL_MIN_RANGE_THRESHOLD, server.thresholds.millMinRange, 'MILL_MIN_RANGE_THRESHOLD');
@@ -501,7 +478,6 @@ export async function validateConstants() {
                 'ZEROED_FILE_LEFT_ALONE');
         }
 
-        // What the machine is doing
         if (server.machineActivities) {
             check(MACHINE_ACTIVITY_DOOR_OPEN, server.machineActivities.doorOpen, 'MACHINE_ACTIVITY_DOOR_OPEN');
             check(MACHINE_ACTIVITY_DOOR_HOLDING, server.machineActivities.doorHolding,
@@ -510,7 +486,6 @@ export async function validateConstants() {
                 'MACHINE_ACTIVITY_DOOR_RESUMING');
         }
 
-        // Controller states
         if (server.controllerStates) {
             check(CONTROLLER_STATE_IDLE, server.controllerStates.idle, 'CONTROLLER_STATE_IDLE');
             check(CONTROLLER_STATE_INITIALIZING, server.controllerStates.initializing, 'CONTROLLER_STATE_INITIALIZING');
@@ -529,14 +504,12 @@ export async function validateConstants() {
             check(PROMPT_OPTION_ABORT, server.promptOptions.abandon, 'PROMPT_OPTION_ABORT');
         }
 
-        // Workflow phases
         if (server.phases) {
             check(PHASE_MILLING, server.phases.milling, 'PHASE_MILLING');
             check(PHASE_TRACING_OUTLINE, server.phases.tracingOutline, 'PHASE_TRACING_OUTLINE');
             check(PHASE_WAITING_FOR_ZERO_Z, server.phases.waitingForZeroZ, 'PHASE_WAITING_FOR_ZERO_Z');
         }
 
-        // WebSocket commands
         if (server.commands) {
             check(CMD_PING, server.commands.ping, 'CMD_PING');
             check(CMD_JOG_MODE, server.commands.jogMode, 'CMD_JOG_MODE');
@@ -553,7 +526,6 @@ export async function validateConstants() {
             check(CMD_PROBE_Z, server.commands.probeZ, 'CMD_PROBE_Z');
         }
 
-        // WebSocket message types
         if (server.wsMessageTypes) {
             check(MSG_TYPE_STATUS, server.wsMessageTypes.status, 'MSG_TYPE_STATUS');
             check(MSG_TYPE_MILL_STATE, server.wsMessageTypes.millState, 'MSG_TYPE_MILL_STATE');
@@ -569,7 +541,6 @@ export async function validateConstants() {
             check(MSG_TYPE_CONNECTION_ERROR, server.wsMessageTypes.connectionError, 'MSG_TYPE_CONNECTION_ERROR');
         }
 
-        // WebSocket close reasons
         if (server.wsCloseReasons) {
             check(WS_CLOSE_REASON_FORCE_DISCONNECT, server.wsCloseReasons.forceDisconnect, 'WS_CLOSE_REASON_FORCE_DISCONNECT');
         }
@@ -579,7 +550,6 @@ export async function validateConstants() {
             mismatches.forEach(m => console.warn('  ' + m));
         }
     } catch (err) {
-        // Non-fatal - constants validation is optional
         console.debug('Could not validate constants:', err.message);
     }
 }

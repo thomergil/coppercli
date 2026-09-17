@@ -1,5 +1,3 @@
-// Extracted from Program.cs
-
 using System.Threading;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
@@ -14,8 +12,8 @@ using static coppercli.Helpers.DisplayHelpers;
 namespace coppercli.Menus
 {
     /// <summary>
-    /// Probe menu for grid probing workflow.
-    /// Uses ProbeController for actual probing operations.
+    /// The grid-probing screen. It starts `ProbeController` on a task and then polls: the
+    /// controller runs the probe, this file draws the grid and reads the keyboard.
     /// </summary>
     internal static class ProbeMenu
     {
@@ -36,12 +34,11 @@ namespace coppercli.Menus
         private static UserInputRequest? _pendingPrompt;
 
         /// <summary>
-        /// The run's last progress update. The controller supplies the wording, and this
-        /// screen draws it instead of deriving it from the machine status.
+        /// The run's last progress update. The controller supplies the wording, which this
+        /// screen draws rather than deriving it from the machine status.
         /// </summary>
         private static ProgressInfo? _latestProgress;
 
-        // Controller task for async probing
         private static Task? _probeTask;
         private static CancellationTokenSource? _probeCts;
 
@@ -56,9 +53,8 @@ namespace coppercli.Menus
 
             try
             {
-                // Load probe data from disk if needed (e.g., after server restart)
-                // Shown rather than dropped: a map left on disk because a run owns the file
-                // is a different thing to the operator from no map at all.
+                // A map left on disk, by a server restart or a run holding the file, is
+                // reported rather than dropped silently.
                 string? notAdopted = AppState.EnsureProbeDataLoaded();
                 if (notAdopted != null)
                 {
@@ -121,7 +117,7 @@ namespace coppercli.Menus
                         case ProbeAction.ContinueProbing:
                             if (ContinueProbing())
                             {
-                                return; // Milling completed, return to main menu
+                                return;
                             }
                             break;
                         case ProbeAction.ClearProbeData:
@@ -129,7 +125,7 @@ namespace coppercli.Menus
                             break;
                         case ProbeAction.ClearAndStartProbing:
                             // Asked before the discard, so a partial probe is not lost only
-                            // to find that probing cannot start.
+                            // for probing to turn out to be blocked.
                             if (ProbingIsBlocked())
                             {
                                 break;
@@ -142,19 +138,19 @@ namespace coppercli.Menus
 
                             if (StartProbing())
                             {
-                                return; // Milling completed, return to main menu
+                                return;
                             }
                             break;
                         case ProbeAction.StartProbing:
                             if (StartProbing())
                             {
-                                return; // Milling completed, return to main menu
+                                return;
                             }
                             break;
                         case ProbeAction.LoadFromFile:
                             if (LoadProbeGrid())
                             {
-                                return; // Complete grid loaded, return to main menu
+                                return;
                             }
                             break;
                         case ProbeAction.RecoverAutosave:
@@ -181,22 +177,18 @@ namespace coppercli.Menus
         {
             var menu = new MenuDef<ProbeAction>();
 
-            // Show Save prominently at top when there's unsaved complete probe data
             if (hasUnsaved)
             {
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuSaveUnsaved, 's', ProbeAction.SaveToFile));
-                // Unsaved complete data: "Discard" since work would be lost
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscard, 'x', ProbeAction.ClearProbeData));
             }
 
             if (hasIncomplete)
             {
-                // Partial state: Continue, Discard, or Discard+Start
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuContinue, 'c', ProbeAction.ContinueProbing,
                     Blocker: MenuHelpers.GetProbeDisabledReason));
-                if (!hasUnsaved)  // Don't duplicate Discard
+                if (!hasUnsaved)  // Discard is already on the menu above
                 {
-                    // Partial data: "Discard" since work would be lost
                     menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscard, 'x', ProbeAction.ClearProbeData));
                 }
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuDiscardAndStart, 'p', ProbeAction.ClearAndStartProbing,
@@ -204,15 +196,14 @@ namespace coppercli.Menus
             }
             else
             {
-                // None or Complete state: Start new probing
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuStart, 'p', ProbeAction.StartProbing,
                     Blocker: MenuHelpers.GetProbeDisabledReason));
             }
 
             menu.Add(new MenuItem<ProbeAction>(ProbeMenuLoad, 'l', ProbeAction.LoadFromFile));
 
-            // Recover is offered only for a map this job can use, which is the check
-            // ForceLoadProbeFromAutosave applies.
+            // Recover is offered only for a map this job can use, the same check
+            // `ForceLoadProbeFromAutosave` applies.
             if (AppState.ReadUsableAutosave() != null)
             {
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuRecover, 'r', ProbeAction.RecoverAutosave,
@@ -221,7 +212,6 @@ namespace coppercli.Menus
 
             bool hasComplete = ProbeGrid.StateOf(AppState.CurrentProbeGrid) == ProbeDataState.Complete;
 
-            // Show Save option (if not already shown as prominent unsaved option)
             if (hasComplete && !hasUnsaved)
             {
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuSave, 's', ProbeAction.SaveToFile));
@@ -239,9 +229,9 @@ namespace coppercli.Menus
 
         /// <summary>A map for this job with points still to measure.</summary>
         internal static bool HasIncompleteProbeData() =>
-            // The map ContinueProbing will act on: the one in memory, or the autosave when
-            // nothing is loaded. Asked of the autosave alone, a partial map loaded from a
-            // file offered no way to resume it.
+            // `CurrentProbeGrid` is what ContinueProbing acts on: the map in memory, or the
+            // autosave when nothing is loaded. The autosave alone would not resume a map
+            // loaded from a file.
             ProbeGrid.StateOf(AppState.CurrentProbeGrid) is ProbeDataState.Partial or ProbeDataState.Ready;
 
         /// <summary>An autosaved map for this job that the operator has not saved.</summary>
@@ -250,7 +240,7 @@ namespace coppercli.Menus
 
         /// <summary>
         /// Whether probing is blocked right now, showing the reason if it is. The menu's
-        /// enabled state is a snapshot from when it was drawn, so every action asks again.
+        /// enabled state is from when it was drawn, so every action checks again.
         /// </summary>
         private static bool ProbingIsBlocked()
         {
@@ -278,10 +268,8 @@ namespace coppercli.Menus
             return true;
         }
 
-        /// <summary>
-        /// Load probe grid from file. Returns true if a complete grid was loaded
-        /// (caller should exit to main menu), false otherwise.
-        /// </summary>
+        /// <returns>True when a complete grid was loaded, which sends the caller back to
+        /// the main menu.</returns>
         private static bool LoadProbeGrid()
         {
             var path = FileMenu.BrowseForProbeGridFile();
@@ -292,8 +280,8 @@ namespace coppercli.Menus
 
             try
             {
-                // The one place a probe grid is loaded (it reloads the original G-code first if a
-                // grid was already applied, so this grid is not applied on top of the old one).
+                // `LoadProbeGridFromFile` reloads the original G-code first where a grid was
+                // already applied, so this grid is not applied on top of the old one.
                 var (grid, refused) = AppState.LoadProbeGridFromFile(path);
                 if (grid == null)
                 {
@@ -301,7 +289,6 @@ namespace coppercli.Menus
                     return false;
                 }
 
-                // Update probe browse directory (separate from G-code browse directory)
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
                 {
@@ -312,7 +299,6 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusLoaded}[/]");
                 AnsiConsole.WriteLine(grid.GetInfo());
 
-                // If complete, auto-apply and return to main menu
                 if (grid.HasCompleteData)
                 {
                     string? notApplied = AppState.ApplyProbeData();
@@ -326,7 +312,6 @@ namespace coppercli.Menus
                     return true;
                 }
 
-                // Incomplete: stay in probe menu
                 return false;
             }
             catch (Exception ex)
@@ -362,10 +347,7 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusAppliedSuccess}[/]");
         }
 
-        /// <summary>
-        /// Continues an interrupted probing session using ProbeController.
-        /// </summary>
-        /// <returns>True if milling was performed (caller should exit to main menu).</returns>
+        /// <returns>True when milling ran, which sends the caller back to the main menu.</returns>
         internal static bool ContinueProbing()
         {
             if (ProbingIsBlocked())
@@ -373,7 +355,6 @@ namespace coppercli.Menus
                 return false;
             }
 
-            // Auto-load from autosave if needed
             string? notAdopted = AppState.EnsureProbeDataLoaded();
             if (notAdopted != null)
             {
@@ -401,10 +382,7 @@ namespace coppercli.Menus
             return RunProbeController(probePoints, traceOutline: false);
         }
 
-        /// <summary>
-        /// Starts a new probing session using ProbeController.
-        /// </summary>
-        /// <returns>True if milling was performed (caller should exit to main menu).</returns>
+        /// <returns>True when milling ran, which sends the caller back to the main menu.</returns>
         private static bool StartProbing()
         {
             if (ProbingIsBlocked())
@@ -437,7 +415,6 @@ namespace coppercli.Menus
                 return false;
             }
 
-            // Warn if in network mode and sleep prevention unavailable
             if (SleepPrevention.ShouldWarn())
             {
                 var proceed = MenuHelpers.ConfirmOrQuit(
@@ -452,22 +429,16 @@ namespace coppercli.Menus
             return RunProbeController(AppState.ProbePoints!, traceOutline: traceChoice == true);
         }
 
-        /// <summary>
-        /// Runs the ProbeController with the given grid.
-        /// Handles async controller with synchronous TUI input loop.
-        /// </summary>
         private static bool RunProbeController(ProbeGrid grid, bool traceOutline)
         {
             var controller = AppState.Probe;
             var settings = AppState.Settings;
 
-            // Configure controller options
             controller.Options = ProbeOptions.FromSettings(settings, traceOutline);
 
-            // Load the grid into controller (same object reference - updates in place)
+            // The controller fills this same object as it probes; the draw loop reads it.
             controller.LoadGrid(grid);
 
-            // Wire up event handlers
             _pendingPrompt = null;
             _latestProgress = null;
             controller.PointCompleted += OnPointCompleted;
@@ -476,7 +447,6 @@ namespace coppercli.Menus
             controller.ErrorOccurred += OnErrorOccurred;
             controller.UserInputRequired += OnUserInputRequired;
 
-            // Start sleep prevention
             SleepPrevention.Start();
 
             _probeCts = new CancellationTokenSource();
@@ -485,15 +455,12 @@ namespace coppercli.Menus
 
             try
             {
-                // Start controller async
                 _probeTask = controller.StartAsync(_probeCts.Token);
 
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]{ProbeStatusStarted}[/]");
 
-                // Poll for completion with UI updates
                 WaitForProbeComplete(controller, grid);
 
-                // Check final state
                 completed = controller.State == ControllerState.Completed;
                 cancelled = controller.State == ControllerState.Cancelled;
             }
@@ -507,7 +474,6 @@ namespace coppercli.Menus
             }
             finally
             {
-                // Cleanup
                 controller.PointCompleted -= OnPointCompleted;
                 controller.PhaseChanged -= OnPhaseChanged;
                 controller.ProgressChanged -= OnProgressChanged;
@@ -539,7 +505,6 @@ namespace coppercli.Menus
 
             if (completed)
             {
-                // Probe data is in autosave, ready for user to save or discard
                 ShowProbeResults();
                 if (MenuHelpers.ConfirmOrQuit(ProbePromptApply, true) == true)
                 {
@@ -551,20 +516,17 @@ namespace coppercli.Menus
             return false;
         }
 
-        /// <summary>
-        /// Waits for probing to complete, handling ESC/Space keys and UI updates.
-        /// </summary>
         private static void WaitForProbeComplete(ProbeController controller, ProbeGrid grid)
         {
             int lastProgress = -1;
 
-            // What the loop last painted over the grid, so it knows when to take it off.
+            // The message this loop last painted over the grid, which marks when the grid
+            // underneath needs redrawing.
             string? shownOperatorMessage = null;
             bool wasPaused = false;
 
             while (controller.IsRunInProgress)
             {
-                // Check for key presses
                 if (Console.KeyAvailable)
                 {
                     var key = Console.ReadKey(true);
@@ -574,20 +536,17 @@ namespace coppercli.Menus
                         _probeCts?.Cancel();
                         AnsiConsole.MarkupLine($"\n[{ColorWarning}]{ProbeStatusStopping}[/]");
 
-                        // Wait for controller to stop
                         try
                         {
                             _probeTask?.Wait(TimeSpan.FromMilliseconds(Constants.ControllerCancelTimeoutMs));
                         }
                         catch
                         {
-                            // Ignore
                         }
                         break;
                     }
                     else if (InputHelpers.IsKey(key, ConsoleKey.Spacebar))
                     {
-                        // Toggle pause/resume
                         if (controller.State == ControllerState.Running)
                         {
                             controller.Pause();
@@ -608,7 +567,8 @@ namespace coppercli.Menus
                     DrawProbeMatrix(grid);
                 }
 
-                // A prompt from the run, drawn here because this loop owns the screen.
+                // The run leaves its prompt in `_pendingPrompt`; only this loop writes to
+                // the screen, so it draws the overlay.
                 var request = Interlocked.Exchange(ref _pendingPrompt, null);
                 if (request != null)
                 {
@@ -620,8 +580,8 @@ namespace coppercli.Menus
                     continue;
                 }
 
-                // The box is painted over the grid, so this loop takes it off again: the run does
-                // not redraw until it has retracted and traversed to the next point.
+                // The overlay covers the grid, and the run does not redraw until it has
+                // retracted and traversed, so this loop restores the grid itself.
                 var progress = Volatile.Read(ref _latestProgress);
                 string? operatorMessage =
                     progress?.Phase == ControllerConstants.PhaseWaitingForOperator
@@ -643,7 +603,7 @@ namespace coppercli.Menus
                     }
                 }
 
-                // Show paused state change, including a pause the height check raised on its own
+                // Includes a pause the height check raised without a keypress.
                 bool isPaused = controller.IsPaused;
                 if (isPaused && !wasPaused)
                 {
@@ -654,7 +614,6 @@ namespace coppercli.Menus
                 Thread.Sleep(StatusPollIntervalMs);
             }
 
-            // Final draw
             if (grid.HasCompleteData)
             {
                 DrawProbeMatrix(grid);
@@ -663,7 +622,6 @@ namespace coppercli.Menus
 
         private static void OnPointCompleted(int index, Vector2 coords, double z)
         {
-            // Autosave progress
             Persistence.SaveProbeProgress();
             Logger.Log($"Probe point {index + 1} complete: ({coords.X:F3}, {coords.Y:F3}) Z={z:F3}");
         }
@@ -681,7 +639,7 @@ namespace coppercli.Menus
         private static void OnProgressChanged(ProgressInfo progress)
         {
             // Point progress is drawn from the grid itself. This is kept for the one thing
-            // the grid does not hold: whether the run is waiting on the operator.
+            // the grid does not carry: whether the run is waiting on the operator.
             Volatile.Write(ref _latestProgress, progress);
         }
 
@@ -719,14 +677,12 @@ namespace coppercli.Menus
             }
         }
 
-        // ANSI escape for RGB foreground color
         private static string AnsiRgb(int r, int g, int b) => $"\x1b[38;2;{r};{g};{b}m";
 
         private static void DrawProbeMatrix(ProbeGrid probePoints)
         {
-            // A snapshot: this runs on the UI thread while probing removes points on
-            // another, so enumerating the live queue would throw and abandon the run
-            // partway through.
+            // This runs on the UI thread while probing removes points on another, so
+            // enumerating the live queue would throw and abandon the run partway through.
             var unprobed = new HashSet<(int, int)>(probePoints.SnapshotRemaining());
 
             var (winWidth, winHeight) = GetSafeWindowSize();
@@ -740,7 +696,6 @@ namespace coppercli.Menus
             int leftPadding = Math.Max(0, (winWidth - matrixWidth) / 2);
             string pad = new string(' ', leftPadding);
 
-            // Get height range for color mapping
             double minZ = probePoints.MinHeight;
             double maxZ = probePoints.MaxHeight;
             double rangeZ = maxZ - minZ;
@@ -756,12 +711,11 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorBold}]{header}[/]");
             AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]{ProbeDisplayEscapeStop}[/]");
 
-            // Show color legend when we have a range
             if (hasRange)
             {
-                var (rLow, gLow, bLow) = HeightGradient.Colour(0.0);
-                var (rMid, gMid, bMid) = HeightGradient.Colour(0.5);
-                var (rHigh, gHigh, bHigh) = HeightGradient.Colour(1.0);
+                var (rLow, gLow, bLow) = HeightGradient.Color(0.0);
+                var (rMid, gMid, bMid) = HeightGradient.Color(0.5);
+                var (rHigh, gHigh, bHigh) = HeightGradient.Color(1.0);
                 double midZ = (minZ + maxZ) / 2;
                 string legend = $"{AnsiRgb(rLow, gLow, bLow)}██{AnsiReset} {minZ:F3}  " +
                                 $"{AnsiRgb(rMid, gMid, bMid)}██{AnsiReset} {midZ:F3}  " +
@@ -779,7 +733,6 @@ namespace coppercli.Menus
                 line.Append(pad);
                 for (int x = 0; x < probePoints.SizeX; x += stepX)
                 {
-                    // Get average height of probed points in this cell
                     double heightSum = 0;
                     int heightCount = 0;
                     bool hasUnprobed = false;
@@ -808,15 +761,13 @@ namespace coppercli.Menus
 
                     if (hasUnprobed || heightCount == 0)
                     {
-                        // Unprobed - dim dots
                         line.Append(AnsiDim).Append("··").Append(AnsiReset);
                     }
                     else
                     {
-                        // Probed - color based on height
                         double avgHeight = heightSum / heightCount;
                         double t = hasRange ? (avgHeight - minZ) / rangeZ : 0.5;
-                        var (r, g, b) = HeightGradient.Colour(t);
+                        var (r, g, b) = HeightGradient.Color(t);
                         line.Append(AnsiRgb(r, g, b)).Append("██").Append(AnsiReset);
                     }
                 }
@@ -845,25 +796,20 @@ namespace coppercli.Menus
             PromptSaveProbeData();
         }
 
-        /// <summary>
-        /// Prompts user to save probe data to a file using the file browser.
-        /// Can be called after probing completes or from the menu.
-        /// </summary>
         private static void PromptSaveProbeData()
         {
             var session = AppState.Session;
             var currentFile = AppState.CurrentFile;
 
-            // The map the Save entry was offered for: the one in memory, or the autosave
-            // when nothing is loaded. Asked of ProbePoints alone, a Save the menu offered
-            // for an autosaved map was refused as having nothing to save.
+            // `CurrentProbeGrid` is the map the Save entry was offered for: the one in
+            // memory, or the autosave when nothing is loaded. `ProbePoints` alone reports
+            // nothing to save for an autosaved map the menu has just offered to save.
             if (ProbeGrid.StateOf(AppState.CurrentProbeGrid) != ProbeDataState.Complete)
             {
                 MenuHelpers.ShowError(ProbeErrorNoComplete);
                 return;
             }
 
-            // Generate default filename based on G-code file or timestamp
             string defaultFilename;
             if (currentFile != null && !string.IsNullOrEmpty(currentFile.FileName))
             {
@@ -874,7 +820,6 @@ namespace coppercli.Menus
                 defaultFilename = DateTime.Now.ToString(ProbeDateFormat) + ProbeGridExtension;
             }
 
-            // Use file browser to select save location
             var path = FileMenu.BrowseForSaveLocation(
                 ProbeGridExtensions,
                 defaultFilename,
@@ -887,7 +832,6 @@ namespace coppercli.Menus
                 return;
             }
 
-            // Confirm overwrite if file exists
             if (File.Exists(path))
             {
                 if (!MenuHelpers.Confirm(string.Format(ProbeFormatOverwrite, Path.GetFileName(path)), true))
@@ -898,12 +842,10 @@ namespace coppercli.Menus
                 }
             }
 
-            // Move autosave to user's chosen location
             if (Persistence.SaveProbeToFile(path))
             {
                 AnsiConsole.MarkupLine($"[{ColorSuccess}]{string.Format(ProbeFormatSaved, Markup.Escape(path))}[/]");
 
-                // Update last probe browse directory
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
                 {
@@ -919,10 +861,7 @@ namespace coppercli.Menus
             }
         }
 
-        /// <summary>
-        /// Offers to start milling if conditions are met.
-        /// </summary>
-        /// <returns>True if milling was performed.</returns>
+        /// <returns>True when milling ran.</returns>
         private static bool OfferToMill()
         {
             var currentFile = AppState.CurrentFile;

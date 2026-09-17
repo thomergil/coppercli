@@ -12,110 +12,38 @@ using static coppercli.Core.Util.GCodeFormat;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Controller for grid probing workflow.
-    /// Handles creating grid, moving to points, probing, and recording results.
-    /// Uses IMachine interface to enable unit testing with mocks.
+    /// Drives a grid probe: create or load the grid, move to each point, probe, record.
     /// </summary>
     /// <remarks>
-    /// <para><b>Probe Data Lifecycle - 4-State Model</b></para>
+    /// <para><b>Probe data lifecycle.</b> What the screens offer follows how much of the
+    /// current grid is measured - the grid in memory, or the autosave when nothing is loaded
+    /// and it was measured for this file and origin (<c>AppState.ReadUsableAutosave</c>).
+    /// <c>ProbeGrid.State</c>, and <c>ProbeGrid.StateOf(grid)</c> where there may be no grid,
+    /// give that answer: none, ready, partial or complete. Nothing else computes it; the web
+    /// server only names the wire spelling.</para>
     ///
-    /// <para>UI state is determined by how much of the current grid is measured: the one in
-    /// memory, or the autosave when nothing is loaded and it matches the current file and
-    /// origin (<c>AppState.ReadUsableAutosave</c>). Whether an autosave exists decides Save
-    /// vs Clear.</para>
+    /// <para>Progress counts points taken off the queue, and a skipped probe takes one off
+    /// too, so a map with a skipped point reaches progress = total without being complete. Ask
+    /// whether every node is measured, never whether the count matches.</para>
     ///
-    /// <para><b>State Machine (see <see cref="ProbeGrid.State"/>):</b></para>
-    /// <code>
-    /// ┌─────────────────────────────────────────────────────────────────────────┐
-    /// │  STATE     │ CONDITION              │ START BUTTON   │ SAVE/DISCARD    │
-    /// ├────────────┼────────────────────────┼────────────────┼─────────────────┤
-    /// │  none      │ no grid                │ disabled       │ disabled        │
-    /// │  ready     │ grid, nothing measured │ [Start]        │ disabled        │
-    /// │  partial   │ some node unmeasured   │ [Continue]     │ [Discard]*      │
-    /// │  complete  │ every node measured    │ disabled       │ [Save]*/[Clear] │
-    /// └─────────────────────────────────────────────────────────────────────────┘
-    /// * Only if hasUnsavedData (a usable autosave exists)
-    ///
-    /// Measured, never counted: Progress counts points taken off the queue, which a skipped
-    /// probe also does, so a map with a skipped point reaches progress = total and is not
-    /// complete.
-    /// </code>
-    ///
-    /// <para><b>State Transitions:</b></para>
-    /// <code>
-    ///     ┌─────────────────┐
-    ///     │ none            │  No grid in memory
-    ///     │ [Start disabled]│
-    ///     └────────┬────────┘
-    ///              │ Setup Grid
-    ///              ▼
-    ///     ┌─────────────────┐
-    ///     │ ready           │  Grid exists, progress=0
-    ///     │ [Start enabled] │
-    ///     └────────┬────────┘
-    ///              │ Start Probing (first point creates autosave)
-    ///              ▼
-    ///     ┌─────────────────┐
-    ///     │ partial         │◄────┐  0 &lt; progress &lt; total
-    ///     │ [Continue]      │     │  (each point updates autosave)
-    ///     └────────┬────────┘     │
-    ///              │ Continue ────┘
-    ///              │ All points probed
-    ///              ▼
-    ///     ┌─────────────────┐
-    ///     │ complete        │  every node measured
-    ///     │ [Save]/[Clear]  │
-    ///     └────────┬────────┘
-    ///              │ Save/Discard/Clear
-    ///              ▼
-    ///     ┌─────────────────┐
-    ///     │ none            │
-    ///     └─────────────────┘
-    /// </code>
-    ///
-    /// <para><b>hasUnsavedData (determines Save vs Clear):</b></para>
-    /// <list type="bullet">
-    ///   <item>true: a usable autosave exists (data from probing) → Show Save/Discard</item>
-    ///   <item>false: no usable autosave (loaded from file) → Show Clear</item>
-    /// </list>
-    ///
-    /// <para><b>Implementation:</b></para>
-    /// <list type="bullet">
-    ///   <item><c>ProbeGrid.State</c>, and <c>ProbeGrid.StateOf(grid)</c> where there may be
-    ///   no map - the one answer to how much of a map is measured. The web server names the
-    ///   wire spelling; nothing else computes the state.</item>
-    ///   <item><c>AppState.ReadUsableAutosave()</c> - The autosave, if it was measured for
-    ///   this file and origin. Sets hasUnsavedData and is used when nothing is loaded.</item>
-    ///   <item><c>Persistence.SaveProbeProgress()</c> - Updates autosave after each point.</item>
-    ///   <item><c>Persistence.SaveProbeToFile(path)</c> - Writes the map to the operator's
-    ///   file, takes it on if it lived only in the autosave, then deletes the autosave.</item>
-    ///   <item><c>Persistence.ClearProbeAutoSave()</c> - Deletes autosave.</item>
-    /// </list>
+    /// <para>The first probed point writes the autosave and every point after it updates it
+    /// (<c>Persistence.SaveProbeProgress</c>). Whether a usable autosave exists is what decides
+    /// Save/Discard against Clear: <c>Persistence.SaveProbeToFile(path)</c> writes the map to
+    /// the operator's file, adopts it if it existed only in the autosave, then deletes the
+    /// autosave, while <c>Persistence.ClearProbeAutoSave()</c> deletes it on its own.</para>
     /// </remarks>
     public class ProbeController : ControllerBase, IProbeController
     {
-        // =========================================================================
-        // Dependencies
-        // =========================================================================
-
         private readonly IMachine _machine;
 
         /// <inheritdoc/>
         protected override IMachine Machine => _machine;
-
-        // =========================================================================
-        // State
-        // =========================================================================
 
         private ProbePhase _phase = ProbePhase.NotStarted;
         private readonly object _phaseLock = new();
         private ProbeGrid? _grid;
         private int _currentPointIndex;
         private TaskCompletionSource<(bool Success, Vector3 Position)>? _probeTcs;
-
-        // =========================================================================
-        // Properties
-        // =========================================================================
 
         public ProbePhase Phase
         {
@@ -138,12 +66,9 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// True while this run is tracing the grid outline. The trace moves the tool but
-        /// measures nothing, so progress displays read the grid probe instead.
-        ///
-        /// Derived from IsRunInProgress, not IsActive: a run waiting on the enclosure prompt
-        /// still owns the machine, and built on IsActive both of these went false while it
-        /// waited, which the browser read as the run having finished.
+        /// The trace moves the tool but measures nothing, so progress displays read the grid
+        /// probe instead. Derived from IsRunInProgress rather than IsActive, because a run
+        /// waiting on the enclosure prompt still has the machine and must not read as finished.
         /// </summary>
         public bool IsTracingOutline => IsRunInProgress && Phase == ProbePhase.TracingOutline;
 
@@ -160,29 +85,13 @@ namespace coppercli.Core.Controllers
 
         public ProbeOptions Options { get; set; } = new ProbeOptions();
 
-        // =========================================================================
-        // Events
-        // =========================================================================
-
         public event Action<ProbePhase>? PhaseChanged;
         public event Action<int, Vector2, double>? PointCompleted;
 
-        // =========================================================================
-        // Constructor
-        // =========================================================================
-
-        /// <summary>
-        /// Create a ProbeController.
-        /// </summary>
-        /// <param name="machine">Machine interface.</param>
         public ProbeController(IMachine machine)
         {
             _machine = machine ?? throw new ArgumentNullException(nameof(machine));
         }
-
-        // =========================================================================
-        // IProbeController implementation
-        // =========================================================================
 
         public void LoadGrid(ProbeGrid grid)
         {
@@ -198,10 +107,6 @@ namespace coppercli.Core.Controllers
         }
 
         public ProbeGrid? GetGrid() => _grid;
-
-        // =========================================================================
-        // IController implementation
-        // =========================================================================
 
         protected override async Task RunAsync(CancellationToken ct)
         {
@@ -226,12 +131,10 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // Subscribe to probe events
             _machine.ProbeFinished += OnProbeFinished;
 
             try
             {
-                // Optional: trace outline first
                 if (Options.TraceOutline)
                 {
                     Phase = ProbePhase.TracingOutline;
@@ -240,7 +143,6 @@ namespace coppercli.Core.Controllers
 
                 await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
 
-                // Safety retract to machine coords (truly safe height)
                 Phase = ProbePhase.SafetyRetracting;
                 bool retracted = await MachineWait.SafetyRetractZAsync(_machine, Constants.SafeClearanceZ,
                     Constants.ZHeightWaitTimeoutMs, ct);
@@ -258,7 +160,6 @@ namespace coppercli.Core.Controllers
                             : ControllerConstants.ErrorSafetyRetractFailed);
                 }
 
-                // Move to first probe point at safe height
                 SortPointsByDistance();
                 if (!_grid.TryPeekNext(out var firstPoint))
                 {
@@ -271,13 +172,11 @@ namespace coppercli.Core.Controllers
                 _machine.SendLine(Inv($"{CmdRapidMove} X{firstCoords.X:F3} Y{firstCoords.Y:F3}"));
                 await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
 
-                // Descend to safe height (work coords)
                 Phase = ProbePhase.Descending;
                 await RaiseZToSafeHeightAsync(ct);
 
                 TransitionTo(ControllerState.Running);
 
-                // Probe all remaining points
                 while (_grid.RemainingCount > 0 && !ct.IsCancellationRequested)
                 {
                     await WaitWhilePausedAsync(ct);
@@ -294,7 +193,6 @@ namespace coppercli.Core.Controllers
                         await RecoverFromDoorAsync(ct).ConfigureAwait(false);
                     }
 
-                    // Sort points by distance for optimal path
                     SortPointsByDistance();
 
                     if (!_grid.TryPeekNext(out var point))
@@ -305,7 +203,6 @@ namespace coppercli.Core.Controllers
                     var coords = _grid.GetCoordinates(point.X, point.Y);
                     _currentPointIndex = _grid.Progress;
 
-                    // Emit progress
                     EmitProgress(new ProgressInfo(
                         PhaseProbing,
                         (int)((_currentPointIndex / (double)_grid.TotalPoints) * 100),
@@ -315,7 +212,6 @@ namespace coppercli.Core.Controllers
                     Vector3 position;
                     try
                     {
-                        // Move to point
                         Phase = ProbePhase.MovingToPoint;
                         await MoveToPointAsync(coords, ct);
 
@@ -331,7 +227,6 @@ namespace coppercli.Core.Controllers
                         continue;
                     }
 
-                    // Record result
                     Phase = ProbePhase.RecordingResult;
                     if (success)
                     {
@@ -372,8 +267,8 @@ namespace coppercli.Core.Controllers
                         }
 
                         // Skip this point: it stays unmeasured, so the map remains
-                        // incomplete, and a later pass can retry it. Say so now, because
-                        // applying the map will fail later and the reason is here.
+                        // incomplete, and a later pass can retry it. Reported now, because
+                        // applying the map fails later and the reason is here.
                         _grid.SkipPoint(point.X, point.Y);
                         EmitError(new ControllerError(
                             string.Format(ControllerConstants.ErrorProbePointSkipped,
@@ -394,7 +289,6 @@ namespace coppercli.Core.Controllers
                 // CleanupAsync, which stops the machine and retracts.
                 ct.ThrowIfCancellationRequested();
 
-                // Final retract
                 Phase = ProbePhase.FinalRetract;
                 if (!await RaiseZToSafeHeightAsync(ct))
                 {
@@ -417,8 +311,8 @@ namespace coppercli.Core.Controllers
         {
             ControllerLog.Log("ProbeController.CleanupAsync: starting, status={0}", _machine.Status);
 
-            // Stop motion, clear GRBL's buffer, then retract to the run's own safe height.
-            // Work coordinates, because a grid probe owns the frame it measured in.
+            // Retracts in work coordinates: a grid probe sets the frame it measures in, so
+            // the run's own safe height is the right target.
             await StopAndLiftAsync(RaiseZToSafeHeightAsync, Constants.CancelRetractTimeoutMs)
                 .ConfigureAwait(false);
 
@@ -443,14 +337,7 @@ namespace coppercli.Core.Controllers
             // before StartAsync.
         }
 
-        // =========================================================================
-        // Probing workflow
-        // =========================================================================
-
-        /// <summary>
-        /// Trace the probe grid outline (standalone operation).
-        /// Sets phase to TracingOutline during trace and NotStarted when complete.
-        /// </summary>
+        /// <summary>Runs on its own, without a grid probe around it.</summary>
         public async Task TraceOutlineAsync(CancellationToken ct)
         {
             if (_grid == null)
@@ -458,8 +345,8 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // A trace moves the tool, so it is a run like any other and everything that
-            // asks whether the machine is busy reads this state.
+            // A trace moves the tool, so it takes the controller state like any other run
+            // and every gate that asks whether the machine is busy sees it.
             TransitionTo(ControllerState.Initializing);
             Phase = ProbePhase.TracingOutline;
 
@@ -500,7 +387,6 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // Validate trace height before any movement
             if (Options.TraceHeight <= 0)
             {
                 ControllerLog.Log("TraceOutline: REFUSED - trace height {0:F3} is not positive", Options.TraceHeight);
@@ -520,7 +406,6 @@ namespace coppercli.Core.Controllers
                 Options.TraceHeight, Options.TraceFeed, minX, minY, maxX, maxY,
                 _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
-            // Safety retract to machine coords first
             ControllerLog.Log("TraceOutline: safety retract to machine Z={0:F1}", Constants.SafeClearanceZ);
             if (!await MachineWait.SafetyRetractZAsync(_machine, Constants.SafeClearanceZ,
                     Constants.ZHeightWaitTimeoutMs, ct))
@@ -530,13 +415,11 @@ namespace coppercli.Core.Controllers
                 throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
             }
 
-            // Move to first corner at safe height
             ControllerLog.Log("TraceOutline: moving to first corner ({0:F3}, {1:F3})", minX, minY);
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine(Inv($"{CmdRapidMove} X{minX:F3} Y{minY:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
 
-            // Move to trace height (above work surface) and verify Z reached target
             ControllerLog.Log("TraceOutline: moving to trace height Z={0:F3} (workZ={1:F3} machZ={2:F3})",
                 Options.TraceHeight, _machine.WorkPosition.Z, _machine.MachinePosition.Z);
             _machine.SendLine(CmdAbsolute);
@@ -546,7 +429,7 @@ namespace coppercli.Core.Controllers
             ControllerLog.Log("TraceOutline: at trace height (workZ={0:F3} machZ={1:F3}), starting trace",
                 _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
-            // Trace remaining corners (skip first since we're already there)
+            // The first corner is left out; the move above already went there.
             var corners = new[]
             {
                 (maxX, minY),
@@ -571,7 +454,6 @@ namespace coppercli.Core.Controllers
                 _machine.SendLine(CmdAbsolute);
                 _machine.SendLine(Inv($"{CmdLinearMove} X{x:F3} Y{y:F3} F{Options.TraceFeed:F0}"));
 
-                // Wait for status to change from Idle (motion started), then wait for Idle (motion complete)
                 await MachineWait.WaitForStatusChangeAsync(_machine, StatusIdle, Constants.MotionStartTimeoutMs, ct);
                 await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
             }
@@ -595,21 +477,17 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Retract from the point just probed, and pause the run if the measured height
-        /// disagrees with the neighbouring nodes.
+        /// disagrees with the neighboring nodes; the height is compared rather than the probe
+        /// timing, because the retract and the rapid before it are queued without waiting and
+        /// G38.2 drains that buffer before it moves, so the reply time covers all three.
         ///
-        /// The height is compared, not the probe timing: the retract and the rapid before it
-        /// are queued without waiting so GRBL can buffer them, and G38.2 drains that buffer
-        /// before it moves, so the reply time covers all three. ProbeGrid owns the
-        /// comparison; this decides what the run does with it.
-        ///
-        /// The retract distance follows: an accepted reading keeps the short buffered
-        /// retract that makes the traverse fast, a rejected one retracts to the safe height
-        /// because the operator is about to reach in.
+        /// An accepted reading keeps the short buffered retract that makes the traverse fast; a
+        /// rejected one goes to the safe height, because the operator is about to reach in.
         /// </summary>
         private async Task<HeightOutcome> RetractAndCheckHeightAsync(
             (int X, int Y) point, double measuredZ, CancellationToken ct)
         {
-            double? deviation = _grid!.GetNeighbourDeviation(point.X, point.Y, measuredZ);
+            double? deviation = _grid!.GetNeighborDeviation(point.X, point.Y, measuredZ);
 
             if (Options.HeightDeviationTolerance <= 0
                 || !deviation.HasValue
@@ -647,7 +525,7 @@ namespace coppercli.Core.Controllers
         /// <summary>What the run does with a probed height.</summary>
         private enum HeightOutcome
         {
-            /// <summary>Within tolerance of its neighbours. Record it.</summary>
+            /// <summary>Within tolerance of its neighbors. Record it.</summary>
             Accepted,
 
             /// <summary>The operator resumed. Probe the point again.</summary>
@@ -658,12 +536,10 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Handles the enclosure, then retracts to the safe height.
-        ///
-        /// A door park leaves the tool where GRBL restored it, which is at probe depth with
-        /// the probe still touching. The next thing the loop does is an XY rapid and another
-        /// G38.2, so without this the probe is dragged across the board and the probe cycle
-        /// starts from a triggered switch, which GRBL answers with an alarm.
+        /// A door park leaves the tool where GRBL restored it, at probe depth with the probe
+        /// still touching. The loop's next moves are an XY rapid and another G38.2, so without
+        /// this the probe is dragged across the board and the cycle starts from a triggered
+        /// switch, which makes GRBL raise an alarm.
         /// </summary>
         private async Task RecoverFromDoorAsync(CancellationToken ct)
         {
@@ -677,7 +553,8 @@ namespace coppercli.Core.Controllers
 
         private Task RetractZAsync(double currentZ, CancellationToken ct)
         {
-            // Don't wait for idle - let GRBL buffer the retract with the next move for smooth motion
+            // Deliberately not awaited, so GRBL buffers this retract with the next move and
+            // the traverse stays smooth.
             double targetZ = Math.Max(currentZ + Options.MinimumHeight, Options.MinimumHeight);
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine(Inv($"{CmdRapidMove} Z{targetZ:F3}"));
@@ -686,7 +563,7 @@ namespace coppercli.Core.Controllers
 
         private Task MoveToPointAsync(Vector2 coords, CancellationToken ct)
         {
-            // Don't wait - let GRBL buffer this with the probe command for smooth motion
+            // Deliberately not awaited, so GRBL buffers this with the probe that follows.
             _machine.SendLine(CmdAbsolute);
             _machine.SendLine(Inv($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}"));
             return Task.CompletedTask;
@@ -724,14 +601,7 @@ namespace coppercli.Core.Controllers
         }
 
 
-        // =========================================================================
-        // Single point probing (standalone operation)
-        // =========================================================================
-
-        /// <summary>
-        /// Perform a single Z probe at the current XY position.
-        /// This is a standalone operation that does not affect controller state.
-        /// </summary>
+        /// <inheritdoc/>
         public async Task<(bool Success, double ZPosition)> ProbeZSingleAsync(CancellationToken ct)
         {
             var tcs = new TaskCompletionSource<(bool, Vector3)>();
@@ -754,7 +624,7 @@ namespace coppercli.Core.Controllers
             _machine.ProbeFinished += OnProbeFinished;
             try
             {
-                // Use relative mode so we probe DOWN from current position
+                // Relative, so the probe descends from wherever the tool is now.
                 _machine.SendLine(CmdRelative);
                 _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
                 _machine.SendLine(CmdAbsolute);
@@ -784,10 +654,6 @@ namespace coppercli.Core.Controllers
             }
         }
 
-        // =========================================================================
-        // Helpers
-        // =========================================================================
-
         private void SortPointsByDistance()
         {
             if (_grid == null)
@@ -806,10 +672,6 @@ namespace coppercli.Core.Controllers
             });
         }
 
-        // =========================================================================
-        // Log message constants (extend ControllerConstants)
-        // =========================================================================
-
         private const string LogProbeZSingle = "ProbeZSingle: success={0}, Z={1:F3}";
         private const string LogProbePhase = "Probe phase: {0}";
         private const string LogProbeGridCreated = "Probe grid created: {0}x{1} = {2} points";
@@ -819,7 +681,7 @@ namespace coppercli.Core.Controllers
         private const string LogProbePointFailed = "Probe point {0} failed";
         private const string LogProbeComplete = "Probing complete: {0} points";
         private const string LogProbeHeightUnexpected =
-            "Probe height {0:F3} deviates {1:F3}mm from its measured neighbours";
+            "Probe height {0:F3} deviates {1:F3}mm from its measured neighbors";
 
         private const string ErrorNoProbeGrid = "No probe grid. Set one up before probing.";
 

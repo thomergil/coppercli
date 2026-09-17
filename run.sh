@@ -10,7 +10,6 @@ DOTNET_INSTALL_URL="https://dotnet.microsoft.com/download/dotnet/8.0"
 PROJECT="coppercli/coppercli.csproj"
 
 find_dotnet() {
-    # Check if dotnet is in PATH
     if command -v dotnet &> /dev/null; then
         echo "dotnet"
         return 0
@@ -81,11 +80,9 @@ find_dotnet() {
     return 1
 }
 
-# Find the script directory (where coppercli.csproj should be)
+# The script directory holds coppercli.csproj.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-
-# Find dotnet
 DOTNET=$(find_dotnet) || {
     echo "ERROR: dotnet not found!"
     echo ""

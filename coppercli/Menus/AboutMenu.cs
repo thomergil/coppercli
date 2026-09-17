@@ -1,14 +1,9 @@
-// Extracted from Program.cs
-
 using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
 
 namespace coppercli.Menus
 {
-    /// <summary>
-    /// About menu showing version info and experimental warning.
-    /// </summary>
     internal static class AboutMenu
     {
         public static void Show()
@@ -35,9 +30,6 @@ namespace coppercli.Menus
             MenuHelpers.WaitEnter("Press Enter to return");
         }
 
-        /// <summary>
-        /// Shows experimental warning on first startup. Offers to silence for future runs.
-        /// </summary>
         public static void ShowExperimentalWarning(Action saveSettings)
         {
             if (AppState.Settings.SilenceExperimentalWarning)

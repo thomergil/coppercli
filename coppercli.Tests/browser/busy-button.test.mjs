@@ -1,5 +1,5 @@
-// A button that shows progress carries an icon beside its label. Writing textContent removes
-// the icon, and putting only the word back leaves it gone until the page is reloaded.
+// A button that shows progress has an icon beside its label. Writing textContent removes the
+// icon, and writing only the label back leaves it gone until the page is reloaded.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

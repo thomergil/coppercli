@@ -17,7 +17,7 @@ namespace coppercli.Core.Util
         /// The color for a height as a fraction of the measured range, 0 for the lowest
         /// point and 1 for the highest. Values outside that are clamped.
         /// </summary>
-        public static (int R, int G, int B) Colour(double fraction)
+        public static (int R, int G, int B) Color(double fraction)
         {
             double t = System.Math.Clamp(fraction, 0, 1);
             double s = (t % BandWidth) / BandWidth;

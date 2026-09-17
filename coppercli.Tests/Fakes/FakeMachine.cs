@@ -12,9 +12,9 @@ using static coppercli.Core.Communication.Machine;
 namespace coppercli.Tests.Fakes
 {
     /// <summary>
-    /// Fake CNC machine that simulates realistic behavior.
-    /// Processes commands, updates positions, and simulates timing.
-    /// Use for integration tests or demo mode.
+    /// Simulates motion and timing: a move takes wall-clock time and the position steps toward
+    /// the target between polls. MockMachine sets state directly instead, so use this double
+    /// only where a test needs a move to take time.
     /// </summary>
     public class FakeMachine : IMachine, IDisposable
     {
@@ -33,36 +33,25 @@ namespace coppercli.Tests.Fakes
                     : GrblProtocol.StatusIdle);
         }
 
-        // =========================================================================
-        // Configuration
-        // =========================================================================
-
-        /// <summary>Simulated rapid move speed (mm/s).</summary>
+        // mm/s
         public double RapidSpeed { get; set; } = 50.0;
 
-        /// <summary>Simulated feed move speed (mm/s).</summary>
+        // mm/s
         public double FeedSpeed { get; set; } = 10.0;
 
-        /// <summary>Status poll interval (ms).</summary>
         public int PollIntervalMs { get; set; } = 50;
 
-        /// <summary>Simulated homing duration (ms).</summary>
         public int HomingDurationMs { get; set; } = 2000;
 
-        /// <summary>Machine travel limits (mm, negative = toward workpiece).</summary>
+        // mm. A move past a limit is clamped, not rejected: this fake raises no limit alarm.
         public Vector3 MinPosition { get; set; } = new Vector3(-300, -200, -100);
         public Vector3 MaxPosition { get; set; } = new Vector3(0, 0, 0);
 
         /// <summary>
-        /// Mirrors MachineSettings.PauseFileOnHold (same default). Governs whether
-        /// M0/M1/M2/M30 stop the stream - M6 always does, regardless of this setting,
-        /// the same decoupling production's Machine.cs applies.
+        /// Mirrors MachineSettings.PauseFileOnHold, including its default. It governs whether
+        /// M0/M1/M2/M30 stop the stream; M6 stops it regardless, as production Machine.cs does.
         /// </summary>
         public bool PauseFileOnHold { get; set; } = true;
-
-        // =========================================================================
-        // State
-        // =========================================================================
 
         private OperatingMode _mode = OperatingMode.Manual;
         private string _status = "Idle";
@@ -98,9 +87,8 @@ namespace coppercli.Tests.Fakes
         }
 
         /// <summary>
-        /// The combined work offset, as GRBL reports it in a status line: G54 plus any
-        /// G92 or tool-length offset. Derived, so it is never accidentally identical to
-        /// G54 - the distinction is the whole point of tracking both.
+        /// The combined work offset as GRBL reports it in a status line: G54 plus
+        /// <see cref="ExtraOffset"/>.
         /// </summary>
         public Vector3 WorkOffset
         {
@@ -134,12 +122,10 @@ namespace coppercli.Tests.Fakes
         private long _statusReportCount;
         public long StatusReportCount => Interlocked.Read(ref _statusReportCount);
 
-        // Tracked separately from WorkOffset on purpose: collapsing the two would make
-        // the G54-vs-combined-WCO distinction untestable, which is the bug this models.
         public Vector3 G54Offset { get; private set; } = new Vector3();
 
-        /// <summary>Simulates a live G92 or tool-length offset, so WorkOffset and G54
-        /// differ the way they do on a real machine.</summary>
+        /// <summary>Stands in for a live G92 or tool-length offset, so a test can make
+        /// WorkOffset and G54Offset differ as they do on a real machine.</summary>
         public Vector3 ExtraOffset { get; set; } = new Vector3();
 
         public Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, CancellationToken ct = default)
@@ -148,10 +134,6 @@ namespace coppercli.Tests.Fakes
         }
 
         public Vector3 LastProbePosMachine { get; private set; } = new Vector3();
-
-        // =========================================================================
-        // Events
-        // =========================================================================
 
 #pragma warning disable CS0067 // Event is never used (required by interface)
         public event Action<string>? StatusReceived;
@@ -165,23 +147,17 @@ namespace coppercli.Tests.Fakes
         public event Action? FilePositionChanged;
 #pragma warning restore CS0067
 
-        // =========================================================================
-        // IMachine implementation
-        // =========================================================================
-
         private readonly List<string> _sentCommands = new();
 
         /// <summary>
-        /// Every line handed to the machine, in order. Returns a snapshot: commands are
-        /// appended from the simulated worker, so handing out the live list would let a
-        /// test enumerate it while it is being written.
+        /// Every line sent, in order. Returns a snapshot: the simulated run appends from its
+        /// own task, so a test enumerating the live list would race it.
         /// </summary>
         public IReadOnlyList<string> SentCommands
         {
             get { lock (_stateLock) { return _sentCommands.ToArray(); } }
         }
 
-        /// <summary>Forgets recorded commands, for tests that measure one phase.</summary>
         public void ClearSentCommands()
         {
             lock (_stateLock)
@@ -214,7 +190,6 @@ namespace coppercli.Tests.Fakes
             return true;
         }
 
-        /// <summary>Forces the operating mode, for tests that model leftover state.</summary>
         public void SimulateModeChange(OperatingMode newMode)
         {
             Mode = newMode;
@@ -237,8 +212,8 @@ namespace coppercli.Tests.Fakes
 
         public void FeedHold()
         {
-            // Only a running machine takes a feed hold. A door hold is already stopped, and
-            // replacing its state would lose which door state it was in.
+            // A feed hold applies only while GRBL is running: at a door hold it is already
+            // stopped, and overwriting the status would lose which door substate it was in.
             if (Status == GrblProtocol.StatusRun)
             {
                 SetStatus($"{GrblProtocol.StatusHold}:0");
@@ -278,24 +253,19 @@ namespace coppercli.Tests.Fakes
 
         public bool ProbeStart()
         {
-            // FakeMachine handles probing in ProcessProbeAsync
+            // ProcessProbeAsync drives the probe from the G38 line, not from this call.
             return true;
         }
 
         public void ProbeStop()
         {
-            // FakeMachine handles probing in ProcessProbeAsync
+            // Nothing to stop: ProcessProbeAsync runs the probe to completion.
         }
-
-        // =========================================================================
-        // Command processing
-        // =========================================================================
 
         private async Task ProcessCommandAsync(string line)
         {
             line = line.Trim().ToUpperInvariant();
 
-            // System commands
             if (line == "$H")
             {
                 await HomeAsync();
@@ -308,10 +278,9 @@ namespace coppercli.Tests.Fakes
                 return;
             }
 
-            // G-code commands.
-            // The motion word may be preceded by G53 ("this block is in machine
-            // coordinates"), so dispatch on the word after any such prefix while still
-            // passing the whole line down - ProcessMoveAsync reads G53 from it.
+            // The motion word may be preceded by G53 ("this block is in machine coordinates"),
+            // so dispatch on the word after that prefix. The whole line still goes down:
+            // ProcessMoveAsync reads G53 from it.
             string dispatch = line.StartsWith("G53") ? line.Substring(3).TrimStart() : line;
 
             // G10 must be tested before G1, or "G10 L2 P1 Z..." dispatches as a move.
@@ -338,14 +307,13 @@ namespace coppercli.Tests.Fakes
             SetStatus("Home");
             await Task.Delay(HomingDurationMs);
 
-            MachinePosition = new Vector3(0, 0, 0); // Home is at machine zero
+            MachinePosition = new Vector3(0, 0, 0);
             _isHomed = true;
             SetStatus("Idle");
         }
 
         private async Task ProcessMoveAsync(string line, bool isRapid)
         {
-            // Parse target position
             var target = MachinePosition;
             bool isMachineCoords = line.Contains("G53");
 
@@ -362,19 +330,16 @@ namespace coppercli.Tests.Fakes
                 target = new Vector3(target.X, target.Y, isMachineCoords ? z : z + WorkOffset.Z);
             }
 
-            // Clamp to limits
             target = ClampToLimits(target);
 
-            // Simulate move
             await SimulateMoveAsync(target, isRapid ? RapidSpeed : FeedSpeed);
         }
 
         private readonly CancellationTokenSource _disposing = new();
 
         /// <summary>
-        /// A machine that takes the line and then alarms instead of moving, so a caller
-        /// waiting for the tool to arrive finds out at once rather than waiting out its
-        /// budget.
+        /// Set true for a machine that accepts the line and then alarms instead of moving. A
+        /// caller waiting for the tool to arrive sees the alarm instead of waiting out its budget.
         /// </summary>
         public bool AlarmOnMove { get; set; }
 
@@ -428,21 +393,20 @@ namespace coppercli.Tests.Fakes
 
         private async Task ProcessProbeAsync(string line)
         {
-            // Simulate probe toward workpiece
-            var probeZ = WorkPosition.Z - 5.0; // Simulate hitting surface 5mm down
+            // Every probe finds the surface; this fake never reports a probe that missed.
+            var probeZ = WorkPosition.Z - 5.0;
             await SimulateMoveAsync(
                 new Vector3(MachinePosition.X, MachinePosition.Y, probeZ + WorkOffset.Z),
                 FeedSpeed / 10);
 
-            // Store probe position in machine coordinates
             LastProbePosMachine = MachinePosition;
 
             ProbeFinished?.Invoke(WorkPosition, true);
         }
 
-        /// <summary>Keeps G54 in step with the work offset. This fake models no G92 or
-        /// tool-length offset, so the two are equal - but they are stored separately so a
-        /// test can set ExtraOffset and make them differ, the way a real machine can.</summary>
+        /// <summary>Writes G54 and the base work offset together. The fake applies no G92 or
+        /// tool-length offset of its own, so the two stay equal until a test sets
+        /// ExtraOffset.</summary>
         private void SetWorkOffset(Vector3 offset)
         {
             lock (_stateLock)
@@ -453,8 +417,8 @@ namespace coppercli.Tests.Fakes
         }
 
         /// <summary>
-        /// Set true for a machine that will not take a work-offset write, as GRBL does while
-        /// it is alarmed.
+        /// Set true for a machine that discards a work-offset write, as GRBL does while it is
+        /// alarmed.
         /// </summary>
         public bool RefuseWorkOffsetWrites { get; set; }
 
@@ -510,36 +474,30 @@ namespace coppercli.Tests.Fakes
 
                 var line = _fileLines[FilePosition];
 
-                // Faithful to production Machine.cs: M6 is recognised the same way
-                // (GCodeParser.IsM6Line - the same anchored pattern, not a substring
-                // check that would also fire on M60/M65) and swallowed rather than sent
-                // onward; every other line is processed as normal.
+                // Matches production Machine.cs: M6 is recognized with GCodeParser.IsM6Line,
+                // the anchored pattern rather than a substring check that also fires on
+                // M60/M65, and is swallowed instead of sent on.
                 bool isM6Line = GCodeParser.IsM6Line(line);
                 if (!isM6Line)
                 {
                     await ProcessCommandAsync(line);
                 }
 
-                // A tool change is not a hold preference - PauseFileOnHold governs
-                // whether M0/M1/M2/M30 stop the stream, but M6 always pauses regardless,
-                // the same decoupling production applies in Machine.cs's SendFile loop.
-                // Classified with GCodeParser.ClassifyPauseLine - the same classifier
-                // MillingController uses to react once the stream has stopped - so this
-                // fake cannot pause on a line MillingController would not recognise, or
-                // vice versa.
+                // GCodeParser.ClassifyPauseLine is the classifier MillingController uses once
+                // the stream has stopped, so this fake cannot pause on a line MillingController
+                // would not recognize, or the reverse.
                 var pauseKind = GCodeParser.ClassifyPauseLine(line);
                 bool isPauseLine = pauseKind != GCodeNumbers.PauseMCode.None;
                 bool shouldPause = isPauseLine && (isM6Line || PauseFileOnHold);
 
-                // GRBL answers a program stop with a feed hold. It never sees an M6 (that
-                // is swallowed before sending) and a program end simply leaves it idle, so
-                // only these two report Hold.
+                // GRBL enters Hold on a program stop. It never receives an M6 (swallowed
+                // above) and a program end leaves it idle, so only these two produce Hold.
                 bool holdsOnPause = pauseKind == GCodeNumbers.PauseMCode.ProgramStop
                     || pauseKind == GCodeNumbers.PauseMCode.OptionalStop;
 
-                // FilePosition advances past the line whether or not it paused here -
-                // production does the same - so MillingController's File[FilePosition -
-                // 1] lookup finds the line that just ran, not the one before it.
+                // FilePosition advances past the line whether or not it paused here, as
+                // production does, so MillingController's File[FilePosition - 1] lookup finds
+                // the line that just ran rather than the one before it.
                 FilePosition++;
                 FilePositionChanged?.Invoke();
 
@@ -549,7 +507,7 @@ namespace coppercli.Tests.Fakes
                     OperatingModeChanged?.Invoke();
 
                     SetStatus(holdsOnPause ? "Hold:0" : "Idle");
-                    return; // Pause for tool change, operator prompt, or program end
+                    return;
                 }
             }
 
@@ -558,14 +516,9 @@ namespace coppercli.Tests.Fakes
             SetStatus("Idle");
         }
 
-        // =========================================================================
-        // Helpers
-        // =========================================================================
-
         /// <summary>
-        /// Takes a status as GRBL writes it on the wire, e.g. "Door:1", and splits it the
-        /// way <see cref="Machine"/> does. Left joined, the substate predicates return the
-        /// wrong answer and a door test passes for the wrong reason.
+        /// Takes a status as GRBL writes it on the wire, e.g. "Door:1", and splits it the way
+        /// <see cref="Machine"/> does. Left joined, the substate predicates read the wrong value.
         /// </summary>
         private void SetStatus(string status)
         {
@@ -602,57 +555,46 @@ namespace coppercli.Tests.Fakes
             );
         }
 
-        // =========================================================================
-        // Test helpers
-        // =========================================================================
-
-        /// <summary>Load G-code file content.</summary>
         public void LoadFile(params string[] lines)
         {
             _fileLines = new List<string>(lines);
             FilePosition = 0;
         }
 
-        /// <summary>Set work offset directly (for test setup).</summary>
         public void SetWorkOffset(double x, double y, double z)
         {
             SetWorkOffset(new Vector3(x, y, z));
         }
 
-        /// <summary>Set machine position directly (for test setup).</summary>
         public void SetMachinePosition(double x, double y, double z)
         {
             MachinePosition = new Vector3(x, y, z);
         }
 
-        /// <summary>The enclosure is open and the machine is holding.</summary>
         public void SimulateDoorOpen()
         {
             SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateAjar}");
         }
 
         /// <summary>
-        /// The enclosure is closed and the machine is still holding, waiting for a cycle
-        /// start. A job start must recover from this state.
+        /// The enclosure reads closed and GRBL keeps holding until it takes a cycle start.
         /// </summary>
         public void SimulateDoorClosedAndHolding()
         {
             SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateClosed}");
         }
 
-        /// <summary>GRBL is restoring from the park after a cycle start.</summary>
+        /// <summary>GRBL is moving the parked axes back after a cycle start.</summary>
         public void SimulateDoorResuming()
         {
             SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateResuming}");
         }
 
-        /// <summary>The restore has finished and the machine is back under control.</summary>
         public void SimulateDoorReleased()
         {
             SetStatus(GrblProtocol.StatusIdle);
         }
 
-        /// <summary>Simulate alarm condition.</summary>
         public void SimulateAlarm(int code = 1)
         {
             SetStatus($"Alarm:{code}");

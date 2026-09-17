@@ -9,19 +9,17 @@ using static coppercli.Core.Controllers.ControllerConstants;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Abstract base class for workflow controllers implementing FSM logic.
-    /// Enforces valid state transitions and provides common event infrastructure.
+    /// The state machine every workflow runs on. `ValidTransitions` below is the whole table,
+    /// and paused, active and finished are derived from <see cref="State"/> rather than stored
+    /// beside it.
     ///
     /// One instance serves the whole session, so every field describing the current run is
-    /// cleared in <see cref="ResetRunState"/> before each run starts. Paused, active and
-    /// finished are derived from <see cref="State"/>.
+    /// cleared in <see cref="ResetRunState"/> before each run starts. That is why
+    /// <see cref="ResetRunState"/> is abstract rather than virtual: a field a subclass forgets
+    /// is read by the next run.
     /// </summary>
     public abstract class ControllerBase : IController
     {
-        // =========================================================================
-        // State transition table - defines all valid transitions
-        // =========================================================================
-
         private static readonly Dictionary<ControllerState, ControllerState[]> ValidTransitions = new()
         {
             [ControllerState.Idle] = new[] { ControllerState.Initializing },
@@ -41,10 +39,6 @@ namespace coppercli.Core.Controllers
             [ControllerState.Cancelled] = new[] { ControllerState.Idle },
         };
 
-        // =========================================================================
-        // State
-        // =========================================================================
-
         private ControllerState _state = ControllerState.Idle;
         private readonly object _stateLock = new();
 
@@ -59,14 +53,9 @@ namespace coppercli.Core.Controllers
             }
         }
 
-        /// <summary>
-        /// True while a run is under way.
-        /// </summary>
         public bool IsActive => IsActiveState(State);
 
-        /// <summary>
-        /// <see cref="IsActive"/> for a state already in hand.
-        /// </summary>
+        /// <summary><see cref="IsActive"/> for a state already read.</summary>
         public static bool IsActiveState(ControllerState state)
         {
             return state == ControllerState.Initializing
@@ -74,12 +63,9 @@ namespace coppercli.Core.Controllers
                 || state == ControllerState.Paused;
         }
 
-        /// <summary>
-        /// True while a run is paused.
-        /// </summary>
         public bool IsPaused => IsPausedState(State);
 
-        /// <summary><see cref="IsPaused"/> for a state already in hand.</summary>
+        /// <summary><see cref="IsPaused"/> for a state already read.</summary>
         public static bool IsPausedState(ControllerState state) => state == ControllerState.Paused;
 
         /// <summary>
@@ -93,17 +79,16 @@ namespace coppercli.Core.Controllers
                 || state == ControllerState.Cancelled;
         }
 
-        /// <summary>True once this run has ended, however it ended.</summary>
         public bool HasFinished => IsFinishedState(State);
 
-        /// <summary><see cref="IsRunInProgress"/> for a state already in hand.</summary>
+        /// <summary><see cref="IsRunInProgress"/> for a state already read.</summary>
         public static bool IsRunInProgressState(ControllerState state) =>
             state != ControllerState.Idle && !IsFinishedState(state);
 
         /// <summary>
         /// True while a run is under way in any sense: initializing, moving, paused, waiting
         /// on the operator, or finishing. <see cref="IsActive"/> is narrower - whether the
-        /// machine is being driven - and a run parked at a prompt still owns the machine.
+        /// machine is being driven - and a run parked at a prompt still holds the machine.
         /// </summary>
         public bool IsRunInProgress => IsRunInProgressState(State);
 
@@ -114,11 +99,6 @@ namespace coppercli.Core.Controllers
         public static bool IsWaitingForOperatorState(ControllerState state) =>
             state == ControllerState.WaitingForUserInput;
 
-        // =========================================================================
-        // Events
-        // =========================================================================
-
-        /// <summary>The machine this controller drives, for the helpers below.</summary>
         protected abstract IMachine Machine { get; }
 
         public event Action<ControllerState>? StateChanged;
@@ -126,13 +106,9 @@ namespace coppercli.Core.Controllers
         public event Action<UserInputRequest>? UserInputRequired;
         public event Action<ControllerError>? ErrorOccurred;
 
-        // =========================================================================
-        // State transitions
-        // =========================================================================
-
         /// <summary>
-        /// Transition to a new state. Throws if transition is invalid.
-        /// Events are fired synchronously - handler runs immediately, controller waits.
+        /// Throws <see cref="InvalidControllerStateException"/> when the table does not allow
+        /// the move. StateChanged fires synchronously, so the handler runs before this returns.
         /// </summary>
         protected void TransitionTo(ControllerState newState)
         {
@@ -144,10 +120,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Transition if the table allows it, and say whether it did.
-        ///
-        /// For a transition another thread may already have made. The test and the
-        /// assignment happen under one hold of the lock, so nothing can land between them.
+        /// For a transition another thread may already have made. The test and the assignment
+        /// happen under one hold of the lock, so nothing can land between them.
         /// </summary>
         protected bool TryTransitionTo(ControllerState newState) => TryTransitionTo(newState, out _);
 
@@ -170,32 +144,23 @@ namespace coppercli.Core.Controllers
                 _state = newState;
             }
 
-            // Log and fire event outside lock to prevent deadlocks
+            // Logged and raised outside the lock: a handler that calls back in would deadlock.
             ControllerLog.Log(LogStateTransition, GetType().Name, from, newState);
             StateChanged?.Invoke(newState);
             return true;
         }
 
-        /// <summary>
-        /// Check if a transition is valid according to the FSM.
-        /// </summary>
         protected static bool IsValidTransition(ControllerState from, ControllerState to)
         {
             return ValidTransitions.TryGetValue(from, out var validTargets) &&
                    Array.IndexOf(validTargets, to) >= 0;
         }
 
-        // =========================================================================
-        // Event helpers
-        // =========================================================================
-
-        /// <summary>Emit a progress update.</summary>
         protected void EmitProgress(ProgressInfo progress)
         {
             ProgressChanged?.Invoke(progress);
         }
 
-        /// <summary>Emit an error.</summary>
         protected void EmitError(ControllerError error)
         {
             ErrorOccurred?.Invoke(error);
@@ -228,10 +193,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Request user input and wait for response.
-        /// Transitions to WaitingForUserInput, emits the request, waits, then returns to
-        /// whatever state it interrupted.
-        /// Returns the user's selection.
+        /// Raise a prompt, wait for the answer and return it. The controller sits in
+        /// WaitingForUserInput meanwhile and goes back to whatever state the prompt interrupted.
         /// </summary>
         protected async Task<string> RequestUserInputAsync(
             string title,
@@ -269,7 +232,6 @@ namespace coppercli.Core.Controllers
             TransitionTo(ControllerState.WaitingForUserInput);
             handler.Invoke(request);
 
-            // Wait for response or cancellation
             using var registration = ct.Register(() => tcs.TrySetCanceled());
             var response = await tcs.Task;
 
@@ -284,11 +246,9 @@ namespace coppercli.Core.Controllers
         /// door state the machine is in.
         /// </summary>
         /// <param name="operatorJustAgreed">
-        /// True when the caller has this moment taken a Continue from the operator. A door
-        /// already closed and holding is then released without asking: they changed the
-        /// tool, closed the door and pressed Continue, and a second question about the
-        /// same door is the same question twice. It covers that one release only, so a
-        /// door opened again afterwards is put to them as usual.
+        /// True when the caller has this moment taken a Continue from the operator, which
+        /// releases a door already closed and holding without asking again. It covers that one
+        /// release only, so a door opened again afterwards is put to them as usual.
         /// </param>
         /// <exception cref="OperationCanceledException">The operator chose to abort.</exception>
         protected async Task EnsureDoorClosedAsync(
@@ -304,10 +264,8 @@ namespace coppercli.Core.Controllers
                 var outcome = await MachineWait.ClearDoorHoldAsync(
                     Machine,
                     // A closed door is the only door state the operator can answer, because
-                    // the cycle start restarts the spindle. Sent as a prompt only: as
-                    // progress as well, the screens would draw the same sentence twice, once
-                    // with the choices and once without. No title - the message already names
-                    // the enclosure.
+                    // the cycle start restarts the spindle. Sent as a prompt and not also as
+                    // progress, or the screens draw the same sentence twice.
                     ask: async message =>
                     {
                         if (agreementCovers)
@@ -356,9 +314,8 @@ namespace coppercli.Core.Controllers
             finally
             {
                 // A screen holds the last message until another arrives, and on the probe's
-                // path the next one is not sent until the safety retract finishes. Withdraw
-                // it on every exit including the abort, so nothing tells the operator to
-                // close a door while the tool is moving.
+                // path the next one waits for the safety retract. Withdrawn on every exit,
+                // including the abort, so nothing asks for a door while the tool is moving.
                 if (announced)
                 {
                     EmitProgress(new ProgressInfo(PhaseDoorCleared, 0, string.Empty));
@@ -367,16 +324,11 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Retract the tool and report whether it reached the target. Every run ends
-        /// through here, so the rules below apply wherever it ends.
-        ///
-        /// Nothing is sent while the machine holds at the door: GRBL keeps the move in its
-        /// planner and runs it when the hold is released. Stop first if the run was moving;
-        /// <see cref="MachineWait.StopAndResetAsync"/> returns whether the machine was at the
-        /// door, because its soft reset moves the machine from Door to Alarm.
-        ///
-        /// The retract runs on its own token: the run's is already cancelled by the time a
-        /// stop reaches here.
+        /// Nothing is sent while the machine holds at the door, because GRBL keeps the move in
+        /// its planner and runs it when the hold is released; a caller that was moving stops
+        /// first and reads the door flag from <see cref="MachineWait.StopAndResetAsync"/>.
+        /// The retract runs on its own budget token, since the run's is already cancelled by
+        /// the time a stop reaches here.
         /// </summary>
         /// <param name="lift">Sends the move and returns true once the tool is there.</param>
         /// <param name="budgetMs">How long to wait for it.</param>
@@ -410,11 +362,10 @@ namespace coppercli.Core.Controllers
                 budgetMs);
 
         /// <summary>
-        /// Lift the tool after a stop, and report when the lift was not confirmed. Every
-        /// controller decides this here, so the three cannot answer it differently.
-        ///
-        /// A stop at the door never counts as confirmed: the soft reset clears the hold, so
-        /// the tool's position is unknown and no move can be queued to check it.
+        /// Lift the tool after a stop, and report when the lift was not confirmed; all three
+        /// controllers decide it here so the three cannot diverge. A stop at the door
+        /// never counts as confirmed, because the soft reset clears the hold and the tool's
+        /// position is then unknown.
         /// </summary>
         /// <param name="wasHoldingAtDoor">What <see cref="MachineWait.StopAndResetAsync"/> returned.</param>
         /// <inheritdoc cref="RetractToSafeZAsync(Func{CancellationToken, Task{bool}}, int)"/>
@@ -436,10 +387,7 @@ namespace coppercli.Core.Controllers
                     Machine, clearanceMachineZ, Util.Constants.ZHeightWaitTimeoutMs, ct),
                 budgetMs);
 
-        /// <summary>
-        /// Stop the machine, then lift the tool, and report when the lift was not confirmed.
-        /// Every run ends through here.
-        /// </summary>
+        /// <summary>Every run ends through here.</summary>
         /// <param name="betweenStopAndLift">
         /// Run after the machine has stopped and before the lift, for a controller with
         /// something to undo while nothing is moving.
@@ -459,8 +407,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// The same, lifting to a machine Z. Use this where the run does not own the work
-        /// frame: a work-coordinate lift there could be a descent.
+        /// The same, lifting to a machine Z. Use this where the work frame may not be set,
+        /// since a work-coordinate lift could then be a descent.
         /// </summary>
         /// <inheritdoc cref="StopAndLiftAsync(Func{CancellationToken, Task{bool}}, int, Func{Task})"/>
         protected Task StopAndLiftAsync(
@@ -471,36 +419,19 @@ namespace coppercli.Core.Controllers
                 budgetMs,
                 betweenStopAndLift);
 
-        // =========================================================================
-        // Abstract methods - subclasses implement these
-        // =========================================================================
-
-        /// <summary>Start the workflow. Called by StartAsync after state validation.</summary>
+        /// <summary>Called by StartAsync once the state allows a run.</summary>
         protected abstract Task RunAsync(CancellationToken ct);
 
-        /// <summary>Cleanup when stopping. Called by StopAsync.</summary>
+        /// <summary>Called by StopAsync, and again on the cancel and error paths.</summary>
         protected abstract Task CleanupAsync();
 
         /// <summary>
-        /// Clear every field that describes the run rather than the machine, so the next
-        /// run starts from a known state. Called from <see cref="StartAsync"/> and
-        /// <see cref="Reset"/>.
-        ///
-        /// Abstract, not virtual: controllers are session-lifetime singletons, so a field
-        /// left behind by one run is read by the next.
-        ///
-        /// State owned by the machine or the operator does not belong here. A work offset
+        /// Clear every field that describes the run rather than the machine: a work offset
         /// still shifted in GRBL, or a probe grid the operator expects to keep, outlives the
-        /// run that set it.
-        ///
-        /// Implementations assign backing fields directly rather than the event-raising
-        /// Phase properties, so a reset does not put a raw enum name on the screen.
+        /// run that set it and stays. Assign backing fields directly rather than the
+        /// event-raising Phase properties, so a reset does not put a raw enum name on a screen.
         /// </summary>
         protected abstract void ResetRunState();
-
-        // =========================================================================
-        // IController implementation
-        // =========================================================================
 
         public async Task StartAsync(CancellationToken ct = default)
         {
@@ -521,15 +452,14 @@ namespace coppercli.Core.Controllers
             }
             catch (OperationCanceledException)
             {
-                // Clean up on cancellation (stop spindle, retract Z, etc.)
-                // CleanupAsync is idempotent - safe to call even if StopAsync also called
+                // CleanupAsync is idempotent, so this is safe even when StopAsync ran it.
                 try
                 {
                     await CleanupAsync();
                 }
                 catch
                 {
-                    // Ignore cleanup errors during cancellation
+                    // A cleanup failure must not replace the cancellation the operator asked for.
                 }
 
                 if (!HasFinished)
@@ -539,14 +469,13 @@ namespace coppercli.Core.Controllers
             }
             catch (Exception ex)
             {
-                // Clean up on error (stop spindle, retract Z, etc.)
                 try
                 {
                     await CleanupAsync();
                 }
                 catch
                 {
-                    // Ignore cleanup errors during error handling
+                    // A cleanup failure must not replace the error that stopped the run.
                 }
 
                 EmitError(ex);
@@ -557,8 +486,8 @@ namespace coppercli.Core.Controllers
             }
 
             // A run that returns without reaching a terminal state leaves the controller
-            // claiming the machine, and every front end reads that as still running. Finish
-            // it here so HasFinished is true once this task completes.
+            // claiming the machine, which every front end reads as still running. Finished
+            // here so HasFinished is true once this task completes.
             if (!HasFinished && State != ControllerState.Idle)
             {
                 ControllerLog.Log("{0}.RunAsync returned in {1} without finishing the run",
@@ -617,11 +546,10 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Whether this run must stay paused. Throws when it is not paused at all, because
-        /// that is a caller mistake rather than a machine state.
-        ///
-        /// A refusal is reported and the run stays paused rather than throwing: the terminal
-        /// calls Resume straight from a key press with nothing to catch an exception.
+        /// Throws when the run is not paused at all, because that is a caller mistake rather
+        /// than a machine state. A machine that refuses the resume is reported instead and the
+        /// run stays paused, since the terminal calls Resume straight from a key press with
+        /// nothing to catch an exception.
         /// </summary>
         protected bool ResumeIsBlocked()
         {

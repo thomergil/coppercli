@@ -11,8 +11,9 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The simulator has to be convincing enough for the real Machine, or every test built
-    /// on it is testing the simulator instead of coppercli.
+    /// FakeGrbl is driven here through the real Machine over a loopback socket. Where the
+    /// simulator diverges from GRBL, every test built on it passes on behavior the machine
+    /// does not have.
     /// </summary>
     public class FakeGrblTests
     {
@@ -35,7 +36,8 @@ namespace coppercli.Tests
                 machine.Connect();
                 Assert.True(machine.Connected);
 
-                // The status poll runs on the worker thread, so wait for the first report.
+                // Status arrives on the worker thread, so Connect returns before the first
+                // report.
                 WebServerFixture.WaitUntil(
                     () => machine.Status == GrblProtocol.StatusIdle,
                     "the simulated machine to report Idle");
@@ -53,8 +55,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// GRBL executes nothing while it holds at the door: lines arrive, queue, and run on
-        /// the cycle start. A double that moved anyway would let a retract queued at the door
-        /// pass every web test, while the real machine lunges when the hold lifts.
+        /// the cycle start. A double that moved anyway would pass a retract queued at the
+        /// door, which on the real machine runs only once the hold lifts.
         /// </summary>
         [Fact]
         public void AMoveSentWhileHoldingAtTheDoor_SitsInThePlanner()
@@ -82,7 +84,7 @@ namespace coppercli.Tests
 
         /// <summary>
         /// GRBL alarms on a soft reset out of a door hold, and $X clears it. StopAndResetAsync
-        /// sends that unlock; against a double that never alarms, nothing proves it does.
+        /// sends that unlock; a double that never alarms would not show whether it does.
         /// </summary>
         [Fact]
         public async Task ASoftResetOutOfADoorHold_AlarmsAndIsClearedByUnlock()
@@ -107,7 +109,6 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>A real Machine talking to the simulator over the loopback port.</summary>
         private static Machine Connected(FakeGrbl grbl)
         {
             var machine = new Machine(new MachineSettings

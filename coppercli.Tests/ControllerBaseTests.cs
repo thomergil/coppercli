@@ -13,24 +13,24 @@ using static coppercli.Core.Controllers.ControllerConstants;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Tests for ControllerBase FSM transitions and event handling.
+    /// Covers the ControllerBase state machine: legal and illegal transitions, start, stop,
+    /// pause and resume, the events a run emits, and EnsureDoorClosedAsync. Three fakes below
+    /// drive it: TestController for the state machine, DoorController for the door, and
+    /// PromptingController for a prompt with no subscriber.
     /// </summary>
     public class ControllerBaseTests
     {
         /// <summary>
-        /// Added to a door budget so a test that waits one out is not racing its own deadline.
+        /// Added to a door timeout so a test that waits one out does not hit its own deadline
+        /// first.
         /// </summary>
         private const int DoorTestGraceMs = 2000;
 
-        /// <summary>
-        /// Concrete implementation for testing abstract ControllerBase.
-        /// </summary>
         private class TestController : ControllerBase
         {
-            /// <summary>The door helpers are not under test here, so this drives an idle one.</summary>
             protected override IMachine Machine => Fake;
 
-            /// <summary>The same machine, for a test that needs to put it at the door.</summary>
+            /// <summary>Starts idle; a test that needs a door calls SimulateDoorOpen on it.</summary>
             public MockMachine Fake { get; } = new MockMachine();
 
             public bool RunWasCalled { get; private set; }
@@ -39,21 +39,20 @@ namespace coppercli.Tests
             public TaskCompletionSource<bool>? RunBlocker { get; set; }
             public int ResetRunStateCallCount { get; private set; }
 
-            /// <summary>Prompts RunAsync raises back to back, with nothing awaited between.</summary>
+            /// <summary>RunAsync raises these back to back, with nothing awaited between them.</summary>
             public string[] PromptsToAsk { get; set; } = Array.Empty<string>();
 
-            /// <summary>Makes RunAsync return while still Running, the way a subclass does
-            /// when one of its exits forgets the terminal transition.</summary>
+            /// <summary>Makes RunAsync return while still Running, as a subclass does when one
+            /// of its exit paths omits the terminal transition.</summary>
             public bool ReturnWithoutFinishing { get; set; }
 
-            /// <summary>Emitted once from RunAsync when set, so the event has something to carry.</summary>
+            /// <summary>RunAsync emits this once when set.</summary>
             public ProgressInfo? ProgressToEmit { get; set; }
 
             /// <summary>
-            /// Snapshot of <see cref="ResetRunStateCallCount"/> taken on RunAsync's very
-            /// first line, before it does anything else - lets a test tell whether
-            /// ResetRunState already ran by the time RunAsync started, rather than only
-            /// by the time it finished.
+            /// <see cref="ResetRunStateCallCount"/> as of RunAsync's first line. A test reads
+            /// it to tell whether ResetRunState ran before the run started, not merely before
+            /// it finished.
             /// </summary>
             public int? ResetRunStateCallCountAtRunStart { get; private set; }
 
@@ -105,13 +104,8 @@ namespace coppercli.Tests
                 ResetRunStateCallCount++;
             }
 
-            // Expose protected method for testing
             public void TestTransitionTo(ControllerState state) => TransitionTo(state);
         }
-
-        // =========================================================================
-        // Initial state tests
-        // =========================================================================
 
         [Fact]
         public void NewController_StartsInIdleState()
@@ -120,13 +114,9 @@ namespace coppercli.Tests
             Assert.Equal(ControllerState.Idle, controller.State);
         }
 
-        // =========================================================================
-        // A finished task and a finished run mean the same thing
-        // =========================================================================
-
         /// <summary>
-        /// A run that returns without transitioning leaves the controller claiming the
-        /// machine with no way back, which every front end reads as still running.
+        /// A run that returns without a terminal transition leaves State at Running, which
+        /// every front end reads as a run still under way with no way back to Idle.
         /// </summary>
         [Fact]
         public async Task ARunThatReturnsWithoutFinishing_StillEndsTheRun()
@@ -139,7 +129,6 @@ namespace coppercli.Tests
             Assert.False(controller.IsRunInProgress);
         }
 
-        /// <summary>Cancelling reports Cancelled, not a failure.</summary>
         [Fact]
         public async Task ARunCancelledWithoutFinishing_EndsAsCancelled()
         {
@@ -153,8 +142,7 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stop, then start again. Releasing returns the controller to Idle whatever state
-        /// the run left behind.
+        /// ReleaseAsync returns the controller to Idle whatever state the run left behind.
         /// </summary>
         [Fact]
         public async Task AfterReleasing_TheNextRunCanStart()
@@ -172,8 +160,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Reset alone throws on a controller that still claims a run, so it is not enough
-        /// on its own. Releasing stops the run first and always reaches Idle.
+        /// Reset throws from Running, so it cannot recover a controller mid-run. ReleaseAsync
+        /// stops the run first and reaches Idle from any state.
         /// </summary>
         [Fact]
         public async Task ReleasingAControllerThatStillClaimsARun_StillReachesIdle()
@@ -189,7 +177,6 @@ namespace coppercli.Tests
             Assert.Equal(ControllerState.Idle, controller.State);
         }
 
-        /// <summary>Releasing an idle controller is a no-op, not an error.</summary>
         [Fact]
         public async Task ReleasingAnIdleController_DoesNothing()
         {
@@ -199,10 +186,6 @@ namespace coppercli.Tests
 
             Assert.Equal(ControllerState.Idle, controller.State);
         }
-
-        // =========================================================================
-        // StartAsync tests
-        // =========================================================================
 
         [Fact]
         public async Task StartAsync_TransitionsToInitializing()
@@ -242,11 +225,9 @@ namespace coppercli.Tests
             var controller = new TestController();
             controller.RunBlocker = new TaskCompletionSource<bool>();
 
-            // Start first run
             var runTask = controller.StartAsync();
-            await Task.Delay(50); // Let it reach Running state
+            await Task.Delay(50); // Let it reach Running and block on RunBlocker.
 
-            // Try to start again
             await Assert.ThrowsAsync<InvalidControllerStateException>(
                 () => controller.StartAsync());
 
@@ -265,7 +246,6 @@ namespace coppercli.Tests
             Assert.Equal(ControllerState.Failed, controller.State);
         }
 
-        /// <summary>A workflow's own refusal reaches the screen unchanged.</summary>
         [Fact]
         public async Task StartAsync_OnRefusal_ShowsTheWorkflowMessage()
         {
@@ -283,8 +263,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A probe that never replies is a machine problem the operator can act on, so the
-        /// workflow's own message is shown. MachineWait raises it as a TimeoutException.
+        /// MachineWait raises a probe that never replies as a TimeoutException, which keeps the
+        /// workflow's own message because the operator can act on it.
         /// </summary>
         [Fact]
         public async Task StartAsync_OnTimeout_ShowsTheWorkflowMessage()
@@ -301,10 +281,9 @@ namespace coppercli.Tests
             Assert.Equal(ErrorProbeTimeout, receivedError?.Message);
         }
 
-        /// <summary>The state machine's refusals name states, not the machine.</summary>
         /// <summary>
-        /// ObjectDisposedException names an internal object, even though its base type is
-        /// InvalidOperationException.
+        /// ObjectDisposedException derives from InvalidOperationException but names an internal
+        /// object, so its message is replaced rather than shown.
         /// </summary>
         [Fact]
         public async Task StartAsync_OnDisposedObject_HidesTheObjectName()
@@ -336,7 +315,10 @@ namespace coppercli.Tests
             Assert.Equal(ErrorRunFailed, receivedError?.Message);
         }
 
-        /// <summary>A caller catching InvalidOperationException still catches them.</summary>
+        /// <summary>
+        /// InvalidControllerStateException derives from InvalidOperationException, so a catch on
+        /// the base type still catches it.
+        /// </summary>
         [Fact]
         public void IllegalTransition_ThrowsInvalidOperation()
         {
@@ -347,8 +329,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Framework text names paths and offsets the operator cannot act on. The exception
-        /// itself stays on the error object, for the log.
+        /// Framework text names paths and offsets the operator cannot act on, so the message is
+        /// replaced. The exception itself stays on the error object, for the log.
         /// </summary>
         [Fact]
         public async Task StartAsync_OnUnexpectedException_HidesTheExceptionText()
@@ -365,10 +347,6 @@ namespace coppercli.Tests
             Assert.Same(thrown, receivedError.Exception);
         }
 
-        // =========================================================================
-        // Pause/Resume tests
-        // =========================================================================
-
         [Fact]
         public async Task Pause_WhenRunning_TransitionsToPaused()
         {
@@ -376,7 +354,7 @@ namespace coppercli.Tests
             controller.RunBlocker = new TaskCompletionSource<bool>();
 
             var runTask = controller.StartAsync();
-            await Task.Delay(50); // Let it reach Running
+            await Task.Delay(50); // Let it reach Running and block on RunBlocker.
 
             controller.Pause();
 
@@ -418,10 +396,6 @@ namespace coppercli.Tests
             Assert.Throws<InvalidControllerStateException>(() => controller.Resume());
         }
 
-        // =========================================================================
-        // StopAsync tests
-        // =========================================================================
-
         [Fact]
         public async Task StopAsync_CallsCleanup()
         {
@@ -461,10 +435,6 @@ namespace coppercli.Tests
             Assert.False(controller.CleanupWasCalled);
         }
 
-        // =========================================================================
-        // Reset tests
-        // =========================================================================
-
         [Fact]
         public async Task Reset_AfterCompleted_TransitionsToIdle()
         {
@@ -502,14 +472,9 @@ namespace coppercli.Tests
             controller.RunBlocker.SetResult(true);
         }
 
-        // =========================================================================
-        // ResetRunState contract tests
-        //
-        // ResetRunState is the one place a subclass clears the fields that describe a
-        // run (see the doc comment on the abstract method). Controllers are
-        // session-lifetime singletons, so if either caller ever stopped invoking it, a
-        // field left behind by one run would leak into the next.
-        // =========================================================================
+        // ResetRunState is the one place a subclass clears the fields describing a run. One
+        // controller serves the whole session, so unless both StartAsync and Reset call it, a
+        // field left behind by one run leaks into the next.
 
         [Fact]
         public async Task StartAsync_CallsResetRunStateBeforeRunning()
@@ -518,9 +483,8 @@ namespace coppercli.Tests
 
             await controller.StartAsync();
 
-            // Checked at the moment RunAsync started, not merely by the time the run
-            // finished, so a ResetRunState() moved to the bottom of StartAsync fails
-            // this rather than passing it.
+            // Read at the moment RunAsync started, not by the time the run finished, so a
+            // ResetRunState() call moved below RunAsync fails this test.
             Assert.Equal(1, controller.ResetRunStateCallCountAtRunStart);
         }
 
@@ -550,10 +514,6 @@ namespace coppercli.Tests
             Assert.Equal(2, controller.ResetRunStateCallCount);
         }
 
-        // =========================================================================
-        // State transition validation tests
-        // =========================================================================
-
         [Theory]
         [InlineData(ControllerState.Idle, ControllerState.Running)]
         [InlineData(ControllerState.Idle, ControllerState.Completed)]
@@ -562,7 +522,6 @@ namespace coppercli.Tests
         {
             var controller = new TestController();
 
-            // Get to 'from' state if not Idle
             if (from == ControllerState.Running)
             {
                 controller.TestTransitionTo(ControllerState.Initializing);
@@ -573,10 +532,6 @@ namespace coppercli.Tests
                 () => controller.TestTransitionTo(to));
         }
 
-        // =========================================================================
-        // Event emission tests
-        // =========================================================================
-
         [Fact]
         public async Task StateChanged_FiredOnEveryTransition()
         {
@@ -586,14 +541,11 @@ namespace coppercli.Tests
 
             await controller.StartAsync();
 
-            // Should have: Initializing, Running, Completing, Completed
+            // Initializing, Running, Completing, Completed.
             Assert.True(states.Count >= 4);
             Assert.Equal(ControllerState.Initializing, states[0]);
         }
 
-        /// <summary>
-        /// Raises progress and asserts on what the subscriber received.
-        /// </summary>
         [Fact]
         public async Task ProgressChanged_ReachesSubscribersWithTheEmittedValues()
         {
@@ -612,8 +564,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A paused run can still raise a prompt. RequestUserInputAsync moves to
-        /// WaitingForUserInput and back to whatever it interrupted, so both transitions must
-        /// be legal or a pause arriving with a prompt throws out of the run.
+        /// WaitingForUserInput and back to the state it interrupted, so both transitions must
+        /// be legal or the prompt throws out of the run.
         /// </summary>
         [Fact]
         public void APromptRaisedWhilePaused_ReturnsToPaused()
@@ -632,8 +584,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A run parked at a prompt or finishing is still under way. Anything that reads it
-        /// as idle - a second start, closing the serial port - acts on a machine mid-job.
+        /// WaitingForUserInput and Completing are still a run in progress. Code that reads
+        /// either as idle - a second start, closing the serial port - acts on a machine mid-job.
         /// </summary>
         [Theory]
         [InlineData(ControllerState.Idle, false)]
@@ -698,7 +650,6 @@ namespace coppercli.Tests
 
             asked[0].OnResponse("Continue");
 
-            // The answer has returned and the run has already published the next prompt.
             Assert.Equal(2, asked.Count);
 
             asked[1].OnResponse("Continue");
@@ -706,10 +657,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stopping a run that already cancelled itself must not throw. StopAsync
-        /// transitions from inside a finally, and Cancelled may only go to Idle, so a throw
-        /// there escapes over whatever brought the caller in. The terminal swallows that and
-        /// skips the Reset after it, leaving the controller stuck: StartAsync needs Idle.
+        /// Cancelled may only go to Idle, so a StopAsync that transitioned unconditionally
+        /// would throw from inside its finally. The terminal swallows that throw and skips the
+        /// Reset after it, leaving the controller in a state StartAsync will not start from.
         /// </summary>
         [Fact]
         public async Task StoppingARunThatAlreadyCancelled_LeavesItResettable()
@@ -730,8 +680,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A prompt with no subscriber used to wait for an answer that could not arrive, so
-        /// the run held the machine until the operator pressed Stop.
+        /// A prompt with no subscriber can never be answered, so RequestUserInputAsync throws
+        /// instead of waiting and holding the machine until the operator presses Stop.
         /// </summary>
         [Fact]
         public async Task RequestUserInput_WithNoSubscriber_Throws()
@@ -745,9 +695,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A door state reaches the operator on one channel. The closed door is the state
-        /// with something to answer, so it goes out as a prompt only. Sent as both, a screen
-        /// would draw the same sentence twice, once with the choices and once without.
+        /// A closed door is the one door state with something to answer, so it goes out as a
+        /// prompt and not also as progress. Published as both, a screen draws the same sentence
+        /// twice, once with the choices and once without.
         /// </summary>
         [Fact]
         public async Task ClosedDoor_IsPromptedAndNotAlsoEmittedAsAMessage()
@@ -755,9 +705,8 @@ namespace coppercli.Tests
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
             var controller = new DoorController(machine);
 
-            // Every progress, not only PhaseWaitingForOperator: the mill screen and the
-            // browser draw any phase that is not PhaseMilling, so the door sentence under
-            // any phase is drawn twice.
+            // Collects every phase, not only PhaseWaitingForOperator: the mill screen and the
+            // browser draw any phase that is not PhaseMilling.
             var published = new List<ProgressInfo>();
             controller.ProgressChanged += published.Add;
 
@@ -780,8 +729,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Closing the enclosure moves GRBL from Door:1 to Door:0, which is still Door. A run
-        /// watching for the door to clear waits out its whole timeout, and for those seconds
-        /// every screen tells the operator to close a door they have closed.
+        /// that waits for the status to leave Door waits out its whole timeout, and until then
+        /// every screen shows a prompt to close a door the operator has closed.
         /// </summary>
         [Fact]
         public async Task ClosingTheDoor_IsNoticedOnTheStatusChange()
@@ -815,9 +764,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A screen holds the last waiting message until the run sends another. The run has
-        /// to withdraw it when the door is dealt with, or the message is still up while the
-        /// tool moves - on the probe's path the next progress is a whole retract away.
+        /// A screen holds the last waiting message until the next progress arrives, so the run
+        /// emits PhaseDoorCleared on every exit. Without it the message is still up while the
+        /// tool moves: on the probe's path the next progress is a whole retract away.
         /// </summary>
         [Fact]
         public async Task OnceTheDoorIsDealtWith_TheRunWithdrawsItsMessage()
@@ -825,7 +774,7 @@ namespace coppercli.Tests
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
             var controller = new DoorController(machine);
 
-            // The rule ProbeMenu and MillMenu both draw by.
+            // Mirrors how ProbeMenu and MillMenu decide what to draw.
             string? onScreen = null;
             controller.ProgressChanged += progress =>
                 onScreen = progress.Phase == ControllerConstants.PhaseWaitingForOperator
@@ -849,9 +798,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A park restore is a move under way, so it goes out as a message like an open door.
-        /// Without this, GetDoorMessage could return anything for it and the screens would
-        /// show that while the tool moves.
+        /// A park restore is a move under way with nothing to answer, so it is published as a
+        /// message like an open door rather than raised as a prompt.
         /// </summary>
         [Fact]
         public async Task DoorResuming_IsEmittedAsAMessage()
@@ -862,8 +810,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The other side of the same rule: an open door has nothing to answer, so it goes
-        /// out as a message. Without it the screens have nothing to draw while the run waits.
+        /// An open door has nothing to answer, so it is published as a message. Without it the
+        /// screens have nothing to draw while the run waits.
         /// </summary>
         [Fact]
         public async Task OpenDoor_IsEmittedAsAMessage()
@@ -889,8 +837,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A switch that reads closed but never lets GRBL resume would otherwise re-prompt
-        /// for ever. After MachineClearAttempts answers the run names the switch instead.
+        /// A switch that reads closed but never lets GRBL resume would otherwise be prompted
+        /// about forever. After MachineClearAttempts operator answers the run fails with
+        /// ErrorDoorWillNotRelease instead.
         /// </summary>
         [Fact]
         public async Task ADoorThatNeverReleases_StopsAskingAndNamesTheSwitch()
@@ -908,8 +857,8 @@ namespace coppercli.Tests
             };
             controller.ErrorOccurred += error => reported = error;
 
-            // Every answer is given the full restore budget before the run gives up on it,
-            // so the whole sequence is that budget times the number of attempts.
+            // Each answer gets the full DoorResumeTimeoutMs before the run gives up on it, so
+            // the whole sequence takes that times MachineClearAttempts.
             using var cts = new CancellationTokenSource(
                 ControllerConstants.MachineClearAttempts * ControllerConstants.DoorResumeTimeoutMs
                 + DoorTestGraceMs);
@@ -952,8 +901,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A closed door is the only door state with a prompt, and it offers both options.
-        /// An open door and a park restore are waited out instead.
+        /// A closed door is the only door state with a prompt; an open door and a park restore
+        /// are waited out instead.
         /// </summary>
         [Fact]
         public async Task ClosedDoor_PromptOffersContinueAndAbort()
@@ -985,10 +934,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A park restore takes as long as the machine's parking settings say, so it never
-        /// raises a prompt. It used to prompt after five seconds - "the machine has not
-        /// finished moving the tool back", with Abort as the only option - on a restore that
-        /// was still running.
+        /// A park restore takes as long as the machine's parking settings say, so no prompt is
+        /// raised however long it runs.
         /// </summary>
         [Fact]
         public async Task DoorResuming_RaisesNoPrompt()
@@ -1003,7 +950,7 @@ namespace coppercli.Tests
                 request.OnResponse(ControllerConstants.OptionAbort);
             };
 
-            // Longer than DoorResumeTimeoutMs, which is what used to raise the prompt.
+            // Runs past DoorResumeTimeoutMs, so a prompt raised on that deadline would be seen.
             using var cts = new CancellationTokenSource(
                 ControllerConstants.DoorResumeTimeoutMs + DoorTestGraceMs);
             try
@@ -1050,9 +997,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A run paused at the door stays paused. GRBL keeps the moves a resume sends in its
-        /// planner and runs them the moment the hold lifts, with nobody watching. Every
-        /// controller inherits this, not only the mill.
+        /// GRBL keeps the moves a resume sends in its planner and runs them the moment the hold
+        /// lifts, with nobody watching, so Resume at the door is refused and the run stays
+        /// paused. Every controller inherits this, not only the mill.
         /// </summary>
         [Fact]
         public async Task ResumingAtTheDoor_IsRefusedAndTheRunStaysPaused()
@@ -1060,7 +1007,7 @@ namespace coppercli.Tests
             var controller = new TestController { RunBlocker = new TaskCompletionSource<bool>() };
             var run = controller.StartAsync();
 
-            await Task.Delay(50); // Let it reach Running
+            await Task.Delay(50); // Let it reach Running and block on RunBlocker.
             controller.Pause();
             Assert.Equal(ControllerState.Paused, controller.State);
 

@@ -1,6 +1,7 @@
 # coppercli Macro Guide
 
-Macros automate multi-step workflows. Instead of navigating menus for each step, write a script that guides you through the job.
+A macro runs a sequence of steps you would otherwise select from the menus one at a time.
+It stops at each `prompt`, `confirm` and `jog` for you to act.
 
 ## File Format
 
@@ -59,27 +60,28 @@ mill
 
 ### Stage 1: Back Copper
 
-1. **home** — Start from known position
-2. **load** — Load the isolation routing file
-3. **jog** — User positions spindle at PCB origin
-4. **probe z** — Find copper surface (clip must be attached)
-5. **zero xyz** — Set work origin at this point
-6. **probe grid** — Map surface height variations (clip still attached)
-7. **mill** — Run with height compensation
+1. **home** — start from a known position
+2. **load** — load the isolation routing file
+3. **jog** — you position the spindle at the PCB origin
+4. **probe z** — find the copper surface (the clip must be attached)
+5. **zero xyz** — set the work origin at this point
+6. **probe grid** — measure the surface height across the board (clip still attached)
+7. **mill** — run with height correction
 
 ### Stage 2: Drilling
 
-1. **load** — Load the drill file
-2. **probe z** — Re-probe with new bit (different length)
-3. **zero z** — Update Z origin for new bit; X/Y unchanged
-4. **probe apply** — Reuse the grid from stage 1 (same board)
-5. **mill** — Drill holes
+1. **load** — load the drill file
+2. **probe z** — re-probe with the new bit, which has a different length
+3. **zero z** — update the Z origin for the new bit; X and Y are unchanged
+4. **probe apply** — reuse the grid from stage 1 (same board)
+5. **mill** — drill the holes
 
-Note: `probe apply` reuses existing grid data rather than re-probing. The surface topology hasn't changed—only the Z reference needs updating for the new bit length.
+`probe apply` reuses existing grid data instead of probing again. The surface has not
+changed between stages; only the Z reference needs updating for the new bit length.
 
 ## Placeholders
 
-Macros can use `[name:file]` placeholders for files that vary between runs:
+A `[name:file]` placeholder stands for a file that differs between runs:
 
 ```
 load [back_file:file]
@@ -88,14 +90,16 @@ load [drill_file:file]
 mill
 ```
 
-When run from the menu, each placeholder prompts a file browser. Underscores display as spaces: `back_file` → "Back file:".
+From the menu, each placeholder opens a file browser. Underscores display as spaces:
+`back_file` becomes "Back file:".
 
-From CLI, provide values with `--name`:
+From the command line, pass values with `--name`:
 ```bash
 coppercli --macro job.cmacro --back_file ~/back.ngc --drill_file ~/drill.ngc
 ```
 
-Missing args prompt interactively—you can provide some via CLI and select others in the browser.
+A placeholder with no value on the command line opens the file browser, so you can pass
+some on the command line and pick the rest in the browser.
 
 ## Running Macros
 
@@ -108,11 +112,10 @@ coppercli -m ~/macros/pcb.cmacro
 coppercli --macro job.cmacro --input_file ~/file.ngc
 ```
 
-Command-line mode auto-connects using saved settings, runs the macro, and exits.
+From the command line, coppercli connects using the saved settings, runs the macro, and
+exits.
 
 ## Tips
 
-- Always `prompt` before `mill` to confirm the user is ready
-- Keep probe clip on through both `probe z` and `probe grid`
-- After bit change, only `zero z`—preserve X/Y origin
-- Use `probe apply` (not `probe grid`) for subsequent operations on the same board
+- Put a `prompt` before every `mill`, so the job waits until you are ready
+- Keep the probe clip on through both `probe z` and `probe grid`

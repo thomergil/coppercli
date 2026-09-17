@@ -1,5 +1,3 @@
-// Extracted from Program.cs
-
 using coppercli.Core.Controllers;
 using coppercli.Core.Settings;
 using coppercli.Helpers;
@@ -9,9 +7,6 @@ using static coppercli.CliConstants;
 
 namespace coppercli.Menus
 {
-    /// <summary>
-    /// Main menu for the coppercli application.
-    /// </summary>
     internal static class MainMenu
     {
         private enum MainAction
@@ -38,8 +33,8 @@ namespace coppercli.Menus
             new MenuItem<MainAction>("Load G-Code", 'l', MainAction.LoadFile),
             new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
                 Blocker: MenuHelpers.GetMachineDisabledReason),
-            // Enabled exactly when nothing blocks it, so the entry and the reason beside
-            // it cannot disagree.
+            // A `Blocker` returns the reason to disable the entry, or null to enable it,
+            // so the entry and the reason shown beside it come from one call.
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
                 Blocker: MenuHelpers.GetProbeDisabledReason),
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
@@ -61,7 +56,6 @@ namespace coppercli.Menus
 
             Console.Clear();
 
-            // Show status header
             var activity = MachineWait.GetActivity(machine);
             var statusColor = MachineWait.IsUnavailable(activity) ? ColorError : ColorSuccess;
             var statusText = DisplayHelpers.GetActivityText(activity, machine.Status);
@@ -95,7 +89,6 @@ namespace coppercli.Menus
                 AnsiConsole.MarkupLine($"Probe: [{ColorInfo}]{probePoints.SizeX}x{probePoints.SizeY}[/] ({probePoints.Progress}/{probePoints.TotalPoints} points)");
             }
 
-            // Show machine profile
             var profile = MachineProfiles.GetProfile(settings.MachineProfile);
             if (profile != null)
             {
@@ -108,17 +101,15 @@ namespace coppercli.Menus
 
             AnsiConsole.WriteLine();
 
-            // Enable auto-clear while showing menu (user can see status updates)
             machine.EnableAutoStateClear = true;
 
-            // Smart default based on workflow state
             int smartDefault = MainMenuDef.IndexOf(GetSmartDefault());
             var choice = MenuHelpers.ShowMenuWithRefresh("Select an option:", MainMenuDef, smartDefault);
 
-            // Disable auto-clear before leaving menu
             machine.EnableAutoStateClear = false;
 
-            // Null means status changed - return to redraw (loop in Program.cs will call us again)
+            // `ShowMenuWithRefresh` returns null when the status changed; the loop in
+            // Program.cs calls Show again to redraw.
             if (choice == null)
             {
                 return;

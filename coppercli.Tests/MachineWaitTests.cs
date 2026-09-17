@@ -11,19 +11,15 @@ using Xunit;
 
 namespace coppercli.Tests
 {
-    /// <summary>
-    /// Tests for MachineWait utility methods.
-    /// </summary>
+    // Covers MachineWait: the status predicates, the polling waits, the door hold release,
+    // and the derived activity and control values every screen reads. MockMachine is the
+    // only machine these run against, so GRBL behavior it does not simulate is untested.
     public class MachineWaitTests
     {
-        /// <summary>Long enough that sitting it out would be an obvious failure.</summary>
+        /// <summary>Long enough that a wait running the full budget fails the test.</summary>
         private const int HangDetectTimeoutMs = 4000;
         private const double RetractStartZ = -10.0;
         private const double RetractTargetZ = -1.0;
-
-        // =========================================================================
-        // Status check tests
-        // =========================================================================
 
         [Fact]
         public void IsIdle_WhenIdle_ReturnsTrue()
@@ -88,10 +84,6 @@ namespace coppercli.Tests
             Assert.False(MachineWait.IsUnavailable(machine));
         }
 
-        // =========================================================================
-        // WaitForIdleAsync tests
-        // =========================================================================
-
         [Fact]
         public async Task WaitForIdleAsync_WhenAlreadyIdle_ReturnsImmediately()
         {
@@ -109,7 +101,6 @@ namespace coppercli.Tests
 
             var waitTask = MachineWait.WaitForIdleAsync(machine, 5000);
 
-            // Simulate status change after short delay
             await Task.Delay(100);
             machine.SimulateStatusChange("Idle");
 
@@ -138,13 +129,8 @@ namespace coppercli.Tests
             await Task.Delay(50);
             cts.Cancel();
 
-            // Standard .NET pattern: cancellation throws TaskCanceledException
             await Assert.ThrowsAsync<TaskCanceledException>(() => waitTask);
         }
-
-        // =========================================================================
-        // WaitForZHeightAsync tests
-        // =========================================================================
 
         [Fact]
         public async Task WaitForZHeightAsync_WhenAtTarget_ReturnsTrue()
@@ -164,7 +150,7 @@ namespace coppercli.Tests
         {
             var machine = new MockMachine
             {
-                WorkPosition = new Vector3(0, 0, 5.05) // Within 0.1mm tolerance
+                WorkPosition = new Vector3(0, 0, 5.05) // inside PositionToleranceMm
             };
 
             var result = await MachineWait.WaitForZHeightAsync(machine, 5.0, 1000);
@@ -189,8 +175,8 @@ namespace coppercli.Tests
         public async Task ASafetyRetract_IsCheckedInMachineCoordinates()
         {
             // G53 moves are in machine coordinates. Starting at the target would take the
-            // already-there shortcut and skip the wait under test, so it starts 50mm away
-            // and arrives mid-wait, with work Z nowhere near the target.
+            // already-there shortcut and skip the wait under test, so the machine starts
+            // 50mm away and arrives mid-wait while work Z stays far from the target.
             var machine = new MockMachine
             {
                 Status = GrblProtocol.StatusIdle,
@@ -208,15 +194,9 @@ namespace coppercli.Tests
                 "the retract was judged on work Z, which never reaches the G53 target");
         }
 
-        // =========================================================================
-        // ReleaseDoorHoldAsync tests
-        //
-        // Closing the door does not end the hold; GRBL waits for a cycle start (see
-        // MachineWait.GetDoorState). Two things must hold: the cycle start goes only on
-        // GRBL's own reading of the switch, and the return value means the hold actually
-        // lifted, because everything the caller does next is machine motion.
-        // =========================================================================
-
+        // Closing the door does not end the hold: GRBL stays in Door until it receives a
+        // cycle start. Everything the caller does after a release is machine motion, so the
+        // return value has to mean the hold lifted.
         [Fact]
         public async Task Release_SendsOneCycleStartAndConfirmsTheHoldLifted()
         {
@@ -232,10 +212,9 @@ namespace coppercli.Tests
         [Fact]
         public async Task Release_SendsNoCycleStartWhileTheDoorReadsAjar()
         {
-            // The cycle start goes only when the operator has answered and GRBL reports the
-            // door closed. Their answer says they are clear of the machine, not where the
-            // door is. Refusing here also stops the answer sitting pending and starting the
-            // machine when the door is closed later, unattended.
+            // The operator's answer says they are clear of the machine, not that the door is
+            // shut. A cycle start sent now stays pending in GRBL and starts the machine
+            // whenever the door is closed later, unattended.
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
 
             using var reporting = PumpStatusReports(machine);
@@ -270,8 +249,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stops the pump on dispose. Disposing a CancellationTokenSource does not cancel
-        /// it, so a `using` over the source alone leaves the loop running.
+        /// Disposing a CancellationTokenSource does not cancel it, so a `using` over the
+        /// source alone would leave the pump loop running.
         /// </summary>
         private sealed class StatusReportPump : IDisposable
         {
@@ -295,7 +274,7 @@ namespace coppercli.Tests
         [Fact]
         public async Task DoorClosedOnALaterPoll_IsStillReleased()
         {
-            // The substate arrives on the status poll, so the report in hand when the
+            // The substate arrives on the status poll, so the report received when the
             // operator answers is one poll old. Without the catch-up allowance they are
             // prompted again immediately after closing the door.
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
@@ -315,8 +294,9 @@ namespace coppercli.Tests
         [Fact]
         public async Task TheCatchUpAndTheRelease_ShareOneTimeout()
         {
-            // A caller asking for N milliseconds waits N in total, not N per wait. The
-            // restore here would finish inside a second full timeout.
+            // The restore outlasts the whole budget, so the release wait ends by running out
+            // of time; the elapsed figure shows whether it ran on the budget the catch-up
+            // left or on a fresh one.
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
             machine.DoorRestoreMs = StatusPollIntervalMs * 8;
 
@@ -415,14 +395,10 @@ namespace coppercli.Tests
             Assert.Equal(0, machine.CycleStartCount);
         }
 
-        // =========================================================================
-        // Waiting out a door hold
-        // =========================================================================
-
         /// <summary>
         /// Releasing a door hold waits for the machine to leave Door. WaitForIdleAsync cannot
-        /// do that job: it treats a door as a reason to stop waiting and gives up on its
-        /// first poll, which is why the prompt used to reappear at once.
+        /// do that: it treats a door as a reason to stop waiting and gives up on its first
+        /// poll, so a release built on it would return before the hold lifted.
         /// </summary>
         [Fact]
         public async Task ADoorHold_IsWaitedOutRatherThanGivenUpOn()
@@ -445,8 +421,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A switch that reads closed but never lets GRBL resume leaves the machine where it
-        /// was, and the caller is told so rather than being told the door cleared.
+        /// IgnoreCycleStart models a door switch that reads closed but never lets GRBL
+        /// resume, so the release returns the state the machine is still in.
         /// </summary>
         [Fact]
         public async Task AHoldThatNeverLifts_IsReportedAsStillHolding()
@@ -459,10 +435,6 @@ namespace coppercli.Tests
 
             Assert.Equal(DoorState.WaitingForResume, left);
         }
-
-        // =========================================================================
-        // EnsureMachineReadyAsync tests
-        // =========================================================================
 
         [Fact]
         public async Task EnsureMachineReadyAsync_WhenIdle_ReturnsTrue()
@@ -485,10 +457,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Readiness must never resume the machine on its own. Sending CycleStart to
-        /// release a door hold restarts the spindle and resumes motion while the operator
-        /// may be reaching in. Only the operator may ask for it, through
-        /// MillingController's prompt.
+        /// CycleStart restarts the spindle and resumes motion while the operator may be
+        /// reaching in, so only the operator asks for it, through MillingController's prompt.
         /// </summary>
         [Fact]
         public async Task EnsureMachineReadyAsync_DoesNotResumeADoorHold()
@@ -521,10 +491,6 @@ namespace coppercli.Tests
             Assert.True(result);
         }
 
-        // =========================================================================
-        // SafetyRetractZAsync tests
-        // =========================================================================
-
         [Fact]
         public async Task SafetyRetractZAsync_SendsCorrectCommands()
         {
@@ -534,7 +500,6 @@ namespace coppercli.Tests
                 MachinePosition = new Vector3(0, 0, -50)
             };
 
-            // Simulate position update
             _ = Task.Run(async () =>
             {
                 await Task.Delay(100);
@@ -546,10 +511,7 @@ namespace coppercli.Tests
 
             await MachineWait.SafetyRetractZAsync(machine, -1.0, 2000);
 
-            // Verify G90 (absolute) was sent
             Assert.True(machine.WasCommandSent("G90"));
-
-            // Verify G53 G0 Z-1 was sent (machine coords retract)
             Assert.True(machine.WasCommandSentMatching(@"G53.*G0.*Z-1"));
         }
 
@@ -562,8 +524,8 @@ namespace coppercli.Tests
                 MachinePosition = new Vector3(0, 0, -1.0)
             };
 
-            // Monotonic: a clock step here would make a prompt return look slow, or a slow
-            // one look prompt.
+            // Stopwatch rather than wall-clock time: a clock adjustment mid-test would
+            // change the elapsed figure this asserts on.
             var elapsed = System.Diagnostics.Stopwatch.StartNew();
             await MachineWait.SafetyRetractZAsync(machine, -1.0, 5000);
 
@@ -602,8 +564,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// One mapping for the whole enum. A missing case would send a screen back to
-        /// branching on GRBL's status word.
+        /// One mapping for the whole enum. Without a case here, a screen has to branch on
+        /// GRBL's status word itself.
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.StatusIdle, "", MachineActivity.Idle)]
@@ -684,8 +646,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every derived answer, one row per activity, so a new activity cannot be added
-        /// without deciding what each control does in it.
+        /// One row per activity. EveryActivity_HasARowInTheControlPredicateTable reads these rows
+        /// back, so an activity added to the enum without a row here fails that test.
         /// </summary>
         [Theory]
         [InlineData(MachineActivity.Disconnected, false, false, false, false, true, false)]
@@ -698,7 +660,7 @@ namespace coppercli.Tests
         [InlineData(MachineActivity.Idle, true, false, false, false, false, false)]
         [InlineData(MachineActivity.Sleep, true, true, false, false, true, true)]
         [InlineData(MachineActivity.Other, true, false, false, false, false, false)]
-        public void EveryActivity_HasControlAnswers(
+        public void EveryActivity_HasTheExpectedControlPredicates(
             MachineActivity activity, bool isAnswering, bool needsAttention,
             bool canPause, bool canResume, bool isUnavailable, bool blocksJobStart)
         {
@@ -709,15 +671,15 @@ namespace coppercli.Tests
             Assert.Equal(isUnavailable, MachineWait.IsUnavailable(activity));
 
             // A door must not block a start: the run prompts about it. Folding this back
-            // into NeedsAttention greys out Mill and Probe at an open enclosure.
+            // into NeedsAttention grays out Mill and Probe at an open enclosure.
             Assert.Equal(blocksJobStart, MachineWait.BlocksJobStart(activity));
         }
 
         [Fact]
-        public void EveryActivity_IsCoveredByTheControlAnswers()
+        public void EveryActivity_HasARowInTheControlPredicateTable()
         {
             var decided = typeof(MachineWaitTests)
-                .GetMethod(nameof(EveryActivity_HasControlAnswers))!
+                .GetMethod(nameof(EveryActivity_HasTheExpectedControlPredicates))!
                 .GetCustomAttributes(typeof(InlineDataAttribute), false)
                 .Cast<InlineDataAttribute>()
                 .Select(row => (MachineActivity)row.GetData(null!).Single()[0]!)
@@ -733,17 +695,11 @@ namespace coppercli.Tests
                 MachineWait.GetDoorState(new MockMachine { Status = GrblProtocol.StatusIdle }));
         }
 
-        // =========================================================================
-        // Waits must not sit on a state only a person can clear
-        //
-        // A door opened mid-cycle leaves GRBL holding. It will not reach Idle, will not
-        // move Z, and will not start a move until the operator acts. A wait that only
-        // watches the clock sits out the full timeout and then reports an error that does
-        // not mention the door.
-        // =========================================================================
-
+        // A door opened mid-cycle leaves GRBL holding: it will not reach Idle and will not
+        // move until the operator acts. A wait that checks only the deadline runs the full
+        // timeout and then reports an error that does not mention the door.
         [Fact]
-        public async Task WaitingForIdleGivesUpAsSoonAsTheDoorHolds()
+        public async Task WaitingForIdle_StopsAsSoonAsTheDoorHolds()
         {
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
 
@@ -757,7 +713,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task WaitForIdle_GivesUpWhenTheMachineAlarms()
+        public async Task WaitForIdle_ReturnsFalseAtOnceWhenTheMachineAlarms()
         {
             var machine = new MockMachine { Status = GrblProtocol.StatusAlarm };
 
@@ -771,7 +727,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task WaitingForAZHeightGivesUpAsSoonAsTheDoorHolds()
+        public async Task WaitingForAZHeight_StopsAsSoonAsTheDoorHolds()
         {
             var machine = new MockMachine
             {
@@ -793,11 +749,11 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A probe reply cannot arrive from a machine parked at the door, so the wait gives
-        /// up as soon as it parks. Without this the run sat out the full
+        /// up as soon as it parks. Without that check the run waits out the full
         /// ProbeReplyTimeoutMs: three minutes with the tool down and nothing on screen.
         /// </summary>
         [Fact]
-        public async Task ReplyWait_GivesUpWhenTheMachineStopsResponding()
+        public async Task ReplyWait_TimesOutWhenTheMachineStopsResponding()
         {
             var machine = new MockMachine { Status = GrblProtocol.StatusRun };
             var neverAnswers = new TaskCompletionSource<bool>();
@@ -821,11 +777,10 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every wait in MachineWait runs through WaitUntilAsync, and the condition can be
-        /// true at the moment the budget runs out. Reported as a timeout, a retract that did
-        /// land reads as one that did not.
-        ///
-        /// A zero budget skips the loop body, so only the re-check after it is under test.
+        /// Every wait in MachineWait runs through WaitUntilAsync, whose condition can turn
+        /// true as the budget runs out; reported as a timeout, a retract that did land reads
+        /// as one that did not. A zero budget skips the loop body, so only the re-check after
+        /// it is under test.
         /// </summary>
         [Fact]
         public async Task AConditionAlreadyTrueWhenTheBudgetIsGone_IsNotATimeout()
@@ -837,7 +792,6 @@ namespace coppercli.Tests
                 "a machine already Idle when the budget ran out was reported as a timeout");
         }
 
-        /// <summary>The other half: still false when the budget is gone is a timeout.</summary>
         [Fact]
         public async Task AConditionStillFalseWhenTheBudgetIsGone_IsATimeout()
         {
