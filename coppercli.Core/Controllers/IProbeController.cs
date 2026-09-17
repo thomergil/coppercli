@@ -107,7 +107,7 @@ namespace coppercli.Core.Controllers
         /// <summary>Safe height for Z travel between points (mm in work coords).</summary>
         public double SafeHeight { get; set; } = Constants.RetractZMm;
 
-        /// <summary>Maximum probe depth below current Z (mm, negative).</summary>
+        /// <summary>How far below the current Z to search for the surface (mm, positive).</summary>
         public double MaxDepth { get; set; } = 10.0;
 
         /// <summary>Probe feed rate (mm/min).</summary>
@@ -132,8 +132,8 @@ namespace coppercli.Core.Controllers
         public bool TraceOutline { get; set; }
 
         /// <summary>
-        /// How far a probed height may sit from its already-measured neighbors before
-        /// the run pauses for the operator (mm). Set to 0 to accept every height.
+        /// How far a probed height may sit from its measured neighbours before the run
+        /// pauses for the operator (mm). Set to 0 to accept every height.
         /// </summary>
         public double HeightDeviationTolerance { get; set; } =
             ControllerConstants.ProbeHeightDeviationToleranceMm;

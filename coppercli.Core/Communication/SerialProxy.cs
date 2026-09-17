@@ -16,8 +16,11 @@ namespace coppercli.Core.Communication
         // =========================================================================
         // Constants
         // =========================================================================
-        private const int HeartbeatIntervalMs = 10000;  // Send status query every 10s of inactivity
-        private const int MaxMissedHeartbeats = 3;      // Disconnect after 3 missed heartbeats (30s)
+        /// <summary>How long a client may send nothing before that counts as one silence.</summary>
+        private const int ClientSilenceIntervalMs = 10000;
+
+        /// <summary>How many of those in a row mean the client has gone.</summary>
+        private const int MaxSilentIntervals = 3;
         private const int HealthCheckIntervalMs = 5000; // Check health every 5 seconds
         private const int RecoveryDelayMs = 1000;       // Wait before attempting recovery
         private const byte GrblStatusQuery = (byte)'?';
@@ -95,7 +98,32 @@ namespace coppercli.Core.Communication
         // =========================================================================
         public long BytesFromClient { get; private set; }
         public long BytesToClient { get; private set; }
-        public DateTime? ClientConnectedTime { get; private set; }
+        /// <summary>
+        /// When the client attached, on the monotonic clock, or null with none attached.
+        /// A screen shows how long ago that was, which a wall clock gets wrong the moment it
+        /// steps.
+        ///
+        /// Private, and read through <see cref="ClientConnectedFor"/>: three threads null it
+        /// under the lock, so a caller that tests then reads can find it gone between the two.
+        /// </summary>
+        private long? _clientConnectedAtMs;
+
+        /// <summary>
+        /// How long the client has been attached, or null with none attached. One read under
+        /// the lock, so a disconnect mid-draw cannot take the screen down.
+        /// </summary>
+        public TimeSpan? ClientConnectedFor
+        {
+            get
+            {
+                lock (_clientLock)
+                {
+                    return _clientConnectedAtMs is long since
+                        ? TimeSpan.FromMilliseconds(Environment.TickCount64 - since)
+                        : null;
+                }
+            }
+        }
 
         // =========================================================================
         // Private state
@@ -110,8 +138,17 @@ namespace coppercli.Core.Communication
         private CancellationTokenSource? _cts;
         private readonly object _clientLock = new();
         private bool _disposed;
-        private DateTime _lastClientActivity;
-        private int _missedHeartbeats;
+        /// <summary>
+        /// When the client last sent anything, on the monotonic clock: a wall clock that
+        /// steps would disconnect it or never notice it had gone.
+        /// </summary>
+        private long _lastClientActivityMs;
+
+        /// <summary>
+        /// How many intervals in a row the client has sent nothing. The '?' sent below goes
+        /// to the serial port, not to the client, so it verifies nothing about the peer.
+        /// </summary>
+        private int _silentIntervals;
 
         /// <summary>
         /// Starts the proxy, opening the serial port and TCP listener.
@@ -341,16 +378,16 @@ namespace coppercli.Core.Communication
         /// </summary>
         private void AcceptLoop()
         {
-            var lastHealthCheck = DateTime.Now;
+            long lastHealthCheck = Environment.TickCount64;
 
             while (_cts != null && !_cts.IsCancellationRequested)
             {
                 try
                 {
                     // Periodic health check and recovery (e.g., after system suspend/resume)
-                    if ((DateTime.Now - lastHealthCheck).TotalMilliseconds >= HealthCheckIntervalMs)
+                    if (Environment.TickCount64 - lastHealthCheck >= HealthCheckIntervalMs)
                     {
-                        lastHealthCheck = DateTime.Now;
+                        lastHealthCheck = Environment.TickCount64;
                         if (!TryRecoverIfNeeded())
                         {
                             // Recovery failed, exit loop
@@ -386,11 +423,11 @@ namespace coppercli.Core.Communication
                         _client = newClient;
                         _networkStream = _client.GetStream();
                         ClientAddress = newClientAddress;
-                        ClientConnectedTime = DateTime.Now;
+                        _clientConnectedAtMs = Environment.TickCount64;
                         BytesFromClient = 0;
                         BytesToClient = 0;
-                        _lastClientActivity = DateTime.Now;
-                        _missedHeartbeats = 0;
+                        _lastClientActivityMs = Environment.TickCount64;
+                        _silentIntervals = 0;
                     }
 
                     RaiseInfo($"Client connected: {ClientAddress}");
@@ -566,7 +603,7 @@ namespace coppercli.Core.Communication
         private void TcpToSerialLoop()
         {
             var buffer = new byte[Constants.ProxyBufferSize];
-            var lastHeartbeatCheck = DateTime.Now;
+            long lastHeartbeatCheck = Environment.TickCount64;
 
             while (_cts != null && !_cts.IsCancellationRequested)
             {
@@ -606,8 +643,8 @@ namespace coppercli.Core.Communication
                         }
 
                         // Update activity tracking - client is alive
-                        _lastClientActivity = DateTime.Now;
-                        _missedHeartbeats = 0;
+                        _lastClientActivityMs = Environment.TickCount64;
+                        _silentIntervals = 0;
 
                         if (_serialPort != null && _serialPort.IsOpen)
                         {
@@ -618,28 +655,25 @@ namespace coppercli.Core.Communication
                     else
                     {
                         // Poll timed out - check if we need to send a heartbeat
-                        var now = DateTime.Now;
-                        var idleTime = now - _lastClientActivity;
+                        long now = Environment.TickCount64;
 
-                        if (idleTime.TotalMilliseconds >= HeartbeatIntervalMs)
+                        if (now - _lastClientActivityMs >= ClientSilenceIntervalMs
+                            && now - lastHeartbeatCheck >= ClientSilenceIntervalMs)
                         {
-                            // Only check once per heartbeat interval
-                            if ((now - lastHeartbeatCheck).TotalMilliseconds >= HeartbeatIntervalMs)
+                            lastHeartbeatCheck = now;
+                            _silentIntervals++;
+
+                            if (_silentIntervals >= MaxSilentIntervals)
                             {
-                                lastHeartbeatCheck = now;
-                                _missedHeartbeats++;
+                                RaiseInfo($"Client sent nothing for {_silentIntervals} intervals");
+                                break;
+                            }
 
-                                if (_missedHeartbeats >= MaxMissedHeartbeats)
-                                {
-                                    RaiseInfo($"Client timeout ({_missedHeartbeats} missed heartbeats)");
-                                    break;
-                                }
-
-                                // Send status query to keep connection alive and verify client
-                                if (_serialPort != null && _serialPort.IsOpen)
-                                {
-                                    _serialPort.Write(new[] { GrblStatusQuery }, 0, 1);
-                                }
+                            // Keeps GRBL reporting, so the client has something to read if
+                            // it is still there.
+                            if (_serialPort != null && _serialPort.IsOpen)
+                            {
+                                _serialPort.Write(new[] { GrblStatusQuery }, 0, 1);
                             }
                         }
                     }
@@ -760,7 +794,7 @@ namespace coppercli.Core.Communication
             _networkStream = null;
             _client = null;
             ClientAddress = null;
-            ClientConnectedTime = null;
+            _clientConnectedAtMs = null;
         }
 
         private void RaiseInfo(string message)

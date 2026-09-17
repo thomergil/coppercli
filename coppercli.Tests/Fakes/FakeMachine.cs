@@ -18,6 +18,21 @@ namespace coppercli.Tests.Fakes
     /// </summary>
     public class FakeMachine : IMachine, IDisposable
     {
+        // GRBL's door rules, shared with the other two doubles.
+        private readonly DoorModel _door;
+
+        public FakeMachine()
+        {
+            _door = new DoorModel(
+                (state, subState) => SetStatus(
+                    string.IsNullOrEmpty(subState) ? state : $"{state}:{subState}"),
+                // GRBL returns to the state the door interrupted, which is Run for a file
+                // that was streaming. Idle here would hide a caller that must re-assert a hold.
+                () => Mode == OperatingMode.SendFile
+                    ? GrblProtocol.StatusRun
+                    : GrblProtocol.StatusIdle);
+        }
+
         // =========================================================================
         // Configuration
         // =========================================================================
@@ -222,35 +237,49 @@ namespace coppercli.Tests.Fakes
 
         public void FeedHold()
         {
-            if (Status == "Run")
+            // Only a running machine takes a feed hold. A door hold is already stopped, and
+            // replacing its state would lose which door state it was in.
+            if (Status == GrblProtocol.StatusRun)
             {
-                SetStatus("Hold:0");
+                SetStatus($"{GrblProtocol.StatusHold}:0");
             }
         }
 
         public void CycleStart()
         {
-            if (Status.StartsWith("Hold"))
+            if (IsHolding && !Status.StartsWith(GrblProtocol.StatusDoor))
             {
-                SetStatus("Run");
+                SetStatus(GrblProtocol.StatusRun);
+                return;
             }
-            else if (Status.StartsWith("Door"))
-            {
-                SetStatus("Idle");
-            }
+
+            _door.CycleStart(Status, StatusSubState);
         }
+
+        /// <inheritdoc cref="DoorModel.RestoreMs"/>
+        public int DoorRestoreMs
+        {
+            get => _door.RestoreMs;
+            set => _door.RestoreMs = value;
+        }
+
+        /// <inheritdoc cref="DoorModel.Holding"/>
+        private bool IsHolding => DoorModel.Holding(Status);
 
         public void SoftReset()
         {
             _runCts?.Cancel();
             Mode = OperatingMode.Manual;
-            SetStatus("Alarm:1"); // Reset causes alarm, need unlock
+            SetStatus(DoorModel.ResetAlarms(Status)
+                ? $"{GrblProtocol.StatusAlarm}:1"
+                : GrblProtocol.StatusIdle);
             OperatingModeChanged?.Invoke();
         }
 
-        public void ProbeStart()
+        public bool ProbeStart()
         {
             // FakeMachine handles probing in ProcessProbeAsync
+            return true;
         }
 
         public void ProbeStop()
@@ -340,6 +369,15 @@ namespace coppercli.Tests.Fakes
             await SimulateMoveAsync(target, isRapid ? RapidSpeed : FeedSpeed);
         }
 
+        private readonly CancellationTokenSource _disposing = new();
+
+        /// <summary>
+        /// A machine that takes the line and then alarms instead of moving, so a caller
+        /// waiting for the tool to arrive finds out at once rather than waiting out its
+        /// budget.
+        /// </summary>
+        public bool AlarmOnMove { get; set; }
+
         private async Task SimulateMoveAsync(Vector3 target, double speed)
         {
             var start = MachinePosition;
@@ -350,6 +388,21 @@ namespace coppercli.Tests.Fakes
                 return;
             }
 
+            // Queued behind the hold, not executed. Reporting Run here would overwrite the
+            // door status and move the tool with the enclosure open.
+            while (IsHolding && !_disposing.IsCancellationRequested)
+            {
+                await Task.Delay(PollIntervalMs);
+            }
+
+            if (_disposing.IsCancellationRequested) { return; }
+
+            if (AlarmOnMove)
+            {
+                SetStatus(GrblProtocol.StatusAlarm);
+                return;
+            }
+
             SetStatus("Run");
 
             var durationMs = (int)(distance / speed * 1000);
@@ -357,14 +410,12 @@ namespace coppercli.Tests.Fakes
 
             for (int i = 1; i <= steps; i++)
             {
-                if (Status.StartsWith("Hold"))
+                while (IsHolding && !_disposing.IsCancellationRequested)
                 {
-                    // Wait while held
-                    while (Status.StartsWith("Hold"))
-                    {
-                        await Task.Delay(PollIntervalMs);
-                    }
+                    await Task.Delay(PollIntervalMs);
                 }
+
+                if (_disposing.IsCancellationRequested) { return; }
 
                 var t = (double)i / steps;
                 MachinePosition = start + (target - start) * t;
@@ -401,8 +452,19 @@ namespace coppercli.Tests.Fakes
             G54Offset = offset;
         }
 
+        /// <summary>
+        /// Set true for a machine that will not take a work-offset write, as GRBL does while
+        /// it is alarmed.
+        /// </summary>
+        public bool RefuseWorkOffsetWrites { get; set; }
+
         private void ProcessWorkOffsetCommand(string line)
         {
+            if (RefuseWorkOffsetWrites)
+            {
+                return;
+            }
+
             // G10 L2 P1 Zvalue - set work offset
             if (line.Contains("L2") && TryParseAxis(line, "Z", out double z))
             {
@@ -436,7 +498,7 @@ namespace coppercli.Tests.Fakes
 
             while (FilePosition < _fileLines.Count && !ct.IsCancellationRequested)
             {
-                while (Status.StartsWith("Hold") && !ct.IsCancellationRequested)
+                while (IsHolding && !ct.IsCancellationRequested)
                 {
                     await Task.Delay(PollIntervalMs, ct);
                 }
@@ -500,9 +562,16 @@ namespace coppercli.Tests.Fakes
         // Helpers
         // =========================================================================
 
+        /// <summary>
+        /// Takes a status as GRBL writes it on the wire, e.g. "Door:1", and splits it the
+        /// way <see cref="Machine"/> does. Left joined, the substate predicates return the
+        /// wrong answer and a door test passes for the wrong reason.
+        /// </summary>
         private void SetStatus(string status)
         {
-            Status = status;
+            int colon = status.IndexOf(':');
+            Status = colon < 0 ? status : status.Substring(0, colon);
+            StatusSubState = colon < 0 ? string.Empty : status.Substring(colon + 1);
             Interlocked.Increment(ref _statusReportCount);
             StatusChanged?.Invoke();
             StatusReceived?.Invoke($"<{status}|MPos:{MachinePosition.X:F3},{MachinePosition.Y:F3},{MachinePosition.Z:F3}>");
@@ -556,10 +625,31 @@ namespace coppercli.Tests.Fakes
             MachinePosition = new Vector3(x, y, z);
         }
 
-        /// <summary>Simulate door opening.</summary>
+        /// <summary>The enclosure is open and the machine is holding.</summary>
         public void SimulateDoorOpen()
         {
-            SetStatus("Door:0");
+            SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateAjar}");
+        }
+
+        /// <summary>
+        /// The enclosure is closed and the machine is still holding, waiting for a cycle
+        /// start. A job start must recover from this state.
+        /// </summary>
+        public void SimulateDoorClosedAndHolding()
+        {
+            SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateClosed}");
+        }
+
+        /// <summary>GRBL is restoring from the park after a cycle start.</summary>
+        public void SimulateDoorResuming()
+        {
+            SetStatus($"{GrblProtocol.StatusDoor}:{GrblProtocol.DoorSubStateResuming}");
+        }
+
+        /// <summary>The restore has finished and the machine is back under control.</summary>
+        public void SimulateDoorReleased()
+        {
+            SetStatus(GrblProtocol.StatusIdle);
         }
 
         /// <summary>Simulate alarm condition.</summary>
@@ -570,8 +660,11 @@ namespace coppercli.Tests.Fakes
 
         public void Dispose()
         {
+            _disposing.Cancel();
             _runCts?.Cancel();
             _runCts?.Dispose();
+            _door.Dispose();
+            _disposing.Dispose();
         }
     }
 }

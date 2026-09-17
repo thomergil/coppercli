@@ -54,6 +54,13 @@ namespace coppercli
         /// 9600: Older GRBL, some Bluetooth modules.
         /// </summary>
         public static readonly int[] CommonBaudRates = { 115200, 250000, 9600, 57600, 38400, 19200 };
+        public const string BaudMenuTitle = "Select baud rate:";
+
+        /// <summary>
+        /// The last entry of the baud menu. Escape returns the last index, so a menu without
+        /// one answers a cancel by picking whatever sits at the end of the list.
+        /// </summary>
+        public const string BaudMenuKeepCurrent = "Keep the current rate";
 
         /// <summary>
         /// Glob patterns for Unix serial ports that typically connect to CNC controllers.
@@ -73,13 +80,16 @@ namespace coppercli
         public const string SessionFileName = "session.json";
 
         /// <summary>Auto-saved probe data file name (stored in app directory).</summary>
-        public const string ProbeAutoSaveFileName = "probe_autosave.pgrid";
+        public const string ProbeAutoSaveFileName = "probe_autosave" + ProbeGridExtension;
 
         /// <summary>Recognized G-code file extensions for file dialogs and filtering.</summary>
         public static readonly string[] GCodeExtensions = { ".nc", ".gcode", ".ngc", ".gc", ".tap", ".cnc" };
 
-        /// <summary>Probe grid file extension.</summary>
-        public static readonly string[] ProbeGridExtensions = { ".pgrid" };
+        /// <summary>What a saved height map is called on disk.</summary>
+        public const string ProbeGridExtension = ".pgrid";
+
+        /// <summary>Every extension the height map browser lists.</summary>
+        public static readonly string[] ProbeGridExtensions = { ProbeGridExtension };
 
         /// <summary>Macro file extension.</summary>
         public const string MacroExtension = ".cmacro";
@@ -249,8 +259,11 @@ namespace coppercli
         /// <summary>Warning message when no machine profile is selected.</summary>
         public const string NoMachineProfileWarning = "No machine profile selected";
 
-        /// <summary>Sub-message for no machine profile warning.</summary>
-        public const string NoMachineProfileSubMessage = "Y=Continue  Esc=Cancel";
+        /// <summary>Key hint under a prompt the operator answers with Y or Escape.</summary>
+        public const string ContinueOrCancelKeyHint = "Y=Continue  Esc=Cancel";
+
+        /// <summary>Key hint under the Z-zero prompt, where jogging is offered as well.</summary>
+        public const string JogContinueOrCancelKeyHint = "J=Jog  " + ContinueOrCancelKeyHint;
 
         /// <summary>Warning message when sleep prevention unavailable in network mode.</summary>
         public const string SleepPreventionWarning = "Sleep prevention unavailable";
@@ -258,25 +271,72 @@ namespace coppercli
         /// <summary>Shown while GRBL reports the enclosure open.</summary>
         public const string DoorOpenMessage = "DOOR OPEN";
 
-        /// <summary>Shown once the door is shut and the machine is waiting to be resumed.</summary>
-        public const string DoorClosedMessage = "DOOR CLOSED - press resume";
+        /// <summary>Shown once the door is closed and the machine is waiting to be resumed.</summary>
+        public const string DoorClosedMessage = "DOOR CLOSED - machine holding";
+
+        /// <summary>Mill screen status while GRBL moves the tool back after a resume.</summary>
+        public const string DoorResumingStatus = "DOOR CLOSED - machine resuming";
+
+        /// <summary>Shown while the machine is alarmed.</summary>
+        public const string MillAlarmStatus = "ALARM";
+
+        /// <summary>Shown while the machine is asleep ($SLP).</summary>
+        public const string MillSleepStatus = "ASLEEP - reset to wake";
+
+        /// <summary>Mill screen status while the run itself is paused.</summary>
+        public const string MillPausedStatus = "PAUSED";
+
+        /// <summary>Confirmed on the jog screen after zeroing.</summary>
+        public const string ZeroedZ = "Z zeroed";
+
+        /// <inheritdoc cref="ZeroedZ"/>
+        public const string ZeroedAllAxes = "All axes zeroed";
+
+        /// <summary>Added to a zero confirmation to say what became of the height map.</summary>
+        public const string ZeroedMapReapplied = "{0} - height map re-applied";
+
+        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        public const string ZeroedMapDiscarded = "{0} - height map discarded";
+
+        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        public const string ZeroedFileLeftAlone = "{0} - height map kept for this run";
+
+        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        public const string ZeroedMapNotReapplied =
+            "{0} - height map was not re-applied. Reload the file before milling.";
+
+        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        public const string ZeroedMapNotDiscarded =
+            "{0} - height map was not removed. Reload the file before milling.";
+
+        /// <summary>A macro stopped because the height map no longer matches the origin.</summary>
+        public const string MacroErrorHeightMapWrong =
+            "Height map no longer matches the origin. Reload the file.";
+
+        /// <summary>Confirmed on the jog screen after an unlock ($X).</summary>
+        public const string UnlockedMessage = "Unlocked";
+
+        /// <summary>Confirmed on the jog screen after a soft reset.</summary>
+        public const string ResetMessage = "Reset";
 
         /// <summary>Status shown once an operator asks to abort a moving tool change.</summary>
         public const string ToolChangeAbortingMessage = "Stopping the tool change...";
 
-        /// <summary>
-        /// Appended to the tool-change status while the spindle moves itself. Escape works
-        /// throughout, and an operator watching an unattended machine move has to be told
-        /// so rather than left guessing whether anything will answer.
-        /// </summary>
-        public const string ToolChangeAbortHint = "{0}  (Esc=Stop)";
+        /// <summary>Key hint under a full-screen overlay: Escape stops the run.</summary>
+        public const string StopKeyHint = "Esc=Stop";
 
         /// <summary>
-        /// Shown when a job does not finish stopping within the time allowed. Both the
-        /// terminal and the browser say this, so there is one sentence for it.
+        /// Appended to the tool-change status while the machine is moving on its own. Escape
+        /// works throughout, so the operator watching it move is told how to stop it.
+        /// </summary>
+        public const string ToolChangeAbortHint = "{0}  (" + StopKeyHint + ")";
+
+        /// <summary>
+        /// Shown when a job does not finish stopping in the time allowed. Used by both the
+        /// terminal and the browser.
         /// </summary>
         public const string StopTimedOutWarning =
-            "Stop did not finish in time. The machine may still be moving - check it directly before doing anything else.";
+            "Stop did not finish. The machine may still be moving - check it.";
 
         /// <summary>Sub-message for sleep prevention warning.</summary>
         public const string SleepPreventionSubMessage = "System may sleep during job. Y=Continue  Esc=Cancel";
@@ -512,8 +572,7 @@ namespace coppercli
         public const string DisabledNoZero = "set work zero first";
 
         /// <summary>Generic reason: probe data not applied.</summary>
-        public const string DisabledProbeSetupChanged =
-            "height map is for a different file or origin";
+        public const string DisabledProbeSetupChanged = "height map is for a different file or origin";
         public const string DisabledProbeNotApplied = "apply probe data first";
 
         /// <summary>Generic reason: probe data incomplete.</summary>
@@ -522,12 +581,48 @@ namespace coppercli
         /// <summary>Generic reason: alarm state must be cleared.</summary>
         public const string DisabledAlarm = "clear alarm first";
 
+        /// <summary>Menu reason while a run owns the machine and the file it is streaming.</summary>
+        public const string DisabledRunInProgress = "a job is running";
+
+        /// <summary>Menu reason while the machine is asleep ($SLP).</summary>
+        public const string DisabledAsleep = "reset the machine first";
+
         /// <summary>Generic error: unknown validation error.</summary>
         public const string DisabledUnknown = "unknown error";
 
-        /// <summary>Error shown when machine is in alarm during mill start.</summary>
-        public const string ErrorMachineAlarm = "Machine is in ALARM state. Please home the machine and try again.";
-        public const string ErrorMachineNotReady = "Machine did not settle. Wait for it to stop moving, clear any alarm, then try again.";
+        /// <summary>The autosave could not be deleted, so the map is still on disk.</summary>
+        public const string ErrorAutosaveNotDeleted = "Could not delete the saved height map.";
+
+        /// <summary>Confirmed after a height map is applied to the loaded file.</summary>
+        public const string HeightMapApplied = "Height map applied.";
+
+        /// <summary>
+        /// The map is applied to the loaded G-code and the original file it was applied to is
+        /// gone, so the corrections cannot be taken back out.
+        /// </summary>
+        public const string ErrorMapStuckInGCode =
+            "The height map is in the loaded file and the original is gone. Load a file.";
+
+        /// <summary>No finished height map is in hand to apply.</summary>
+        public const string ErrorNoCompleteMapToApply = "No finished height map to apply.";
+
+        /// <summary>
+        /// A run tracks its place in the file by line number, so replacing the file reopens
+        /// the program at the start.
+        /// </summary>
+        public const string ErrorFileChangeDuringRun = "The job is using this file. Stop it first.";
+
+        /// <summary>
+        /// Re-zeroing X or Y moves the origin, so the rest of the job cuts in the wrong
+        /// place. Z is the one axis a paused run can take, because a tool change asks for it.
+        /// </summary>
+        public const string ErrorZeroXYDuringRun = "Stop the job before re-zeroing X or Y.";
+
+        /// <summary>Shown while connecting, when the machine is neither at the door nor alarmed but still will not clear.</summary>
+        public const string ErrorMachineWillNotClear = "Machine not ready. Reset it, then try again.";
+
+        /// <summary>Shown while connecting, when the alarm is still set after several tries.</summary>
+        public const string ErrorAlarmWillNotClear = "Still in alarm. Clear it, then unlock.";
 
         // =========================================================================
         // Probe menu: Status messages
@@ -567,8 +662,8 @@ namespace coppercli
         public const string ProbeStatusComplete = "Probe data is already complete.";
 
         /// <summary>
-        /// Shown when a macro asks for a probe while probing is already under way. Both
-        /// share one controller, so the second would take over the first's settings.
+        /// Shown when a macro asks for a probe while one is already running. They share one
+        /// controller, so the second would overwrite the first's settings.
         /// </summary>
         public const string ProbeErrorAlreadyRunning =
             "Probing is already running. Wait for it to finish, then try again.";
@@ -601,25 +696,44 @@ namespace coppercli
         // Probe menu: Error messages
         // =========================================================================
 
-        /// <summary>Error: no G-code file loaded.</summary>
-        public const string ProbeErrorNoFile = "No G-code file loaded";
 
         /// <summary>Error: probe data is not complete.</summary>
         public const string ProbeErrorIncomplete = "Probe data not complete";
 
-        /// <summary>Shown when the saved probe data could not be deleted.</summary>
-        public const string ProbeDiscardFailed =
-            "Could not delete the saved probe data. Check the file is not open elsewhere.";
 
         /// <summary>Shown when the autosaved map was measured for another job.</summary>
         public const string ProbeAutosaveNotApplicable =
-            "The saved probe data was measured for a different file or work origin.";
+            "The saved height map was measured for a different file or work origin.";
 
         /// <summary>Error: no autosaved probe data available.</summary>
-        public const string ProbeErrorNoAutosave = "No autosaved probe data";
+        public const string ProbeErrorNoAutosave =
+            "There is no saved height map to recover. Probe the board first.";
 
-        /// <summary>Error: probe recovery failed.</summary>
-        public const string ProbeErrorRecoveryFailed = "Recovery failed: {0}";
+        /// <summary>How a height map is described in the warning before an X or Y zero.</summary>
+        public const string PartlyMeasuredMap = "a partly measured";
+
+        /// <inheritdoc cref="PartlyMeasuredMap"/>
+        public const string CompleteMap = "a complete";
+
+        /// <inheritdoc cref="PartlyMeasuredMap"/>
+        public const string UnmeasuredMap = "an unmeasured";
+
+        /// <summary>
+        /// What zeroing X or Y costs. {0} describes the map, {1} names the axes. Published
+        /// through /api/constants, so the browser shows the same words.
+        /// </summary>
+        public const string ZeroDiscardsMap =
+            "You have {0} height map for this board, measured from the current X/Y origin. "
+            + "Zeroing {1} deletes it and the saved copy, and you will have to probe again. "
+            + "Zeroing only Z keeps it. Continue?";
+
+        /// <summary>Shown when settings could not be written to disk.</summary>
+        public const string SettingsNotSaved =
+            "Could not save your settings. They will be back to their old values next time "
+            + "coppercli starts.";
+
+        /// <summary>Shown when the file a previous session had open will not load.</summary>
+        public const string ErrorFileNotLoaded = "The file from your last session would not load.";
 
         /// <summary>Success: recovered probe data from autosave.</summary>
         public const string ProbeStatusRecovered = "Recovered {0}/{1} points from autosave";
@@ -630,8 +744,6 @@ namespace coppercli
         /// <summary>Error: no incomplete probe data to resume.</summary>
         public const string ProbeErrorNoIncomplete = "No incomplete probe data found.";
 
-        /// <summary>Error: no G-code file loaded with instructions.</summary>
-        public const string ProbeErrorNoFileLoad = "No G-Code file loaded. Load a file first.";
 
         /// <summary>Error: no complete probe data to save.</summary>
         public const string ProbeErrorNoComplete = "No complete probe data to save.";
@@ -693,10 +805,46 @@ namespace coppercli
         public const string ProbeFormatLoadError = "Error loading probe data: {0}";
 
         /// <summary>Format: error creating probe grid ({0} = error message).</summary>
-        public const string ProbeFormatGridError = "Error creating probe grid: {0}";
+        /// <summary>
+        /// Shown in place of a caught exception. Its text names files, offsets and types the
+        /// operator cannot act on; it goes to the log instead. {0} is one of the Failed*
+        /// constants below.
+        /// </summary>
+        public const string ErrorSomethingFailed =
+            "{0} failed. Try again; if it keeps happening, restart coppercli with --debug and "
+            + "keep the coppercli.log file it writes.";
+
+        /// <summary>What was being done when it failed, as the operator asked for it.</summary>
+        public const string FailedConnecting = "Connecting";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedLoadingTheFile = "Loading the file";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedLoadingTheHeightMap = "Loading the height map";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedProbing = "Probing";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedSettingUpTheGrid = "Setting up the grid";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedReadingTheMacro = "Reading the macro";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedRunningTheMacro = "Running the macro";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedStartingTheProxy = "Starting the proxy";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedStartingTheWebServer = "Starting the web server";
+
+        /// <inheritdoc cref="FailedConnecting"/>
+        public const string FailedListeningOnTheNetwork = "Listening on the network";
 
         /// <summary>Format: probing error ({0} = error message).</summary>
-        public const string ProbeFormatError = "Probing error: {0}";
 
         /// <summary>Format: probe grid dimensions ({0}x{1} = {2} points).</summary>
         public const string ProbeFormatGrid = "Probe grid: {0}x{1} = {2} points";

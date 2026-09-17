@@ -25,6 +25,13 @@ namespace coppercli.Core.Controllers
         public string? FilePath { get; set; }
 
         /// <summary>
+        /// How long the settling phase waits for the machine to stop and stay stopped.
+        /// Only tests set this, to avoid the full timeout on a machine that will not
+        /// settle.
+        /// </summary>
+        internal int SettleTimeoutMs { get; set; } = Util.Constants.SettleTimeoutMs;
+
+        /// <summary>
         /// Depth adjustment in mm (negative = deeper).
         /// Applied as offset to work coordinate Z origin.
         /// </summary>
@@ -32,7 +39,6 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Whether to home the machine if not already homed.
-        /// Default: true.
         /// </summary>
         public bool RequireHoming { get; set; } = true;
     }

@@ -5,9 +5,9 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The translator turns a bare "error:9" into the sentence an operator reads. Both
-    /// tables are parsed out of embedded CSV by one loader, so a pattern that stops
-    /// matching empties them silently and every message degrades to its raw code.
+    /// The translator turns a bare "error:9" into the message the operator reads. Both
+    /// tables are parsed from embedded CSV by one loader, so a pattern that stops matching
+    /// empties them and every message falls back to its raw code.
     /// </summary>
     public class GrblCodeTranslatorTests
     {

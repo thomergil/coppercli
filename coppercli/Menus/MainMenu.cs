@@ -1,11 +1,11 @@
 // Extracted from Program.cs
 
+using coppercli.Core.Controllers;
 using coppercli.Core.Settings;
 using coppercli.Helpers;
 using coppercli.Macro;
 using Spectre.Console;
 using static coppercli.CliConstants;
-using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Menus
 {
@@ -28,12 +28,6 @@ namespace coppercli.Menus
             Exit
         }
 
-        private static string? GetJogDisabledReason() =>
-            !AppState.Machine.Connected ? DisabledConnect : null;
-
-        private static string? GetMacroDisabledReason() =>
-            !AppState.Machine.Connected ? DisabledConnect : null;
-
         private static string? GetServerDisabledReason() =>
             AppState.Machine.Connected && AppState.Settings.ConnectionType == ConnectionType.Ethernet
                 ? DisabledDisconnect
@@ -43,22 +37,17 @@ namespace coppercli.Menus
             new MenuItem<MainAction>("Connection", 'c', MainAction.Connect),
             new MenuItem<MainAction>("Load G-Code", 'l', MainAction.LoadFile),
             new MenuItem<MainAction>("Jog", 'j', MainAction.Move,
-                EnabledWhen: () => AppState.Machine.Connected,
-                DisabledReason: GetJogDisabledReason),
+                Blocker: MenuHelpers.GetMachineDisabledReason),
             // Enabled exactly when nothing blocks it, so the entry and the reason beside
             // it cannot disagree.
             new MenuItem<MainAction>("Probe", 'p', MainAction.Probe,
-                EnabledWhen: () => MenuHelpers.GetProbeDisabledReason() == null,
-                DisabledReason: MenuHelpers.GetProbeDisabledReason),
+                Blocker: MenuHelpers.GetProbeDisabledReason),
             new MenuItem<MainAction>("Mill", 'm', MainAction.Mill,
-                EnabledWhen: () => MenuHelpers.GetMillDisabledReason() == null,
-                DisabledReason: MenuHelpers.GetMillDisabledReason),
+                Blocker: () => MenuHelpers.GetMillDisabledReason()),
             new MenuItem<MainAction>("Macro", 'r', MainAction.Macro,
-                EnabledWhen: () => AppState.Machine.Connected,
-                DisabledReason: GetMacroDisabledReason),
+                Blocker: MenuHelpers.GetMachineDisabledReason),
             new MenuItem<MainAction>("Server", 'x', MainAction.Server,
-                EnabledWhen: () => !AppState.Machine.Connected || AppState.Settings.ConnectionType != ConnectionType.Ethernet,
-                DisabledReason: GetServerDisabledReason),
+                Blocker: GetServerDisabledReason),
             new MenuItem<MainAction>("Settings", 's', MainAction.Settings),
             new MenuItem<MainAction>("About", 'a', MainAction.About),
             new MenuItem<MainAction>("Exit", 'q', MainAction.Exit)
@@ -73,8 +62,9 @@ namespace coppercli.Menus
             Console.Clear();
 
             // Show status header
-            var statusColor = machine.Connected ? ColorSuccess : ColorError;
-            var statusText = machine.Connected ? machine.Status : StatusDisconnected;
+            var activity = MachineWait.GetActivity(machine);
+            var statusColor = MachineWait.IsUnavailable(activity) ? ColorError : ColorSuccess;
+            var statusText = DisplayHelpers.GetActivityText(activity, machine.Status);
             var settings = AppState.Settings;
             var connectionInfo = machine.Connected
                 ? (settings.ConnectionType == ConnectionType.Serial

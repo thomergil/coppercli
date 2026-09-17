@@ -1,15 +1,22 @@
 // coppercli Web UI Jog Screen
 
 import { state } from './state.js';
-import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, isProblematicStatus } from './helpers.js';
+import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, format, postJson } from './helpers.js';
 import { sendCommand } from './websocket.js';
 import { showScreen } from './screens.js';
 import { isWaitingForZeroZ, continueLastPrompt } from './mill.js';
 import {
     API_CONFIG,
     API_PROBE_STATUS,
+    API_RESUME,
     API_ZERO,
+    ERROR_RESUME_NOT_SENT,
     ERROR_ZERO_NOT_SENT,
+    TEXT_ZEROED_Z,
+    TEXT_ZEROED_ALL,
+    TEXT_ZEROED_WITH_MAP,
+    MAP_DESCRIPTION_BY_STATE,
+    HEIGHT_MAP_TEXT_BY_OUTCOME,
     CMD_JOG_MODE,
     CMD_HOME,
     CMD_UNLOCK,
@@ -24,11 +31,11 @@ import {
     CMD_RESUME,
     CLASS_ACTIVE,
     CLASS_HIDDEN,
-    STATUS_RUN,
-    STATUS_HOLD,
     PROBE_STATE_NONE,
-    PROBE_STATE_PARTIAL,
-    SCREEN_MILL
+    SCREEN_MILL,
+    TEXT_ZERO_XY_INVALIDATES,
+    TEXT_ZERO_AXES_XY,
+    TEXT_ZERO_TITLE,
 } from './constants.js';
 
 export async function loadConfig() {
@@ -53,12 +60,12 @@ export async function loadConfig() {
             { name: 'Slow' },
             { name: 'Creep' }
         ];
-        // Without the server's answer, take the mode that moves least per press.
+        // Without the server's list, use the mode that moves least per press.
         state.jogModeIndex = slowestJogMode();
     }
 }
 
-// The modes are ordered fastest to finest, so the last is the one that moves least.
+// The modes are ordered fastest to finest, so the last one moves least.
 function slowestJogMode() {
     return Math.max(0, state.jogModes.length - 1);
 }
@@ -85,18 +92,24 @@ export function setJogMode(index) {
     }
 }
 
-function togglePause() {
+// Resume can be refused and the reason cannot come back over the WebSocket, so it goes over
+// HTTP like zeroing. A feed hold is never refused and stays on the socket.
+async function togglePause() {
     const btn = $('jog-pause-btn');
-    if (btn.dataset.paused === 'true') {
-        sendCommand(CMD_RESUME);
-    } else {
+    if (btn.dataset.paused !== 'true') {
         sendCommand(CMD_FEEDHOLD);
+        return;
+    }
+
+    const resumed = await postJson(API_RESUME);
+    if (!resumed.ok) {
+        showError(resumed.error || ERROR_RESUME_NOT_SENT);
     }
 }
 
 // Check if probe data exists and warn before zeroing (only for X/Y changes)
 async function zeroWithWarning(axes) {
-    // Only warn if X or Y is being zeroed (Z-only preserves probe corrections)
+    // Z-only keeps the probe corrections, so it needs no warning.
     const zeroingXY = axes.some(a => a === 'X' || a === 'Y');
 
     if (zeroingXY) {
@@ -105,8 +118,12 @@ async function zeroWithWarning(axes) {
             const data = await response.json();
 
             if (data.state && data.state !== PROBE_STATE_NONE) {
-                const stateDesc = data.state === PROBE_STATE_PARTIAL ? 'partial' : 'complete';
-                if (!await showConfirm(`You have ${stateDesc} probe data. Zeroing X/Y will invalidate it. Continue?`, 'Zero')) {
+                // One arm per state the server can send. Two arms over three called a grid
+                // with nothing measured "a complete height map".
+                const stateDesc = MAP_DESCRIPTION_BY_STATE[data.state];
+                if (!await showConfirm(
+                    format(TEXT_ZERO_XY_INVALIDATES, stateDesc, TEXT_ZERO_AXES_XY),
+                    TEXT_ZERO_TITLE)) {
                     return;
                 }
             }
@@ -117,25 +134,28 @@ async function zeroWithWarning(axes) {
     }
 
     // Over HTTP rather than the socket, because the server can refuse this and the operator
-    // must not be told the datum was set when it was not.
-    try {
-        const response = await fetch(API_ZERO, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ axes })
-        });
-        const json = await response.json();
-        if (!json.success) {
-            showError(json.error || ERROR_ZERO_NOT_SENT);
-            return;
-        }
-    } catch (err) {
-        console.error('zero failed', err);
-        showError(ERROR_ZERO_NOT_SENT);
+    // must not be told the origin was set when it was not.
+    const result = await postJson(API_ZERO, { axes });
+    if (!result.ok) {
+        showError(result.error || ERROR_ZERO_NOT_SENT);
         return;
     }
 
-    showInfo(axes.length === 1 ? 'Z zeroed' : 'All axes zeroed');
+    const zeroed = result.data.heightMap;
+    const reloadTheFile = result.data.reloadTheFile === true;
+
+    // The height map's outcome decides whether the next cut is at the right depth, so it is
+    // shown with the confirmation.
+    const what = zeroingXY ? TEXT_ZEROED_ALL : TEXT_ZEROED_Z;
+    const map = HEIGHT_MAP_TEXT_BY_OUTCOME[zeroed];
+    const line = map ? format(TEXT_ZEROED_WITH_MAP, what, map) : what;
+
+    if (reloadTheFile) {
+        showError(line);
+        return;
+    }
+
+    showInfo(line);
 }
 
 export function initJogScreen() {
@@ -185,7 +205,8 @@ export function initJogScreen() {
 }
 
 /**
- * Continue milling after setting Z0 (tool change Mode B).
+ * Continue milling after setting Z0 by hand, which is what a tool change asks for when the
+ * machine has no tool setter.
  * Sends "Continue" response to the tool change controller.
  */
 async function continueMilling() {
@@ -209,8 +230,8 @@ export function updateContinueMillingButton(toolChange) {
     }
 }
 
-// IDs of buttons that should be disabled in alarm/door state
-const alarmDisabledButtons = [
+// IDs of buttons disabled while the machine needs the operator.
+const attentionDisabledButtons = [
     'jog-home-btn',
     'jog-zero-all-btn',
     'jog-zero-z-btn',
@@ -228,27 +249,27 @@ const xyMovementButtons = [
     'jog-goto-center-btn'
 ];
 
-// Update jog screen button states based on machine status
+// Enable or disable the jog controls from the status message.
 export function updateJogButtons(status) {
-    const statusStr = status?.status || '';
-    const isAlarm = isProblematicStatus(statusStr);
-    const isRun = statusStr === STATUS_RUN;
-    const isHold = statusStr.startsWith(STATUS_HOLD);
-    const probeContact = status?.probePin || false;
+    // No status yet, so leave the controls disabled.
+    const machineUnavailable = status?.machineUnavailable ?? true;
+    const canPause = status?.canPause ?? false;
+    const canResume = status?.canResume ?? false;
+    const probeContact = status?.probePin ?? false;
 
     // Update pause/resume button text and state
     const pauseBtn = $('jog-pause-btn');
     if (pauseBtn) {
-        updatePauseButton(pauseBtn, isHold);
-        pauseBtn.disabled = !isRun && !isHold;
+        updatePauseButton(pauseBtn, canResume);
+        pauseBtn.disabled = !canPause && !canResume;
     }
 
     // Disable/enable specific buttons
-    alarmDisabledButtons.forEach(id => {
+    attentionDisabledButtons.forEach(id => {
         const btn = document.getElementById(id);
         if (btn) {
             const isXYMove = xyMovementButtons.includes(id);
-            btn.disabled = isAlarm || (isXYMove && probeContact);
+            btn.disabled = machineUnavailable || (isXYMove && probeContact);
         }
     });
 
@@ -257,11 +278,11 @@ export function updateJogButtons(status) {
     document.querySelectorAll('.jog-btn[data-axis]').forEach(btn => {
         const axis = btn.dataset.axis?.toUpperCase();
         const isXY = axis === 'X' || axis === 'Y';
-        btn.disabled = isAlarm || (isXY && probeContact);
+        btn.disabled = machineUnavailable || (isXY && probeContact);
     });
 
     // Disable/enable jog mode selector buttons
     document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
-        btn.disabled = isAlarm;
+        btn.disabled = machineUnavailable;
     });
 }

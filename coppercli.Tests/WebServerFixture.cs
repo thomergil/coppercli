@@ -1,10 +1,12 @@
 #nullable enable
 using System;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Net.Http;
 using System.Threading;
 using coppercli;
 using coppercli.Core.Communication;
+using coppercli.Core.Controllers;
 using coppercli.Core.Settings;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
@@ -19,6 +21,16 @@ namespace coppercli.Tests
     /// </summary>
     public sealed class WebServerFixture : IDisposable
     {
+        /// <summary>
+        /// The repository root, for tests that read a source file rather than a built one.
+        /// Taken from this file's compile-time path, because the build output lives outside
+        /// the tree.
+        /// </summary>
+        public static string RepositoryRoot => Path.GetDirectoryName(
+            Path.GetDirectoryName(ThisFile())!)!;
+
+        private static string ThisFile([CallerFilePath] string path = "") => path;
+
         private const int StartupTimeoutMs = 10000;
         private const int PollIntervalMs = 20;
 
@@ -27,6 +39,7 @@ namespace coppercli.Tests
         private readonly string _appDataDir;
         private readonly string? _previousAppData;
         private readonly Machine _machine;
+        private readonly SessionState _session;
         private readonly bool _previousLogging;
 
         public WebServerFixture()
@@ -38,7 +51,7 @@ namespace coppercli.Tests
             _previousAppData = Environment.GetEnvironmentVariable(AppDataEnvVar);
             Environment.SetEnvironmentVariable(AppDataEnvVar, _appDataDir);
 
-            // A 500 tells the browser nothing on purpose, so the reason has to reach the log.
+            // A 500 carries no detail to the browser, so the reason has to reach the log.
             _previousLogging = Helpers.Logger.Enabled;
             Helpers.Logger.Enabled = true;
 
@@ -52,7 +65,8 @@ namespace coppercli.Tests
             };
 
             AppState.Settings = Settings;
-            AppState.Session = new SessionState();
+            _session = new SessionState();
+            AppState.Session = _session;
             AppState.Machine = new Machine(Settings);
             AppState.ResetControllers();
             AppState.Machine.Connect();
@@ -93,6 +107,22 @@ namespace coppercli.Tests
                 AppState.Machine = _machine;
                 AppState.ResetControllers();
             }
+
+            // The session is process-wide as well, and a test that replaces it would
+            // otherwise hand the next one whatever board it had loaded.
+            if (!ReferenceEquals(AppState.Session, _session))
+            {
+                AppState.Session = _session;
+            }
+
+            // The machine is shared across the collection, and a stop leaves it alarmed the
+            // way GRBL does. Hand each test an idle machine rather than whatever the last
+            // one left, so the order of the tests cannot decide the result.
+            if (!MachineWait.IsIdle(_machine))
+            {
+                _machine.SendLine(GrblProtocol.CmdUnlock);
+                WaitUntil(() => MachineWait.IsIdle(_machine), "the machine to settle");
+            }
         }
 
         public HttpClient Client { get; }
@@ -103,8 +133,10 @@ namespace coppercli.Tests
         /// <summary>Polls until the condition holds, or fails naming what it waited for.</summary>
         public static void WaitUntil(Func<bool> until, string what, int timeoutMs = StartupTimeoutMs)
         {
-            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
-            while (DateTime.UtcNow < deadline)
+            // Monotonic: a clock step under this wait would either end it at once or never,
+            // and every web test waits through here.
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            while (elapsed.ElapsedMilliseconds < timeoutMs)
             {
                 if (until()) { return; }
                 Thread.Sleep(PollIntervalMs);

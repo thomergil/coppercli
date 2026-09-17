@@ -331,37 +331,39 @@ class Program
     /// Offers to reload files and restore state from previous session.
     /// </summary>
     /// <summary>
-    /// Asks the questions carried over from the previous session.
+    /// Raises the prompts carried over from the previous session.
     ///
-    /// Which questions apply, and what each answer does, is decided in SessionRestore -
-    /// shared with the browser interface. This method only asks them, so neither front
-    /// end can skip a question or answer one differently.
+    /// Which prompts apply, and what each answer does, is decided in SessionRestore, shared
+    /// with the browser interface. This method only shows them, so neither front end can
+    /// skip one or act on it differently.
     /// </summary>
     private static void OfferSessionRestore()
     {
-        foreach (var step in SessionRestore.GetPendingSteps())
+        // Only the words. Which questions apply, what each answer does, and what ends the
+        // sequence all live in SessionRestore.
+        bool carriedOn = SessionRestore.AskPendingSteps(
+            step =>
+            {
+                ExitIfDisconnected();
+
+                if (!string.IsNullOrEmpty(step.Detail))
+                {
+                    AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(step.Detail)}[/]");
+                }
+
+                return MenuHelpers.ConfirmOrQuit(step.Question, step.DefaultYes);
+            },
+            MenuHelpers.ShowError);
+
+        if (!carriedOn)
         {
-            ExitIfDisconnected();
-
-            if (!string.IsNullOrEmpty(step.Detail))
-            {
-                AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(step.Detail)}[/]");
-            }
-
-            var answer = MenuHelpers.ConfirmOrQuit(step.Question, step.DefaultYes);
-
-            if (answer == null)
-            {
-                Environment.Exit(0);
-            }
-
-            SessionRestore.Answer(step.Topic, answer == true);
+            Environment.Exit(0);
         }
     }
 
     /// <summary>
     /// Exits if the machine was disconnected (e.g., by another client force-disconnecting).
-    /// Called between opening questions to detect disconnection.
+    /// Called between startup prompts to detect a disconnection.
     /// </summary>
     private static void ExitIfDisconnected()
     {

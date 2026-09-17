@@ -1,5 +1,3 @@
-// Shared application state accessible to all menus
-
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
@@ -16,6 +14,17 @@ namespace coppercli
     /// Shared application state accessible to all menus.
     /// This class holds the machine connection, settings, session state, and loaded files.
     /// </summary>
+    /// <summary>
+    /// What <see cref="AppState.LoadGCodeIntoMachine"/> did.
+    /// </summary>
+    /// <param name="Refused">Why the file was not loaded, or null once it was.</param>
+    /// <param name="MapDiscardedBecause">
+    /// Why the height map in hand was dropped, or null if it was kept. Returned rather than
+    /// stored, because two browser tabs load files on their own threads and a shared field
+    /// would hand one load's reason to the other.
+    /// </param>
+    internal sealed record LoadOutcome(string? Refused, string? MapDiscardedBecause);
+
     internal static class AppState
     {
         // JSON serialization options (shared)
@@ -55,7 +64,7 @@ namespace coppercli
         {
             if (_machine != null && !_machine.Connected)
             {
-                ForgetWorkZero();
+                ClearWorkZero();
             }
         }
 
@@ -90,34 +99,30 @@ namespace coppercli
             _probeController = null;
         }
 
-        // Active controller tracking (only one can run at a time)
-
         // Loaded files
         public static GCodeFile? CurrentFile { get; set; }
-        public static ProbeGrid? ProbePoints { get; set; }
+        public static ProbeGrid? ProbePoints { get; private set; }
 
-        // State flags
-        // AreProbePointsApplied has private setter - only ApplyProbeData() can set it to true.
-        // LoadGCodeIntoMachine() always resets it to false.
+        // AreProbePointsApplied has a private setter: only ApplyProbeData sets it true, and
+        // ResetProbeApplicationState is the one place it goes back to false.
         public static bool AreProbePointsApplied { get; private set; } = false;
         /// <summary>
-        /// Whether the work origin is known. Written only through the three methods below,
-        /// so every way it changes is named in one place.
+        /// Whether the work origin is known. Written only through the setters below.
         /// </summary>
         public static bool IsWorkZeroSet { get; private set; } = false;
 
-        /// <summary>The machine was just zeroed, so the origin is known.</summary>
-        public static void WorkZeroWasSet() => SetWorkZeroKnown(true, "zeroed on the machine");
+        /// <summary>The machine was zeroed, so the origin is known.</summary>
+        public static void MarkWorkZeroSet() => SetWorkZeroKnown(true, "zeroed on the machine");
 
         /// <summary>
-        /// The operator vouched for an origin nobody just set: a zero remembered from the
-        /// last session, or one GRBL keeps across a reconnect to the same machine.
+        /// The operator confirmed an origin nobody set this session: one remembered from
+        /// the last session, or one GRBL kept across a reconnect.
         /// </summary>
-        public static void TrustWorkZero(bool trusted) =>
+        public static void SetWorkZeroTrusted(bool trusted) =>
             SetWorkZeroKnown(trusted, "trusted by the operator");
 
-        /// <summary>The origin is no longer known, because the machine may have moved.</summary>
-        public static void ForgetWorkZero() => SetWorkZeroKnown(false, "machine disconnected");
+        /// <summary>The origin is no longer known: the machine may have moved.</summary>
+        public static void ClearWorkZero() => SetWorkZeroKnown(false, "machine disconnected");
 
         private static void SetWorkZeroKnown(bool known, string why)
         {
@@ -130,10 +135,40 @@ namespace coppercli
             Logger.Log("AppState: IsWorkZeroSet = {0} ({1})", known, why);
         }
         /// <summary>
-        /// Whether a grid probe is running, derived from the probe controller that owns
-        /// that state, so no front end keeps a flag it could forget to clear.
+        /// Whether a grid probe is running, read from the probe controller, so no front end
+        /// keeps a flag of its own.
         /// </summary>
         public static bool IsProbing => _probeController?.IsActive ?? false;
+
+        /// <summary>
+        /// Whether any run owns the machine, parked at a prompt or not. Read from the backing
+        /// fields, so asking does not create a controller.
+        /// </summary>
+        public static bool IsRunInProgress =>
+            (_millingController?.IsRunInProgress ?? false)
+            || (_probeController?.IsRunInProgress ?? false)
+            || (_toolChangeController?.IsRunInProgress ?? false);
+
+        /// <summary>Whether this zero moves the X or Y datum.</summary>
+        public static bool ZeroTouchesXY(string axes)
+        {
+            string upper = axes.ToUpperInvariant();
+            return upper.Contains('X') || upper.Contains('Y');
+        }
+
+        /// <summary>Whether this zero sets all three axes, so it establishes a full origin.</summary>
+        public static bool ZeroIsFullOrigin(string axes)
+        {
+            string upper = axes.ToUpperInvariant();
+            return upper.Contains('X') && upper.Contains('Y') && upper.Contains('Z');
+        }
+
+        /// <summary>
+        /// Why the loaded file and the height map cannot change now, or null. A run streams
+        /// from Machine.File with the map baked in, and tracks its place by line number.
+        /// </summary>
+        public static string? WhyTheFileCannotChange() =>
+            IsRunInProgress ? CliConstants.ErrorFileChangeDuringRun : null;
 
         /// <inheritdoc cref="Core.Controllers.IProbeController.IsTracingOutline"/>
         public static bool IsTracingOutline => _probeController?.IsTracingOutline ?? false;
@@ -182,9 +217,8 @@ namespace coppercli
         // Jog state
         /// <summary>
         /// Which jog preset is selected. Advance it with <see cref="CycleJogPreset"/> and
-        /// read the preset itself from <see cref="CurrentJogMode"/>, so how the index wraps
-        /// and what it points at are each stated once rather than at every menu that offers
-        /// the key.
+        /// read the preset from <see cref="CurrentJogMode"/>, so the wrap-around and the
+        /// lookup are each defined once.
         /// </summary>
         public static int JogPresetIndex { get; private set; } = CliConstants.DefaultJogModeIndex;
 
@@ -198,20 +232,29 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Loads G-code into the machine and resets probe application state.
-        /// This is the ONLY way to load G-code into the machine (except ApplyProbeData).
-        /// Ensures AreProbePointsApplied is always reset when new G-code is loaded.
+        /// The one path that loads a file into the machine. ApplyProbeData rewrites the same
+        /// file in place once a map is baked in; nothing else touches Machine.SetFile.
+        ///
+        /// Refused while a run is in progress: a run tracks its place in Machine.File by
+        /// line number, and a new file resets that to the start.
         /// </summary>
-        public static void LoadGCodeIntoMachine(GCodeFile file)
+        /// <returns>What the load did: see <see cref="LoadOutcome"/>.</returns>
+        public static LoadOutcome LoadGCodeIntoMachine(GCodeFile file)
         {
+            string? blocked = WhyTheFileCannotChange();
+            if (blocked != null)
+            {
+                Logger.Log("LoadGCodeIntoMachine: {0}", blocked);
+                return new LoadOutcome(blocked, null);
+            }
+
             CurrentFile = file;
             Machine?.SetFile(file.GetGCode());
-            AreProbePointsApplied = false;
-            ResetDepthAdjustment();
+            ResetProbeApplicationState();
 
             // Record which board is loaded here, not at each of the callers - a height
             // map's applicability is decided by comparing against this, and a caller
-            // that does not set it makes every later answer wrong.
+            // that does not set it makes every later check wrong.
             if (!string.IsNullOrEmpty(file.FilePath))
             {
                 Session.LastLoadedGCodeFile = file.FilePath;
@@ -219,57 +262,74 @@ namespace coppercli
 
             // And decide here what that means for any height map in hand, so every entry
             // point - menu, web, macro, session restore - behaves the same way.
-            LastDiscardedProbeReason = DiscardInapplicableProbeData();
+            string? mapDiscardedBecause = DiscardInapplicableProbeData();
 
             Logger.Log($"LoadGCodeIntoMachine: loaded {file.FileName}, AreProbePointsApplied=false");
+
+            return new LoadOutcome(null, mapDiscardedBecause);
         }
 
         /// <summary>
         /// Loads a probe grid from a file, replacing any current grid. If a grid was already
-        /// baked into the in-memory G-code, the original is reloaded first: ApplyProbeGrid is
-        /// additive (Z += interpolated height), so applying a second grid without restoring the
-        /// original would double the corrections and cut at the wrong depth. One definition
-        /// for both the terminal and web "load probe file" paths, so each reloads first.
+        /// applied to the in-memory G-code, the original is reloaded first: ApplyProbeGrid
+        /// adds to Z, so a second grid on top would double the corrections.
         /// </summary>
-        public static ProbeGrid LoadProbeGridFromFile(string path)
+        /// <returns>
+        /// The grid, or null with the reason it was refused. Refused before anything changes:
+        /// without the reload, the next apply doubles the corrections.
+        /// </returns>
+        public static (ProbeGrid? Grid, string? Refused) LoadProbeGridFromFile(string path)
         {
             if (AreProbePointsApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
                 File.Exists(Session.LastLoadedGCodeFile))
             {
-                LoadGCodeIntoMachine(GCodeFile.Load(Session.LastLoadedGCodeFile));
+                string? refused = LoadGCodeIntoMachine(GCodeFile.Load(Session.LastLoadedGCodeFile)).Refused;
+                if (refused != null)
+                {
+                    return (null, refused);
+                }
+
                 Logger.Log("LoadProbeGridFromFile: reloaded original G-code before loading new probe grid");
             }
-            var grid = ProbeGrid.Load(path);
-            ProbePoints = grid;
-            ResetProbeApplicationState();
-            return grid;
-        }
 
-        /// <summary>
-        /// Why the height map was dropped by the most recent load, or null if none was.
-        /// The UI reports this; the decision itself is made in one place.
-        /// </summary>
-        internal static string? LastDiscardedProbeReason { get; private set; }
+            var grid = ProbeGrid.Load(path);
+            string? notAdopted = AdoptProbeGrid(grid);
+            if (notAdopted != null)
+            {
+                return (null, notAdopted);
+            }
+
+            // A grid from a file is already saved, so anything in the autosave belongs to an
+            // earlier one and would otherwise be offered as unsaved work.
+            Persistence.ClearProbeAutoSave();
+            return (grid, null);
+        }
 
         /// <summary>
         /// Whether the height map in hand describes the job in hand.
         ///
-        /// One question, answered by the map itself from the setup recorded on it, so
-        /// every screen gives the same answer instead of each inferring one from a
-        /// different corner of the session state.
+        /// Decided by the map itself, from the setup recorded on it, so every screen gets
+        /// the same result instead of inferring one from the session state.
         /// </summary>
-        internal static ProbeApplicability GetProbeApplicability()
-        {
-            var grid = ProbePoints;
+        internal static ProbeApplicability GetProbeApplicability() =>
+            DescribeApplicability(ProbePoints);
 
-            if (grid == null)
-            {
-                return ProbeApplicability.DifferentFile;
-            }
+        /// <summary>
+        /// The current setup: the file loaded and the origin the machine reports. A map is
+        /// stamped with this when measured and compared against it afterwards.
+        /// </summary>
+        internal static ProbeContext CurrentSetup => new(
+            Session.LastLoadedGCodeFile ?? string.Empty,
+            Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
 
-            return grid.GetApplicability(Session.LastLoadedGCodeFile ?? string.Empty,
-                                         Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
-        }
+        /// <summary>
+        /// Whether <paramref name="grid"/> matches the current file and origin. No map
+        /// counts as not matching.
+        /// </summary>
+        internal static ProbeApplicability DescribeApplicability(ProbeGrid? grid) =>
+            grid == null
+                ? ProbeApplicability.DifferentFile
+                : grid.GetApplicability(CurrentSetup.SourceFile, CurrentSetup.WorkOrigin);
 
         /// <summary>
         /// Drops a height map that does not describe the job in hand, so it cannot be
@@ -285,20 +345,50 @@ namespace coppercli
 
             var applicability = GetProbeApplicability();
 
-            if (applicability == ProbeApplicability.Applicable || applicability == ProbeApplicability.Unknown)
+            if (applicability.IsUsable())
             {
                 return null;
             }
 
-            string why = applicability == ProbeApplicability.DifferentFile
-                ? $"it was measured for {Path.GetFileName(ProbePoints.Context.SourceFile)}"
-                : "the work origin has moved since it was measured";
+            string why = GetInapplicableReason(applicability, ProbePoints.Context.SourceFile);
 
             DiscardProbeData();
+
             Persistence.ClearProbeAutoSave();
             Logger.Log("DiscardInapplicableProbeData: dropped height map ({0})", applicability);
 
             return why;
+        }
+
+        /// <summary>
+        /// Why a height map does not describe the job in hand, as a phrase that finishes a
+        /// sentence about it. Every screen that has to explain a dropped or refused map reads
+        /// this, so none of them explains it differently.
+        /// </summary>
+        internal static string GetInapplicableReason(ProbeApplicability applicability, string measuredFor) =>
+            applicability == ProbeApplicability.DifferentFile
+                ? $"it was measured for {Path.GetFileName(measuredFor)}"
+                : "the work origin has moved since it was measured";
+
+        /// <summary>
+        /// The one place the height map in hand changes. Swapping the map clears the applied
+        /// flag, so a run streaming corrections would be left with AppState saying there are
+        /// none, and the next apply would double them.
+        /// </summary>
+        /// <param name="grid">The new map, or null to have none.</param>
+        /// <returns>Why the map was left alone, or null once it was replaced.</returns>
+        public static string? AdoptProbeGrid(ProbeGrid? grid)
+        {
+            string? blocked = WhyTheFileCannotChange();
+            if (blocked != null)
+            {
+                Logger.Log("AdoptProbeGrid: {0}", blocked);
+                return blocked;
+            }
+
+            ProbePoints = grid;
+            ResetProbeApplicationState();
+            return null;
         }
 
         /// <summary>
@@ -312,66 +402,84 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Sets up a new probe grid. Single source of truth for both TUI and Web UI.
-        /// Creates in-memory grid and clears any stale autosave.
-        /// Autosave is NOT created here - it's created when first probe point is recorded.
+        /// Builds a new probe grid for the loaded job and takes it as the map in hand.
         /// </summary>
         /// <param name="fileMin">G-code file minimum bounds.</param>
         /// <param name="fileMax">G-code file maximum bounds.</param>
         /// <param name="margin">Margin to add around file bounds.</param>
         /// <param name="gridSize">Grid cell size.</param>
-        /// <returns>The created ProbeGrid.</returns>
-        public static ProbeGrid SetupProbeGrid(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
+        /// <returns>The new grid, or null with the reason it was refused.</returns>
+        public static (ProbeGrid? Grid, string? Refused) SetupProbeGrid(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
         {
             var grid = ProbeGrid.ForJob(fileMin, fileMax, margin, gridSize);
 
             // Stamped at creation from the machine's reported origin, so the map can later
             // say whether it still describes this job.
-            grid.Context = new ProbeContext(
-                Session.LastLoadedGCodeFile ?? string.Empty,
-                Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
+            grid.Context = CurrentSetup;
 
-            ProbePoints = grid;
-            ResetProbeApplicationState();
+            string? notAdopted = AdoptProbeGrid(grid);
+            if (notAdopted != null)
+            {
+                return (null, notAdopted);
+            }
 
-            // Clear any stale autosave - new grid starts fresh
-            // Autosave is created when probing starts, not at setup
+            // A new grid starts with no measured points, so anything still on disk belongs
+            // to an earlier one. The autosave is written again once probing records a point.
             Persistence.ClearProbeAutoSave();
 
             Logger.Log($"SetupProbeGrid: {grid.SizeX}x{grid.SizeY} = {grid.TotalPoints} points");
-            return grid;
+            return (grid, null);
         }
 
         /// <summary>
-        /// Applies probe data to the current G-code file.
-        /// Returns true on success, false if preconditions not met.
+        /// Applies probe data to the current G-code file, adopting the autosave as the live
+        /// map if none is in memory.
         /// </summary>
-        public static bool ApplyProbeData()
+        /// <returns>Null once the map is applied, or the reason it was refused.</returns>
+        public static string? ApplyProbeData()
         {
+            // Applying rewrites Machine.File and resets its line count, so it is refused for
+            // the same reason a load is.
+            string? blocked = WhyTheFileCannotChange();
+            if (blocked != null)
+            {
+                Logger.Log("ApplyProbeData: {0}", blocked);
+                return blocked;
+            }
+
             Logger.Log($"ApplyProbeData: CurrentFile={CurrentFile != null}, ProbePoints={ProbePoints != null}, NotProbed={ProbePoints?.RemainingCount ?? -1}, AreProbePointsApplied={AreProbePointsApplied}");
 
-            // Adopt the autosave if that is where the map is. Applying is an operator
-            // action, so it may take the data on; a status read may not.
-            ProbePoints ??= ReadUsableAutosave();
+            // Adopt the autosave if that is where the map is, through the one adopter.
+            // Applying is an operator action, so it may take the data on; a status read may
+            // not. Assigned directly, this skipped ResetProbeApplicationState.
+            if (ProbePoints == null && ReadUsableAutosave() is ProbeGrid autosave)
+            {
+                string? notAdopted = AdoptProbeGrid(autosave);
+                if (notAdopted != null)
+                {
+                    Logger.Log("ApplyProbeData: {0}", notAdopted);
+                    return notAdopted;
+                }
+            }
 
             if (CurrentFile == null || ProbePoints == null || !ProbePoints.HasCompleteData)
             {
-                Logger.Log("ApplyProbeData: preconditions not met, returning false");
-                return false;
+                Logger.Log("ApplyProbeData: preconditions not met");
+                return CliConstants.ErrorNoCompleteMapToApply;
             }
 
-            // Already applied - don't double-apply
+            // Applying twice would double the corrections.
             if (AreProbePointsApplied)
             {
-                Logger.Log("ApplyProbeData: already applied, returning true");
-                return true;
+                Logger.Log("ApplyProbeData: already applied");
+                return null;
             }
 
             CurrentFile = CurrentFile.ApplyProbeGrid(ProbePoints);
             Machine.SetFile(CurrentFile.GetGCode());
             AreProbePointsApplied = true;
             Logger.Log("ApplyProbeData: applied successfully, AreProbePointsApplied=true");
-            return true;
+            return null;
         }
 
         /// <summary>
@@ -401,26 +509,32 @@ namespace coppercli
         /// along with the G-code it was measured for. Call it before reading ProbePoints on
         /// a path that may run before anything loaded them.
         /// </summary>
-        public static void EnsureProbeDataLoaded()
+        /// <returns>Why the autosave was left alone, or null if it was adopted or there was none.</returns>
+        public static string? EnsureProbeDataLoaded()
         {
             // Already have probe data in memory
             if (ProbePoints != null)
             {
-                return;
+                return null;
             }
 
             var candidate = ReadUsableAutosave();
             if (candidate == null)
             {
-                return;
+                return null;
             }
 
-            ProbePoints = candidate;
-            ResetProbeApplicationState();
+            string? notAdopted = AdoptProbeGrid(candidate);
+            if (notAdopted != null)
+            {
+                return notAdopted;
+            }
+
             Logger.Log("EnsureProbeDataLoaded: adopted the autosave");
 
-            // Also load the G-Code file that was used when probe was created
+            // Also load the G-code file that was used when probe was created
             LoadProbeSourceGCode();
+            return null;
         }
 
         /// <summary>
@@ -437,12 +551,9 @@ namespace coppercli
                 return null;
             }
 
-            var applicability = candidate.GetApplicability(
-                Session.LastLoadedGCodeFile ?? string.Empty,
-                Machine?.G54Offset ?? Core.Util.Vector3.MinValue);
+            var applicability = DescribeApplicability(candidate);
 
-            if (applicability == ProbeApplicability.DifferentFile
-                || applicability == ProbeApplicability.OriginMoved)
+            if (!applicability.IsUsable())
             {
                 Logger.Log("ReadUsableAutosave: not applicable ({0})", applicability);
                 return null;
@@ -453,46 +564,86 @@ namespace coppercli
 
         /// <summary>
         /// The height map for the job in hand: the one loaded, or the autosave when nothing
-        /// is loaded and it describes this job. Every gate that asks whether the operator has
-        /// probe data reads this, so none of them can answer differently from the screen.
+        /// is loaded and it matches this job. Every check for probe data reads this, so none
+        /// of them can disagree with the screen.
         /// </summary>
-        public static ProbeGrid? CurrentProbeGrid => ProbePoints ?? ReadUsableAutosave();
+        public static ProbeGrid? CurrentProbeGrid => ReadProbeGridAndAutosave().Grid;
 
         /// <summary>
-        /// Deletes the autosave and drops the map in memory, in that order, so a delete that
-        /// fails does not leave the operator told the data is gone while it is still there.
+        /// The map for this job and the usable autosave behind it, from one read of the
+        /// file. The status builds its probe panel and its Save button from both, and two
+        /// reads could return different maps.
         /// </summary>
-        /// <returns>False if the autosave is still on disk.</returns>
-        public static bool DiscardProbeDataAndAutosave()
+        public static (ProbeGrid? Grid, ProbeGrid? UsableAutosave) ReadProbeGridAndAutosave()
         {
-            if (!Persistence.ClearProbeAutoSave())
+            var usableAutosave = ReadUsableAutosave();
+            return (ProbePoints ?? usableAutosave, usableAutosave);
+        }
+
+        /// <summary>
+        /// Takes the map out of the G-code and drops it, then deletes the saved copy. In that
+        /// order, so a saved copy that will not delete is not reported as corrections stuck in
+        /// the toolpath.
+        /// </summary>
+        /// <returns>The reason nothing was discarded, or null once it was.</returns>
+        public static string? DiscardProbeDataAndAutosave()
+        {
+            // Asked before the autosave is deleted, so a refusal leaves both copies where
+            // they are.
+            string? blocked = WhyTheFileCannotChange();
+            if (blocked != null)
             {
-                return false;
+                Logger.Log("DiscardProbeDataAndAutosave: {0}", blocked);
+                return blocked;
             }
 
-            DiscardProbeData();
-            return true;
+            string? notDiscarded = DiscardProbeData();
+            if (notDiscarded != null)
+            {
+                return notDiscarded;
+            }
+
+            return Persistence.ClearProbeAutoSave() ? null : CliConstants.ErrorAutosaveNotDeleted;
         }
 
         /// <summary>
-        /// Force loads probe data from autosave, replacing any in-memory data.
-        /// Used for explicit "Recover from Autosave" action in TUI and Web UI.
-        /// Returns the loaded ProbeGrid, or throws if autosave doesn't exist or load fails.
+        /// Takes the autosaved map as the operator's current data, replacing anything in
+        /// memory. Behind Recover from Autosave in both front ends.
         /// </summary>
-        public static ProbeGrid ForceLoadProbeFromAutosave()
+        /// <returns>
+        /// The recovered map, or null with the reason: there is no autosave, it does not
+        /// describe this job, or a run owns the file.
+        /// </returns>
+        public static (ProbeGrid? Grid, string? Refused) ForceLoadProbeFromAutosave()
         {
-            // The same test the status applies: recovering a map measured for another board
-            // would hand the operator someone else's heights as their current data.
-            ProbePoints = ReadUsableAutosave()
-                ?? throw new InvalidOperationException(CliConstants.ProbeAutosaveNotApplicable);
-            ResetProbeApplicationState();
+            // Told apart, because "there is none" and "there is one that does not fit" are
+            // different things to the operator.
+            var candidate = Persistence.ReadProbeAutoSave();
+            if (candidate == null)
+            {
+                return (null, CliConstants.ProbeErrorNoAutosave);
+            }
+
+            // The same check the status applies: a map measured for another board must not
+            // be recovered as this job's data.
+            if (!DescribeApplicability(candidate).IsUsable())
+            {
+                return (null, CliConstants.ProbeAutosaveNotApplicable);
+            }
+
+            string? notAdopted = AdoptProbeGrid(candidate);
+            if (notAdopted != null)
+            {
+                return (null, notAdopted);
+            }
+
             LoadProbeSourceGCode();
-            Logger.Log($"ForceLoadProbeFromAutosave: loaded {ProbePoints.Progress}/{ProbePoints.TotalPoints} points");
-            return ProbePoints;
+            Logger.Log($"ForceLoadProbeFromAutosave: loaded {candidate.Progress}/{candidate.TotalPoints} points");
+            return (candidate, null);
         }
 
         /// <summary>
-        /// Checks if probe data exists but the source G-Code file is missing.
+        /// Checks if probe data exists but the source G-code file is missing.
         /// Used to show warnings in TUI and Web UI.
         /// </summary>
         public static bool IsProbeSourceGCodeMissing =>
@@ -502,10 +653,13 @@ namespace coppercli
             !File.Exists(Session.ProbeSourceGCodeFile);
 
         /// <summary>
-        /// Loads the G-Code file associated with current probe data (if available).
-        /// Called after loading probe data to ensure both are loaded together.
-        /// Returns true if G-Code was loaded, false if not available or missing.
+        /// Loads the G-code file the current probe data was measured for, so the map and the
+        /// job it describes are in hand together.
         /// </summary>
+        /// <returns>
+        /// True once a file is loaded, including one that was already loaded. False when
+        /// none is recorded, the recorded one is gone, or the load was refused.
+        /// </returns>
         public static bool LoadProbeSourceGCode()
         {
             if (CurrentFile != null)
@@ -520,15 +674,21 @@ namespace coppercli
 
             if (!File.Exists(Session.ProbeSourceGCodeFile))
             {
-                Logger.Log($"LoadProbeSourceGCode: G-Code file missing: {Session.ProbeSourceGCodeFile}");
+                Logger.Log($"LoadProbeSourceGCode: G-code file missing: {Session.ProbeSourceGCodeFile}");
                 return false;
             }
 
             try
             {
                 var file = GCodeFile.Load(Session.ProbeSourceGCodeFile);
-                LoadGCodeIntoMachine(file);
-                Logger.Log($"LoadProbeSourceGCode: loaded G-Code from {Session.ProbeSourceGCodeFile}");
+                string? refused = LoadGCodeIntoMachine(file).Refused;
+                if (refused != null)
+                {
+                    Logger.Log("LoadProbeSourceGCode: {0}", refused);
+                    return false;
+                }
+
+                Logger.Log($"LoadProbeSourceGCode: loaded G-code from {Session.ProbeSourceGCodeFile}");
                 return true;
             }
             catch (Exception ex)
@@ -539,104 +699,170 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Handles probe grid state after work zero changes.
-        /// Call this after setting work zero to ensure probe data remains valid.
-        /// - XY zero: discards probe data (grid XY coordinates become invalid)
-        /// - Z-only zero: reloads original G-code and re-applies probe grid
-        ///   (grid values are relative to Z0, so must be re-applied with new Z0)
+        /// What the height map must become after the work zero changed.
+        ///
+        /// A Z zero reaches here during a run, because a tool change asks for one. Re-applying
+        /// the map reloads the G-code and takes the program back to line 0, so during a run
+        /// the file is left alone. An XY zero is refused earlier, in SetWorkZeroAndWait.
         /// </summary>
-        /// <param name="axes">The axes string passed to ZeroWorkOffset (e.g., "X0 Y0 Z0" or "Z0").</param>
-        public static void HandleWorkZeroChange(string axes)
+        /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
+        /// <returns>What it did, for the screen that reports it to the operator.</returns>
+        public static WorkZeroOutcome HandleWorkZeroChange(string axes)
         {
-            var axesUpper = axes.ToUpperInvariant();
-            bool zeroingXY = axesUpper.Contains("X") || axesUpper.Contains("Y");
+            if (ZeroTouchesXY(axes))
+            {
+                // The map's coordinates move with the work origin, so the map goes.
+                bool hadMap = CurrentProbeGrid != null;
 
-            if (zeroingXY)
-            {
-                // XY change invalidates probe grid coordinates
-                DiscardProbeData();
-                Persistence.ClearProbeAutoSave();
+                string? notDiscarded = DiscardProbeDataAndAutosave();
+                if (notDiscarded == CliConstants.ErrorAutosaveNotDeleted)
+                {
+                    // The map came out of the G-code; only the saved copy is still there, so
+                    // the file is right and there is nothing to reload.
+                    Logger.Log("HandleWorkZeroChange: {0}", notDiscarded);
+                    return WorkZeroOutcome.MapDiscarded;
+                }
+
+                if (notDiscarded != null)
+                {
+                    return WorkZeroOutcome.MapNotDiscarded;
+                }
+
+                if (!hadMap)
+                {
+                    return WorkZeroOutcome.NothingToDo;
+                }
+
                 Logger.Log("HandleWorkZeroChange: X/Y zeroed, probe data discarded");
+                return WorkZeroOutcome.MapDiscarded;
             }
-            else if (AreProbePointsApplied && ProbePoints != null)
+
+            if (IsRunInProgress)
             {
-                // Z-only change: re-apply probe grid to fresh G-code
-                // The grid values were baked into the G-code with the old Z0 reference.
-                // We need to reload the original G-code and re-apply with the new Z0.
-                ReapplyProbeGrid();
-                Logger.Log("HandleWorkZeroChange: Z-only zero, probe grid re-applied");
+                Logger.Log("HandleWorkZeroChange: a run owns the loaded file, leaving it alone");
+                return WorkZeroOutcome.FileLeftAlone;
             }
-            else
+
+            if (AreProbePointsApplied && ProbePoints != null)
             {
-                Logger.Log("HandleWorkZeroChange: Z-only zero, no probe grid to re-apply");
+                // The map's heights were measured against the old Z0, so it is reloaded and
+                // baked in again against the new one.
+                return ReapplyProbeGrid()
+                    ? WorkZeroOutcome.MapReapplied
+                    : WorkZeroOutcome.MapNotReapplied;
             }
+
+            Logger.Log("HandleWorkZeroChange: Z-only zero, no probe grid to re-apply");
+            return WorkZeroOutcome.NothingToDo;
         }
 
         /// <summary>
         /// Reloads original G-code and re-applies the probe grid.
         /// Used when Z0 changes and probe grid was already applied.
         /// </summary>
-        private static void ReapplyProbeGrid()
+        /// <returns>True once the map is baked into the reloaded G-code.</returns>
+        private static bool ReapplyProbeGrid()
         {
             if (ProbePoints == null || string.IsNullOrEmpty(Session.LastLoadedGCodeFile))
             {
                 Logger.Log("ReapplyProbeGrid: no probe points or no source file, skipping");
-                return;
+                return false;
             }
 
             if (!File.Exists(Session.LastLoadedGCodeFile))
             {
                 Logger.Log($"ReapplyProbeGrid: source file missing: {Session.LastLoadedGCodeFile}");
-                return;
+                return false;
             }
 
             try
             {
-                // Reload original G-code (resets AreProbePointsApplied to false)
                 var file = GCodeFile.Load(Session.LastLoadedGCodeFile);
-                LoadGCodeIntoMachine(file);
+                string? refused = LoadGCodeIntoMachine(file).Refused;
+                if (refused != null)
+                {
+                    // The map stays baked into the streaming file. Applying it again would
+                    // double the corrections.
+                    Logger.Log("ReapplyProbeGrid: {0}", refused);
+                    return false;
+                }
 
                 // Re-apply probe grid with new Z0 reference
-                ApplyProbeData();
+                string? failed = ApplyProbeData();
+                if (failed != null)
+                {
+                    Logger.Log("ReapplyProbeGrid: {0}", failed);
+                    return false;
+                }
+
                 Logger.Log($"ReapplyProbeGrid: reloaded and re-applied probe grid");
+                return true;
             }
             catch (Exception ex)
             {
                 Logger.Log($"ReapplyProbeGrid: failed - {ex.Message}");
+                return false;
             }
         }
 
         /// <summary>
-        /// Discards probe data and reloads the G-code file if probe data was applied.
-        /// Called when XY work zero changes since probe grid XY coordinates become invalid.
-        /// Does nothing if no probe data exists.
+        /// Drops the map and puts the original G-code back if the map was applied to it.
         /// </summary>
-        public static void DiscardProbeData()
+        /// <returns>The reason nothing was discarded, or null once it was.</returns>
+        public static string? DiscardProbeData()
         {
-            // Nothing to discard
             if (ProbePoints == null && !AreProbePointsApplied)
             {
-                return;
+                return null;
             }
 
-            bool wasApplied = AreProbePointsApplied;
-            ProbePoints = null;
-            ResetProbeApplicationState();
-
-            // If probe data was applied to the G-code, reload the original file
-            if (wasApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
-                File.Exists(Session.LastLoadedGCodeFile))
+            // Asked before anything is cleared. The reload takes the map back out of the
+            // G-code; clearing first and not reloading leaves the machine cutting a map
+            // AppState says is gone.
+            string? blocked = WhyTheFileCannotChange();
+            if (blocked != null)
             {
-                try
+                Logger.Log("DiscardProbeData: {0}", blocked);
+                return blocked;
+            }
+
+            // The reload takes the map back out of the G-code, and it runs before AppState
+            // forgets the map. A reload that fails then leaves the two still agreeing.
+            if (AreProbePointsApplied)
+            {
+                string? notRemoved = RemoveMapFromLoadedGCode();
+                if (notRemoved != null)
                 {
-                    var file = GCodeFile.Load(Session.LastLoadedGCodeFile);
-                    LoadGCodeIntoMachine(file);
-                    Helpers.Logger.Log("DiscardProbeData: Reloaded {0}", Session.LastLoadedGCodeFile);
+                    return notRemoved;
                 }
-                catch (Exception ex)
-                {
-                    Helpers.Logger.Log("DiscardProbeData: Failed to reload file: {0}", ex.Message);
-                }
+            }
+
+            return AdoptProbeGrid(null);
+        }
+
+        /// <summary>
+        /// Puts the original G-code back, so the map's corrections are no longer in what the
+        /// machine would cut.
+        /// </summary>
+        /// <returns>The reason the map is still in the G-code, or null once it is out.</returns>
+        private static string? RemoveMapFromLoadedGCode()
+        {
+            if (string.IsNullOrEmpty(Session.LastLoadedGCodeFile)
+                || !File.Exists(Session.LastLoadedGCodeFile))
+            {
+                Logger.Log(
+                    "RemoveMapFromLoadedGCode: source gone: {0}", Session.LastLoadedGCodeFile);
+                return CliConstants.ErrorMapStuckInGCode;
+            }
+
+            try
+            {
+                return LoadGCodeIntoMachine(GCodeFile.Load(Session.LastLoadedGCodeFile)).Refused;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("RemoveMapFromLoadedGCode: {0}", ex.Message);
+                return CliConstants.ErrorMapStuckInGCode;
             }
         }
     }

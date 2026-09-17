@@ -1,7 +1,7 @@
 // coppercli Web UI File Browser
 
 import { state } from './state.js';
-import { $, showError, showInfo, FileBrowser } from './helpers.js';
+import { $, showError, showInfo, FileBrowser, format, whileBusy } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     API_FILES,
@@ -10,25 +10,31 @@ import {
     SCREEN_DASHBOARD,
     CLASS_HIDDEN,
     TEXT_LOADING,
-    TEXT_LOAD,
-    TEXT_UNKNOWN,
     TEXT_FILE_UPLOADED,
     BYTES_PER_KB,
     BYTES_PER_MB,
-    POSITION_DECIMALS_BRIEF,
-    TEXT_UPLOAD,
     TEXT_UPLOADING,
     TEXT_FILE_LOAD_FAILED,
-    TEXT_UPLOAD_FAILED
+    TEXT_UPLOAD_FAILED,
+    TEXT_FILE_LOADED,
+    TEXT_HEIGHT_MAP_DROPPED,
+    FILE_SIZE_DECIMALS,
+    TEXT_SIZE_BYTES,
+    TEXT_SIZE_KB,
+    TEXT_SIZE_MB,
 } from './constants.js';
 
 // Shared file browser instance
 let fileBrowser = null;
 
 function formatSize(bytes) {
-    if (bytes < BYTES_PER_KB) return bytes + ' B';
-    if (bytes < BYTES_PER_MB) return (bytes / BYTES_PER_KB).toFixed(POSITION_DECIMALS_BRIEF) + ' KB';
-    return (bytes / BYTES_PER_MB).toFixed(POSITION_DECIMALS_BRIEF) + ' MB';
+    if (bytes < BYTES_PER_KB) {
+        return format(TEXT_SIZE_BYTES, bytes);
+    }
+    if (bytes < BYTES_PER_MB) {
+        return format(TEXT_SIZE_KB, (bytes / BYTES_PER_KB).toFixed(FILE_SIZE_DECIMALS));
+    }
+    return format(TEXT_SIZE_MB, (bytes / BYTES_PER_MB).toFixed(FILE_SIZE_DECIMALS));
 }
 
 function onFileSelect(path) {
@@ -69,9 +75,7 @@ export async function loadFiles(path) {
 export async function loadFile() {
     if (!state.selectedFile) return;
 
-    const btn = document.getElementById('load-file-btn');
-    btn.disabled = true;
-    btn.textContent = TEXT_LOADING;
+    const done = whileBusy(document.getElementById('load-file-btn'), TEXT_LOADING);
 
     try {
         const response = await fetch(API_FILE_LOAD, {
@@ -83,7 +87,8 @@ export async function loadFile() {
         const data = await response.json();
 
         if (data.success) {
-            showInfo(`Loaded: ${data.name} (${data.lines} lines)`);
+            showInfo(format(TEXT_FILE_LOADED, data.name, data.lines));
+            reportDroppedMap(data);
             showScreen(SCREEN_DASHBOARD);
         } else {
             showError(data.error || TEXT_FILE_LOAD_FAILED);
@@ -92,8 +97,15 @@ export async function loadFile() {
         console.error('file load failed', err);
         showError(TEXT_FILE_LOAD_FAILED);
     } finally {
-        btn.disabled = false;
-        btn.textContent = TEXT_LOAD;
+        done();
+    }
+}
+
+// Loading a file can drop the height map that was in hand. The terminal says so; without
+// this the browser operator watches it vanish from the probe panel with no reason given.
+function reportDroppedMap(data) {
+    if (data.droppedMap) {
+        showError(format(TEXT_HEIGHT_MAP_DROPPED, data.droppedMap));
     }
 }
 
@@ -101,11 +113,7 @@ async function uploadFile(file) {
     const formData = new FormData();
     formData.append('file', file);
 
-    const uploadBtn = $('upload-file-btn');
-    if (uploadBtn) {
-        uploadBtn.disabled = true;
-        uploadBtn.textContent = TEXT_UPLOADING;
-    }
+    const done = whileBusy($('upload-file-btn'), TEXT_UPLOADING);
 
     try {
         const response = await fetch(API_FILE_UPLOAD, {
@@ -115,19 +123,17 @@ async function uploadFile(file) {
         const data = await response.json();
 
         if (data.success) {
-            showInfo(`${TEXT_FILE_UPLOADED}: ${data.name} (${data.lines} lines)`);
+            showInfo(format(TEXT_FILE_UPLOADED, data.name, data.lines));
+            reportDroppedMap(data);
             showScreen(SCREEN_DASHBOARD);
         } else {
-            showError(data.error || TEXT_UNKNOWN);
+            showError(data.error || TEXT_UPLOAD_FAILED);
         }
     } catch (err) {
         console.error('upload failed', err);
         showError(TEXT_UPLOAD_FAILED);
     } finally {
-        if (uploadBtn) {
-            uploadBtn.disabled = false;
-            uploadBtn.textContent = TEXT_UPLOAD;
-        }
+        done();
     }
 }
 

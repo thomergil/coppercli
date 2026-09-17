@@ -33,3 +33,8 @@ that clears it.
 **Touches:** `controllers → machine` (v1 → v2), rules `no-bail-out-on-the-awaited-state`,
 `never-auto-clear-a-safety-gate`, `coppercli.Core/Controllers/MachineWait.cs`,
 `coppercli.Core/Controllers/MillingController.cs`, `coppercli.Tests/MachineWaitTests.cs`.
+
+**Superseded names.** `IsProblematic` is `MachineWait.IsUnavailable` now, and Hold is not in
+it: `NeedsAttention` is the door states, Alarm and Sleep. `WaitForDoorClosedAsync` is gone;
+the door waits are `ReleaseDoorHoldAsync` and `WaitForDoorStateChangeAsync`. The lesson stands
+as written.

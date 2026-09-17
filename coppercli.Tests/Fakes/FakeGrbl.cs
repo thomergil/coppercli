@@ -19,6 +19,7 @@ namespace coppercli.Tests.Fakes
     {
         private const string WelcomeBanner = "grbl v1.1f ['$' for help]";
         private const byte StatusQuery = (byte)'?';
+        private const byte CycleStart = (byte)GrblProtocol.CycleStart;
         private const byte FeedHold = (byte)GrblProtocol.FeedHold;
         private const byte SoftReset = (byte)GrblProtocol.SoftReset;
         private const int AcceptPollMs = 20;
@@ -27,15 +28,24 @@ namespace coppercli.Tests.Fakes
         private readonly Thread _thread;
         private readonly object _lock = new();
         private readonly List<string> _received = new();
+
+        // Lines that arrived while the machine was holding, waiting on the cycle start.
+        private readonly List<string> _queued = new();
+
+        // GRBL's door rules, shared with the other two doubles.
+        private readonly DoorModel _door;
         private volatile bool _running = true;
         private TcpClient? _client;
         private Stream? _stream;
 
         private double _x, _y, _z;
         private string _state = GrblProtocol.StatusIdle;
+        private string _subState = string.Empty;
 
         public FakeGrbl()
         {
+            _door = new DoorModel(SetState, () => GrblProtocol.StatusIdle);
+
             _listener = new TcpListener(IPAddress.Loopback, 0);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -58,11 +68,44 @@ namespace coppercli.Tests.Fakes
         /// <summary>What <see cref="Received"/> holds where a real-time byte arrived.</summary>
         public const string FeedHoldMark = "<feed-hold>";
 
+        /// <summary><see cref="FeedHoldMark"/> for a cycle start.</summary>
+        public const string CycleStartMark = "<cycle-start>";
+
         /// <inheritdoc cref="FeedHoldMark"/>
         public const string SoftResetMark = "<soft-reset>";
 
         public int FeedHoldCount => CountOf(FeedHoldMark);
         public int SoftResetCount => CountOf(SoftResetMark);
+        public int CycleStartCount => CountOf(CycleStartMark);
+
+        /// <summary>The enclosure is open and the machine is holding.</summary>
+        public void SimulateDoorOpen() =>
+            SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar);
+
+        /// <summary>GRBL is restoring from the park after a cycle start.</summary>
+        public void SimulateDoorResuming() =>
+            SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateResuming);
+
+        /// <inheritdoc cref="DoorModel.RestoreMs"/>
+        public int DoorRestoreMs
+        {
+            get => _door.RestoreMs;
+            set => _door.RestoreMs = value;
+        }
+
+        /// <summary>
+        /// The enclosure is closed and the machine is still holding, waiting for a cycle
+        /// start. A job start must recover from this state.
+        /// </summary>
+        public void SimulateDoorClosedAndHolding() =>
+            SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed);
+
+        /// <summary>Writes state and substate together, so neither can carry the other's leftovers.</summary>
+        private void SetState(string state, string subState)
+        {
+            _state = state;
+            _subState = subState;
+        }
 
         private int CountOf(string mark)
         {
@@ -85,6 +128,7 @@ namespace coppercli.Tests.Fakes
         public void Dispose()
         {
             _running = false;
+            _door.Dispose();
             try { _listener.Stop(); } catch { /* shutting down */ }
             try { _client?.Close(); } catch { /* shutting down */ }
             _thread.Join(TimeSpan.FromSeconds(2));
@@ -133,15 +177,40 @@ namespace coppercli.Tests.Fakes
                 if (b == FeedHold)
                 {
                     Record(FeedHoldMark);
-                    _state = GrblProtocol.StatusHold;
+                    if (DoorModel.FeedHoldApplies(_state))
+                    {
+                        SetState(GrblProtocol.StatusHold, string.Empty);
+                    }
                     continue;
                 }
 
                 if (b == SoftReset)
                 {
                     Record(SoftResetMark);
-                    _state = GrblProtocol.StatusIdle;
+                    SetState(
+                        DoorModel.ResetAlarms(_state)
+                            ? GrblProtocol.StatusAlarm
+                            : GrblProtocol.StatusIdle,
+                        DoorModel.ResetAlarms(_state) ? "1" : string.Empty);
                     Send(WelcomeBanner);
+                    continue;
+                }
+
+                if (b == CycleStart)
+                {
+                    Record(CycleStartMark);
+
+                    // A feed hold always resumes; the door has its own rules.
+                    if (_state == GrblProtocol.StatusHold)
+                    {
+                        SetState(GrblProtocol.StatusIdle, string.Empty);
+                    }
+                    else
+                    {
+                        _door.CycleStart(_state, _subState);
+                    }
+
+                    RunQueuedLines();
                     continue;
                 }
 
@@ -162,6 +231,23 @@ namespace coppercli.Tests.Fakes
         private void Handle(string line)
         {
             Record(line);
+
+            if (DoorModel.ClearsAlarm(line, _state))
+            {
+                SetState(GrblProtocol.StatusIdle, string.Empty);
+                Send(GrblProtocol.ResponseOk);
+                return;
+            }
+
+            // GRBL executes nothing while it holds: the line is acknowledged, queued, and
+            // runs on the cycle start. A double that moved anyway would let a retract queued
+            // at the door pass every test that checks the tool stayed put.
+            if (DoorModel.Holding(_state))
+            {
+                lock (_lock) { _queued.Add(line); }
+                Send(GrblProtocol.ResponseOk);
+                return;
+            }
 
             if (line.StartsWith(GrblProtocol.CmdViewParameters, StringComparison.Ordinal))
             {
@@ -192,6 +278,22 @@ namespace coppercli.Tests.Fakes
             Send(GrblProtocol.ResponseOk);
         }
 
+        /// <summary>Runs whatever arrived while the machine was holding.</summary>
+        private void RunQueuedLines()
+        {
+            string[] queued;
+            lock (_lock)
+            {
+                queued = _queued.ToArray();
+                _queued.Clear();
+            }
+
+            foreach (string line in queued)
+            {
+                Handle(line);
+            }
+        }
+
         /// <summary>Reads the axis words so the reported position follows the move.</summary>
         private void ApplyMove(string line)
         {
@@ -220,7 +322,8 @@ namespace coppercli.Tests.Fakes
         private void SendStatus()
         {
             string pos = GCodeFormat.Inv($"{_x:F3},{_y:F3},{_z:F3}");
-            Send($"<{_state}"
+            string state = _subState.Length == 0 ? _state : $"{_state}:{_subState}";
+            Send($"<{state}"
                 + $"|{GrblProtocol.FieldMachinePos}:{pos}"
                 + $"|{GrblProtocol.FieldFeedSpindle}:0,0"
                 + $"|{GrblProtocol.FieldWorkCoordOffset}:0.000,0.000,0.000>");

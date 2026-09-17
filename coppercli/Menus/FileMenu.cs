@@ -96,7 +96,7 @@ namespace coppercli.Menus
                         var newName = MenuHelpers.AskString(FileBrowserFilenameLabel.TrimEnd(), filename);
                         if (newName != null)
                         {
-                            filename = EnsureExtension(newName, extensions);
+                            filename = PathHelpers.EnsureExtension(newName, extensions);
                         }
                         break;
 
@@ -436,7 +436,7 @@ namespace coppercli.Menus
                     else if (InputHelpers.IsEnterKey(key))
                     {
                         // Save with current filename
-                        var finalFilename = EnsureExtension(filename, extensions);
+                        var finalFilename = PathHelpers.EnsureExtension(filename, extensions);
                         if (!string.IsNullOrWhiteSpace(finalFilename))
                         {
                             return new FileBrowserResult { Action = FileBrowserAction.SaveWithFilename, Filename = finalFilename };
@@ -520,7 +520,7 @@ namespace coppercli.Menus
                         if (saveMode && !string.IsNullOrWhiteSpace(filename))
                         {
                             // Save with current filename
-                            var finalFilename = EnsureExtension(filename, extensions);
+                            var finalFilename = PathHelpers.EnsureExtension(filename, extensions);
                             return new FileBrowserResult { Action = FileBrowserAction.SaveWithFilename, Filename = finalFilename };
                         }
                         else if (filteredItems.Count > 0)
@@ -539,23 +539,6 @@ namespace coppercli.Menus
         /// <summary>
         /// Ensures the filename has the correct extension.
         /// </summary>
-        private static string EnsureExtension(string filename, string[]? extensions)
-        {
-            if (string.IsNullOrWhiteSpace(filename) || extensions == null || extensions.Length == 0)
-            {
-                return filename;
-            }
-
-            var ext = Path.GetExtension(filename).ToLower();
-            if (extensions.Contains(ext))
-            {
-                return filename;
-            }
-
-            // Append the first valid extension
-            return filename + extensions[0];
-        }
-
         /// <summary>
         /// Handles navigation keys (arrows, Page Up/Down, Home/End) for list selection.
         /// Returns the new selected index.
@@ -608,7 +591,12 @@ namespace coppercli.Menus
                 }
 
                 // Load into machine (sets CurrentFile, loads to machine, resets probe state)
-                AppState.LoadGCodeIntoMachine(currentFile);
+                var loaded = AppState.LoadGCodeIntoMachine(currentFile);
+                if (loaded.Refused != null)
+                {
+                    MenuHelpers.ShowError(loaded.Refused);
+                    return;
+                }
 
                 var dir = Path.GetDirectoryName(path);
                 if (!string.IsNullOrEmpty(dir))
@@ -619,7 +607,7 @@ namespace coppercli.Menus
 
                 // LoadGCodeIntoMachine already decided what this load means for any
                 // height map in hand; this reports that decision.
-                string? whyDropped = AppState.LastDiscardedProbeReason;
+                string? whyDropped = loaded.MapDiscardedBecause;
                 if (whyDropped != null)
                 {
                     AnsiConsole.MarkupLine(
@@ -627,26 +615,27 @@ namespace coppercli.Menus
                         $"Probe again before milling.[/]");
                 }
 
-                // Offer to apply probe data that genuinely belongs to this file
-                var probePoints = AppState.ProbePoints;
-                if (probePoints != null && probePoints.HasCompleteData)
+                // The map for this job, loaded or not - the same one the mill check reads.
+                // Asked of ProbePoints alone, a complete autosave was never offered here.
+                if (ProbeGrid.StateOf(AppState.CurrentProbeGrid) == ProbeDataState.Complete)
                 {
                     if (MenuHelpers.Confirm("Apply the existing height map to this file?", true))
                     {
-                        if (AppState.ApplyProbeData())
+                        string? notApplied = AppState.ApplyProbeData();
+                        if (notApplied == null)
                         {
-                            AnsiConsole.MarkupLine($"[{ColorSuccess}]Height map applied.[/]");
+                            AnsiConsole.MarkupLine($"[{ColorSuccess}]{HeightMapApplied}[/]");
                         }
                         else
                         {
-                            MenuHelpers.ShowError("Could not apply the height map.");
+                            MenuHelpers.ShowError(notApplied);
                         }
                     }
                 }
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Error loading file: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowFailure(CliConstants.FailedLoadingTheFile, ex);
                 InputHelpers.WaitForKeyPolling();
             }
         }

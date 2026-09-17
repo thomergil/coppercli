@@ -54,7 +54,12 @@ namespace coppercli.Core.Communication
         Vector3 LastProbePosMachine { get; }
 
         /// <summary>Start probe mode. Must be called before sending probe commands.</summary>
-        void ProbeStart();
+        /// <summary>
+        /// Opens GRBL's probe cycle. Returns false when it could not - the machine is
+        /// disconnected, or something else already owns it - in which case no probe move
+        /// may be sent: nothing would be watching for the trigger.
+        /// </summary>
+        bool ProbeStart();
 
         /// <summary>Stop probe mode. Call after probing completes.</summary>
         void ProbeStop();

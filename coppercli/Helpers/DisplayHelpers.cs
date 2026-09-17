@@ -1,4 +1,7 @@
+using System.Collections.Generic;
 using System.Text;
+using coppercli.Core.Controllers;
+using coppercli.Core.Util;
 using static coppercli.CliConstants;
 
 namespace coppercli.Helpers
@@ -75,6 +78,21 @@ namespace coppercli.Helpers
 
         /// <summary>ANSI code for errors and alerts (bold red).</summary>
         public const string AnsiAlert = AnsiCodeBoldRed;
+
+        /// <summary>
+        /// The terminal's text for what the machine is doing, falling back to GRBL's own
+        /// word where there is none. Every terminal screen reads this.
+        /// </summary>
+        public static string GetActivityText(MachineActivity activity, string rawStatus) => activity switch
+        {
+            MachineActivity.Disconnected => GrblProtocol.StatusDisconnected,
+            MachineActivity.Alarm => MillAlarmStatus,
+            MachineActivity.DoorOpen => DoorOpenMessage,
+            MachineActivity.DoorHolding => DoorClosedMessage,
+            MachineActivity.DoorResuming => DoorResumingStatus,
+            MachineActivity.Sleep => MillSleepStatus,
+            _ => rawStatus
+        };
 
         /// <summary>
         /// Gets the console window size safely, returning defaults if unavailable.
@@ -215,11 +233,6 @@ namespace coppercli.Helpers
         /// </summary>
         public const int OverlayBoxFixedLines = 6;
 
-        /// <summary>
-        /// Total height for legacy 2-line overlay (for backward compatibility).
-        /// </summary>
-        public const int OverlayBoxHeight = OverlayBoxFixedLines + 2;
-
         /// <summary>Padding added to content width for overlay box (border + inner padding on each side).</summary>
         public const int OverlayBoxPadding = 6;
 
@@ -248,11 +261,34 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Calculates overlay box width for a 2-line overlay (convenience overload).
+        /// The lines an overlay box holds, and the colour of each: the message first, then the
+        /// subtext. Both are wrapped to what a box of <paramref name="maxWidth"/> fits, because
+        /// GetOverlayBoxLine cuts a content line that is wider than the box.
         /// </summary>
-        public static int CalculateOverlayBoxWidth(string line1, string line2, int maxWidth)
+        public static (string[] Lines, string[] Colors) BuildOverlayContent(
+            string message, string? subtext, string messageColor, int maxWidth)
         {
-            return CalculateOverlayBoxWidth(new[] { line1, line2 }, maxWidth);
+            int textWidth = maxWidth - OverlayBoxMargin - OverlayBoxPadding;
+
+            var lines = new List<string>();
+            var colors = new List<string>();
+
+            foreach (string line in WrapToWidth(message, textWidth))
+            {
+                lines.Add(line);
+                colors.Add(messageColor);
+            }
+
+            if (!string.IsNullOrEmpty(subtext))
+            {
+                foreach (string line in WrapToWidth(subtext, textWidth))
+                {
+                    lines.Add(line);
+                    colors.Add(AnsiDim);
+                }
+            }
+
+            return (lines.ToArray(), colors.ToArray());
         }
 
         /// <summary>
@@ -267,7 +303,6 @@ namespace coppercli.Helpers
                 return "";
             }
 
-            int totalHeight = CalculateOverlayBoxHeight(contentLines);
             string inner = new string(' ', boxWidth - 2);
 
             // Line indices: 0=margin, 1=border, 2=padding, 3..3+N-1=content, 3+N=padding, 3+N+1=border, 3+N+2=margin
@@ -300,19 +335,6 @@ namespace coppercli.Helpers
                 return $"║{color}{CenterText(contentLines[contentIdx], boxWidth - 2)}{AnsiReset}║";
             }
             return "";
-        }
-
-        /// <summary>
-        /// Gets a single line of a 2-line overlay box (convenience overload).
-        /// Used by MillMenu and MacroRunner for message+subtext overlays.
-        /// </summary>
-        public static string GetOverlayBoxLine(int lineIndex, int boxWidth,
-            string line1Text, string line1Color,
-            string line2Text, string line2Color)
-        {
-            return GetOverlayBoxLine(lineIndex, boxWidth,
-                new[] { line1Text, line2Text },
-                new[] { line1Color, line2Color });
         }
 
         /// <summary>
@@ -377,33 +399,55 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Draws a centered overlay box. Used internally by ShowOverlayTimed and ShowOverlayAndWait.
-        /// Handles newlines in message/subtext to create multi-line overlays.
+        /// Splits text into lines that fit the given width, breaking at spaces and keeping
+        /// the line breaks already in the text. A word longer than the width is left whole.
+        /// </summary>
+        public static List<string> WrapToWidth(string text, int width)
+        {
+            var wrapped = new List<string>();
+            if (width < 1)
+            {
+                width = 1;
+            }
+
+            foreach (string paragraph in text.Split('\n'))
+            {
+                if (paragraph.Length <= width)
+                {
+                    wrapped.Add(paragraph);
+                    continue;
+                }
+
+                var line = new StringBuilder();
+                foreach (string word in paragraph.Split(' '))
+                {
+                    if (line.Length > 0 && line.Length + 1 + word.Length > width)
+                    {
+                        wrapped.Add(line.ToString());
+                        line.Clear();
+                    }
+                    if (line.Length > 0)
+                    {
+                        line.Append(' ');
+                    }
+                    line.Append(word);
+                }
+                wrapped.Add(line.ToString());
+            }
+
+            return wrapped;
+        }
+
+        /// <summary>
+        /// Draws a centered overlay box. Used by ShowOverlayTimed, ShowOverlayAndWait and
+        /// ShowOverlayConfirm. Newlines in the message or subtext make a multi-line overlay.
         /// </summary>
         private static void DrawCenteredOverlay(string message, string subtext, string messageColor)
         {
             var (winWidth, winHeight) = GetSafeWindowSize();
 
-            // Build content lines from message and subtext, handling embedded newlines
-            var lines = new List<string>();
-            var colors = new List<string>();
-
-            foreach (var line in message.Split('\n'))
-            {
-                lines.Add(line);
-                colors.Add(messageColor);
-            }
-            if (!string.IsNullOrEmpty(subtext))
-            {
-                foreach (var line in subtext.Split('\n'))
-                {
-                    lines.Add(line);
-                    colors.Add(AnsiDim);
-                }
-            }
-
-            var contentLines = lines.ToArray();
-            var contentColors = colors.ToArray();
+            var (contentLines, contentColors) =
+                BuildOverlayContent(message, subtext, messageColor, winWidth);
 
             int boxHeight = CalculateOverlayBoxHeight(contentLines);
             int boxWidth = CalculateOverlayBoxWidth(contentLines, winWidth);
@@ -415,6 +459,18 @@ namespace coppercli.Helpers
                 Console.SetCursorPosition(boxLeft, boxTop + i);
                 Console.Write(GetOverlayBoxLine(i, boxWidth, contentLines, contentColors));
             }
+        }
+
+        /// <summary>
+        /// Draws a centered overlay box and returns. Use this where the caller does its own
+        /// waiting; the box stands until something else redraws the screen.
+        /// </summary>
+        /// <param name="message">Main message to display.</param>
+        /// <param name="subtext">Secondary text (optional).</param>
+        /// <param name="messageColor">ANSI color for main message.</param>
+        public static void ShowOverlay(string message, string? subtext = null, string? messageColor = null)
+        {
+            DrawCenteredOverlay(message, subtext ?? "", messageColor ?? AnsiSuccess);
         }
 
         /// <summary>

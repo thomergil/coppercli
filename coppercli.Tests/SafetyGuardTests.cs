@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -18,6 +19,85 @@ namespace coppercli.Tests
     /// </summary>
     public class SafetyGuardTests
     {
+        /// <summary>Long enough that sitting it out would be an obvious failure.</summary>
+        private const int HangDetectMs = 10000;
+
+        // =====================================================================
+        // A retract nobody confirmed must never be reported as a finished run
+        // =====================================================================
+
+        /// <summary>
+        /// A final retract the machine never confirmed must fail the run. Returned rather
+        /// than thrown, the run unwinds as a normal finish and reports Completed.
+        /// </summary>
+        [Fact]
+        public async Task AMillWhoseFinalRetractIsNotConfirmed_NeverReportsItFinished()
+        {
+            using var machine = new FakeMachine();
+            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            // Every move the job needs lands; then the tool is put back down and the
+            // machine stops arriving, so only the final lift is unconfirmed.
+            controller.StateChanged += state =>
+            {
+                if (state == ControllerState.Completing)
+                {
+                    machine.SetMachinePosition(0, 0, 0);
+                    machine.AlarmOnMove = true;
+                }
+            };
+
+            var errors = new List<ControllerError>();
+            controller.ErrorOccurred += errors.Add;
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await controller.StartAsync(cts.Token);
+
+            Assert.NotEqual(ControllerState.Completed, controller.State);
+            Assert.Contains(
+                errors, e => e.Message == ControllerConstants.ErrorSafetyRetractFailed);
+        }
+
+        /// <summary>
+        /// A mill stopped at the door lifted nothing GRBL confirmed. The probe reports that;
+        /// the mill runs through the same LiftAfterStopAsync and must report it too.
+        /// </summary>
+        [Fact]
+        public async Task AMillStoppedAtTheDoor_ReportsAnUnconfirmedLift()
+        {
+            using var machine = new FakeMachine();
+            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
+            machine.SimulateDoorOpen();
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            var errors = new List<ControllerError>();
+            controller.ErrorOccurred += errors.Add;
+
+            using var cts = new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+
+            long deadline = Environment.TickCount64 + HangDetectMs;
+            while (!controller.IsRunInProgress && Environment.TickCount64 < deadline)
+            {
+                await Task.Delay(Constants.StatusPollIntervalMs);
+            }
+
+            cts.Cancel();
+            try { await run; } catch (OperationCanceledException) { }
+
+            Assert.Contains(
+                errors, e => e.Message == ControllerConstants.ErrorStopRetractFailed);
+        }
+
         // =====================================================================
         // Disconnecting must stop the machine first
         // =====================================================================
@@ -50,8 +130,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A stop waits out the whole teardown - feed hold, reset, unlock, idle, then the
-        /// lift - so its budget has to cover the sum. If the budget is smaller than that sum,
-        /// a working stop tells the operator the machine may still be moving.
+        /// retract - so its timeout has to cover the sum. A shorter timeout makes a working
+        /// stop report that the machine may still be moving.
         /// </summary>
         [Fact]
         public void TheStopBudget_CoversTheTeardownItWaitsOn()
@@ -65,9 +145,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A line sent moments ago sits unparsed in GRBL's receive buffer while the status
-        /// still reads Idle. That happens when a jog and a disconnect both land between two
-        /// status polls.
+        /// A line just sent sits unparsed in GRBL's receive buffer while the status still
+        /// reads Idle. That happens when a jog and a disconnect both land between two status
+        /// polls.
         /// </summary>
         [Fact]
         public void NeedsStopBeforeDisconnect_IsTrueWhenIdleWithALineOutstanding()
@@ -78,10 +158,10 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Auto-detect opens every serial port in turn and disconnects the ones that do not
-        /// answer. A port that never answered as GRBL must not be sent a reset.
+        /// respond. A port that never answered as GRBL must not be sent a reset.
         /// </summary>
         [Fact]
-        public void NeedsStopBeforeDisconnect_IsFalseForAPortThatNeverSpokeGrbl()
+        public void NeedsStopBeforeDisconnect_IsFalseForAPortThatNeverAnsweredGrbl()
         {
             Assert.False(Machine.NeedsStopBeforeDisconnect(
                 connected: true, GrblProtocol.StatusDisconnected, bytesSent: 0));
@@ -124,7 +204,8 @@ namespace coppercli.Tests
             var machine = new MockMachine
             {
                 Status = "Run",                                   // never settles
-                MachinePosition = new Vector3(0, 0, 0)            // and never moves
+                MachinePosition = new Vector3(0, 0, 0),
+                IgnoreMoves = true                                // and never gets there
             };
 
             bool retracted = await MachineWait.SafetyRetractZAsync(machine, -40.0, 300);
@@ -204,9 +285,9 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task Ready_IsRefused_WithTheDoorOpen_AndDoesNotResume()
+        public async Task EnsureMachineReady_AtADoorHold_IsRefusedAndDoesNotResume()
         {
-            var machine = new MockMachine { Status = "Door:0" };
+            var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
 
             Assert.False(await MachineWait.EnsureMachineReadyAsync(machine, 300));
             Assert.Equal(0, machine.CycleStartCount);
@@ -228,7 +309,7 @@ namespace coppercli.Tests
                 Status = "Idle",
                 // Already at the safety height, so the retract confirms immediately and
                 // the run reaches the work-offset query this test is about.
-                MachinePosition = new Vector3(0, 0, Constants.MillStartSafetyZ),
+                MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ),
                 WorkOffsetQuerySucceeds = false
             };
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
@@ -353,7 +434,8 @@ namespace coppercli.Tests
         /// <summary>
         /// If the file never begins streaming, the controller must fail with a clear
         /// message. The completion check cannot tell "never started" from "finished", so
-        /// an unstarted stream would otherwise sit at Idle for ever with nothing reported.
+        /// an unstarted stream would otherwise sit at Idle indefinitely with nothing
+        /// reported.
         /// </summary>
         [Fact]
         public async Task Milling_FailsLoudly_WhenTheFileCannotStartStreaming()
@@ -362,7 +444,7 @@ namespace coppercli.Tests
             {
                 Status = "Idle",
                 RefuseFileStart = true,
-                MachinePosition = new Vector3(0, 0, Constants.MillStartSafetyZ)
+                MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ)
             };
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
 
@@ -374,7 +456,7 @@ namespace coppercli.Tests
             ControllerError? error = null;
             controller.ErrorOccurred += e => error = e;
 
-            // Would hang for ever before the fix; a generous cap proves it now terminates.
+            // Well above the controller's own timeouts, so a pass means the run ended by itself.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             await controller.StartAsync(cts.Token);
 
@@ -384,9 +466,9 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A probe run that ends right before milling can leave the machine in Probe
-        /// mode. Milling now returns it to Manual up front, so the job streams instead of
-        /// stalling - the root of the reported "stuck at Idle" hang.
+        /// A probe run that ends right before milling can leave the machine in Probe mode.
+        /// Milling returns it to Manual up front, so the job streams instead of stalling at
+        /// Idle.
         /// </summary>
         [Fact]
         public async Task Milling_RecoversFromLeftoverProbeMode()
@@ -428,17 +510,13 @@ namespace coppercli.Tests
                 Options = new MillingOptions { RequireHoming = false }
             };
 
+            // Well above the controller's own timeouts, so reaching it means the run never
+            // ended by itself. The cancellation escapes rather than being swallowed: a run
+            // that stalled is a failure, not a pass.
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            try
-            {
-                await controller.StartAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-            }
+            await controller.StartAsync(cts.Token);
 
-            // It must not have failed on the streaming assertion.
-            Assert.NotEqual(ControllerState.Failed, controller.State);
+            Assert.Equal(ControllerState.Completed, controller.State);
         }
     }
 }

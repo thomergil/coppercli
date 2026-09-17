@@ -21,8 +21,8 @@ namespace coppercli.Core.Util
         /// <summary>
         /// Reads a quoted-CSV resource into a dictionary keyed by its first column.
         ///
-        /// The two loaders differed only in how many columns they wanted and what they
-        /// built from them, so that is all each one still says.
+        /// The two loaders differed only in how many columns they read and what they built
+        /// from them, so those are the two parameters.
         /// </summary>
         private static void LoadCsvResource<T>(
             Dictionary<int, T> dict, string resourceName, Regex lineParser, Func<Match, T> build)
@@ -49,7 +49,7 @@ namespace coppercli.Core.Util
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error loading {resourceName}: {ex.Message}");
+                Controllers.ControllerLog.Log($"Could not read {resourceName}: {ex.Message}");
             }
         }
 

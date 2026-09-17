@@ -109,10 +109,8 @@ namespace coppercli.Core.GCode
 
         /// <summary>
         /// The lowest and highest measured heights, read from the nodes on every call.
-        ///
-        /// A node can be re-measured at any time, and InterpolateZ hands MaxHeight back as
-        /// the cut depth for any point outside the grid, so these must follow the nodes
-        /// rather than accumulate.
+        /// A node can be re-measured at any time, so these must follow the nodes rather than
+        /// accumulate.
         /// </summary>
         public double MinHeight => MeasuredExtreme(takeLowest: true);
 
@@ -135,8 +133,7 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// The nodes holding a height, with that height. Callers needing every measured
-        /// node use this rather than walking the grid themselves.
+        /// The measured nodes with their heights, so callers do not walk the grid.
         /// </summary>
         public IEnumerable<(int X, int Y, double Height)> MeasuredNodes()
         {
@@ -154,16 +151,14 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// The setup this map was measured in. Travels with the map through save and load,
-        /// so whether a map is usable here is answered from the map itself rather than from
-        /// the session file.
+        /// The setup this map was measured in. Saved and loaded with the map, so whether a
+        /// map is usable is decided from the map rather than the session file.
         /// </summary>
         public ProbeContext Context { get; set; } = ProbeContext.Unknown;
 
         /// <summary>
-        /// Whether this map describes the given job. The origin comparison catches a work
-        /// zero moved by any route: jogging and re-zeroing, another client, or a G10 in a
-        /// macro.
+        /// Whether this map matches the given file and origin. The origin comparison
+        /// catches a work zero moved by any route: re-zeroing, another client, or a G10.
         /// </summary>
         public ProbeApplicability GetApplicability(string currentFile, Vector3 currentWorkOrigin)
         {
@@ -172,8 +167,8 @@ namespace coppercli.Core.GCode
                 return ProbeApplicability.Unknown;
             }
 
-            // Nobody has told us where the origin is, so the comparison below would read
-            // "not where it was" from a number that only means "not known".
+            // The origin is unknown, so the comparison below would report a move from a
+            // value that only means "not set".
             if (!IsFinite(currentWorkOrigin))
             {
                 return ProbeApplicability.Unknown;
@@ -273,6 +268,24 @@ namespace coppercli.Core.GCode
         public bool HasCompleteData => Points != null && _measuredCount == TotalPoints;
 
         /// <summary>
+        /// How many nodes hold a measured height. What a screen counting points shows;
+        /// <see cref="Progress"/> counts points taken off the queue, skipped ones included.
+        /// </summary>
+        public int MeasuredCount => _measuredCount;
+
+        /// <summary>
+        /// How much of this map is measured. Every screen and gate reads this rather than
+        /// comparing Progress with TotalPoints, which a skipped point makes equal.
+        /// </summary>
+        public ProbeDataState State =>
+            HasCompleteData ? ProbeDataState.Complete
+            : Progress > 0 ? ProbeDataState.Partial
+            : ProbeDataState.Ready;
+
+        /// <summary>The same answer where there may be no map: null reads as None.</summary>
+        public static ProbeDataState StateOf(ProbeGrid grid) => grid?.State ?? ProbeDataState.None;
+
+        /// <summary>
         /// The grid for a job: the file's extent grown by the margin, at the given spacing.
         /// </summary>
         public static ProbeGrid ForJob(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
@@ -336,10 +349,12 @@ namespace coppercli.Core.GCode
                 throw new InvalidOperationException(IncompleteGridMessage);
             }
 
-            if (x > Max.X || x < Min.X || y > Max.Y || y < Min.Y)
-            {
-                return MaxHeight;
-            }
+            // Outside the probed area, the nearest edge is the best estimate the map has:
+            // the board continues, and its measured height at the boundary is the closest
+            // thing to a reading. Returning the board's highest point instead put a step of
+            // the whole warp range at the edge of the grid, where the outermost traces are.
+            x = Math.Clamp(x, Min.X, Max.X);
+            y = Math.Clamp(y, Min.Y, Max.Y);
 
             x -= Min.X;
             y -= Min.Y;
@@ -537,7 +552,7 @@ namespace coppercli.Core.GCode
                         map._measuredCount = 0;
 
                         // Absent in maps written before the setup was recorded; those
-                        // stay Unknown and are questioned rather than assumed usable.
+                        // stay Unknown and are checked rather than assumed usable.
                         string sourceFile = r["SourceFile"];
 
                         if (!string.IsNullOrEmpty(sourceFile))
@@ -648,10 +663,9 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Whether any node holds a height. Read from the count the grid already keeps, so
-        /// it cannot disagree with MinHeight and MaxHeight. Progress counts points taken
-        /// off the queue, which a skipped probe also does, so it answers a different
-        /// question.
+        /// Whether any node holds a height. Read from the count the grid already keeps, so it
+        /// cannot disagree with MinHeight and MaxHeight. Not Progress, which counts points
+        /// taken off the queue and so includes skipped probes.
         /// </summary>
         public bool HasValidHeights => _measuredCount > 0;
 

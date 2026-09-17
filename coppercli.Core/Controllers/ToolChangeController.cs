@@ -26,6 +26,9 @@ namespace coppercli.Core.Controllers
         // =========================================================================
 
         private readonly IMachine _machine;
+
+        /// <inheritdoc/>
+        protected override IMachine Machine => _machine;
         private readonly Func<bool> _hasToolSetter;
         private readonly Func<(double X, double? Y)?> _getToolSetterPosition;
         private readonly Func<ToolSetterConfig?> _getToolSetterConfig;
@@ -38,8 +41,8 @@ namespace coppercli.Core.Controllers
         private readonly object _phaseLock = new();
         private ToolChangeInfo? _currentToolChange;
 
-        // The reference tool's length, measured at the start of a tool change, from which
-        // the new tool's offset is worked out. Cleared per tool change; see ResetRunState.
+        // The reference tool's length, measured at the start of a tool change, used to work
+        // out the new tool's offset. Cleared per tool change; see ResetRunState.
         private double _referenceToolLength;
 
         // Return position after tool change
@@ -160,9 +163,8 @@ namespace coppercli.Core.Controllers
 
                 if (success)
                 {
-                    // The run's state says it finished. The phase names the step of work,
-                    // and there is no step left, so the completion message is emitted here
-                    // rather than through a phase that restated the state.
+                    // The run's state says it finished. Phase names the step of work and
+                    // there is no step left, so the completion message is emitted here.
                     EmitProgress(new ProgressInfo(
                         nameof(ControllerState.Completing), ProgressPercentComplete, MessageToolChangeComplete));
                     TransitionTo(ControllerState.Completing);
@@ -207,7 +209,7 @@ namespace coppercli.Core.Controllers
         /// <inheritdoc/>
         protected override void ResetRunState()
         {
-            // NotStarted means no step is under way; the run's own state says whether one is.
+            // NotStarted means no step is under way. ControllerState says whether a run is.
             lock (_phaseLock)
             {
                 _phase = ToolChangePhase.NotStarted;
@@ -245,21 +247,29 @@ namespace coppercli.Core.Controllers
 
         protected override async Task CleanupAsync()
         {
-            // Raise Z to safe height
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
-            await Task.Delay(CommandDelayMs);
+            // Stops first and reports an unconfirmed lift, as the probe and mill runs do.
+            // Retracting without stopping queued the lift behind a probe still descending.
+            await StopAndLiftAsync(SafeClearanceZ, CancelRetractTimeoutMs).ConfigureAwait(false);
         }
 
         // =========================================================================
         // Workflow phases
         // =========================================================================
 
+        /// <summary>
+        /// Raise Z to the clearance height, and stop the run if it cannot be confirmed. The
+        /// only place this run sends that move. Every caller follows it with an XY rapid, and
+        /// an unconfirmed retract means the tool may still be down.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">The tool did not reach the height.</exception>
         private async Task RaiseZToClearanceAsync(CancellationToken ct)
         {
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
-            await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
+            if (!await MachineWait
+                .SafetyRetractZAsync(_machine, SafeClearanceZ, ZHeightWaitTimeoutMs, ct)
+                .ConfigureAwait(false))
+            {
+                throw new InvalidOperationException(ErrorSafetyRetractFailed);
+            }
         }
 
         private async Task<bool> HandleWithToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
@@ -309,7 +319,6 @@ namespace coppercli.Core.Controllers
             // Calculate and apply offset
             Phase = ToolChangePhase.ApplyingOffset;
             double offset = newLength.Value - _referenceToolLength;
-            // One consistent read. Subtracting WorkPosition from MachinePosition reads
             // Read G54 itself, not the combined WCO. WorkOffset is G54 + G92 + tool
             // length offset, but the write below is G10 L2 P1, which sets G54 alone -
             // so starting from the combined figure would re-datum Z by whatever the
@@ -324,6 +333,14 @@ namespace coppercli.Core.Controllers
             ControllerLog.Log(LogToolChangeOffset, _referenceToolLength, newLength.Value, offset);
             _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{newWcoZ:F3}"));
             await Task.Delay(CommandDelayMs, ct);
+
+            // Read back before believing it. A rejected write leaves the new tool carrying
+            // the old tool's length compensation, with the run reporting success.
+            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct)
+                || Math.Abs(_machine.G54Offset.Z - newWcoZ) > WorkOffsetToleranceMm)
+            {
+                throw new InvalidOperationException(ErrorToolOffsetNotTaken);
+            }
 
             // Return to original position
             Phase = ToolChangePhase.Returning;
@@ -351,7 +368,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Prompts user to set Z0 (Mode B only).
+        /// Asks the operator to set Z0 by hand. Only on the path for a machine with no tool
+        /// setter; with one, HandleWithToolSetterAsync measures it instead.
         /// User navigates to jog screen, jogs to PCB surface, sets Z0, returns and presses Continue.
         /// </summary>
         private async Task<bool> PromptForZeroZAsync(CancellationToken ct)
@@ -368,8 +386,7 @@ namespace coppercli.Core.Controllers
                 return false;
             }
 
-            // Clear Door state if user opened enclosure
-            await MachineWait.ClearDoorStateAsync(_machine, ct);
+            await EnsureDoorClosedAsync(ct, operatorJustAgreed: true).ConfigureAwait(false);
             return true;
         }
 
@@ -378,13 +395,17 @@ namespace coppercli.Core.Controllers
         // =========================================================================
 
         /// <summary>
-        /// Prompts user to change tool, handles abort, and clears door state.
+        /// Prompts user to change tool and handles abort.
         /// Returns true if user chose to continue, false if aborted.
         /// </summary>
         private async Task<bool> PromptForToolChangeAsync(string promptFormat, CancellationToken ct)
         {
             Phase = ToolChangePhase.WaitingForToolChange;
-            string prompt = string.Format(promptFormat, _currentToolChange?.ToolNumber ?? 0);
+            int toolNumber = _currentToolChange?.ToolNumber ?? 0;
+            string? toolName = _currentToolChange?.ToolName;
+            string prompt = string.IsNullOrWhiteSpace(toolName) || promptFormat != ToolChangePrompt
+                ? string.Format(promptFormat, toolNumber)
+                : string.Format(ToolChangePromptNamed, toolNumber, toolName);
             var response = await RequestUserInputAsync(
                 ToolChangePromptTitle,
                 prompt,
@@ -396,8 +417,7 @@ namespace coppercli.Core.Controllers
                 return false;
             }
 
-            // Clear Door state if user opened enclosure to change tool
-            await MachineWait.ClearDoorStateAsync(_machine, ct);
+            await EnsureDoorClosedAsync(ct, operatorJustAgreed: true).ConfigureAwait(false);
             return true;
         }
 
@@ -431,9 +451,7 @@ namespace coppercli.Core.Controllers
 
         private async Task ReturnToPositionAsync(CancellationToken ct)
         {
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{ToolChangeClearanceZ:F1}"));
-            await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
+            await RaiseZToClearanceAsync(ct);
             _machine.SendLine(Inv($"{CmdRapidMove} X{_returnX:F3} Y{_returnY:F3}"));
             await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
         }
@@ -496,14 +514,14 @@ namespace coppercli.Core.Controllers
 
             try
             {
-                _machine.ProbeStart();
+                MachineWait.OpenProbeCycle(_machine);
                 _machine.SendLine(CmdAbsolute);
                 _machine.SendLine(Inv($"{CmdProbeToward} Z{targetWorkZ:F3} F{feed:F1}"));
 
                 using var registration = ct.Register(() => tcs.TrySetCanceled());
 
                 return await MachineWait.AwaitReplyOrTimeoutAsync(
-                    tcs.Task, ProbeReplyTimeoutMs, ErrorProbeTimeout, ct);
+                    tcs.Task, ProbeReplyTimeoutMs, ErrorProbeTimeout, ct, _machine);
             }
             finally
             {

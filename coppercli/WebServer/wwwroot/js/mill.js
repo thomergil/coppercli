@@ -1,20 +1,31 @@
 // coppercli Web UI Mill Screen
 
 import { state } from './state.js';
-import { $, showError, showConfirm, updatePauseButton } from './helpers.js';
+import { $, showError, showConfirm, updatePauseButton, postJson, escapeMarkup, format } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
-    PROMPT_KIND_OPERATOR_PAUSE,
     PROMPT_OPTION_CONTINUE,
+    PROMPT_OPTION_ABORT,
     ERROR_START_NOT_SENT,
     ERROR_PAUSE_NOT_SENT,
+    ERROR_RESUME_NOT_SENT,
     ERROR_STOP_NOT_SENT,
     ERROR_ABORT_NOT_SENT,
     ERROR_INPUT_NOT_SENT,
     ERROR_NOTHING_TO_ANSWER,
+    ERROR_FEED_NOT_SENT,
+    ERROR_DEPTH_NOT_SET,
+    TEXT_LINE_COUNT,
+    DEPTH_ACTION_INCREASE,
+    DEPTH_ACTION_DECREASE,
+    DEPTH_ACTION_RESET,
+    MILL_GRID_PADDING_PX,
+    MILL_GRID_CELL_GAP_PX,
+    MILL_MARKER_CELL_FRACTION,
     PROMPT_SETTLE_MS,
+    DOOR_RELEASE_PROMPT_ID,
     API_FILE_INFO,
-    API_MILL_PREFLIGHT,
+    API_MILL_CAN_START,
     API_MILL_START,
     API_MILL_PAUSE,
     API_MILL_RESUME,
@@ -29,6 +40,7 @@ import {
     SCREEN_DASHBOARD,
     SCREEN_MILL,
     CLASS_HIDDEN,
+    CLASS_DOOR_MESSAGE,
     MSG_TYPE_MILL_STATE,
     MSG_TYPE_MILL_PROGRESS,
     MSG_TYPE_MILL_TOOLCHANGE,
@@ -42,10 +54,10 @@ import {
     CONTROLLER_STATE_PAUSED,
     CONTROLLER_STATE_WAITING_FOR_USER_INPUT,
     PHASE_MILLING,
-    PHASE_WAITING_FOR_TOOL_CHANGE,
     PHASE_WAITING_FOR_ZERO_Z,
     MILL_MIN_RANGE_THRESHOLD,
-    TEXT_TOOL_CHANGE,
+    API_DOOR_RELEASE,
+    ERROR_DOOR_NOT_RELEASED,
     TEXT_NO_FILE_LOADED,
     TEXT_ABORT_MILLING_CONFIRM,
     TEXT_ABORT_MILLING_TITLE,
@@ -59,13 +71,13 @@ let premillResolve = null;  // Promise resolve for modal result
 
 export async function startMill() {
     try {
-        // === PREFLIGHT CHECKS ===
-        const preflightResponse = await fetch(API_MILL_PREFLIGHT);
-        const preflight = await preflightResponse.json();
+        // === CAN THE JOB START ===
+        const canStartResponse = await fetch(API_MILL_CAN_START);
+        const canStart = await canStartResponse.json();
 
         // Check for blocking errors
-        if (!preflight.canStart) {
-            const errorMsg = preflight.errors.join('\n');
+        if (!canStart.canStart) {
+            const errorMsg = canStart.errors.join('\n');
             showError(errorMsg);
             return;
         }
@@ -82,7 +94,7 @@ export async function startMill() {
         resetGridState();
 
         // === SHOW PRE-MILL MODAL ===
-        const confirmed = await showPremillModal(fileInfo, preflight.warnings || []);
+        const confirmed = await showPremillModal(fileInfo, canStart.warnings || []);
         if (!confirmed) {
             return;
         }
@@ -90,15 +102,13 @@ export async function startMill() {
         // Show milling screen
         $('mill-filename').textContent = fileInfo.name;
         $('mill-phase').textContent = '';  // Clear stale phase from previous operation
-        $('progress-lines').textContent = `0 / ${fileInfo.lines}`;
         showScreen(SCREEN_MILL);
 
         // Start milling (server handles safety retract, G90/G17, etc.)
-        const startResponse = await fetch(API_MILL_START, { method: 'POST' });
-        const started = await startResponse.json();
-        if (!started.success) {
-            // The run never began. Go back rather than sit on a milling screen that will
-            // then announce a job nobody is cutting as complete.
+        const started = await postJson(API_MILL_START);
+        if (!started.ok) {
+            // The run never started, so go back rather than sit on a milling screen that
+            // would later report a job complete.
             showError(started.error || ERROR_START_NOT_SENT);
             showScreen(SCREEN_DASHBOARD, true);
         }
@@ -117,29 +127,35 @@ async function showPremillModal(fileInfo, warnings) {
     const fileEl = $('premill-file');
     const linesEl = $('premill-lines');
     const warningsEl = $('premill-warnings');
-    const depthEl = $('premill-depth-value');
 
     // Populate modal
     fileEl.textContent = fileInfo.name;
-    linesEl.textContent = `${fileInfo.lines} lines`;
+    linesEl.textContent = format(TEXT_LINE_COUNT, fileInfo.lines);
 
     // Show warnings if any
     if (warnings.length > 0) {
-        warningsEl.innerHTML = warnings.map(w => `<p>⚠️ ${w}</p>`).join('');
+        warningsEl.innerHTML = warnings.map(w => `<p>⚠️ ${escapeMarkup(w)}</p>`).join('');
         warningsEl.classList.remove(CLASS_HIDDEN);
     } else {
         warningsEl.classList.add(CLASS_HIDDEN);
     }
 
     // Reset depth to 0 via API (single source of truth)
-    await adjustPremillDepth('reset');
-    depthEl.textContent = '0';
+    await adjustPremillDepth(DEPTH_ACTION_RESET);
 
     // Show modal
     modal.classList.remove(CLASS_HIDDEN);
 
     // Return promise that resolves when user confirms or cancels
     return new Promise((resolve) => {
+        // One modal, one pair of buttons, so a second call overwrites the first's resolve.
+        // Answered false first, or the first promise never settles.
+        if (premillResolve) {
+            const stranded = premillResolve;
+            premillResolve = null;
+            stranded(false);
+        }
+
         premillResolve = resolve;
     });
 }
@@ -151,7 +167,7 @@ function hidePremillModal() {
 async function adjustPremillDepth(action) {
     const result = await adjustDepth(action);
     if (result !== null) {
-        updatePremillDepthDisplay(result);
+        updateDepthDisplay(result);
     }
 }
 
@@ -164,13 +180,6 @@ function formatDepthText(depth) {
     return `${sign}${depth.toFixed(2)}`;
 }
 
-function updatePremillDepthDisplay(depth) {
-    const depthEl = $('premill-depth-value');
-    if (depthEl && depth !== undefined) {
-        depthEl.textContent = formatDepthText(depth);
-    }
-}
-
 // Server may refuse a resume (e.g. a tool change is active) or fail to confirm a stop in
 // time - either way the button must reflect what the server actually did, not what the
 // operator asked for, so this awaits the response instead of assuming success.
@@ -178,10 +187,9 @@ async function togglePause() {
     const btn = $('mill-pause-btn');
     const wasPaused = btn.dataset.paused === 'true';
     try {
-        const response = await fetch(wasPaused ? API_MILL_RESUME : API_MILL_PAUSE, { method: 'POST' });
-        const json = await response.json();
-        if (!json.success) {
-            showError(json.error || `Failed to ${wasPaused ? 'resume' : 'pause'}`);
+        const result = await postJson(wasPaused ? API_MILL_RESUME : API_MILL_PAUSE);
+        if (!result.ok) {
+            showError(result.error || (wasPaused ? ERROR_RESUME_NOT_SENT : ERROR_PAUSE_NOT_SENT));
             return;
         }
         updatePauseButton(btn, !wasPaused);
@@ -193,12 +201,11 @@ async function togglePause() {
 
 async function stopMill() {
     try {
-        const response = await fetch(API_MILL_STOP, { method: 'POST' });
-        const json = await response.json();
-        if (!json.success) {
+        const result = await postJson(API_MILL_STOP);
+        if (!result.ok) {
             // The server could not confirm the machine stopped - leave the mill screen
             // up and the milling state alone rather than telling the operator it did.
-            showError(json.error || 'Failed to stop');
+            showError(result.error || ERROR_STOP_NOT_SENT);
             return;
         }
     } catch (err) {
@@ -207,30 +214,26 @@ async function stopMill() {
         return;
     }
 
-    // The server confirmed the run is torn down, so the next status will say so, unlock the
-    // screen and re-enable the back button. Leave now rather than waiting the poll out.
+    // The server confirmed the run is torn down, so the next status will unlock the screen
+    // and re-enable the back button. Leave now rather than waiting for it.
     endMillRun();
     showScreen(SCREEN_DASHBOARD, true);
 }
 
 // --- Tool Change Handling ---
 
-// True from the moment a toolchange:input prompt is shown (tool change or a bare M0/M1)
-// until it is answered or the run ends. It holds the overlay up between the broadcast that
-// announced the prompt and the first status snapshot that knows about it.
-let pendingUserInputPrompt = false;
+// The prompt this client is showing, or null. Its id tells an already-answered prompt from
+// a new one in a status snapshot, and is sent with the answer so a tap meant for this prompt
+// cannot answer the next one (see PendingPrompt.cs). Null is "nothing outstanding": a second
+// flag beside it was the same fact twice, and the two could disagree.
+let shownPrompt = null;
 
-// The prompt this client last showed. Its id tells an already-answered prompt from a new one
-// in a status snapshot, and travels with the answer so a tap meant for this question cannot
-// release the next one (see PendingPrompt.cs).
-let lastPrompt = null;
-
-// Single place that hides the overlay and clears pendingUserInputPrompt. Two paths end a
-// pending prompt: it is answered (handleToolChangeComplete), or the run ends on its own
-// (endMillRun, called from the stop request and from the status that says the run is over).
-// A prompt parked in WaitingForUserInput can be cancelled without ever being answered.
+// The one place that hides the overlay and forgets the prompt. Two paths end a prompt: it is
+// answered (handleToolChangeComplete), or the run ends (endMillRun, called from the stop
+// request and from the status that reports the run over). A prompt parked in
+// WaitingForUserInput can be cancelled without being answered.
 function hideToolChangeOverlay() {
-    pendingUserInputPrompt = false;
+    shownPrompt = null;
     const overlay = $('toolchange-overlay');
     if (overlay) {
         overlay.classList.add(CLASS_HIDDEN);
@@ -238,82 +241,37 @@ function hideToolChangeOverlay() {
 }
 
 /**
- * Update tool change display based on controller phase (FSM state).
- * Called from screens.js when status is received.
+ * Draw whatever prompt the run is waiting on, from the status. Called from screens.js on
+ * every status message, and it is the only route for a client that reloaded or reconnected
+ * mid-prompt: the toolchange:input broadcast that announced it live is one-shot.
  *
- * Which phase puts what on screen is defined once, on ToolChangePhase in
- * coppercli.Core/Controllers/ToolChangePhase.cs. The prompt kind that marks a bare program
- * stop rather than a tool change is PROMPT_KIND_OPERATOR_PAUSE. A null means no tool
- * change is under way.
+ * The status is the authority on whether a prompt is still outstanding. The run's own phase
+ * is not: between raising prompts the tool-change controller sits in WaitingForToolChange
+ * with nothing to answer, so a display built from that phase would show a stale question
+ * with live buttons under it.
  */
 export function updateToolChangeDisplay(toolChange) {
     const overlay = $('toolchange-overlay');
     if (!overlay) return;
 
-    // A prompt is up and unanswered, so leave it alone whatever this poll saw.
-    // hideToolChangeOverlay takes it down once it is resolved.
-    if (pendingUserInputPrompt) {
+    const prompt = toolChange?.id ? toolChange : null;
+
+    // The prompt on screen is the one the run is still waiting on, so leave it alone.
+    if (shownPrompt && prompt && prompt.id === shownPrompt.id) {
         return;
     }
 
-    // A bare M0/M1 has no tool-change phase of its own, so GetStatus folds it into this
-    // field. It is the only path a client that reloaded mid-prompt has, and the id check
-    // keeps it from redrawing one already shown.
-    if (toolChange && toolChange.phase === PROMPT_KIND_OPERATOR_PAUSE) {
-        if (toolChange.id !== lastPrompt?.id) {
-            lastPrompt = toolChange;
-            pendingUserInputPrompt = true;
-            renderUserInputPrompt(toolChange);
-        }
-        return;
-    }
+    shownPrompt = prompt;
 
-    // The jog screen's Continue Milling button answers from here, and it is shown on a
-    // phase this overlay does not draw (WaitingForZeroZ).
-    lastPrompt = toolChange?.id ? toolChange : null;
-
-    // No tool change or not waiting for tool change → hide overlay
-    if (!toolChange || toolChange.phase !== PHASE_WAITING_FOR_TOOL_CHANGE) {
+    // Nothing outstanding. A run that ended without its prompt being answered - stopped, or
+    // aborted from another browser - broadcasts nothing, so without this the overlay would
+    // stand for ever with a button that answers a run that is gone.
+    if (!prompt) {
         overlay.classList.add(CLASS_HIDDEN);
         return;
     }
 
-    // Log bug condition: phase is WaitingForToolChange but toolNumber is null
-    if (toolChange.toolNumber == null) {
-        console.error('BUG: toolChange has phase WaitingForToolChange but toolNumber is null:', toolChange);
-    }
-
-    // WaitingForToolChange phase - show overlay with both buttons
-    const infoEl = $('toolchange-info');
-    const messageEl = $('toolchange-message');
-    const continueBtn = $('toolchange-continue-btn');
-    const abortBtn = $('toolchange-abort-btn');
-
-    const toolDesc = toolChange.toolName
-        ? `Change to T${toolChange.toolNumber} (${toolChange.toolName})`
-        : `Change to T${toolChange.toolNumber}`;
-
-    if (infoEl) {
-        infoEl.textContent = TEXT_TOOL_CHANGE;
-    }
-    if (messageEl) {
-        messageEl.textContent = toolDesc;
-    }
-
-    // Always show both buttons in WaitingForToolChange phase
-    // (both Continue and Abort are always valid options)
-    if (continueBtn) {
-        continueBtn.style.display = '';
-        continueBtn.onclick = () => answerPrompt(toolChange);
-    }
-    acceptAnswersAfterSettling(toolChange.id);
-    if (abortBtn) {
-        abortBtn.style.display = '';
-        // Note: abort handler is set via addEventListener in setupMillEventListeners()
-        // which shows a confirmation dialog before aborting
-    }
-
-    overlay.classList.remove(CLASS_HIDDEN);
+    renderUserInputPrompt(prompt);
 }
 
 /**
@@ -332,15 +290,14 @@ async function abortToolChange() {
     }
     console.log('abortToolChange: user confirmed, sending abort request');
     try {
-        hideToolChangeOverlay();  // Aborting - any pending prompt is moot
+        hideToolChangeOverlay();  // Aborting - no answer will be taken from a pending prompt.
 
-        const response = await fetch(API_MILL_TOOLCHANGE_ABORT, { method: 'POST' });
-        const json = await response.json();
-        if (!json.success) {
-            // The server could not confirm both controllers stopped - surface it and
-            // leave navigation alone rather than telling the operator it's safe to walk
+        const result = await postJson(API_MILL_TOOLCHANGE_ABORT);
+        if (!result.ok) {
+            // The server could not confirm both controllers stopped - report it and
+            // leave navigation alone rather than telling the operator it is safe to walk
             // away from the machine.
-            showError(json.error || 'Failed to abort');
+            showError(result.error || ERROR_ABORT_NOT_SENT);
             return;
         }
         console.log('abortToolChange: abort request complete, navigating to dashboard');
@@ -355,32 +312,25 @@ async function abortToolChange() {
 // --- Depth Adjustment ---
 
 /**
- * Update depth adjustment display.
- * Called from screens.js when status is received.
+ * Update the depth adjustment display. Written from the status stream and from the reply
+ * to a +/- press, so an optimistic update corrects itself.
  */
 export function updateDepthDisplay(depth) {
-    const depthEl = $('depth-value');
+    const depthEl = $('premill-depth-value');
     if (depthEl && depth !== undefined) {
         depthEl.textContent = formatDepthText(depth);
     }
 }
 
 async function adjustDepth(action) {
-    try {
-        const response = await fetch(API_MILL_DEPTH, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action })
-        });
-        const result = await response.json();
-        if (result.success) {
-            updateDepthDisplay(result.depth);
-            return result.depth;
-        }
-    } catch (err) {
-        console.error('Failed to adjust depth:', err);
+    const result = await postJson(API_MILL_DEPTH, { action });
+    if (!result.ok) {
+        showError(result.error || ERROR_DEPTH_NOT_SET);
+        return null;
     }
-    return null;
+
+    updateDepthDisplay(result.data.depth);
+    return result.data.depth;
 }
 
 // Grid visualization state
@@ -390,8 +340,8 @@ let gridState = {
     minY: 0, maxY: 0,
     currentX: 0, currentY: 0,
     initialized: false,
-    // How many cutting-path points the cells above were drawn from, so a status carrying
-    // no new points costs no fetch.
+    // How many cutting-path points the cells above were drawn from, so a status with no
+    // new points skips the fetch.
     fetchedCount: 0
 };
 
@@ -500,14 +450,12 @@ function drawMillGrid(canvas) {
     const width = canvas.width;
     const height = canvas.height;
 
-    // Get CSS variables for colors
+    // The stylesheet owns the theme, so the colours are read from it rather than copied.
     const style = getComputedStyle(document.documentElement);
-    const bgColor = style.getPropertyValue('--bg-color').trim() || '#1a1a2e';
-    const surfaceColor = style.getPropertyValue('--surface-color').trim() || '#16213e';
-    const primaryColor = style.getPropertyValue('--primary-color').trim() || '#0f3460';
-    const successColor = style.getPropertyValue('--success-color').trim() || '#00bf63';
-    const warningColor = style.getPropertyValue('--warning-color').trim() || '#ffc107';
-    const textDim = style.getPropertyValue('--text-dim').trim() || '#888';
+    const bgColor = style.getPropertyValue('--bg-color').trim();
+    const surfaceColor = style.getPropertyValue('--surface-color').trim();
+    const successColor = style.getPropertyValue('--success-color').trim();
+    const warningColor = style.getPropertyValue('--warning-color').trim();
 
     // Clear canvas
     ctx.fillStyle = bgColor;
@@ -517,7 +465,7 @@ function drawMillGrid(canvas) {
     const { rangeX, rangeY, gridWidth, gridHeight } = calculateGridDimensions();
 
     // Calculate cell size to fit canvas with padding
-    const padding = 10;
+    const padding = MILL_GRID_PADDING_PX;
     const availableWidth = width - padding * 2;
     const availableHeight = height - padding * 2;
     const cellWidth = availableWidth / gridWidth;
@@ -543,7 +491,11 @@ function drawMillGrid(canvas) {
             } else {
                 ctx.fillStyle = surfaceColor;
             }
-            ctx.fillRect(px + 1, py + 1, cellSize - 2, cellSize - 2);
+            ctx.fillRect(
+                px + MILL_GRID_CELL_GAP_PX,
+                py + MILL_GRID_CELL_GAP_PX,
+                cellSize - MILL_GRID_CELL_GAP_PX * 2,
+                cellSize - MILL_GRID_CELL_GAP_PX * 2);
         }
     }
 
@@ -555,16 +507,24 @@ function drawMillGrid(canvas) {
 
     ctx.fillStyle = warningColor;
     ctx.beginPath();
-    ctx.arc(markerX, markerY, cellSize / 3, 0, Math.PI * 2);
+    ctx.arc(markerX, markerY, cellSize / MILL_MARKER_CELL_FRACTION, 0, Math.PI * 2);
     ctx.fill();
+}
+
+async function sendFeedOverride(url) {
+    const result = await postJson(url);
+    if (!result.ok) {
+        showError(result.error || ERROR_FEED_NOT_SENT);
+    }
 }
 
 export function initMillScreen() {
     $('mill-pause-btn').addEventListener('click', togglePause);
     $('mill-stop-btn').addEventListener('click', stopMill);
-    $('feed-minus').addEventListener('click', () => fetch(API_FEED_DECREASE, { method: 'POST' }));
-    $('feed-plus').addEventListener('click', () => fetch(API_FEED_INCREASE, { method: 'POST' }));
-    $('feed-reset').addEventListener('click', () => fetch(API_FEED_RESET, { method: 'POST' }));
+    // Through postJson: these are refused on a machine that has dropped off the link.
+    $('feed-minus').addEventListener('click', () => sendFeedOverride(API_FEED_DECREASE));
+    $('feed-plus').addEventListener('click', () => sendFeedOverride(API_FEED_INCREASE));
+    $('feed-reset').addEventListener('click', () => sendFeedOverride(API_FEED_RESET));
 
     // Feed controls start disabled until milling is actually running
     updateFeedControls(false);
@@ -574,9 +534,9 @@ export function initMillScreen() {
     if (abortBtn) abortBtn.addEventListener('click', abortToolChange);
 
     // Pre-mill modal buttons (depth adjustment before starting)
-    $('premill-depth-minus').addEventListener('click', () => adjustPremillDepth('decrease'));
-    $('premill-depth-plus').addEventListener('click', () => adjustPremillDepth('increase'));
-    $('premill-depth-reset').addEventListener('click', () => adjustPremillDepth('reset'));
+    $('premill-depth-minus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_DECREASE));
+    $('premill-depth-plus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_INCREASE));
+    $('premill-depth-reset').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_RESET));
     $('premill-start-btn').addEventListener('click', async () => {
         hidePremillModal();
         // Confirm probe hardware removal before starting
@@ -632,9 +592,9 @@ function updateFeedControls(enabled) {
 }
 
 /**
- * Put the mill screen's controls where the controller's state says they belong. Called from
- * the mill:state broadcast and from each status, so a reloaded page shows the right button.
- * Feed means nothing while the machine is still homing, so it is off until it cuts.
+ * Set the mill screen's controls from the controller state. Called from the mill:state
+ * broadcast and from each status, so a reloaded page shows the right button. Feed override
+ * does nothing while homing, so it stays disabled until the run is cutting.
  */
 export function applyMillControllerState(controllerState) {
     const adjustable = controllerState === CONTROLLER_STATE_RUNNING ||
@@ -645,12 +605,16 @@ export function applyMillControllerState(controllerState) {
 }
 
 /**
- * Drop everything this screen was holding for a run that is over. Safe to call twice:
- * whichever of the stop request and the next status gets here first does the work.
+ * Clear everything this screen held for a run that is over. Safe to call twice: whichever
+ * of the stop request and the next status arrives first does the work.
  */
 export function endMillRun() {
     hideToolChangeOverlay();
     resetGridState();
+
+    // A new run inherits nothing from the last one's prompts, or its first prompt
+    // would be answerable the moment it is drawn.
+    settledPromptId = null;
 }
 
 function handleStateChange(controllerState) {
@@ -658,26 +622,28 @@ function handleStateChange(controllerState) {
     applyMillControllerState(controllerState);
 }
 
+// Whether the door overlay is showing the enclosure sentence. Read from the overlay itself:
+// held as a flag beside it, the two could disagree about what is on screen.
+function doorSentenceOnScreen() {
+    const overlay = $('door-overlay');
+    return overlay != null && !overlay.classList.contains(CLASS_HIDDEN);
+}
+
 function handleProgressUpdate(progress) {
     const phaseEl = $('mill-phase');
-    const progressLinesEl = $('progress-lines');
 
     // Update phase display with message (but not during Milling phase - line count shown below progress bar)
     if (phaseEl) {
         // During Milling phase, don't show the message (it duplicates progress-lines)
-        const showMessage = progress.phase !== PHASE_MILLING;
+        const showMessage = progress.phase !== PHASE_MILLING && !doorSentenceOnScreen();
         phaseEl.textContent = showMessage ? (progress.message || progress.phase || '') : '';
     }
 
-    // Update progress lines (use != null to check for both null and undefined)
-    if (progressLinesEl && progress.currentStep != null && progress.totalSteps != null) {
-        progressLinesEl.textContent = `${progress.currentStep} / ${progress.totalSteps}`;
-    }
 }
 
 function handleToolChangeEvent(data) {
-    // Informational: the server auto-starts the tool change controller, which broadcasts
-    // its own phases. The overlay follows those (updateToolChangeDisplay).
+    // Informational: the server starts the tool change controller, which broadcasts its
+    // own phases, and the overlay follows those (updateToolChangeDisplay).
     console.log('Tool change event:', data);
 }
 
@@ -713,12 +679,9 @@ export function handleToolChangeControllerEvent(type, data) {
 }
 
 function handleToolChangeState(state) {
+    // handleToolChangeProgress writes the phase the operator reads into mill-phase. This
+    // carries the controller state, which no screen shows.
     console.log('Tool change controller state:', state);
-    // Update UI to show current phase
-    const phaseEl = $('toolchange-phase');
-    if (phaseEl) {
-        phaseEl.textContent = state;
-    }
 }
 
 function handleToolChangeProgress(progress) {
@@ -735,15 +698,132 @@ function handleToolChangeProgress(progress) {
     }
 }
 
-// Renders a { title, message, options } prompt into the overlay and shows it. Shared
-// by the live path (handleToolChangeInput) and the status-recovery path
+// The overlay's heading, hidden when the prompt has no title.
+function setPromptHeading(title) {
+    const heading = $('toolchange-info');
+    if (!heading) return;
+
+    heading.textContent = title || '';
+    heading.classList.toggle(CLASS_HIDDEN, !title);
+}
+
+/**
+ * Everything about the enclosure, over whichever screen is open: an open door stops jogging
+ * and probing as well as milling.
+ *
+ * A run's own enclosure prompt is drawn here too, not in the tool-change overlay. That
+ * overlay lives inside the mill screen, which is not on the page while the operator is on
+ * the probe or jog screen, so a prompt rendered there would leave them with a held machine,
+ * nothing on screen and no way to answer.
+ */
+export function updateDoorOverlay(status) {
+    const overlay = $('door-overlay');
+    if (!overlay) return;
+
+    // A run holding at the door published a prompt; its Continue answers that prompt.
+    // Without a run, the door text comes from the status and Continue releases the hold.
+    const prompt = doorPrompt();
+
+    if (shownPrompt && !prompt) {
+        // The run is asking about something else, and it has said what to show.
+        overlay.classList.add(CLASS_HIDDEN);
+        return;
+    }
+
+    // A run parked on its prompt cannot notice the enclosure reopening, so the status, not
+    // the prompt, decides whether a cycle start still applies and what the operator is told.
+    const canRelease = status?.canReleaseDoor === true;
+    const text = canRelease && prompt ? prompt.message : status?.doorMessage || (prompt && prompt.message);
+
+    if (!text) {
+        overlay.classList.add(CLASS_HIDDEN);
+        return;
+    }
+
+    $('door-message').textContent = text;
+
+    // Which buttons the overlay has is decided in Core. A run says so by the options it
+    // offers, still gated on the door state because a run parked on its prompt cannot
+    // notice the enclosure reopening. Without a run, the server says whether a release
+    // straight from here would be taken - it refuses one while a run is handling the door
+    // itself, and offering it anyway put the question back on screen after it was answered.
+    const options = prompt ? (prompt.options || []) : [];
+    const canContinue = prompt
+        ? canRelease && options.includes(PROMPT_OPTION_CONTINUE)
+        : status?.buttons?.doorRelease?.enabled === true;
+
+    setDoorButton('door-continue-btn',
+        canContinue,
+        prompt ? () => answerPrompt(prompt) : releaseDoorHold);
+
+    // Abort stays offered while the enclosure is open, because the overlay is the only
+    // thing on screen and an operator who wants to abandon the job needs a way to say so.
+    const canAbort = options.includes(PROMPT_OPTION_ABORT);
+    setDoorButton('door-abort-btn', canAbort, () => answerPrompt(prompt, PROMPT_OPTION_ABORT));
+
+    // With no button there is nothing to answer, so the overlay becomes a banner rather
+    // than a layer over the page: the operator still has to reach Stop underneath.
+    const hasButton = canAbort || canContinue;
+    overlay.classList.toggle(CLASS_DOOR_MESSAGE, !hasButton);
+
+    // A release with no run behind it has no earlier prompt a tap could belong to, so it
+    // is answerable at once. Either way this is the only place the buttons are enabled.
+    if (hasButton) {
+        acceptAnswersAfterSettling(
+            prompt ? prompt.id : DOOR_RELEASE_PROMPT_ID,
+            prompt ? PROMPT_SETTLE_MS : 0);
+    }
+
+    overlay.classList.remove(CLASS_HIDDEN);
+}
+
+// Show or hide one of the door overlay's buttons, and say what it answers. Whether it is
+// enabled belongs to acceptAnswersAfterSettling: writing it here as well re-enabled the
+// button on the next status tick, sooner than the settle allows.
+function setDoorButton(id, shown, onclick) {
+    const btn = $(id);
+    if (!btn) return;
+
+    btn.style.display = shown ? '' : 'none';
+    btn.onclick = onclick;
+}
+
+// The enclosure prompt a run is waiting on, or null. Read from the same shownPrompt the
+// tool-change display uses, so the two overlays cannot disagree about which prompt is up.
+function doorPrompt() {
+    return shownPrompt?.isDoorPrompt ? shownPrompt : null;
+}
+
+async function releaseDoorHold() {
+    // Disabled while the POST is in flight, as answerPrompt does: a second tap would send a
+    // second cycle start.
+    const buttons = answerButtons();
+    buttons.forEach(btn => { btn.disabled = true; });
+
+    try {
+        const result = await postJson(API_DOOR_RELEASE);
+        if (!result.ok) {
+            showError(result.error || ERROR_DOOR_NOT_RELEASED);
+        }
+    } finally {
+        buttons.forEach(btn => { btn.disabled = false; });
+    }
+}
+
+// Renders a { title, message, options } prompt into the tool-change overlay and shows it.
+// Shared by the live path (handleToolChangeInput) and the status-recovery path
 // (updateToolChangeDisplay), so the two can never render the prompt differently.
 function renderUserInputPrompt(data) {
+    // The enclosure prompt is drawn by updateDoorOverlay, in the page-level overlay that
+    // is on screen whichever screen the operator is on.
+    if (data.isDoorPrompt) {
+        return;
+    }
+
     const overlay = $('toolchange-overlay');
     if (!overlay) return;
 
-    // Update overlay content - title and message from controller
-    $('toolchange-info').textContent = data.title || 'Tool Change';
+    setPromptHeading(data.title);
     $('toolchange-message').textContent = data.message || '';
 
     // Update buttons based on options
@@ -751,12 +831,11 @@ function renderUserInputPrompt(data) {
     const abortBtn = $('toolchange-abort-btn');
 
     if (continueBtn && abortBtn && data.options) {
-        // Find matching options
-        const hasContinue = data.options.some(opt => opt.toLowerCase().includes('continue'));
-        const hasAbort = data.options.some(opt => opt.toLowerCase().includes('abort'));
-
-        continueBtn.style.display = hasContinue ? '' : 'none';
-        abortBtn.style.display = hasAbort ? '' : 'none';
+        // Compared against the options the server publishes, not matched by substring: an
+        // answer has to be one of them exactly, so a near miss draws a button that cannot
+        // answer anything.
+        continueBtn.style.display = data.options.includes(PROMPT_OPTION_CONTINUE) ? '' : 'none';
+        abortBtn.style.display = data.options.includes(PROMPT_OPTION_ABORT) ? '' : 'none';
 
         // Update click handler for continue button
         continueBtn.onclick = () => answerPrompt(data);
@@ -769,60 +848,68 @@ function renderUserInputPrompt(data) {
     acceptAnswersAfterSettling(data.id);
 }
 
-// The buttons that can answer a prompt. Both go dead while an answer is in flight and while
-// a freshly drawn question is still settling, so a second tap cannot reach a question the
+// The buttons that can answer a prompt. Both are disabled while an answer is in flight and
+// while a newly drawn prompt is still settling, so a second tap cannot answer a prompt the
 // operator has not read.
-function continueButtons() {
-    return [$('toolchange-continue-btn'), $('jog-continue-milling-btn')].filter(Boolean);
+function answerButtons() {
+    return [
+        $('toolchange-continue-btn'),
+        $('jog-continue-milling-btn'),
+        $('door-continue-btn'),
+        $('door-abort-btn')
+    ].filter(Boolean);
 }
 
 let promptSettleTimer = null;
 let settledPromptId = null;
 
 /**
- * Allow the question now on screen to be answered, once it has been there long enough that
- * a tap cannot belong to the gesture that answered the previous one. Each question settles
- * once: the status-recovery path redraws the same one on every poll.
+ * Enable the answer buttons once the prompt has been on screen long enough that a tap
+ * cannot belong to the one that answered the previous prompt. Each prompt settles once,
+ * because the status-recovery path redraws the same one on every poll.
  */
-function acceptAnswersAfterSettling(promptId) {
+function acceptAnswersAfterSettling(promptId, settleMs = PROMPT_SETTLE_MS) {
     if (promptId != null && promptId === settledPromptId) {
         return;
     }
     settledPromptId = promptId ?? null;
 
-    continueButtons().forEach(btn => { btn.disabled = true; });
     if (promptSettleTimer) {
         clearTimeout(promptSettleTimer);
+        promptSettleTimer = null;
     }
+
+    if (settleMs <= 0) {
+        answerButtons().forEach(btn => { btn.disabled = false; });
+        return;
+    }
+
+    answerButtons().forEach(btn => { btn.disabled = true; });
     promptSettleTimer = setTimeout(() => {
         promptSettleTimer = null;
-        continueButtons().forEach(btn => { btn.disabled = false; });
-    }, PROMPT_SETTLE_MS);
+        answerButtons().forEach(btn => { btn.disabled = false; });
+    }, settleMs);
 }
 
 /**
- * Answers `prompt` with its Continue option. Takes the prompt rather than reading whichever
- * is current, so a button drawn for one question can only answer that one.
+ * Answer `prompt` with `wanted`, if it offered that option. Takes the prompt rather than
+ * reading whichever is current, so a button drawn for one prompt can only answer that one.
  */
-async function answerPrompt(prompt) {
-    const option = (prompt?.options || []).find(opt => opt === PROMPT_OPTION_CONTINUE);
+async function answerPrompt(prompt, wanted = PROMPT_OPTION_CONTINUE) {
+    const option = (prompt?.options || []).find(opt => opt === wanted);
     if (!option) {
         showError(ERROR_NOTHING_TO_ANSWER);
         return false;
     }
 
-    const buttons = continueButtons();
+    const buttons = answerButtons();
     buttons.forEach(btn => { btn.disabled = true; });
 
     try {
-        const result = await fetch(API_MILL_TOOLCHANGE_INPUT, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: prompt.id, response: option })
-        });
-        const json = await result.json();
-        if (!json.success) {
-            showError(json.error || ERROR_INPUT_NOT_SENT);
+        const result = await postJson(
+            API_MILL_TOOLCHANGE_INPUT, { id: prompt.id, response: option });
+        if (!result.ok) {
+            showError(result.error || ERROR_INPUT_NOT_SENT);
             buttons.forEach(btn => { btn.disabled = false; });
             return false;
         }
@@ -830,25 +917,24 @@ async function answerPrompt(prompt) {
     } catch (err) {
         console.error('answerPrompt failed', err);
         showError(ERROR_INPUT_NOT_SENT);
-        // The question is still waiting, so the only button that can answer it comes back.
+        // The prompt is still waiting, so re-enable the button that answers it.
         buttons.forEach(btn => { btn.disabled = false; });
         return false;
     }
 }
 
 /**
- * Answers the question the run is on now. For the jog screen's Continue Milling button,
- * which is shown only while the run is waiting for Z0 to be set.
+ * Answer the prompt the run is on now. For the jog screen's Continue Milling button, shown
+ * only while the run is waiting for Z0 to be set.
  */
 export function continueLastPrompt() {
-    return answerPrompt(lastPrompt);
+    return answerPrompt(shownPrompt);
 }
 
 function handleToolChangeInput(data) {
     console.log('Tool change input required:', data);
 
-    pendingUserInputPrompt = true;
-    lastPrompt = data;
+    shownPrompt = data;
 
     // Show user input dialog - this is when user action is actually needed
     // data contains: title, message, options[], id

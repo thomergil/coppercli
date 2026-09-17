@@ -2,6 +2,7 @@
 // Controller owns workflow logic, TUI owns display and user interaction
 
 using System.Linq;
+using System.Threading;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.Util;
@@ -9,7 +10,6 @@ using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.Constants;
-using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Core.Controllers.ControllerConstants;
 using static coppercli.Helpers.DisplayHelpers;
 
@@ -24,14 +24,24 @@ namespace coppercli.Menus
         // Shared state for display updates (set by event handlers, read by render loop)
         private static ProgressInfo? _latestProgress;
         private static ToolChangeInfo? _pendingToolChange;
-        private static UserInputRequest? _pendingOperatorPause;
+        private static UserInputRequest? _pendingPrompt;
         private static ControllerError? _latestError;
 
         // ETA is estimated only while actually milling. The clock starts when streaming
         // begins - not before, or the setup phases (settle, home, retract) would pollute
         // the pace the estimate is built from.
         private static EtaEstimator? _etaEstimator;
-        private static DateTime? _millStreamStart;
+        /// <summary>
+        /// When the run began streaming, on the monotonic clock. The ETA is computed from
+        /// this, and a wall clock that steps would move it by an hour mid-job.
+        /// </summary>
+        private static long? _millStreamStartMs;
+
+        /// <summary>
+        /// The paused total when streaming began. The ETA's clock starts later than the
+        /// display's, so subtracting the whole paused total made the first estimates negative.
+        /// </summary>
+        private static long _millStreamPausedAtStartMs;
 
         // Tool change display state (replaces ToolChangeHelpers static properties)
         private static string? _toolChangeOverlayMessage;
@@ -42,17 +52,18 @@ namespace coppercli.Menus
         {
             var machine = AppState.Machine;
 
-            // Defense in depth: ensure auto-clear is disabled during milling
+            // Auto-clear sends $X, which would clear an alarm the operator has to see.
             machine.EnableAutoStateClear = false;
 
             try
             {
-                // Validate preflight (shared with WebServer)
-                var preflight = MenuHelpers.ValidateMillPreflight();
+                // Can the job start? Shared with the web server.
+                var canStart = MenuHelpers.CheckMillCanStart();
 
                 // Blocking errors, mapped in one place shared with the disabled-reason
-                // display (AlarmState falls through to the ready-check below).
-                string? blockingReason = MenuHelpers.DescribeMillBlockingError(preflight);
+                // display. The milling controller decides whether the machine's state
+                // allows a job: it handles the enclosure and settles the machine.
+                string? blockingReason = MenuHelpers.GetMillBlockerReason(canStart);
                 if (blockingReason != null)
                 {
                     MenuHelpers.ShowError(blockingReason);
@@ -60,11 +71,11 @@ namespace coppercli.Menus
                 }
 
                 // Handle dangerous command warnings (prompt user)
-                if (preflight.Warnings.Contains(MillPreflightWarning.DangerousCommands) &&
-                    preflight.DangerousWarnings?.Count > 0)
+                if (canStart.Warnings.Contains(MillWarning.DangerousCommands) &&
+                    canStart.DangerousWarnings?.Count > 0)
                 {
                     AnsiConsole.MarkupLine($"[{ColorError}]WARNING: File contains potentially dangerous commands:[/]");
-                    foreach (var warning in preflight.DangerousWarnings)
+                    foreach (var warning in canStart.DangerousWarnings)
                     {
                         AnsiConsole.MarkupLine($"[{ColorWarning}]  {warning}[/]");
                     }
@@ -77,7 +88,7 @@ namespace coppercli.Menus
                 }
 
                 // Handle no machine profile warning
-                if (preflight.Warnings.Contains(MillPreflightWarning.NoMachineProfile))
+                if (canStart.Warnings.Contains(MillWarning.NoMachineProfile))
                 {
                     if (MenuHelpers.ConfirmOrQuit($"[{ColorWarning}]{NoMachineProfileWarning}[/]. Continue?", false) != true)
                     {
@@ -92,17 +103,6 @@ namespace coppercli.Menus
                     {
                         return;
                     }
-                }
-
-                // === TAKE CONTROL OF MACHINE STATE ===
-                AnsiConsole.MarkupLine($"[{ColorDim}]Preparing machine...[/]");
-
-                if (!MachineCommands.EnsureMachineReady(machine))
-                {
-                    // Not-ready now covers "still moving or held" as well as alarmed,
-                    // so say what the operator actually needs to do.
-                    MenuHelpers.ShowError(MachineWait.IsAlarm(machine) ? ErrorMachineAlarm : ErrorMachineNotReady);
-                    return;
                 }
 
                 MonitorMilling();
@@ -123,17 +123,18 @@ namespace coppercli.Menus
             // Reset shared state
             _latestProgress = null;
             _pendingToolChange = null;
-            _pendingOperatorPause = null;
+            _pendingPrompt = null;
             _latestError = null;
             _etaEstimator = null;
-            _millStreamStart = null;
+            _millStreamStartMs = null;
+            _millStreamPausedAtStartMs = 0;
 
             // TUI state for display
             bool paused = false;
             var visitedCells = new HashSet<(int, int)>();
-            var startTime = DateTime.Now;
-            var pauseStartTime = DateTime.Now;
-            var totalPausedTime = TimeSpan.Zero;
+            var startMs = Environment.TickCount64;
+            var pauseStartMs = Environment.TickCount64;
+            long totalPausedMs = 0;
             var (lastWidth, lastHeight) = GetSafeWindowSize();
 
             // Cancellation token for stopping the controller. Not wrapped in `using`:
@@ -174,7 +175,7 @@ namespace coppercli.Menus
             };
             Action<ProgressInfo> onProgressChanged = progress =>
             {
-                _latestProgress = progress;
+                Volatile.Write(ref _latestProgress, progress);
             };
             Action<ToolChangeInfo> onToolChange = info =>
             {
@@ -186,7 +187,7 @@ namespace coppercli.Menus
             // subscribes to a different controller instance's UserInputRequired.
             Action<UserInputRequest> onUserInputRequired = request =>
             {
-                _pendingOperatorPause = request;
+                Volatile.Write(ref _pendingPrompt, request);
                 Logger.Log("Mill controller user input required: {0}", request.Message);
             };
             Action<ControllerError> onError = error =>
@@ -262,14 +263,14 @@ namespace coppercli.Menus
                 millTask = controller.StartAsync(cts.Token);
 
                 // Record start time (drives the elapsed display).
-                startTime = DateTime.Now;
+                startMs = Environment.TickCount64;
 
                 Console.Clear();
 
                 // === MONITOR LOOP ===
                 while (true)
                 {
-                    // Asked of the controller, not of a copy an event has to keep current.
+                    // Read from the controller, not from a copy an event has to update.
                     var state = controller.State;
                     if (ControllerBase.IsFinishedState(state))
                     {
@@ -284,17 +285,16 @@ namespace coppercli.Menus
                         _pendingToolChange = null;
 
                         Logger.Log("Handling tool change for T{0}", tcInfo.ToolNumber);
-                        pauseStartTime = DateTime.Now;
+                        pauseStartMs = Environment.TickCount64;
 
                         // Run tool change using ToolChangeController
-                        bool success = RunToolChangeController(tcInfo, visitedCells, startTime, totalPausedTime);
+                        bool success = RunToolChangeController(tcInfo, visitedCells, startMs, totalPausedMs);
 
                         if (success)
                         {
                             Logger.Log("Tool change completed successfully, resuming");
-                            totalPausedTime += DateTime.Now - pauseStartTime;
+                            totalPausedMs += Environment.TickCount64 - pauseStartMs;
                             controller.Resume();
-                            paused = false;
                         }
                         else
                         {
@@ -307,28 +307,20 @@ namespace coppercli.Menus
                     // Handle pending operator pause (M0/M1) - the mill controller's own
                     // prompt, not routed through RunToolChangeController since no
                     // separate tool-change workflow is running.
-                    if (_pendingOperatorPause != null)
+                    var pendingPrompt = Interlocked.Exchange(ref _pendingPrompt, null);
+                    if (pendingPrompt != null)
                     {
-                        var request = _pendingOperatorPause;
-                        _pendingOperatorPause = null;
+                        var request = pendingPrompt;
 
                         Logger.Log("Handling operator pause: {0}", request.Message);
-                        pauseStartTime = DateTime.Now;
+                        pauseStartMs = Environment.TickCount64;
 
-                        // A pause exists because something needs a human decision, so a
-                        // reflex Enter must not resume cutting - default to not continuing.
-                        // ShowOverlayConfirm renders [y/N] for this, so the prompt already
-                        // shows the operator which key does what.
-                        bool? proceed = ShowOverlayConfirm(request.Message, defaultYes: false);
+                        bool continued = MenuHelpers.ShowPromptOverlay(request);
                         Console.Clear();
 
-                        string response = proceed == true ? OptionContinue : OptionAbort;
-                        request.OnResponse(response);
-
-                        if (response == OptionContinue)
+                        if (continued)
                         {
-                            totalPausedTime += DateTime.Now - pauseStartTime;
-                            paused = false;
+                            totalPausedMs += Environment.TickCount64 - pauseStartMs;
                         }
                     }
 
@@ -344,8 +336,7 @@ namespace coppercli.Menus
                             {
                                 Logger.Log("Pausing");
                                 controller.Pause();
-                                paused = true;
-                                pauseStartTime = DateTime.Now;
+                                pauseStartMs = Environment.TickCount64;
                             }
                         }
                         else if (InputHelpers.IsKey(key, ConsoleKey.R))
@@ -354,8 +345,7 @@ namespace coppercli.Menus
                             {
                                 Logger.Log("Resuming");
                                 controller.Resume();
-                                paused = false;
-                                totalPausedTime += DateTime.Now - pauseStartTime;
+                                totalPausedMs += Environment.TickCount64 - pauseStartMs;
                             }
                         }
                         else if (InputHelpers.IsExitKey(key))
@@ -381,30 +371,35 @@ namespace coppercli.Menus
                         }
                     }
 
-                    // Update paused state from controller
-                    paused = ControllerBase.IsPausedState(state);
+                    // Derived from the controller, never tracked beside it, so a key press
+                    // and a pause the run raised itself read the same.
+                    paused = ControllerBase.IsPausedState(controller.State);
 
                     // Start the ETA clock the moment milling actually begins streaming,
                     // so setup time does not distort the pace it learns from.
-                    if (_millStreamStart == null &&
-                        _latestProgress?.Phase == PhaseMilling &&
+                    if (_millStreamStartMs == null &&
+                        Volatile.Read(ref _latestProgress)?.Phase == PhaseMilling &&
                         AppState.CurrentFile != null)
                     {
-                        _millStreamStart = DateTime.Now;
+                        _millStreamStartMs = Environment.TickCount64;
+                        _millStreamPausedAtStartMs = totalPausedMs;
                         _etaEstimator = new EtaEstimator(AppState.CurrentFile.TotalTime, machine.File.Count);
                     }
 
-                    // One pause accounting, used for both clocks. The display elapsed
-                    // runs from the moment the user hit go; the ETA's clock runs from
-                    // when milling actually began streaming - but both exclude the same
-                    // paused time.
-                    var currentPausedTime = paused ? (DateTime.Now - pauseStartTime) : TimeSpan.Zero;
-                    var elapsed = DateTime.Now - startTime - totalPausedTime - currentPausedTime;
+                    // One pause accounting, used for both clocks. The display elapsed runs
+                    // from the moment the operator hit go; the ETA's clock runs from when
+                    // milling actually began streaming, so it excludes only the pauses since
+                    // then - see _millStreamPausedAtStartMs.
+                    long currentPausedMs = paused ? Environment.TickCount64 - pauseStartMs : 0;
+                    var elapsed = TimeSpan.FromMilliseconds(
+                        Environment.TickCount64 - startMs - totalPausedMs - currentPausedMs);
 
                     string etaStr = EtaUnknown;
-                    if (_etaEstimator != null && _millStreamStart != null)
+                    if (_etaEstimator != null && _millStreamStartMs != null)
                     {
-                        var millingElapsed = DateTime.Now - _millStreamStart.Value - totalPausedTime - currentPausedTime;
+                        var millingElapsed = TimeSpan.FromMilliseconds(
+                            Environment.TickCount64 - _millStreamStartMs.Value
+                            - (totalPausedMs - _millStreamPausedAtStartMs) - currentPausedMs);
                         var remaining = _etaEstimator.Update(machine.FilePosition, millingElapsed);
                         etaStr = remaining.HasValue ? FormatTimeSpan(remaining.Value) : EtaUnknown;
                     }
@@ -418,12 +413,17 @@ namespace coppercli.Menus
                         lastHeight = curHeight;
                     }
 
-                    // Draw progress with current phase message if in setup phases
-                    string? statusMessage = null;
-                    if (_latestProgress != null && _latestProgress.Phase != PhaseMilling)
-                    {
-                        statusMessage = _latestProgress.Message;
-                    }
+                    // What the run is doing when it is not cutting - settling, homing, or
+                    // waiting out an open enclosure - drawn over the screen. The run is the only
+                    // source: this screen does not read the machine and word it again. An
+                    // empty message is the run withdrawing what it published, so it puts the
+                    // progress bar back rather than drawing a blank box.
+                    var progress = Volatile.Read(ref _latestProgress);
+                    string? statusMessage =
+                        progress != null && progress.Phase != PhaseMilling
+                            && !string.IsNullOrEmpty(progress.Message)
+                            ? progress.Message
+                            : null;
 
                     DrawMillProgress(paused, visitedCells, elapsed, etaStr, statusMessage);
                     Thread.Sleep(StatusPollIntervalMs);
@@ -431,7 +431,8 @@ namespace coppercli.Menus
 
                 // === COMPLETION ===
                 var finalState = controller.State;
-                var finalElapsed = DateTime.Now - startTime - totalPausedTime;
+                var finalElapsed = TimeSpan.FromMilliseconds(
+                    Environment.TickCount64 - startMs - totalPausedMs);
 
                 if (finalState == ControllerState.Completed)
                 {
@@ -442,16 +443,17 @@ namespace coppercli.Menus
                     {
                         if (ShowOverlayConfirm(ProbePromptClear, true) == true)
                         {
-                            bool discarded = AppState.DiscardProbeDataAndAutosave();
+                            string? notDiscarded = AppState.DiscardProbeDataAndAutosave();
                             ShowOverlayTimed(
-                                discarded ? ProbeStatusCleared : ProbeDiscardFailed,
-                                ConfirmationDisplayMs);
+                                notDiscarded ?? ProbeStatusCleared,
+                                ConfirmationDisplayMs,
+                                messageColor: notDiscarded == null ? null : AnsiWarning);
                         }
                     }
                 }
                 else if (finalState == ControllerState.Failed && _latestError != null)
                 {
-                    MenuHelpers.ShowError(_latestError.Message);
+                    MenuHelpers.ShowRunError(_latestError);
                 }
             }
             finally
@@ -464,8 +466,8 @@ namespace coppercli.Menus
                 // Wait on the run's own task rather than polling IsActive: IsActive
                 // excludes Completing, so polling it would return while the safe-stop,
                 // re-home, and depth-adjustment restore that make up Completing are
-                // still running. Waiting on the task returns only once that unwind -
-                // whatever state it lands in - has actually finished. Bounded so an
+                // still running. Waiting on the task returns only once that unwind has
+                // finished, whatever state it ends in. Bounded so an
                 // operator abort can never hang the TUI; a cancelled run's Wait can
                 // throw AggregateException, and nothing on a machine-abort path may
                 // escape this finally.
@@ -483,16 +485,16 @@ namespace coppercli.Menus
 
                 if (!stopped)
                 {
-                    // Wait() reports a timeout by returning false rather than throwing,
-                    // so without this the operator walks away from a machine that may
-                    // still be finishing a move.
+                    // Wait() reports a timeout by returning false rather than throwing, so
+                    // without this the operator is not told the machine may still be
+                    // moving.
                     Logger.Log("Milling teardown timed out after {0}ms", ControllerCancelTimeoutMs);
                     MenuHelpers.ShowError(StopTimedOutWarning);
                 }
 
-                // Runs for every exit - normal, abort, or exception - so the controller
-                // never sits waiting for the next run to clear it. Logged rather than
-                // thrown: the rest of this finally unsubscribes and releases the machine.
+                // Runs on every exit (normal, abort, exception), so the controller is
+                // always cleared. Logged rather than thrown, because the rest of this
+                // finally unsubscribes and releases the machine.
                 try
                 {
                     controller.ReleaseAsync().GetAwaiter().GetResult();
@@ -560,34 +562,10 @@ namespace coppercli.Menus
             int totalLines = machine.File.Count;
             double pct = totalLines > 0 ? (100.0 * fileLine / totalLines) : 0;
 
-            // Show machine status prominently when not running normally
-            string status = machine.Status;
-            string statusDisplay;
-            if (MachineWait.IsDoor(machine))
-            {
-                // GRBL keeps reporting Door after the operator closes it, so the raw
-                // status alone would leave them staring at "Door" having already done
-                // what it asked.
-                statusDisplay = MachineWait.IsDoorOpen(machine)
-                    ? $"{AnsiAlert}{DoorOpenMessage}{AnsiReset}"
-                    : $"{AnsiWarning}{DoorClosedMessage}{AnsiReset}";
-            }
-            else if (status.StartsWith(StatusHold))
-            {
-                statusDisplay = $"{AnsiWarning}{OverlayHoldMessage}{AnsiReset}";
-            }
-            else if (paused)
-            {
-                statusDisplay = $"{AnsiWarning}PAUSED{AnsiReset}";
-            }
-            else if (status.StartsWith(StatusAlarm))
-            {
-                statusDisplay = $"{AnsiAlert}{StatusAlarm}{AnsiReset}";
-            }
-            else
-            {
-                statusDisplay = $"{AnsiInfo}{status}{AnsiReset}";
-            }
+            // Status line text. MachineWait.GetActivity decides the cases; the words
+            // below belong to this screen.
+            var activity = MachineWait.GetActivity(machine);
+            string statusDisplay = GetMillStatusText(activity, paused, machine.Status);
 
             int lineWidth = totalLines.ToString().Length;
             string lineStr = fileLine.ToString().PadLeft(lineWidth);
@@ -664,17 +642,43 @@ namespace coppercli.Menus
                 overlayMessage = statusMessage;
                 overlaySubMessage = statusSubMessage;
             }
-            else if (status.StartsWith(StatusHold))
+            else if (activity == MachineActivity.Hold)
             {
                 overlayMessage = OverlayHoldMessage;
             }
-            else if (status.StartsWith(StatusAlarm))
+            else if (activity == MachineActivity.Alarm)
             {
                 overlayMessage = OverlayAlarmMessage;
                 overlayColor = AnsiAlert;
             }
 
             DrawPositionGrid(gridWidth, gridHeight, gridX, gridY, visitedCells, winWidth, minX, maxX, minY, maxY, overlayMessage, overlayColor, overlaySubMessage);
+        }
+
+        /// <summary>
+        /// The status line text. The last arm is not about the machine: a paused run, or a
+        /// GRBL state this screen has no text for.
+        /// </summary>
+        private static string GetMillStatusText(MachineActivity activity, bool paused, string status)
+        {
+            // Hold has its own text here, because this screen can name the resume key.
+            // Every other case uses the shared text.
+            if (activity == MachineActivity.Hold)
+            {
+                return $"{AnsiWarning}{OverlayHoldMessage}{AnsiReset}";
+            }
+
+            if (MachineWait.NeedsAttention(activity))
+            {
+                string alert = activity is MachineActivity.Alarm or MachineActivity.DoorOpen
+                    ? AnsiAlert
+                    : AnsiWarning;
+                return $"{alert}{DisplayHelpers.GetActivityText(activity, status)}{AnsiReset}";
+            }
+
+            return paused
+                ? $"{AnsiWarning}{MillPausedStatus}{AnsiReset}"
+                : $"{AnsiInfo}{DisplayHelpers.GetActivityText(activity, status)}{AnsiReset}";
         }
 
         private static string BuildProgressBar(double pct, int width)
@@ -698,19 +702,22 @@ namespace coppercli.Menus
             int leftPadding = Math.Max(0, (winWidth - matrixWidth - MillBorderPadding) / 2);
             string pad = new string(' ', leftPadding);
 
-            // Calculate overlay box width based on content (if overlay is shown)
-            int boxWidth = CalculateOverlayBoxWidth(overlayMessage ?? "", overlaySubMessage ?? "", matrixWidth);
+            // The box is no wider than the grid, so the enclosure prompt is wrapped to fit
+            // rather than cut off at the key that answers it.
+            var (overlayLines, overlayColors) = BuildOverlayContent(
+                overlayMessage ?? string.Empty, overlaySubMessage ?? StopKeyHint,
+                overlayColor, matrixWidth);
+
+            int boxWidth = CalculateOverlayBoxWidth(overlayLines, matrixWidth);
             int boxStartChar = (matrixWidth - boxWidth) / 2;
 
             // Center vertically in the grid (grid rows go from height-1 down to 0)
+            int boxHeight = CalculateOverlayBoxHeight(overlayLines);
             int boxCenterRow = height / 2;
-            int boxTopRow = boxCenterRow + OverlayBoxHeight / 2;
-            int boxBottomRow = boxTopRow - OverlayBoxHeight + 1;
+            int boxTopRow = boxCenterRow + boxHeight / 2;
+            int boxBottomRow = boxTopRow - boxHeight + 1;
 
             WriteLineTruncated($"{pad}┌{new string('─', matrixWidth)}┐", winWidth);
-
-            // Use provided sub-message or default to "Esc=Stop"
-            string subMsg = overlaySubMessage ?? "Esc=Stop";
 
             for (int y = height - 1; y >= 0; y--)
             {
@@ -738,8 +745,8 @@ namespace coppercli.Menus
                 if (overlayMessage != null && y <= boxTopRow && y >= boxBottomRow)
                 {
                     int boxLineIndex = boxTopRow - y;
-                    string boxLine = GetOverlayBoxLine(boxLineIndex, boxWidth,
-                        overlayMessage, overlayColor, subMsg, AnsiInfo);
+                    string boxLine = GetOverlayBoxLine(
+                        boxLineIndex, boxWidth, overlayLines, overlayColors);
 
                     // Overlay the box onto the row (margin lines are empty - show background)
                     if (!string.IsNullOrEmpty(boxLine))
@@ -866,8 +873,8 @@ namespace coppercli.Menus
         private static bool RunToolChangeController(
             ToolChangeInfo tcInfo,
             HashSet<(int, int)> visitedCells,
-            DateTime startTime,
-            TimeSpan totalPausedTime)
+            long startMs,
+            long totalPausedMs)
         {
             var toolChangeController = AppState.ToolChange;
 
@@ -884,15 +891,14 @@ namespace coppercli.Menus
             bool success = false;
             UserInputRequest? pendingInput = null;
             string? userResponse = null;
-            var pauseStartTime = DateTime.Now;
+            var pauseStartMs = Environment.TickCount64;
 
             // Helper to refresh display
             void RefreshDisplay()
             {
-                var currentPausedTime = DateTime.Now - pauseStartTime;
-                var elapsed = startTime != DateTime.MinValue
-                    ? DateTime.Now - startTime - totalPausedTime - currentPausedTime
-                    : TimeSpan.Zero;
+                long currentPausedMs = Environment.TickCount64 - pauseStartMs;
+                var elapsed = TimeSpan.FromMilliseconds(
+                    Environment.TickCount64 - startMs - totalPausedMs - currentPausedMs);
                 DrawMillProgress(false, visitedCells, elapsed, EtaUnknown);
             }
 
@@ -923,8 +929,9 @@ namespace coppercli.Menus
 
             Action<UserInputRequest> onUserInputRequired = request =>
             {
-                // Store the request - we'll handle it in the main loop
-                pendingInput = request;
+                // Store the request - we'll handle it in the main loop. Written and read on
+                // different threads, so both ends go through Volatile/Interlocked.
+                Volatile.Write(ref pendingInput, request);
                 Logger.Log("ToolChange user input required: {0}", request.Message);
             };
 
@@ -956,10 +963,9 @@ namespace coppercli.Menus
                 while (!completed)
                 {
                     // Handle pending user input request
-                    if (pendingInput != null)
+                    var request = Interlocked.Exchange(ref pendingInput, null);
+                    if (request != null)
                     {
-                        var request = pendingInput;
-                        pendingInput = null;
 
                         // Build tool info for overlay
                         string toolInfoStr = "TOOL CHANGE";
@@ -973,17 +979,40 @@ namespace coppercli.Menus
                             toolInfoStr = $"TOOL CHANGE: {toolDetail}";
                         }
 
-                        // Check if we're waiting for Z zero (Mode B) - allow jogging
-                        bool isWaitingForZeroZ = toolChangeController.Phase == ToolChangePhase.WaitingForZeroZ;
+                        // Jogging is offered for the Z-zero step, and never for the
+                        // enclosure: the jog screen handles the door itself, and this run is
+                        // already parked on its own door prompt.
+                        bool isWaitingForZeroZ =
+                            toolChangeController.Phase == ToolChangePhase.WaitingForZeroZ
+                            && !request.IsDoorPrompt;
                         string keyHint = isWaitingForZeroZ
-                            ? "J=Jog  Y=Continue  Esc=Cancel"
-                            : "Y=Continue  Esc=Cancel";
+                            ? JogContinueOrCancelKeyHint
+                            : ContinueOrCancelKeyHint;
+
+                        // The enclosure prompt arrives through this same slot with no
+                        // title. Under the "TOOL CHANGE" heading it would read as a prompt
+                        // about the tool.
+                        if (request.IsDoorPrompt)
+                        {
+                            toolInfoStr = string.Empty;
+                        }
+                        else if (request.Title != ToolChangePromptTitle)
+                        {
+                            toolInfoStr = request.Title;
+                        }
 
                         // Show overlay with prompt
                         _toolChangeOverlayMessage = toolInfoStr;
                         _toolChangeOverlaySubMessage = $"{request.Message}  {keyHint}";
                         _toolChangeStatusAction = null;
                         RefreshDisplay();
+
+                        // Answering a prompt resumes the run on this thread, and the run can
+                        // raise its next prompt before the answer returns. Throw away what is
+                        // already typed, so the keystroke that answered the last one cannot
+                        // answer this one - which for the enclosure prompt would restart the
+                        // spindle.
+                        InputHelpers.FlushKeyboard();
 
                         // Wait for user input (Y, X, or J if waiting for Z zero)
                         while (userResponse == null && !completed)
@@ -1031,7 +1060,7 @@ namespace coppercli.Menus
                     // the long part of a tool change, and the browser can already stop
                     // them. Read only when no prompt is pending, so this cannot swallow
                     // the keystroke that prompt is waiting for.
-                    if (pendingInput == null && Console.KeyAvailable)
+                    if (Volatile.Read(ref pendingInput) == null && Console.KeyAvailable)
                     {
                         var key = Console.ReadKey(true);
                         if (InputHelpers.IsExitKey(key))

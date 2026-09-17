@@ -8,6 +8,7 @@ using System.Text;
 using System.Text.Json;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
+using coppercli.Core.Settings;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using coppercli.Helpers;
@@ -36,23 +37,26 @@ public static class CncWebServer
         /// <summary>The browser's own id from its cookie, or null if it sent none.</summary>
         public string? Id { get; init; }
 
-        /// <summary>Last heard from. Read and written under <see cref="_clientsLock"/>.</summary>
-        public DateTime LastActivity { get; set; }
+        /// <summary>
+        /// When the client last said anything, on the monotonic clock. Read and written under
+        /// <see cref="_clientsLock"/>. Wall-clock time steps with NTP and daylight saving, and
+        /// every socket would look silent at once.
+        /// </summary>
+        public long LastActivityMs { get; set; }
 
         /// <summary>
-        /// A WebSocket takes one send at a time, and several threads write to this one. Not
-        /// disposed when the client goes: a send still queued behind it would throw, and
-        /// nothing here takes the wait handle that disposing would release.
+        /// A WebSocket takes one send at a time and several threads write to this one. Not
+        /// disposed when the client goes: a send still queued behind it would throw.
         /// </summary>
         public SemaphoreSlim SendLock { get; } = new(1, 1);
     }
 
     private static readonly List<ClientConnection> _clients = new();
     // Track clients that have been served the page but haven't connected WebSocket yet
-    private static readonly Dictionary<string, DateTime> _pendingClients = new();
+    private static readonly Dictionary<string, long> _pendingClients = new();
     private static readonly object _clientsLock = new();
-    private const int WebSocketTimeoutMs = 30000;  // 30 seconds without activity = stale
-    private const string ClientIdCookieName = "coppercli_client_id";
+    internal const int WebSocketTimeoutMs = 30000;  // 30 seconds without activity = stale
+
     private static Machine? _machine;
 
     /// <summary>
@@ -67,7 +71,20 @@ public static class CncWebServer
     private static string _serialPort = "";
     private static int _baudRate = Constants.DefaultBaudRate;
     private static bool _isReconnecting = false;
-    private static bool _forceDisconnected = false;  // Suppress auto-reconnect after force disconnect
+    /// <summary>
+    /// Whether a browser took the machine over, so the server must not reconnect. Read and
+    /// written under <see cref="_clientsLock"/>: set outside it, a client finishing its
+    /// handshake could clear it after the takeover had already decided, and the server would
+    /// reopen the serial port it just released.
+    /// </summary>
+    private static bool _forceDisconnected;
+
+    /// <summary>
+    /// The browser that asked for the takeover, under <see cref="_clientsLock"/>. Only its
+    /// own handshake lifts the suppression: the browser the takeover closed reconnects too,
+    /// and lifting on any handshake let that one win the machine back.
+    /// </summary>
+    private static string? _takeoverClientId;
     private static readonly object _reconnectLock = new();
 
     // Milling controller cancellation (for stopping operations). Only ever assigned a
@@ -102,10 +119,10 @@ public static class CncWebServer
     // try to drive both controllers' teardown at once.
     private static readonly SemaphoreSlim _toolChangeAbortLock = new(1, 1);
 
-    // The in-flight probe controller run - a grid probe or an outline trace, which drive the
-    // one controller and so can never both be running. Released by that run's own finally
-    // under a compare-and-clear (see ReleaseProbeRunAsync), not disposed: a stop whose bounded
-    // wait times out leaves the run still holding this token.
+    // The running probe-controller run: a grid probe or an outline trace. Both drive the one
+    // controller, so they can never both be running. Released by that run's finally under a
+    // compare-and-clear (ReleaseProbeRunAsync), not disposed: a stop whose bounded wait times
+    // out leaves the run still holding this token.
     private static CancellationTokenSource? _probeCts;
     private static Task? _probeTask;
 
@@ -183,7 +200,7 @@ public static class CncWebServer
         catch (HttpListenerException ex)
         {
             // Try localhost only if binding to all interfaces fails
-            AnsiConsole.MarkupLine($"[{ColorWarning}]Could not bind to all interfaces: {ex.Message}[/]");
+            MenuHelpers.ShowFailure(CliConstants.FailedListeningOnTheNetwork, ex);
             AnsiConsole.MarkupLine($"[{ColorDim}]Trying localhost only...[/]");
 
             _listener = new HttpListener();
@@ -243,16 +260,38 @@ public static class CncWebServer
         {
             while (!_cts.Token.IsCancellationRequested)
             {
-                var contextTask = _listener.GetContextAsync();
-                // Wait for request, checking cancellation periodically
-                while (!contextTask.IsCompleted && !_cts.Token.IsCancellationRequested)
+                try
                 {
-                    contextTask.Wait(RequestPollTimeoutMs, _cts.Token);
-                }
+                    var contextTask = _listener.GetContextAsync();
+                    // Wait for request, checking cancellation periodically
+                    while (!contextTask.IsCompleted && !_cts.Token.IsCancellationRequested)
+                    {
+                        contextTask.Wait(RequestPollTimeoutMs, _cts.Token);
+                    }
 
-                if (contextTask.IsCompletedSuccessfully)
+                    if (contextTask.IsCompletedSuccessfully)
+                    {
+                        _ = HandleRequest(contextTask.Result);
+                    }
+                }
+                catch (OperationCanceledException)
                 {
-                    _ = HandleRequest(contextTask.Result);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    // One connection that fails while it is being accepted - a client that
+                    // resets mid-handshake, a malformed request - is not a reason to stop
+                    // serving. Without this the whole web UI went down with it.
+                    Logger.Log("CncWebServer: accepting a request failed - {0}", ex.Message);
+
+                    // Unless the listener itself is gone, in which case every further call
+                    // throws at once and this would spin.
+                    if (!_listener.IsListening)
+                    {
+                        Logger.Log("CncWebServer: listener is no longer bound");
+                        break;
+                    }
                 }
             }
         }
@@ -288,14 +327,16 @@ public static class CncWebServer
 
             try
             {
-                // Cancel first and let the runs unwind while the machine is still reachable:
-                // their teardown is what stops it and lifts the tool. A run left going would
-                // otherwise send moves to the next connection.
-                var running = new[] { _probeTask, _millRunTask, _toolChangeRunTask }
+                // Cancel first so the runs unwind while the machine is still reachable:
+                // their teardown stops it and retracts. A run left going would send moves to
+                // the next connection.
+                var (probeCts, probeTask) = ProbeRun();
+
+                var running = new[] { probeTask, _millRunTask, _toolChangeRunTask }
                     .Where(task => task != null)
                     .ToArray();
 
-                _probeCts?.Cancel();
+                probeCts?.Cancel();
                 _millCts?.Cancel();
                 _toolChangeCts?.Cancel();
 
@@ -498,9 +539,9 @@ public static class CncWebServer
 
     /// <summary>
     /// Headers applied to every response. The web UI drives a machine from large on-screen
-    /// buttons, so a page that framed it could sit an invisible copy under the operator's
-    /// thumb: inside the frame the UI runs at our own origin, and every request it makes is
-    /// genuinely same-origin. Refusing to be framed at all is the only reliable answer.
+    /// buttons, so a page that framed it could put an invisible copy over those buttons.
+    /// Inside the frame the UI runs at its own origin and every request it makes is
+    /// same-origin, so only refusing to be framed stops it.
     /// </summary>
     private static void ApplySecurityHeaders(HttpListenerResponse response)
     {
@@ -526,52 +567,140 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// A command that hands one instruction to the machine and needs nothing else from the
-    /// request. An HTTP endpoint and a WebSocket command run the same entry, so they cannot
-    /// answer it differently.
+    /// A command that sends one instruction to the machine and needs nothing else from the
+    /// request. The HTTP endpoint and the WebSocket command run the same entry. <c>Run</c>
+    /// returns null once the command has been sent, or the reason it was refused; without a
+    /// return value a refusal would be dropped and the browser told it succeeded.
     /// </summary>
     /// <param name="Path">The HTTP endpoint that runs it.</param>
     /// <param name="WsCommand">The WebSocket command that runs it, or null for none.</param>
     /// <param name="Run">What it asks of the machine.</param>
     /// <param name="DuringRun">
     /// Whether it may be sent while a workflow is driving the machine. True only for the
-    /// controls an operator reaches for because a job is running: stop, hold, resume,
-    /// unlock, feed override. Anything that starts a move of its own is false.
+    /// controls used during a job: stop, hold, resume, unlock, feed override. Anything that
+    /// starts a move of its own is false.
     /// </param>
     internal sealed record DirectCommand(
-        string Path, string? WsCommand, Action<Machine> Run, bool DuringRun = false);
+        string Path, string? WsCommand, Func<Machine, string?> Run, bool DuringRun = false);
 
     private static readonly DirectCommand[] DirectCommands =
     {
-        new(ApiHome, WsCmdHome, machine => MachineCommands.HomeAndWait(machine)),
-        new(ApiUnlock, WsCmdUnlock, MachineCommands.Unlock, DuringRun: true),
-        new(ApiReset, WsCmdReset, machine => machine.SoftReset(), DuringRun: true),
-        new(ApiFeedhold, WsCmdFeedhold, machine => machine.FeedHold(), DuringRun: true),
-        new(ApiResume, WsCmdResume, machine => machine.CycleStart(), DuringRun: true),
+        new(ApiHome, WsCmdHome, machine => { MachineCommands.HomeAndWait(machine); return null; }),
+        new(ApiUnlock, WsCmdUnlock, machine => { MachineCommands.Unlock(machine); return null; },
+            DuringRun: true),
+        new(ApiReset, WsCmdReset, machine => { machine.SoftReset(); return null; }, DuringRun: true),
+        // Unguarded on purpose: CanPause decides whether the Pause control is enabled, but
+        // a feed hold is harmless in every state, so it is always sent.
+        new(ApiFeedhold, WsCmdFeedhold, machine => { machine.FeedHold(); return null; },
+            DuringRun: true),
+        // Resume releases a feed hold. A door hold restarts the spindle, so it goes through
+        // the workflow's prompt and this command does nothing at the door.
+        new(ApiResume, WsCmdResume, machine =>
+            {
+                var activity = MachineWait.GetActivity(machine);
+                if (!MachineWait.CanResume(activity)) { return GetResumeRefusalMessage(activity); }
+                machine.CycleStart();
+                return null;
+            }, DuringRun: true),
 
         // X0 Y0, leaving Z where it is - the same as the TUI's key for it.
-        new(ApiGotoOrigin, WsCmdGotoOrigin, machine => MachineCommands.GotoWorkOriginXY(machine)),
+        new(ApiGotoOrigin, WsCmdGotoOrigin, machine => { MachineCommands.GotoWorkOriginXY(machine); return null; }),
         new(ApiGotoCenter, WsCmdGotoCenter,
-            machine => MachineCommands.GotoFileCenterXY(machine, AppState.CurrentFile)),
+            machine => { MachineCommands.GotoFileCenterXY(machine, AppState.CurrentFile); return null; }),
         new(ApiGotoSafe, WsCmdGotoSafe,
-            machine => MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm)),
+            machine => { MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm); return null; }),
         new(ApiGotoRef, WsCmdGotoRef,
-            machine => MachineCommands.MoveToSafeHeight(machine, ReferenceZHeightMm)),
-        new(ApiGotoZ0, WsCmdGotoZ0, machine => MachineCommands.MoveToSafeHeight(machine, 0)),
-        new(ApiProbeZ, WsCmdProbeZ, _ => ProbeZSingle()),
+            machine => { MachineCommands.MoveToSafeHeight(machine, ReferenceZHeightMm); return null; }),
+        new(ApiGotoZ0, WsCmdGotoZ0, machine => { MachineCommands.MoveToSafeHeight(machine, 0); return null; }),
+        new(ApiProbeZ, WsCmdProbeZ, _ => { ProbeZSingle(); return null; }),
 
         // Feed override has no WebSocket command: the mill screen adjusts it over HTTP.
-        new(ApiFeedIncrease, null, machine => machine.FeedOverrideIncrease(), DuringRun: true),
-        new(ApiFeedDecrease, null, machine => machine.FeedOverrideDecrease(), DuringRun: true),
-        new(ApiFeedReset, null, machine => machine.FeedOverrideReset(), DuringRun: true),
+        new(ApiFeedIncrease, null, machine => { machine.FeedOverrideIncrease(); return null; }, DuringRun: true),
+        new(ApiFeedDecrease, null, machine => { machine.FeedOverrideDecrease(); return null; }, DuringRun: true),
+        new(ApiFeedReset, null, machine => { machine.FeedOverrideReset(); return null; }, DuringRun: true),
     };
+
+    /// <summary>
+    /// Why a cycle start would do nothing in this state. Only the door needs the operator
+    /// to act; the other cases report what the machine is doing.
+    /// </summary>
+    private static string GetResumeRefusalMessage(MachineActivity activity) => activity switch
+    {
+        MachineActivity.DoorOpen or MachineActivity.DoorHolding or MachineActivity.DoorResuming
+            => ControllerConstants.ErrorDoorBlocksResume,
+        MachineActivity.Alarm => ControllerConstants.ErrorAlarmBeforeStart,
+        MachineActivity.Disconnected => ErrorMachineNotConnected,
+        _ => ErrorNothingToResume
+    };
+
+    /// <summary>
+    /// Release a door hold from the browser's door overlay. The click is the confirmation.
+    /// MachineWait.ReleaseDoorHoldAsync is the only place that sends the cycle start, and it
+    /// checks GRBL's reading of the switch first.
+    /// </summary>
+    /// <returns>Null once the hold is released, or the reason it was not.</returns>
+    /// <summary>
+    /// Why a release straight from a browser will not be taken, or null once it will. The
+    /// endpoint and the button both read this, so the browser cannot offer a Continue the
+    /// server would refuse.
+    /// </summary>
+    private static string? WhyTheDoorCannotBeReleasedHere()
+    {
+        var machine = _machine;
+        if (machine == null)
+        {
+            return ErrorMachineNotConnected;
+        }
+
+        // A run owns the machine until it ends, parked at a prompt or not. It may have moves
+        // queued for the moment the hold lifts, and it releases the hold itself on a Continue
+        // the operator has already given. This path is the no-run one, as WaitForDoorClear is
+        // for the terminal.
+        if (AnyOperationRunning())
+        {
+            return PendingPrompt.Current?.IsDoorPrompt == true
+                ? ControllerConstants.ErrorDoorAnswerThePrompt
+                : ErrorMachineBusy;
+        }
+
+        // Only a closed door can be released. An open one, or a park retract still running,
+        // would hand ReleaseDoorHoldAsync a state it has to wait out, and a switch that
+        // flipped closed inside that wait would take the cycle start.
+        if (!MachineWait.CanReleaseDoorHold(machine))
+        {
+            return MachineWait.IsDoor(machine)
+                ? ControllerConstants.ErrorDoorBlocksResume
+                : ErrorNoDoorToRelease;
+        }
+
+        return null;
+    }
+
+    private static async Task<string?> ReleaseDoorHoldAsync()
+    {
+        string? refused = WhyTheDoorCannotBeReleasedHere();
+        if (refused != null)
+        {
+            return refused;
+        }
+
+        var machine = _machine!;
+
+        var left = await MachineWait.ReleaseDoorHoldAsync(
+            machine, ControllerConstants.DoorResumeTimeoutMs);
+
+        // Still restoring means the cycle start was accepted, so it is not a failure.
+        return left is DoorState.None or DoorState.Resuming
+            ? null
+            : ControllerConstants.ErrorDoorBlocksResume;
+    }
 
     private static DirectCommand? FindDirectCommand(Func<DirectCommand, bool> match) =>
         DirectCommands.FirstOrDefault(match);
 
     /// <summary>
-    /// Whether a stored connection is one this browser left behind, so a new connection from
-    /// it replaces the old. A socket still open belongs to a second tab; dropping that would
+    /// Whether a stored connection is one this browser left behind, so a new connection
+    /// replaces it. A socket still open belongs to a second tab, and dropping that would
     /// leave the tab sending commands with no status.
     /// </summary>
     internal static bool IsSupersededClient(
@@ -580,13 +709,13 @@ public static class CncWebServer
 
     /// <summary>
     /// The command a WebSocket message of this type runs, or null for none. A message with
-    /// no type names no command: matching null would pick out the entries that have none.
+    /// no type matches nothing: matching null would select the entries that have no command.
     /// </summary>
     internal static DirectCommand? FindWsCommand(string? type) =>
         type == null ? null : FindDirectCommand(command => command.WsCommand == type);
 
     /// <summary>
-    /// Runs a direct command, or says why it could not. <paramref name="offTheCallingThread"/>
+    /// Run a direct command, or return why it could not. <paramref name="offTheCallingThread"/>
     /// is for the WebSocket: homing blocks for as long as homing takes, and the same socket
     /// carries the Stop button.
     /// </summary>
@@ -606,15 +735,17 @@ public static class CncWebServer
         var machine = _machine;
         if (!offTheCallingThread)
         {
-            command.Run(machine);
-            return null;
+            return command.Run(machine);
         }
 
+        // Off the calling thread there is nothing to return to, so a refusal is logged.
+        // Only commands that never refuse are run this way.
         _ = Task.Run(() =>
         {
             try
             {
-                command.Run(machine);
+                string? refused = command.Run(machine);
+                if (refused != null) { Logger.Log("Command {0} refused: {1}", command.Path, refused); }
             }
             catch (Exception ex)
             {
@@ -643,8 +774,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Answers a request to start something: success, or the reason it was refused. The
-    /// browser puts its screen up on this answer.
+    /// Answer a request to start something: success, or the reason it was refused. The
+    /// browser opens its screen on this answer.
     /// </summary>
     private static async Task WriteStartResult(HttpListenerResponse response, string? refusal)
     {
@@ -659,7 +790,7 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// What the caller asked for, else where that browser was last looking, else home.
+    /// The directory the caller asked for, else the one that browser last used, else home.
     /// </summary>
     private static string BrowseDirectory(string? requested, string? lastVisited)
     {
@@ -690,9 +821,8 @@ public static class CncWebServer
 
         response.ContentType = ContentTypeJson;
 
-        // Commands that hand one instruction to the machine and need nothing else from the
-        // request are answered from the table they share with the WebSocket, rather than
-        // spelling the same case out a dozen times here.
+        // Commands that send one instruction and need nothing else from the request are
+        // handled from the table shared with the WebSocket, rather than a case each.
         var direct = FindDirectCommand(command => command.Path == path);
         if (direct != null)
         {
@@ -759,13 +889,36 @@ public static class CncWebServer
                     var zeroReq = await ReadBody<ZeroRequest>(request, response);
                     if (zeroReq != null)
                     {
-                        await WriteStartResult(response, HandleZero(zeroReq));
+                        var (zeroRefused, mapOutcome) = HandleZero(zeroReq);
+                        if (zeroRefused != null)
+                        {
+                            // Only a malformed axes list is the caller's mistake. A busy or
+                            // disconnected machine is a conflict, as it is everywhere else.
+                            response.StatusCode = zeroRefused == ErrorInvalidRequest
+                                ? HttpStatusBadRequest
+                                : HttpStatusConflict;
+                            await WriteJson(response, new { error = zeroRefused });
+                        }
+                        else
+                        {
+                            // The name, not a sentence: what it means to the operator is the
+                            // browser's wording, as every other activity name is.
+                            await WriteJson(response, new
+                            {
+                                success = true,
+                                heightMap = mapOutcome.ToString(),
+
+                                // Core decides which outcomes need the operator to act, so
+                                // the browser does not list them again.
+                                reloadTheFile = mapOutcome.LeftTheGCodeWrong()
+                            });
+                        }
                     }
                 }
                 break;
 
-            // File browsers - G-code and saved probe grids, same listing with a different
-            // filter and a browse directory of its own.
+            // File browsers for G-code and saved probe grids: the same listing with a
+            // different filter and its own browse directory.
             case ApiFiles:
             case ApiProbeFiles:
                 if (await RequireMethod(response, method, MethodGet))
@@ -806,10 +959,10 @@ public static class CncWebServer
                 break;
 
             // Milling control
-            case ApiMillPreflight:
+            case ApiMillCanStart:
                 if (await RequireMethod(response, method, MethodGet))
                 {
-                    await WriteJson(response, HandleMillPreflight());
+                    await WriteJson(response, HandleMillCanStart());
                 }
                 break;
 
@@ -851,7 +1004,14 @@ public static class CncWebServer
                     // controller fires, so this is race-free - DetectToolChange lags up
                     // to a few seconds behind it (see DetectToolChange's own remarks).
                     bool toolChangeActive = resumeController.Phase == MillingPhase.ToolChange;
-                    if (resumeController.IsPaused && !toolChangeActive)
+
+                    // The same question Resume() asks itself, asked first so the refusal
+                    // comes back with the response rather than only as an error event.
+                    string? blocked = _machine == null
+                        ? ErrorMachineNotConnected
+                        : MachineWait.GetResumeBlocker(_machine);
+
+                    if (resumeController.IsPaused && !toolChangeActive && blocked == null)
                     {
                         resumeController.Resume();
                         await WriteJson(response, new { success = true });
@@ -861,7 +1021,8 @@ public static class CncWebServer
                         response.StatusCode = HttpStatusBadRequest;
                         await WriteJson(response, new
                         {
-                            error = toolChangeActive ? ErrorCannotResumeToolChangeActive : ErrorCannotResumeNotPaused
+                            error = blocked
+                                ?? (toolChangeActive ? ErrorCannotResumeToolChangeActive : ErrorCannotResumeNotPaused)
                         });
                     }
                 }
@@ -871,6 +1032,13 @@ public static class CncWebServer
                 if (await RequireMethod(response, method, MethodPost))
                 {
                     await WriteStopResult(response, await HandleMillStopAsync());
+                }
+                break;
+
+            case ApiDoorRelease:
+                if (await RequireMethod(response, method, MethodPost))
+                {
+                    await WriteStartResult(response, await ReleaseDoorHoldAsync());
                 }
                 break;
 
@@ -941,7 +1109,12 @@ public static class CncWebServer
             case ApiProbeStop:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    await WriteStopResult(response, await HandleProbeStop());
+                    {
+                        // A refusal, not a stop that failed: nothing was sent.
+                        string? refused = ProbeStopBlocker();
+                        await WriteStopResult(
+                            response, refused == null && await HandleProbeStop(), refused);
+                    }
                 }
                 break;
 
@@ -955,17 +1128,20 @@ public static class CncWebServer
             case ApiProbeApply:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    // Applying rewrites the loaded G-code, which rewinds the file a paused
-                    // run would resume from.
-                    if (AnyOperationRunning())
+                    // Applying rewrites the loaded G-code, which rewinds the file that a
+                    // paused run would resume from.
+                    string? notApplied = AppState.ApplyProbeData();
+                    if (notApplied != null)
                     {
                         response.StatusCode = HttpStatusConflict;
-                        await WriteJson(response, new { success = false, error = ErrorMachineBusy });
-                        break;
                     }
 
-                    bool success = AppState.ApplyProbeData();
-                    await WriteJson(response, new { success, applied = AppState.AreProbePointsApplied });
+                    await WriteJson(response, new
+                    {
+                        success = notApplied == null,
+                        error = notApplied,
+                        applied = AppState.AreProbePointsApplied
+                    });
                 }
                 break;
 
@@ -995,22 +1171,18 @@ public static class CncWebServer
             case ApiProbeDiscard:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    if (AnyOperationRunning())
+                    // A refusal, not a server failure: the map is where it was and the
+                    // sentence says why.
+                    string? notDiscarded = HandleProbeDiscard();
+                    if (notDiscarded != null)
                     {
                         response.StatusCode = HttpStatusConflict;
-                        await WriteJson(response, new { success = false, error = ErrorMachineBusy });
-                        break;
                     }
 
-                    bool discarded = HandleProbeDiscard();
-                    if (!discarded)
-                    {
-                        response.StatusCode = HttpStatusServerError;
-                    }
                     await WriteJson(response, new
                     {
-                        success = discarded,
-                        error = discarded ? null : CliConstants.ProbeDiscardFailed
+                        success = notDiscarded == null,
+                        error = notDiscarded
                     });
                 }
                 break;
@@ -1050,7 +1222,14 @@ public static class CncWebServer
                     var depthReq = await ReadBody<DepthAdjustmentRequest>(request, response);
                     if (depthReq != null)
                     {
-                        HandleDepthAdjustment(depthReq);
+                        string? refusedDepth = HandleDepthAdjustment(depthReq);
+                        if (refusedDepth != null)
+                        {
+                            response.StatusCode = HttpStatusBadRequest;
+                            await WriteJson(response, new { error = refusedDepth });
+                            break;
+                        }
+
                         await WriteJson(response, new { success = true, depth = AppState.DepthAdjustment });
                     }
                 }
@@ -1061,13 +1240,17 @@ public static class CncWebServer
                 {
                     // Grid dimensions come from the client, which sizes them to its screen
                     // from the maxima this server published.
+                    // Read before the cells, so the count never describes a longer path than
+                    // they were built from. The browser stores it and skips the next fetch.
+                    int pathCount = AppState.Milling.CuttingPath.Count;
+
                     await WriteJson(response, new
                     {
                         cells = GetVisitedGridCells(
                             AppState.Milling,
                             QueryInt(request, QueryParamWidth, WebMillGridDefaultWidth, MillGridMaxWidth),
                             QueryInt(request, QueryParamHeight, WebMillGridDefaultHeight, MillGridMaxHeight)),
-                        count = AppState.Milling.CuttingPath.Count
+                        count = pathCount
                     });
                 }
                 break;
@@ -1075,7 +1258,7 @@ public static class CncWebServer
             case ApiForceDisconnect:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    await HandleForceDisconnect(response);
+                    await HandleForceDisconnect(context);
                 }
                 break;
 
@@ -1139,8 +1322,13 @@ public static class CncWebServer
                         break;
                     }
 
-                    SessionRestore.Answer(topic, answer.yes ?? false);
-                    await WriteJson(response, new { success = true });
+                    string? failed = SessionRestore.Answer(topic, answer.yes ?? false);
+                    if (failed != null)
+                    {
+                        response.StatusCode = HttpStatusConflict;
+                    }
+
+                    await WriteJson(response, new { success = failed == null, error = failed });
                 }
                 break;
 
@@ -1166,92 +1354,108 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Whether any workflow is under way, so the machine is not disconnected out from
-    /// under one. Asked of the controllers, which own the answer; a task handle is nulled
-    /// after a stop that timed out and would report idle while the run is still moving.
-    ///
-    /// A run waiting on the operator counts: the tool is in the work with the job half done.
+    /// Whether anything owns the machine, so it is not disconnected under a run. AppState
+    /// answers for the runs, so a run parked at a prompt counts; homing is added here because
+    /// the server's own machine handle reports it.
     /// </summary>
     private static bool AnyOperationRunning() =>
-        AppState.Probe.IsRunInProgress
-        || AppState.Milling.IsRunInProgress
-        || AppState.ToolChange.IsRunInProgress
-        || (_machine?.IsHoming ?? false);
+        AppState.IsRunInProgress
+        || (_machine?.IsHoming ?? false)
+        || (_machine != null && MachineWait.IsProbeCycleOpen(_machine));
 
     /// <summary>
-    /// Whether a workflow is driving the machine, so a move of the caller's own would land
+    /// Whether a workflow is moving the machine, so a move of the caller's own would land
     /// in the middle of one. Narrower than <see cref="AnyOperationRunning"/>.
     /// </summary>
     private static bool MachineIsBeingDriven()
     {
-        if (AppState.Probe.IsActive || AppState.ToolChange.IsActive || (_machine?.IsHoming ?? false))
+        // IsRunInProgress, not IsActive: a probe parked at its enclosure prompt still owns
+        // the machine, and homing there destroys the frame the rest of the run measures in.
+        if (AppState.Probe.IsRunInProgress || (_machine?.IsHoming ?? false)
+            || (_machine != null && MachineWait.IsProbeCycleOpen(_machine)))
         {
             return true;
         }
 
-        // A tool change is the one wait an operator is meant to jog through: it asks them to
-        // go to the surface and set Z0. Every other hold leaves the tool where the job put
-        // it, and a move from here would cut the rest of the pass from somewhere else.
+        // A tool change is the one pause the operator is meant to jog through, because it
+        // asks them to set Z0; IsActive excludes it. Every other hold leaves the tool where
+        // the job put it, so a move would offset the rest of the pass.
+        if (AppState.ToolChange.IsActive)
+        {
+            return true;
+        }
+
         var milling = AppState.Milling;
         return milling.IsRunInProgress && milling.Phase != MillingPhase.ToolChange;
     }
 
     private static object GetStatus()
     {
-        if (_machine == null)
-        {
-            return new
-            {
-                connected = false,
-                status = "Disconnected",
-                buttons = GetButtonStates(false)
-            };
-        }
+        // The app's machine, which exists before the server starts, so every status has the
+        // same shape and the browser never fills in defaults of its own.
+        var machine = _machine ?? AppState.Machine;
 
         var controller = AppState.Milling;
         var controllerState = controller.State;
         var controllerPhase = controller.Phase;
 
-        // Not over while the spindle waits on the operator, nor while the tool retracts.
+        // One read of the map for the whole payload. Read again for the buttons, the probe
+        // panel and the Mill button could describe different data, and the autosave would be
+        // parsed twice every broadcast.
+        var (probeGrid, probeState, hasUnsavedProbeData) = ReadProbeStateSnapshot();
+
+        // Still running while the run waits on the operator or retracts.
         var isMilling = ControllerBase.IsRunInProgressState(controllerState);
 
-        // Tool change state from AppState (set by controller event), falling back to a
-        // pending bare M0/M1 prompt when there is no tool change. Both flow through the
-        // same overlay client-side, and this field is the only way a client that reloaded
-        // or reconnected mid-prompt can recover it - the toolchange:input WS broadcast
-        // that announced it live is one-shot and already missed by then.
-        var toolChange = DetectToolChange() ?? DetectOperatorPause();
+        // Tool change state from AppState (set by controller event), falling back to
+        // whatever prompt any run has published. Both flow through the same overlay
+        // client-side, and this field is the only way a client that reloaded or reconnected
+        // mid-prompt can recover it - the toolchange:input WS broadcast that announced it
+        // live is one-shot and already missed by then.
+        var toolChange = DetectToolChange() ?? DetectPendingPrompt();
 
         var settings = AppState.Settings;
         var profile = !string.IsNullOrEmpty(settings.MachineProfile)
             ? MachineProfiles.GetProfile(settings.MachineProfile)
             : null;
 
+        // One read each of what the receive thread rewrites, so the payload describes one
+        // instant. Read per field, machineActivity and doorMessage could disagree.
+        var activity = MachineWait.GetActivity(machine);
+        var doorState = MachineWait.GetDoorState(machine);
+        var status = machine.Status;
+        var workPos = machine.WorkPosition;
+        var machinePos = machine.MachinePosition;
+
         return new
         {
-            connected = _machine.Connected,
-            status = _machine.Status,
-            // Derived in Core so the browser and the terminal answer "is the door open"
-            // the same way: GRBL reports Door either side of the operator closing it.
-            doorOpen = MachineWait.IsDoorOpen(_machine),
-            doorAwaitingResume = MachineWait.IsDoorAwaitingResume(_machine),
+            connected = MachineWait.IsResponding(activity),
+
+            // GRBL's own word, for display only. See rule the-browser-draws-what-it-was-handed.
+            status,
+
+            machineActivity = activity.ToString(),
+            needsAttention = MachineWait.NeedsAttention(activity),
+
+            // Wider than needsAttention: it also covers a machine that is not there. The
+            // jog controls read this, because a disconnected machine takes no move either.
+            machineUnavailable = MachineWait.IsUnavailable(activity),
+            canPause = MachineWait.CanPause(activity),
+            canResume = MachineWait.CanResume(activity),
+            canReleaseDoor = MachineWait.CanReleaseDoorHold(doorState),
+
+            // The sentence the door overlay shows. Core owns it, because it is the same
+            // prompt a run raises; the header's short label is the browser's own wording.
+            doorMessage = MachineWait.IsDoorActivity(activity)
+                ? MachineWait.GetDoorMessage(doorState)
+                : null,
             machineProfile = profile?.Name,
-            workPos = new
-            {
-                x = _machine.WorkPosition.X,
-                y = _machine.WorkPosition.Y,
-                z = _machine.WorkPosition.Z
-            },
-            machinePos = new
-            {
-                x = _machine.MachinePosition.X,
-                y = _machine.MachinePosition.Y,
-                z = _machine.MachinePosition.Z
-            },
-            feedOverride = _machine.FeedOverride,
-            probePin = _machine.PinStateProbe,
+            workPos = new { x = workPos.X, y = workPos.Y, z = workPos.Z },
+            machinePos = new { x = machinePos.X, y = machinePos.Y, z = machinePos.Z },
+            feedOverride = machine.FeedOverride,
+            probePin = machine.PinStateProbe,
             file = GetFileStatus(),
-            probe = GetProbeStatusBrief(),
+            probe = GetProbeStatusBrief(probeGrid, probeState, hasUnsavedProbeData),
             probeApplied = AppState.AreProbePointsApplied,
             milling = isMilling,
             millingPhase = controllerPhase.ToString(),
@@ -1261,7 +1465,7 @@ public static class CncWebServer
             tracingOutline = AppState.IsTracingOutline,
             toolChange = toolChange,
             depthAdjustment = AppState.DepthAdjustment,
-            buttons = GetButtonStates(_machine.Connected),
+            buttons = GetButtonStates(probeGrid),
             hasStoredWorkZero = AppState.Session.HasStoredWorkZero,
             isWorkZeroSet = AppState.IsWorkZeroSet
         };
@@ -1284,8 +1488,8 @@ public static class CncWebServer
         var phase = controller.Phase;
         var state = controller.State;
 
-        // Whether a run is under way is the run's state to answer. Reading it off the
-        // phase asked one enum two questions, and the two could disagree.
+        // Whether a run is under way comes from ControllerState. Reading it off the phase
+        // made one enum answer two questions, which could disagree.
         if (!controller.IsActive && !ControllerBase.IsWaitingForOperatorState(state))
         {
             return null;
@@ -1300,9 +1504,14 @@ public static class CncWebServer
             Logger.Log($"DetectToolChange: phase={phase}, state={state}, info=null (BUG!)");
         }
 
-        // The prompt now waiting, if one is. A client that reloaded mid-tool-change missed
-        // the toolchange:input broadcast, so this is the only way it learns which question
-        // it is answering - and an answer has to name its question.
+        // The prompt now waiting, if any. A client that reloaded mid-tool-change missed the
+        // toolchange:input broadcast, so this is the only way it learns which prompt it is
+        // answering, and an answer has to name its prompt.
+        //
+        // Title and message are sent because a tool change raises two kinds of prompt: the
+        // tool prompt, and the enclosure prompt when the operator opened the door. Rebuilt
+        // from the phase alone, the browser would show "change the tool and press Continue"
+        // over a door prompt whose Continue restarts the spindle.
         var pending = PendingPrompt.Current;
 
         return new
@@ -1310,34 +1519,90 @@ public static class CncWebServer
             phase = phase.ToString(),
             toolNumber = info?.ToolNumber,
             toolName = info?.ToolName,
+            title = pending?.Title,
+            message = pending?.Message,
             id = pending?.Id,
-            options = pending?.Options
+            options = pending?.Options,
+            isDoorPrompt = pending?.IsDoorPrompt ?? false
         };
     }
 
     /// <summary>
-    /// Detects a bare M0/M1 prompt pending on the milling controller itself - the
-    /// counterpart to DetectToolChange for the one case that controller doesn't cover.
-    /// Shaped so the single client-side handler that already reconstructs a tool-change
-    /// overlay from status.toolChange can reconstruct this one too, without needing to
-    /// know which kind of prompt it is.
+    /// The prompt any run is waiting on, read from the slot rather than from one controller,
+    /// so a probe or outline trace's enclosure prompt reaches a client that reloaded as the
+    /// mill's does. Shaped so the one client-side handler that reconstructs a tool-change
+    /// overlay reconstructs this too, without needing to know which run raised it.
     /// </summary>
-    private static object? DetectOperatorPause()
+    private static object? DetectPendingPrompt()
     {
         var pending = PendingPrompt.Current;
-        if (!ControllerBase.IsWaitingForOperatorState(AppState.Milling.State) || pending == null)
-        {
-            return null;
-        }
+        return pending == null ? null : GetOperatorPausePayload(pending);
+    }
 
-        return new
+    /// <summary>
+    /// A paused run's prompt on the wire. The text is the workflow's, because a door prompt
+    /// drawn under the tool-change heading would ask about the tool instead.
+    /// </summary>
+    internal static object GetOperatorPausePayload(UserInputRequest pending) => new
+    {
+        phase = PromptKindOperatorPause,
+        title = pending.Title,
+        message = pending.Message,
+        options = pending.Options,
+        id = pending.Id,
+        isDoorPrompt = pending.IsDoorPrompt
+    };
+
+    /// <summary>
+    /// Publish a run's prompt to the browser: into the prompt slot, so an answer can name
+    /// what it answers, and over the socket for clients already watching. The only place the
+    /// three runs do this.
+    /// </summary>
+    /// <returns>
+    /// What was published. The run clears this from the slot when it ends, by which time
+    /// another run may have published its own.
+    /// </returns>
+    private static UserInputRequest PublishPrompt(UserInputRequest request)
+    {
+        // Id carries the request's own GUID, so a client recovering this prompt from
+        // GetStatus (see DetectPendingPrompt) can compare it against this broadcast and tell
+        // it from one already answered.
+        var published = new UserInputRequest
         {
-            phase = PromptKindOperatorPause,
-            title = pending.Title,
-            message = pending.Message,
-            options = pending.Options,
-            id = pending.Id
+            Id = request.Id,
+            Title = request.Title,
+            Message = request.Message,
+            Options = request.Options,
+            IsDoorPrompt = request.IsDoorPrompt,
+            OnResponse = response =>
+            {
+                request.OnResponse(response);
+
+                // Answer clears the slot before calling this, and the run continues inside
+                // that call, publishing its next prompt from here. An empty slot means
+                // nothing replaced this one, so the dialog closes.
+                if (PendingPrompt.Current == null)
+                {
+                    BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = true });
+                }
+            }
         };
+
+        PendingPrompt.Set(published);
+        BroadcastMessage(WsMessageTypeToolChangeInput, new
+        {
+            title = request.Title,
+            message = request.Message,
+            options = request.Options,
+            id = request.Id,
+
+            // The enclosure prompt is drawn in the page-level door overlay, because the
+            // tool-change overlay lives inside the mill screen and is not on the page at all
+            // while the operator is on the probe or jog screen.
+            isDoorPrompt = request.IsDoorPrompt
+        });
+
+        return published;
     }
 
     /// <summary>
@@ -1345,29 +1610,39 @@ public static class CncWebServer
     /// Each button has: enabled (bool), reason (string or null if enabled).
     /// Uses shared helpers from MenuHelpers to avoid duplicating validation logic.
     /// </summary>
-    private static object GetButtonStates(bool isConnected)
+    /// <param name="probeGrid">
+    /// The map the rest of this payload was built from, so the buttons and the probe panel
+    /// cannot describe different data - and the autosave is read once rather than twice.
+    /// </param>
+    private static object GetButtonStates(ProbeGrid? probeGrid)
     {
-        // Jog: requires connection
-        string? jogReason = !isConnected ? DisabledConnect : null;
+        // Jog: needs a machine, and nothing else.
+        string? jogReason = MenuHelpers.GetMachineDisabledReason();
 
         // Probe: requires connection, file loaded, work zero set
         string? probeReason = MenuHelpers.GetProbeDisabledReason();
 
         // Mill: requires connection, file loaded, probe data applied (if exists)
-        string? millReason = MenuHelpers.GetMillDisabledReason();
+        string? millReason = MenuHelpers.GetMillDisabledReason(probeGrid);
+
+        string? doorReleaseReason = WhyTheDoorCannotBeReleasedHere();
 
         return new
         {
             jog = new { enabled = jogReason == null, reason = jogReason },
             probe = new { enabled = probeReason == null, reason = probeReason },
-            mill = new { enabled = millReason == null, reason = millReason }
+            mill = new { enabled = millReason == null, reason = millReason },
+
+            // The door overlay's own Continue, for a hold with no run behind it. A run at
+            // the door asks its own question, or releases the hold on a Continue already
+            // given, and the browser must not offer a second one over the top.
+            doorRelease = new { enabled = doorReleaseReason == null, reason = doorReleaseReason }
         };
     }
 
-    private static object? GetProbeStatusBrief()
+    private static object? GetProbeStatusBrief(
+        ProbeGrid? grid, string state, bool hasUnsavedData)
     {
-        var (grid, state, hasUnsavedData) = ReadProbeStateSnapshot();
-
         if (grid == null)
         {
             return new
@@ -1385,6 +1660,10 @@ public static class CncWebServer
             active = AppState.IsMeasuringGrid,
             hasUnsavedData,
             progress = grid.Progress,
+
+            // What a summary counts. Progress is how far through the queue the run is, and
+            // a skipped point comes off the queue without being measured.
+            measured = grid.MeasuredCount,
             total = grid.TotalPoints,
             sizeX = grid.SizeX,
             sizeY = grid.SizeY,
@@ -1428,14 +1707,34 @@ public static class CncWebServer
     {
         return new
         {
-            // Status strings - must match GrblProtocol
-            status = new
+            // What a saved height map is called on disk.
+            probeGridExtension = CliConstants.ProbeGridExtension,
+
+            // What became of the height map after a zero. The browser has its own words for
+            // each, so only the names have to agree.
+            // The warning before an X or Y zero, so both front ends say the same thing.
+            zeroWarning = new
             {
-                run = GrblProtocol.StatusRun,
-                hold = GrblProtocol.StatusHold,
-                idle = GrblProtocol.StatusIdle,
-                alarm = GrblProtocol.StatusAlarm,
-                door = GrblProtocol.StatusDoor
+                discardsMap = CliConstants.ZeroDiscardsMap,
+                unmeasured = CliConstants.UnmeasuredMap,
+                partlyMeasured = CliConstants.PartlyMeasuredMap,
+                complete = CliConstants.CompleteMap
+            },
+            heightMapOutcomes = new
+            {
+                reapplied = nameof(WorkZeroOutcome.MapReapplied),
+                notReapplied = nameof(WorkZeroOutcome.MapNotReapplied),
+                notDiscarded = nameof(WorkZeroOutcome.MapNotDiscarded),
+                discarded = nameof(WorkZeroOutcome.MapDiscarded),
+                fileLeftAlone = nameof(WorkZeroOutcome.FileLeftAlone)
+            },
+            // The activity names the browser branches on: the three it has its own text
+            // for. It shows GRBL's status word for the rest, so those are not published.
+            machineActivities = new
+            {
+                doorOpen = nameof(MachineActivity.DoorOpen),
+                doorHolding = nameof(MachineActivity.DoorHolding),
+                doorResuming = nameof(MachineActivity.DoorResuming)
             },
             // Controller states - must match ControllerState enum
             controllerStates = new
@@ -1450,22 +1749,19 @@ public static class CncWebServer
                 failed = nameof(ControllerState.Failed),
                 cancelled = nameof(ControllerState.Cancelled)
             },
-            // Prompt kinds the client keys behavior off, and the choice that carries one on.
-            promptKinds = new
-            {
-                operatorPause = PromptKindOperatorPause
-            },
+            // The options a prompt offers. The client draws a button per option and sends
+            // the option back, so a rename on either side has to be caught.
             promptOptions = new
             {
-                carryOn = ControllerConstants.OptionContinue
+                carryOn = ControllerConstants.OptionContinue,
+                abandon = ControllerConstants.OptionAbort
             },
-            // The phases the client changes its display for. The rest are shown as they
-            // arrive, so only these have to agree.
+            // The phases the client changes its display for. The rest are shown as sent,
+            // so only these have to match.
             phases = new
             {
                 milling = nameof(MillingPhase.Milling),
                 tracingOutline = nameof(ProbePhase.TracingOutline),
-                waitingForToolChange = nameof(ToolChangePhase.WaitingForToolChange),
                 waitingForZeroZ = nameof(ToolChangePhase.WaitingForZeroZ)
             },
             // WebSocket message types
@@ -1502,6 +1798,26 @@ public static class CncWebServer
                 maxMargin = MaxProbeMargin,
                 minGridSize = MinProbeGridSize,
                 maxGridSize = MaxProbeGridSize
+            },
+            // How the browser addresses the socket and names itself on it. Spelled out in
+            // the browser instead, a rename here connects it anonymously and its own reload
+            // counts as a second client.
+            socket = new
+            {
+                path = WsPath,
+                clientIdParam = QueryParamClientId,
+                clientIdCookie = ClientIdCookieName,
+
+                // The browser pings well inside this, or every client is reaped mid-job.
+                timeoutMs = WebSocketTimeoutMs
+            },
+            // What the depth buttons send. Named on one side only, a rename answers 200
+            // with the depth unchanged.
+            depthActions = new
+            {
+                increase = DepthActionIncrease,
+                decrease = DepthActionDecrease,
+                reset = DepthActionReset
             },
             // Probe states - 4-state model based on in-memory grid progress
             probeStates = new
@@ -1567,6 +1883,7 @@ public static class CncWebServer
         // Fall back to original file count if machine not available
         int totalLines = _machine?.File.Count ?? file.Toolpath.Count;
         int currentLine = _machine?.FilePosition ?? 0;
+        var bounds = GetCuttingBounds(file);
 
         return new
         {
@@ -1575,12 +1892,27 @@ public static class CncWebServer
             totalLines,
             currentLine,
             progress = totalLines > 0 ? (double)currentLine / totalLines : 0,
-            // Bounds for grid visualization (use feed bounds if available for actual cutting area)
-            minX = file.SizeFeed.X > MillMinRangeThreshold ? file.MinFeed.X : file.Min.X,
-            maxX = file.SizeFeed.X > MillMinRangeThreshold ? file.MaxFeed.X : file.Max.X,
-            minY = file.SizeFeed.Y > MillMinRangeThreshold ? file.MinFeed.Y : file.Min.Y,
-            maxY = file.SizeFeed.Y > MillMinRangeThreshold ? file.MaxFeed.Y : file.Max.Y
+            // The same bounds the cells are indexed on - see GetCuttingBounds.
+            minX = bounds.MinX,
+            maxX = bounds.MaxX,
+            minY = bounds.MinY,
+            maxY = bounds.MaxY
         };
+    }
+
+    /// <summary>
+    /// The area the job cuts: the feed bounds when both axes have them, and the whole
+    /// toolpath otherwise. The browser sizes its grid from these bounds and then draws cells
+    /// the server indexed on them, so both must use one rule.
+    /// </summary>
+    private static (double MinX, double MaxX, double MinY, double MaxY) GetCuttingBounds(GCodeFile file)
+    {
+        bool useFeedBounds = file.SizeFeed.X > MillMinRangeThreshold
+            && file.SizeFeed.Y > MillMinRangeThreshold;
+
+        return useFeedBounds
+            ? (file.MinFeed.X, file.MaxFeed.X, file.MinFeed.Y, file.MaxFeed.Y)
+            : (file.Min.X, file.Max.X, file.Min.Y, file.Max.Y);
     }
 
     /// <summary>
@@ -1604,12 +1936,7 @@ public static class CncWebServer
             return Array.Empty<string>();
         }
 
-        // Use feed bounds (actual cutting area) if available, otherwise fall back to full bounds
-        bool useFeedBounds = file.SizeFeed.X > MillMinRangeThreshold && file.SizeFeed.Y > MillMinRangeThreshold;
-        double minX = useFeedBounds ? file.MinFeed.X : file.Min.X;
-        double maxX = useFeedBounds ? file.MaxFeed.X : file.Max.X;
-        double minY = useFeedBounds ? file.MinFeed.Y : file.Min.Y;
-        double maxY = useFeedBounds ? file.MaxFeed.Y : file.Max.Y;
+        var (minX, maxX, minY, maxY) = GetCuttingBounds(file);
 
         // Calculate ranges
         double rangeX = Math.Max(maxX - minX, MillMinRangeThreshold);
@@ -1736,19 +2063,19 @@ public static class CncWebServer
     }
 
     /// <returns>Null once the work zero is set, or the reason it was refused.</returns>
-    private static string? HandleZero(ZeroRequest req)
+    private static WorkZeroResult HandleZero(ZeroRequest req)
     {
         Logger.Log($"HandleZero called: axes={string.Join(",", req.axes ?? Array.Empty<string>())}");
 
         if (!MachineConnected)
         {
-            return ErrorMachineNotConnected;
+            return new WorkZeroResult(ErrorMachineNotConnected, WorkZeroOutcome.NothingToDo);
         }
 
         // Re-datuming under a run would move the rest of the job relative to the part.
         if (MachineIsBeingDriven())
         {
-            return ErrorMachineBusy;
+            return new WorkZeroResult(ErrorMachineBusy, WorkZeroOutcome.NothingToDo);
         }
 
         var requested = req.axes ?? new[] { "X", "Y", "Z" };
@@ -1765,14 +2092,21 @@ public static class CncWebServer
 
         if (axesUpper.Length == 0)
         {
-            return ErrorInvalidRequest;
+            return new WorkZeroResult(ErrorInvalidRequest, WorkZeroOutcome.NothingToDo);
         }
 
         var axesStr = string.Join(" ", axesUpper.Select(a => $"{a}0"));
         Logger.Log($"HandleZero: axes={axesStr} workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3}) machPos=({_machine.MachinePosition.X:F3},{_machine.MachinePosition.Y:F3},{_machine.MachinePosition.Z:F3})");
 
-        // SetWorkZeroAndWait handles probe grid state (re-applies if Z-only, discards if XY)
-        MachineCommands.SetWorkZeroAndWait(_machine, axesStr);
+        // SetWorkZeroAndWait owns the offset and what it means for the height map, and
+        // refuses an X or Y zero during a run.
+        var zeroed = MachineCommands.SetWorkZeroAndWait(_machine, axesStr);
+        if (zeroed.Refused != null)
+        {
+            return zeroed;
+        }
+
+
         Logger.Log($"HandleZero: after zero workPos=({_machine.WorkPosition.X:F3},{_machine.WorkPosition.Y:F3},{_machine.WorkPosition.Z:F3})");
 
         // Retract to safe height after zeroing Z or all axes (matches TUI behavior)
@@ -1791,25 +2125,120 @@ public static class CncWebServer
         }
 
         Logger.Log("HandleZero: done");
-        return null;
+        return zeroed;
     }
 
     private static void ProbeZSingle()
     {
-        var controller = AppState.Probe;
-
-        // Configure probe options
-        controller.Options = ProbeOptions.FromSettings(AppState.Settings);
-
-        // Run probe and handle result
-        _ = Task.Run(async () =>
+        // Through the same slot as every other probe, so /api/probe/stop reaches this one.
+        var probeCts = new CancellationTokenSource();
+        if (!TryClaimProbeRun(probeCts))
         {
-            var (success, _) = await controller.ProbeZSingleAsync(CancellationToken.None);
-            if (!success)
+            probeCts.Dispose();
+            BroadcastMessage(WsMessageTypeProbeError, new { message = ErrorMachineBusy });
+            return;
+        }
+
+        // Inside the try: the slot is taken and the run task that hands it back does not
+        // exist yet. AppState.Probe builds the controller on first use, and can throw.
+        try
+        {
+            var controller = AppState.Probe;
+
+            // Configure probe options
+            controller.Options = ProbeOptions.FromSettings(AppState.Settings);
+
+            // Run probe and handle result
+            PublishProbeTask(probeCts, Task.Run(async () =>
             {
-                BroadcastMessage(WsMessageTypeProbeError, new { message = ControllerConstants.ErrorProbeNoContact });
-            }
-        });
+                try
+                {
+                    var (success, _) = await controller.ProbeZSingleAsync(probeCts.Token);
+                    if (!success)
+                    {
+                        BroadcastMessage(
+                            WsMessageTypeProbeError,
+                            new { message = ControllerConstants.ErrorProbeNoContact });
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    Logger.Log("ProbeZSingle: stopped");
+                }
+                catch (Exception ex)
+                {
+                    // A probe that never triggers and one the enclosure interrupts both
+                    // time out. Reported as no contact, both said the tool reached full
+                    // depth when it had not.
+                    Logger.Log("ProbeZSingle: failed - {0}", ex);
+                    BroadcastMessage(
+                        WsMessageTypeProbeError,
+                        new { message = ControllerConstants.ShowableMessage(ex) });
+                }
+                finally
+                {
+                    // The slot alone: this probe stopped no idle timer and started no sleep
+                    // prevention, so there is nothing else of the server's to hand back.
+                    ReleaseProbeRunSlot(probeCts);
+                }
+            }));
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("ProbeZSingle: could not start - {0}", ex);
+            ReleaseProbeRunSlot(probeCts);
+            BroadcastMessage(
+                WsMessageTypeProbeError,
+                new { message = ControllerConstants.ShowableMessage(ex) });
+        }
+    }
+
+    /// <summary>
+    /// Whether this path names something on this computer. A leading "\\" or "//" is
+    /// refused, because Windows reads either as a host name. On Unix that also refuses
+    /// "//tmp", which is the same directory as "/tmp".
+    /// </summary>
+    internal static bool IsLocalPath(string path) =>
+        !string.IsNullOrEmpty(path)
+        && !path.StartsWith(WindowsUncPrefix, StringComparison.Ordinal)
+        && !path.StartsWith(UnixUncPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The absolute local path a request asked for, or null with the reason it was refused.
+    /// The sequence every endpoint that loads or saves a path follows: expand the tilde,
+    /// check it names this computer, then root it against <paramref name="baseDir"/>.
+    /// </summary>
+    internal static string? ResolveRequestPath(
+        string? requested, string? baseDir, out string? refused)
+    {
+        refused = null;
+
+        if (string.IsNullOrEmpty(requested))
+        {
+            refused = ErrorNoPathSpecified;
+            return null;
+        }
+
+        string path = PathHelpers.ExpandTilde(requested);
+
+        // Checked before rooting. A Windows UNC path is not rooted on Unix, so combining it
+        // with the base directory first would bury the prefix and let it through.
+        if (!IsLocalPath(path))
+        {
+            refused = ErrorPathNotOnThisComputer;
+            return null;
+        }
+
+        if (!Path.IsPathRooted(path))
+        {
+            path = Path.Combine(
+                string.IsNullOrEmpty(baseDir)
+                    ? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                    : baseDir,
+                path);
+        }
+
+        return path;
     }
 
     private static object GetFiles(string dirPath) =>
@@ -1819,7 +2248,10 @@ public static class CncWebServer
     {
         try
         {
-            if (!Directory.Exists(dirPath))
+            // A path on another host sends this thread to that host's file server. On
+            // Windows Directory.Exists opens an outbound session and blocks for the mount
+            // timeout.
+            if (!IsLocalPath(dirPath) || !Directory.Exists(dirPath))
             {
                 dirPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             }
@@ -1994,15 +2426,31 @@ public static class CncWebServer
                 counter++;
             }
 
+            // Asked before the upload is written, so a refused upload leaves nothing behind.
+            if (AppState.WhyTheFileCannotChange() is string uploadBlocked)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { error = uploadBlocked });
+                return;
+            }
+
             await File.WriteAllTextAsync(savePath, fileContent);
 
             // Load the file into machine (single source of truth for G-code loading)
             var file = GCodeFile.Load(savePath);
-            AppState.LoadGCodeIntoMachine(file);
-            AppState.Session.LastLoadedGCodeFile = savePath;
+            var loaded = AppState.LoadGCodeIntoMachine(file);
+            if (loaded.Refused != null)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { error = loaded.Refused });
+                return;
+            }
+
+            // LoadGCodeIntoMachine recorded which board is loaded; only the browse
+            // directory is this caller's to set.
             AppState.Session.LastBrowseDirectory = uploadsDir;
 
-            await WriteJson(response, FileSummary(file));
+            await WriteJson(response, FileSummary(file, loaded.MapDiscardedBecause));
         }
         catch (Exception ex)
         {
@@ -2012,24 +2460,25 @@ public static class CncWebServer
 
     private static async Task HandleLoadFile(HttpListenerResponse response, LoadFileRequest req)
     {
-        // Loading a file clears the applied height map and the depth adjustment while the
-        // machine keeps streaming the old one.
-        if (AnyOperationRunning())
+        // Asked before the path is resolved, so a refused load reads no directory.
+        if (AppState.WhyTheFileCannotChange() is string loadBlocked)
         {
             response.StatusCode = HttpStatusConflict;
-            await WriteJson(response, new { success = false, error = ErrorMachineBusy });
+            await WriteJson(response, new { success = false, error = loadBlocked });
             return;
         }
 
-        if (req.path == null)
+        // Resolved first, so every later step works on the one path that was checked.
+        string? path = ResolveRequestPath(req.path, AppState.Session.LastBrowseDirectory, out string? refusedPath);
+        if (path == null)
         {
             response.StatusCode = HttpStatusBadRequest;
-            await WriteJson(response, new { error = ErrorNoPathSpecified });
+            await WriteJson(response, new { error = refusedPath });
             return;
         }
 
         // Validate file extension
-        var ext = Path.GetExtension(req.path).ToLowerInvariant();
+        var ext = Path.GetExtension(path).ToLowerInvariant();
         if (!GCodeExtensions.Contains(ext))
         {
             response.StatusCode = HttpStatusBadRequest;
@@ -2037,8 +2486,9 @@ public static class CncWebServer
             return;
         }
 
-        // Validate file exists and is a regular file (not directory, symlink to sensitive location, etc.)
-        if (!File.Exists(req.path))
+        // File.Exists is false for a directory, so this rejects one too. A symlink to a
+        // file passes.
+        if (!File.Exists(path))
         {
             response.StatusCode = HttpStatusNotFound;
             await WriteJson(response, new { error = ErrorFileNotFound });
@@ -2048,12 +2498,18 @@ public static class CncWebServer
         try
         {
             // Load the file into machine (single source of truth for G-code loading)
-            var file = GCodeFile.Load(req.path);
-            AppState.LoadGCodeIntoMachine(file);
-            AppState.Session.LastLoadedGCodeFile = req.path;
-            AppState.Session.LastBrowseDirectory = Path.GetDirectoryName(req.path);
+            var file = GCodeFile.Load(path);
+            var loaded = AppState.LoadGCodeIntoMachine(file);
+            if (loaded.Refused != null)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { error = loaded.Refused });
+                return;
+            }
 
-            await WriteJson(response, FileSummary(file));
+            AppState.Session.LastBrowseDirectory = Path.GetDirectoryName(path);
+
+            await WriteJson(response, FileSummary(file, loaded.MapDiscardedBecause));
         }
         catch (Exception ex)
         {
@@ -2066,9 +2522,10 @@ public static class CncWebServer
     /// response (upload, load, status). Keeps the wire shape identical across endpoints so
     /// the client sees one contract instead of three hand-copied anonymous objects.
     /// </summary>
-    private static object FileSummary(GCodeFile file) => new
+    private static object FileSummary(GCodeFile file, string? droppedMap = null) => new
     {
         success = true,
+        droppedMap,
         name = file.FileName,
         path = file.FilePath,
         lines = file.Toolpath.Count,
@@ -2104,7 +2561,7 @@ public static class CncWebServer
     private static void PurgeExpiredPendingClients()
     {
         var expired = _pendingClients
-            .Where(kvp => (DateTime.Now - kvp.Value).TotalMilliseconds > PendingClientTimeoutMs)
+            .Where(kvp => Environment.TickCount64 - kvp.Value > PendingClientTimeoutMs)
             .Select(kvp => kvp.Key)
             .ToList();
         foreach (var key in expired)
@@ -2113,28 +2570,29 @@ public static class CncWebServer
         }
     }
 
-    /// <summary>Turns a preflight failure into the sentence the operator sees.</summary>
-    private static string DescribePreflightError(MillPreflightResult result) => result.Error switch
+    /// <summary>The message shown for a blocked start.</summary>
+    internal static string GetMillBlockerMessage(MillStartCheck result) => result.Error switch
     {
-        MillPreflightError.NotConnected => PreflightErrorNotConnected,
-        MillPreflightError.NoFile => PreflightErrorNoFile,
-        MillPreflightError.ProbeNotApplied => PreflightErrorProbeNotApplied,
-        MillPreflightError.ProbeSetupChanged => PreflightErrorProbeSetupChanged,
-        MillPreflightError.ProbeIncomplete => string.Format(PreflightErrorProbeIncomplete, result.ProbeProgress),
-        MillPreflightError.AlarmState => PreflightErrorAlarm,
-        _ => PreflightErrorUnknown
+        MillBlocker.NotConnected => MillBlockedNotConnected,
+        MillBlocker.NoFile => MillBlockedNoFile,
+        MillBlocker.ProbeNotApplied => MillBlockedProbeNotApplied,
+        MillBlocker.ProbeSetupChanged => MillBlockedProbeSetupChanged,
+        MillBlocker.ProbeIncomplete => string.Format(MillBlockedProbeIncomplete, result.ProbeProgress),
+        MillBlocker.AlarmState => MillBlockedAlarm,
+        MillBlocker.Asleep => MillBlockedAsleep,
+        _ => MillBlockedUnknown
     };
 
-    private static object HandleMillPreflight()
+    private static object HandleMillCanStart()
     {
-        var result = MenuHelpers.ValidateMillPreflight();
+        var result = MenuHelpers.CheckMillCanStart();
         var warnings = new List<string>();
         var errors = new List<string>();
 
         // Map error code to API error message
-        if (result.Error != MillPreflightError.None)
+        if (result.Error != MillBlocker.None)
         {
-            errors.Add(DescribePreflightError(result));
+            errors.Add(GetMillBlockerMessage(result));
         }
 
         // Map warnings to API warning messages
@@ -2142,18 +2600,18 @@ public static class CncWebServer
         {
             switch (warning)
             {
-                case MillPreflightWarning.NotHomed:
-                    warnings.Add(PreflightWarningNotHomed);
+                case MillWarning.NotHomed:
+                    warnings.Add(MillWarningNotHomed);
                     break;
-                case MillPreflightWarning.DangerousCommands:
+                case MillWarning.DangerousCommands:
                     // Add the actual dangerous warning messages from the file
                     if (result.DangerousWarnings != null)
                     {
                         warnings.AddRange(result.DangerousWarnings);
                     }
                     break;
-                case MillPreflightWarning.NoMachineProfile:
-                    warnings.Add(PreflightWarningNoProfile);
+                case MillWarning.NoMachineProfile:
+                    warnings.Add(MillWarningNoProfile);
                     break;
             }
         }
@@ -2168,8 +2626,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Starts a milling run, or says why it will not. Every refusal comes back to the
-    /// caller, which answers the request with it.
+    /// Start a milling run, or return why it was refused. The caller answers the request
+    /// with that reason.
     /// </summary>
     /// <returns>Null once the run is under way, or the reason it was refused.</returns>
     private static async Task<string?> StartMilling()
@@ -2177,7 +2635,7 @@ public static class CncWebServer
         var controller = AppState.Milling;
 
         // A second start would cancel the first run's token and clear the prompt the
-        // operator is standing in front of.
+        // operator is looking at.
         if (controller.IsRunInProgress)
         {
             return ErrorMillingAlreadyRunning;
@@ -2193,24 +2651,15 @@ public static class CncWebServer
             return ErrorNoFileLoaded;
         }
 
-        // === SAFETY PREFLIGHT ===
-        // The same gate the TUI enforces (MillMenu). /api/mill/preflight only reports
-        // this to the browser; enforcing it here too means a direct POST cannot start a
-        // job with an incomplete or unapplied height map, which would cut a warped board
-        // at a depth nobody checked.
-        var preflight = MenuHelpers.ValidateMillPreflight();
-        if (!preflight.CanStart)
+        // === CAN THE JOB START ===
+        // The same check the TUI runs (MillMenu). /api/mill/can-start only reports it to
+        // the browser, so enforcing it here stops a direct POST starting a job with an
+        // incomplete or unapplied height map.
+        var canStart = MenuHelpers.CheckMillCanStart();
+        if (!canStart.CanStart)
         {
-            Logger.Log("Mill start refused by preflight: {0}", preflight.Error);
-            return DescribePreflightError(preflight);
-        }
-
-        // === ENSURE MACHINE READY ===
-        // Clear Door state, wait for Idle
-        if (!MachineCommands.EnsureMachineReady(_machine))
-        {
-            Logger.Log("Mill start aborted: machine did not reach a settled, alarm-free state");
-            return CliConstants.ErrorMachineNotReady;
+            Logger.Log("Mill start blocked: {0}", canStart.Error);
+            return GetMillBlockerMessage(canStart);
         }
 
         // Clear the last run off the controller, whatever state it left behind.
@@ -2234,13 +2683,13 @@ public static class CncWebServer
         };
         // Throttle progress broadcasts to avoid overwhelming WebSocket (controller emits at 10Hz)
         // But always broadcast phase changes immediately
-        DateTime lastProgressBroadcast = DateTime.MinValue;
+        long lastProgressBroadcast = 0;
         string? lastProgressPhase = null;
         Action<ProgressInfo> onProgressChanged = progress =>
         {
-            var now = DateTime.Now;
+            long now = Environment.TickCount64;
             bool phaseChanged = progress.Phase != lastProgressPhase;
-            if (!phaseChanged && (now - lastProgressBroadcast).TotalMilliseconds < WebConstants.WebSocketBroadcastIntervalMs)
+            if (!phaseChanged && now - lastProgressBroadcast < WebConstants.WebSocketBroadcastIntervalMs)
             {
                 return;  // Skip this update, same phase and too soon since last broadcast
             }
@@ -2296,42 +2745,17 @@ public static class CncWebServer
         // runs on the separate ToolChangeController instance handled by onToolChange
         // above. Shares the tool-change dialog's WS message and the one prompt slot (see
         // PendingPrompt) since the two prompts can never be pending at once.
-        // The question this run last published, so its teardown takes down its own and not
-        // one the tool change put up in the meantime.
+        // The prompt this run last published, so its teardown clears its own and not one
+        // the tool change published since.
         UserInputRequest? published = null;
         Action<UserInputRequest> onUserInputRequired = request =>
         {
             Logger.Log("Mill controller user input required: {0}", request.Message);
 
-            // Wrap OnResponse so the dialog closes once answered. Unlike a tool change -
-            // several prompts in sequence, closed only by the workflow's own
-            // toolchange:complete once every step is done - this is always exactly one
-            // prompt: Abort never reaches here (it goes through the separate tool-change
-            // abort endpoint/button instead), so any response landing here is Continue,
-            // and there is no next prompt to keep the dialog open for.
-            // Id carries request's own GUID through so a client recovering this prompt
-            // from GetStatus (see DetectOperatorPause) can compare it against this same
-            // broadcast's id and tell them apart from an already-answered prompt.
-            published = new UserInputRequest
-            {
-                Id = request.Id,
-                Title = request.Title,
-                Message = request.Message,
-                Options = request.Options,
-                OnResponse = response =>
-                {
-                    request.OnResponse(response);
-                    BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = true });
-                }
-            };
-            PendingPrompt.Set(published);
-            BroadcastMessage(WsMessageTypeToolChangeInput, new
-            {
-                title = request.Title,
-                message = request.Message,
-                options = request.Options,
-                id = request.Id
-            });
+            // Wrap OnResponse so the dialog closes once answered, unless the run publishes
+            // a new prompt from inside that call, which a milling run does when the
+            // enclosure was opened.
+            published = PublishPrompt(request);
         };
         Action<ControllerError> onError = error =>
         {
@@ -2350,7 +2774,7 @@ public static class CncWebServer
         controller.ErrorOccurred += onError;
 
         // Configure controller. The web UI has no per-start depth confirmation (the TUI does);
-        // the server-side preflight gate above is what protects a web-initiated start.
+        // the server-side check above is what protects a web-initiated start.
         controller.Options = MillingOptions.Create(AppState.CurrentFile?.FileName,
             AppState.DepthAdjustment, _machine!.IsHomed);
 
@@ -2379,8 +2803,8 @@ public static class CncWebServer
             }
             catch (Exception ex)
             {
-                // Nobody awaits this task except a stop, which swallows faults so its own
-                // teardown still runs. Without this the run would end with no trace at all.
+                // Only a stop awaits this task, and it swallows faults so its own teardown
+                // runs. Without this the run would fail with nothing logged.
                 Logger.Log("Milling run failed: {0}", ex);
             }
             finally
@@ -2443,9 +2867,9 @@ public static class CncWebServer
     ///
     /// Nothing reachable from the tool-change run task itself may call back
     /// into this method - that would await this exact task from inside its own
-    /// execution. A tool change that ends without success on its own (nobody at the Stop
-    /// button) tears down the milling run via <see cref="StopMillingAsync"/> directly
-    /// instead - see StartToolChangeControllerAsync.
+    /// execution. A tool change that fails on its own, with no Stop from the operator, tears
+    /// down the milling run through <see cref="StopMillingAsync"/> instead - see
+    /// StartToolChangeControllerAsync.
     /// </summary>
     /// <returns>False if a lock, or a run's cancellation-driven unwind, did not complete
     /// within <see cref="ControllerCancelTimeoutMs"/> - the caller must not tell the
@@ -2542,9 +2966,8 @@ public static class CncWebServer
                 stopped = await AwaitRunTeardownAsync(runTask, "Mill", budget);
             }
 
-            // Only once the run has finished unwinding. A teardown that overran is still
-            // stopping the machine and lifting the tool, and a second reset would wipe the
-            // lift it has queued - the same reason HandleProbeStop returns false instead.
+            // Only once the run has unwound. A teardown that overran is still stopping the
+            // machine and retracting, and a second reset would cancel that retract.
             if (stopped)
             {
                 await controller.ReleaseAsync();
@@ -2560,9 +2983,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// What is left of a stop's time budget. A stop takes a lock, then another lock, then
-    /// waits for the run to unwind; one budget spent across all three keeps a Stop from
-    /// sitting unanswered for three times as long as the operator was promised.
+    /// What is left of a stop's time budget. A stop takes two locks and then waits for the
+    /// run to unwind; one budget across all three bounds the total wait.
     /// </summary>
     private static int RemainingStopBudgetMs(Stopwatch budget)
     {
@@ -2571,9 +2993,9 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Waits for a controller's run task to unwind after cancellation, bounded so a stalled
+    /// Wait for a controller's run task to unwind after cancellation, bounded so a stalled
     /// run cannot hang the caller. A fault is logged rather than rethrown, because the
-    /// teardown that follows this call is the whole reason for waiting.
+    /// teardown that follows is the reason for waiting.
     /// </summary>
     /// <returns>True if the run task unwound within <see cref="ControllerCancelTimeoutMs"/>.</returns>
     private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label, Stopwatch? budget = null)
@@ -2602,8 +3024,9 @@ public static class CncWebServer
     private static async Task HandleProbeSetup(HttpListenerResponse response, ProbeSetupRequest req)
     {
         // Setting up replaces the grid and deletes the autosave, which a running probe is
-        // still writing into.
-        if (AnyOperationRunning())
+        // still writing into. SetupProbeGrid refuses a run below; homing is this gate's own,
+        // because the funnel does not cover it.
+        if (_machine?.IsHoming ?? false)
         {
             response.StatusCode = HttpStatusConflict;
             await WriteJson(response, new { success = false, error = ErrorMachineBusy });
@@ -2625,11 +3048,18 @@ public static class CncWebServer
             var gridSize = Math.Clamp(req.gridSize ?? DefaultProbeGridSize, MinProbeGridSize, MaxProbeGridSize);
 
             // Use shared setup method (single source of truth)
-            var grid = AppState.SetupProbeGrid(
+            var (grid, refused) = AppState.SetupProbeGrid(
                 new Vector2(file.Min.X, file.Min.Y),
                 new Vector2(file.Max.X, file.Max.Y),
                 margin,
                 gridSize);
+
+            if (grid == null)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { success = false, error = refused });
+                return;
+            }
 
             await WriteJson(response, new
             {
@@ -2657,32 +3087,118 @@ public static class CncWebServer
             return refusal;
         }
 
-        // Published before the run is scheduled, so its finally cannot release a handle this
-        // has not stored yet.
+        // Claimed before the run is scheduled, so its finally cannot release a handle that
+        // has not been stored yet.
         var traceCts = new CancellationTokenSource();
-        _probeCts = traceCts;
-        _probeTask = Task.Run(() => TraceOutlineAsync(grid, traceCts));
+        if (!TryClaimProbeRun(traceCts))
+        {
+            traceCts.Dispose();
+            return ErrorMachineBusy;
+        }
+
+        PublishProbeTask(traceCts, Task.Run(() => TraceOutlineAsync(grid, traceCts)));
         return null;
     }
 
+    /// <summary>Guards claiming and releasing the one probe run slot.</summary>
+    private static readonly object ProbeRunLock = new();
+
     /// <summary>
-    /// Releases what a probe run holds, if that run is still the current one. A run that
-    /// outlives its successor's start clears nothing.
+    /// The probe run's task, read under the lock that publishes and clears it.
     /// </summary>
+    private static Task? ProbeTask() => ProbeRun().Task;
+
+    /// <summary>
+    /// The current probe run's token and task, read together. Read apart, a run that ends
+    /// between the two leaves a caller cancelling one run and waiting on another.
+    /// </summary>
+    private static (CancellationTokenSource? Cts, Task? Task) ProbeRun()
+    {
+        lock (ProbeRunLock)
+        {
+            return (_probeCts, _probeTask);
+        }
+    }
+
+    /// <summary>Hands the probe run slot back, for a test that races the claim.</summary>
+    internal static void ReleaseProbeRunSlotForTest()
+    {
+        lock (ProbeRunLock)
+        {
+            _probeCts = null;
+            _probeTask = null;
+        }
+    }
+
+    /// <summary>
+    /// Take the one probe run slot, or find it taken. Claimed and published in the same
+    /// step: requests are served concurrently, and a check that publishes its handle later
+    /// lets a second request pass the same check. Both then subscribe their handlers to one
+    /// controller, and the loser's finally releases the winner.
+    /// </summary>
+    internal static bool TryClaimProbeRun(CancellationTokenSource cts)
+    {
+        lock (ProbeRunLock)
+        {
+            if (_probeCts != null)
+            {
+                Logger.Log("Probe start refused: a probe run already owns the machine");
+                return false;
+            }
+
+            _probeCts = cts;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Publish a run's task beside the claim it started under. A run can reach its own
+    /// finally before Task.Run returns, so a bare assignment stores a finished task in a
+    /// slot the release has already cleared.
+    /// </summary>
+    private static void PublishProbeTask(CancellationTokenSource cts, Task task)
+    {
+        lock (ProbeRunLock)
+        {
+            if (ReferenceEquals(_probeCts, cts))
+            {
+                _probeTask = task;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Hand the run slot back, if it is still this run's. The stop endpoint finds the
+    /// machine by this slot, so a late release would take it from the run that owns it.
+    /// </summary>
+    /// <returns>False when a newer run holds the slot, so nothing was released.</returns>
+    internal static bool ReleaseProbeRunSlot(CancellationTokenSource cts)
+    {
+        lock (ProbeRunLock)
+        {
+            if (!ReferenceEquals(_probeCts, cts))
+            {
+                Logger.Log("Probe run finished; a newer run owns the machine");
+                return false;
+            }
+
+            _probeCts = null;
+            _probeTask = null;
+            return true;
+        }
+    }
+
+    /// <summary>Releases the slot and everything else a probe run holds.</summary>
     private static async Task ReleaseProbeRunAsync(CancellationTokenSource cts)
     {
-        if (!ReferenceEquals(_probeCts, cts))
+        if (!ReleaseProbeRunSlot(cts))
         {
-            Logger.Log("Probe run finished; a newer run owns the machine");
             return;
         }
 
-        _probeCts = null;
-        _probeTask = null;
-
-        // Return the controller to Idle whatever the run left behind, so this server and
-        // the controller cannot disagree about whether a run is going. Logged rather than
-        // thrown: this runs from the run task's finally.
+        // Return the controller to Idle whatever the run left behind, so the server and
+        // the controller agree about whether a run is going. Logged rather than thrown,
+        // because this runs from the run task's finally.
         try
         {
             await AppState.Probe.ReleaseAsync();
@@ -2703,7 +3219,7 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Takes the grid a probe run will work on, or says why there will be no run. The grid
+    /// Take the grid a probe run will use, or return why there will be no run. The grid
     /// probe and the outline trace drive one controller, so only one may run.
     /// </summary>
     private static bool TryTakeProbeGrid(
@@ -2711,8 +3227,8 @@ public static class CncWebServer
     {
         grid = null;
 
-        // The same gate the terminal applies: grid coordinates are work coordinates, so
-        // probing from an origin nobody set drives the tool to arbitrary XY.
+        // The same check the terminal runs: grid coordinates are work coordinates, so
+        // probing from an unset origin drives the tool to arbitrary XY.
         refusal = MenuHelpers.GetProbeDisabledReason();
         if (refusal != null)
         {
@@ -2722,13 +3238,20 @@ public static class CncWebServer
         if (AppState.Probe.IsRunInProgress)
         {
             Logger.Log("Probe start refused: controller is {0}, probe task {1}",
-                AppState.Probe.State, _probeTask == null ? "absent" : "running");
+                AppState.Probe.State, ProbeTask() == null ? "absent" : "running");
             refusal = CliConstants.ProbeErrorAlreadyRunning;
             return false;
         }
 
         // Auto-load from autosave if probe data not in memory but exists on disk
-        AppState.EnsureProbeDataLoaded();
+        // The reason carries: a map left on disk because a run owns the file is a different
+        // thing to the operator from no map at all.
+        refusal = AppState.EnsureProbeDataLoaded();
+        if (refusal != null)
+        {
+            return false;
+        }
+
         grid = AppState.ProbePoints;
         refusal = grid == null ? ErrorNoProbeGrid : null;
         return grid != null;
@@ -2739,28 +3262,36 @@ public static class CncWebServer
         var settings = AppState.Settings;
         var controller = AppState.Probe;
 
-        // Start from Idle, whatever the last run left behind.
-        await controller.ReleaseAsync();
+        // The trace prompts about the enclosure like any other run, and a prompt with no
+        // subscriber throws rather than waiting (ControllerBase.RequestUserInputAsync).
+        UserInputRequest? published = null;
+        Action<UserInputRequest> onUserInputRequired = request => published = PublishPrompt(request);
 
-        Logger.Log($"TraceOutline: tracing outline for {grid.SizeX}x{grid.SizeY} grid, " +
-            $"traceHeight={settings.OutlineTraceHeight:F3}, traceFeed={settings.OutlineTraceFeed:F0}");
-
-        // Configure controller with grid and trace options
-        controller.LoadGrid(grid);
-        controller.Options = ProbeOptions.FromSettings(settings, traceOutline: true);
-
-        controller.ErrorOccurred += OnProbeError;
-
-        // The tool moves for the length of the trace, so the door pauses it rather than
-        // being cleared from under it, and the computer stays awake.
-        if (_machine != null)
-        {
-            _machine.EnableAutoStateClear = false;
-        }
-        SleepPrevention.Start();
-
+        // Setup is inside the try: the finally below holds the only release of the run slot,
+        // and ReleaseAsync stops an unfinished run, so it can throw.
         try
         {
+            // Start from Idle, whatever the last run left behind.
+            await controller.ReleaseAsync();
+
+            Logger.Log($"TraceOutline: tracing outline for {grid.SizeX}x{grid.SizeY} grid, " +
+                $"traceHeight={settings.OutlineTraceHeight:F3}, traceFeed={settings.OutlineTraceFeed:F0}");
+
+            // Configure controller with grid and trace options
+            controller.LoadGrid(grid);
+            controller.Options = ProbeOptions.FromSettings(settings, traceOutline: true);
+
+            controller.ErrorOccurred += OnProbeError;
+            controller.UserInputRequired += onUserInputRequired;
+
+            // The tool moves for the whole trace, so the door must pause it rather than be
+            // cleared automatically, and the computer must stay awake.
+            if (_machine != null)
+            {
+                _machine.EnableAutoStateClear = false;
+            }
+            SleepPrevention.Start();
+
             await controller.TraceOutlineAsync(cts.Token);
             Logger.Log("TraceOutline: complete");
         }
@@ -2775,6 +3306,8 @@ public static class CncWebServer
         finally
         {
             controller.ErrorOccurred -= OnProbeError;
+            controller.UserInputRequired -= onUserInputRequired;
+            PendingPrompt.ClearIfCurrent(published);
             await ReleaseProbeRunAsync(cts);
         }
     }
@@ -2787,63 +3320,106 @@ public static class CncWebServer
             return refusal;
         }
 
-        var controller = AppState.Probe;
-        await controller.ReleaseAsync();
-
-        Logger.Log($"StartProbing: starting grid probe {grid.SizeX}x{grid.SizeY} = {grid.TotalPoints} points");
-
-        // Configure controller options
-        // Web grid probe uses the same full settings mapping as the TUI.
-        controller.Options = ProbeOptions.FromSettings(AppState.Settings, traceOutline: false);
-
-        // Load the grid into controller (same object reference - updates in place)
-        controller.LoadGrid(grid);
-
-        // Wire up events for autosave
-        controller.PointCompleted += OnProbePointCompleted;
-        controller.ErrorOccurred += OnProbeError;
-
-        // Disable auto state clear during probing
-        if (_machine != null)
+        // Claimed before the first await, so a second request cannot pass the check above
+        // while this one is still setting up.
+        var probeCts = new CancellationTokenSource();
+        if (!TryClaimProbeRun(probeCts))
         {
-            _machine.EnableAutoStateClear = false;
+            probeCts.Dispose();
+            return ErrorMachineBusy;
         }
 
-        // A grid probe runs for tens of minutes with the probe down, and a suspend would
-        // drop the link. The TUI does the same.
-        SleepPrevention.Start();
+        var controller = AppState.Probe;
 
-        // Captured before Task.Run schedules the body that reads it, and compared against the
-        // shared field before the finally releases anything. Same pattern as StartMilling.
-        var probeCts = new CancellationTokenSource();
-        _probeCts = probeCts;
-        _probeTask = Task.Run(async () =>
+        // The probe run prompts about the enclosure and shares the prompt slot with the
+        // mill and tool-change runs. None of the three can be pending at once.
+        UserInputRequest? published = null;
+        Action<UserInputRequest> onUserInputRequired = request =>
         {
-            try
-            {
-                await controller.StartAsync(probeCts.Token);
+            Logger.Log("Probe controller user input required: {0}", request.Message);
 
-                // Complete - autosave already contains the data, no action needed
-                if (controller.State == ControllerState.Completed)
+            published = PublishPrompt(request);
+        };
+
+        void Unsubscribe()
+        {
+            controller.PointCompleted -= OnProbePointCompleted;
+            controller.ErrorOccurred -= OnProbeError;
+            controller.UserInputRequired -= onUserInputRequired;
+        }
+
+        try
+        {
+            await controller.ReleaseAsync();
+
+            Logger.Log($"StartProbing: starting grid probe {grid.SizeX}x{grid.SizeY} = {grid.TotalPoints} points");
+
+            // Configure controller options
+            // Web grid probe uses the same full settings mapping as the TUI.
+            controller.Options = ProbeOptions.FromSettings(AppState.Settings, traceOutline: false);
+
+            // Load the grid into controller (same object reference - updates in place)
+            controller.LoadGrid(grid);
+
+            // Wire up events for autosave
+            controller.PointCompleted += OnProbePointCompleted;
+            controller.ErrorOccurred += OnProbeError;
+            controller.UserInputRequired += onUserInputRequired;
+
+            // Disable auto state clear during probing
+            if (_machine != null)
+            {
+                _machine.EnableAutoStateClear = false;
+            }
+
+            // A grid probe runs for tens of minutes with the probe down, and a suspend would
+            // drop the link. The TUI does the same.
+            SleepPrevention.Start();
+
+            PublishProbeTask(probeCts, Task.Run(async () =>
+            {
+                try
                 {
-                    Logger.Log("StartProbing: probing complete, data in autosave");
+                    await controller.StartAsync(probeCts.Token);
+
+                    // Complete - autosave already contains the data, no action needed
+                    if (controller.State == ControllerState.Completed)
+                    {
+                        Logger.Log("StartProbing: probing complete, data in autosave");
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                Logger.Log("StartProbing: probing cancelled");
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"StartProbing: error - {ex.Message}");
-            }
-            finally
-            {
-                controller.PointCompleted -= OnProbePointCompleted;
-                controller.ErrorOccurred -= OnProbeError;
-                await ReleaseProbeRunAsync(probeCts);
-            }
-        });
+                catch (OperationCanceledException)
+                {
+                    Logger.Log("StartProbing: probing cancelled");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"StartProbing: error - {ex.Message}");
+                }
+                finally
+                {
+                    Unsubscribe();
+
+                    // Clear this run's own prompt, not one another run published since.
+                    bool wasOurs = published != null && ReferenceEquals(PendingPrompt.Current, published);
+                    PendingPrompt.ClearIfCurrent(published);
+                    if (wasOurs)
+                    {
+                        BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = false });
+                    }
+
+                    await ReleaseProbeRunAsync(probeCts);
+                }
+            }));
+        }
+        catch
+        {
+            // The run task's finally is the only other release, and setup failed before there
+            // was a run task to reach it.
+            Unsubscribe();
+            await ReleaseProbeRunAsync(probeCts);
+            throw;
+        }
 
         return null;
     }
@@ -2861,28 +3437,44 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Stops probing, and waits for the run's own teardown rather than driving the machine
-    /// alongside it. That teardown stops the machine and then lifts the tool clear
-    /// (ProbeController.CleanupAsync). Returns a Task rather than being async void, because
-    /// an exception from an async void method is rethrown on the thread pool and ends the
-    /// process while the machine is moving.
+    /// Why a probe stop must not touch the machine, or null. With no probe run in progress
+    /// this endpoint resets GRBL, which would abort a mill run's cut and then clear the alarm
+    /// before that run's monitor saw it. That run's own stop is the one that ends it.
+    /// </summary>
+    private static string? ProbeStopBlocker() =>
+        ProbeTask() == null
+            && (AppState.Milling.IsRunInProgress || AppState.ToolChange.IsRunInProgress)
+            ? ErrorMachineBusy
+            : null;
+
+    /// <summary>
+    /// Stop probing, waiting for the run's own teardown rather than driving the machine
+    /// alongside it. That teardown stops the machine and retracts
+    /// (ProbeController.CleanupAsync). Returns a Task rather than async void, because an
+    /// exception from async void is rethrown on the thread pool and ends the process.
     /// </summary>
     /// <returns>False if the run did not unwind in time, so the machine may still be moving.</returns>
     private static async Task<bool> HandleProbeStop()
     {
-        var runTask = _probeTask;
-        _probeCts?.Cancel();
+        var (probeCts, runTask) = ProbeRun();
+        probeCts?.Cancel();
 
         if (runTask == null)
         {
-            // No run in progress, so nothing has stopped the machine: stop it here.
+            // A claim with no task is a run that never started, and nothing else clears it.
+            if (probeCts != null)
+            {
+                ReleaseProbeRunSlot(probeCts);
+            }
+
+            // No run in progress, so nothing else will stop the machine.
             if (_machine != null)
             {
                 await MachineWait.StopAndResetAsync(_machine);
             }
 
-            // The controller can still be claiming a run this server has no task for.
-            // Stop is the operator's way out of that, so it releases the controller here.
+            // The controller can still claim a run this server has no task for, so Stop
+            // releases it here.
             try
             {
                 await AppState.Probe.ReleaseAsync();
@@ -2896,9 +3488,8 @@ public static class CncWebServer
             return true;
         }
 
-        // A teardown that overruns has already stopped the machine - that is its first act -
-        // and is partway through the lift. Return false rather than send a second reset, which
-        // would cancel the lift.
+        // A teardown that overruns has already stopped the machine and is partway through
+        // the retract, so a second reset would cancel it. Report false instead.
         return await AwaitRunTeardownAsync(runTask, "Probe");
     }
 
@@ -2946,30 +3537,21 @@ public static class CncWebServer
     /// </summary>
     private static (ProbeGrid? grid, string state, bool hasUnsavedData) ReadProbeStateSnapshot()
     {
-        // One read answers both questions, so the state and the Save/Recover buttons
-        // cannot describe different data. The autosave stands in when nothing is loaded,
-        // reported without being adopted - see rule no-side-effect-on-get.
-        var usableAutosave = AppState.ReadUsableAutosave();
-        var grid = AppState.ProbePoints ?? usableAutosave;
+        // One read for both, so the state and the Save/Recover buttons cannot describe
+        // different data. The autosave is used when nothing is loaded, and is reported
+        // without being adopted - see rule no-side-effect-on-get.
+        var (grid, usableAutosave) = AppState.ReadProbeGridAndAutosave();
         return (grid, ComputeProbeState(grid), usableAutosave != null);
     }
 
-    private static string ComputeProbeState(ProbeGrid? grid)
+    /// <summary>The wire name for the state Core computed. The words are this layer's.</summary>
+    private static string ComputeProbeState(ProbeGrid? grid) => ProbeGrid.StateOf(grid) switch
     {
-        if (grid == null)
-        {
-            return ProbeStateNone;
-        }
-        if (grid.HasCompleteData)
-        {
-            return ProbeStateComplete;
-        }
-        if (grid.Progress > 0)
-        {
-            return ProbeStatePartial;
-        }
-        return ProbeStateReady;
-    }
+        ProbeDataState.Complete => ProbeStateComplete,
+        ProbeDataState.Partial => ProbeStatePartial,
+        ProbeDataState.Ready => ProbeStateReady,
+        _ => ProbeStateNone
+    };
 
     private static object?[][] GetProbePointsArray(ProbeGrid grid)
     {
@@ -2986,11 +3568,11 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// The color for each measured node, as CSS. Worked out here rather than in the
-    /// browser so both views of the map are drawn from one calculation.
+    /// The color for each measured node, as CSS. Computed here rather than in the browser
+    /// so both views use one calculation.
     ///
-    /// Null where a node has no height yet, and null throughout until something has been
-    /// measured, since a range needs two readings to mean anything.
+    /// Null where a node has no height, and null throughout until something is measured,
+    /// because the range needs at least one reading.
     /// </summary>
     private static string?[][] GetProbeColoursArray(ProbeGrid grid)
     {
@@ -3052,7 +3634,7 @@ public static class CncWebServer
             else if (clientId != null)
             {
                 // Reserve this slot by adding to pending (prevents race with other WebSocket requests)
-                _pendingClients[clientId] = DateTime.Now;
+                _pendingClients[clientId] = Environment.TickCount64;
             }
         }
 
@@ -3072,14 +3654,20 @@ public static class CncWebServer
             {
                 Socket = webSocket,
                 Id = clientId,
-                LastActivity = DateTime.Now
+                LastActivityMs = Environment.TickCount64
             };
 
             var clientAddress = context.Request.RemoteEndPoint?.Address?.ToString();
 
             lock (_clientsLock)
             {
-                _forceDisconnected = false;  // Reset: new client means normal reconnect behavior
+                // Only the browser that asked for the takeover lifts it. See _takeoverClientId.
+                if (clientId != null && clientId == _takeoverClientId)
+                {
+                    _forceDisconnected = false;
+                    _takeoverClientId = null;
+                }
+
                 if (clientId != null)
                 {
                     int stale = _clients.RemoveAll(
@@ -3104,7 +3692,7 @@ public static class CncWebServer
                 var errorJson = JsonSerializer.Serialize(new
                 {
                     type = WsMessageTypeConnectionError,
-                    data = new { error = ProxyConnectionRejected }
+                    data = new { error = ProxyConnectionRejected, otherClientConnected = true }
                 });
                 await SendToClientAsync(client, Encoding.UTF8.GetBytes(errorJson));
                 // Don't close immediately - let client handle the modal
@@ -3142,17 +3730,35 @@ public static class CncWebServer
                     {
                         Logger.Log($"Connection rejected by proxy: {rejectionMessage}");
                         _machine.Disconnect();
-                        BroadcastMessage(WsMessageTypeConnectionError, new { error = rejectionMessage });
+
+                        // The proxy refuses for two reasons: another client, or the port
+                        // held elsewhere. Only the first can be taken over. Its line names
+                        // the reason; the words come from here, because that line can carry
+                        // the operating system's own text about a port.
+                        bool anotherClient =
+                            rejectionMessage.StartsWith(ProxyConnectionRejectedPrefix);
+
+                        BroadcastMessage(WsMessageTypeConnectionError, new
+                        {
+                            error = (anotherClient
+                                ? Constants.ProxyConnectionRejected
+                                : Constants.ProxySerialPortInUse).Trim(),
+                            otherClientConnected = anotherClient
+                        });
                     }
                     else
                     {
-                        _machine.EnableAutoStateClear = true;  // Auto-clear Door/Alarm states
+                        _machine.EnableAutoStateClear = true;
                     }
                 }
                 catch (Exception ex)
                 {
                     Logger.Log("Failed to connect Machine: {0}", ex);
-                    BroadcastMessage(WsMessageTypeConnectionError, new { error = ErrorMachineNotConnected });
+                    BroadcastMessage(WsMessageTypeConnectionError, new
+                    {
+                        error = ErrorMachineNotConnected,
+                        otherClientConnected = false
+                    });
                 }
                 finally
                 {
@@ -3173,7 +3779,7 @@ public static class CncWebServer
 
                 lock (_clientsLock)
                 {
-                    client.LastActivity = DateTime.Now;
+                    client.LastActivityMs = Environment.TickCount64;
                 }
 
                 if (result.MessageType == WebSocketMessageType.Close)
@@ -3255,6 +3861,12 @@ public static class CncWebServer
                     Logger.Log("Last web client disconnected, but operation in progress - keeping Machine connected");
                 }
             }
+            else
+            {
+                // The upgrade never completed, and HandleRequest has already skipped
+                // closing the connection. Left open, each retry leaks one.
+                context.Response.Abort();
+            }
         }
     }
 
@@ -3267,8 +3879,8 @@ public static class CncWebServer
 
             var type = ReadString(root, WsFieldType);
 
-            // The commands that just hand an instruction to the machine live in the table
-            // the HTTP endpoints use, so the two doors cannot drift apart.
+            // Commands that only send an instruction live in the table the HTTP endpoints
+            // use, so the two paths cannot drift apart.
             if (type == WsCmdPing)
             {
                 // Receiving it already refreshed this client's activity; nothing else to do.
@@ -3286,9 +3898,9 @@ public static class CncWebServer
                 return;
             }
 
-            // Only the jog command is left here: it carries a payload of its own, and it is
-            // the one command with nothing to answer. Zeroing can be refused, and a refusal
-            // needs somewhere to go, so the jog screen asks for that over HTTP.
+            // Only jog is left here: it carries a payload of its own and has nothing to
+            // return. Zeroing can be refused, and a refusal needs a reply, so the jog screen
+            // sends that over HTTP.
             if (type == WsCmdJogMode)
             {
                 HandleJogWithMode(
@@ -3305,8 +3917,8 @@ public static class CncWebServer
 
     /// <summary>
     /// A number from a client message, or <paramref name="fallback"/> when the field is
-    /// absent or is not a number. A wrong-shaped field must not throw out of the receive
-    /// loop, which would drop the connection.
+    /// absent or not a number. A malformed field must not throw out of the receive loop,
+    /// which would drop the connection.
     /// </summary>
     private static int ReadInt(JsonElement root, string name, int fallback) =>
         root.TryGetProperty(name, out var value)
@@ -3326,8 +3938,8 @@ public static class CncWebServer
             : null;
 
     /// <summary>
-    /// An array of strings, or null when the field is absent or is not an array. Elements
-    /// that are not strings are dropped; every caller whitelists what it accepts anyway.
+    /// An array of strings, or null when the field is absent or not an array. Non-string
+    /// elements are dropped, and every caller checks what it accepts anyway.
     /// </summary>
     private static string[]? ReadStringArray(JsonElement root, string name)
     {
@@ -3343,9 +3955,9 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Sends one frame to one client. A WebSocket accepts one send at a time, so each
+    /// Send one frame to one client. A WebSocket accepts one send at a time, so each
     /// client's sends queue behind its own lock. <paramref name="dropIfBusy"/> drops a
-    /// message whose next copy is along shortly rather than queueing it.
+    /// message that will be superseded shortly rather than queueing it.
     /// </summary>
     private static async Task SendToClientAsync(ClientConnection client, byte[] bytes, bool dropIfBusy = false)
     {
@@ -3381,7 +3993,7 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Sends a message to every connected client. The one place a WebSocket message leaves
+    /// Send a message to every connected client. The only place a WebSocket message leaves
     /// this server.
     /// </summary>
     private static void BroadcastMessage(string type, object data, bool dropIfBusy = false)
@@ -3422,9 +4034,9 @@ public static class CncWebServer
                 List<ClientConnection> staleClients;
                 lock (_clientsLock)
                 {
-                    var now = DateTime.Now;
+                    long now = Environment.TickCount64;
                     staleClients = _clients
-                        .Where(c => (now - c.LastActivity).TotalMilliseconds > WebSocketTimeoutMs)
+                        .Where(c => now - c.LastActivityMs > WebSocketTimeoutMs)
                         .ToList();
                     _clients.RemoveAll(staleClients.Contains);
                 }
@@ -3445,7 +4057,7 @@ public static class CncWebServer
                 }
 
                 // Dropped rather than queued for a client that has stopped reading: the
-                // next snapshot is 300ms away and is the one worth having.
+                // next snapshot is along shortly and is more current.
                 BroadcastMessage(WsMessageTypeStatus, GetStatus(), dropIfBusy: true);
             }
             catch (OperationCanceledException)
@@ -3454,8 +4066,8 @@ public static class CncWebServer
             }
             catch (Exception ex)
             {
-                // The browser takes its screen lock from this stream, so it keeps running:
-                // a snapshot that failed to build is better skipped than fatal.
+                // The browser takes its screen lock from this stream, so keep it running
+                // and skip a snapshot that failed to build.
                 Logger.Log("Status broadcast failed: {0}", ex);
             }
         }
@@ -3464,7 +4076,7 @@ public static class CncWebServer
     private static async Task TryReconnectLoop(CancellationToken ct)
     {
         // Skip reconnect if force-disconnected (TUI taking over)
-        if (_forceDisconnected)
+        if (ForceDisconnected())
         {
             Logger.Log("TryReconnectLoop: skipping, force-disconnected by TUI");
             return;
@@ -3485,7 +4097,8 @@ public static class CncWebServer
             // Initial delay before first reconnect attempt (gives TUI time to take over if needed)
             await Task.Delay(ReconnectIntervalMs, ct);
 
-            while (!ct.IsCancellationRequested && _machine != null && !_machine.Connected && !_forceDisconnected)
+            while (!ct.IsCancellationRequested && _machine != null && !_machine.Connected
+                   && !ForceDisconnected())
             {
                 attempts++;
                 Logger.Log($"TryReconnectLoop: attempt {attempts}");
@@ -3651,27 +4264,27 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Answers a Stop or Abort request. <paramref name="stopped"/> is false when
-    /// <see cref="HandleMillStopAsync"/> could not confirm both controllers actually
-    /// finished tearing down within their time budget - the caller must not tell the
-    /// operator the machine has stopped in that case.
+    /// Answers a Stop or Abort request. <paramref name="stopped"/> is false when the stop
+    /// could not confirm the controllers finished tearing down in time, so the operator must
+    /// not be told the machine has stopped. <paramref name="refusal"/> means the stop was not
+    /// attempted and the machine is as it was.
     /// </summary>
-    private static async Task WriteStopResult(HttpListenerResponse response, bool stopped)
+    private static async Task WriteStopResult(
+        HttpListenerResponse response, bool stopped, string? refusal = null)
     {
         if (stopped)
         {
             await WriteJson(response, new { success = true });
+            return;
         }
-        else
-        {
-            response.StatusCode = HttpStatusServerError;
-            await WriteJson(response, new { error = CliConstants.StopTimedOutWarning });
-        }
+
+        response.StatusCode = refusal == null ? HttpStatusServerError : HttpStatusConflict;
+        await WriteJson(response, new { error = refusal ?? CliConstants.StopTimedOutWarning });
     }
 
     /// <summary>
-    /// Answers a request that failed on something the operator cannot see. The exception
-    /// goes to the log; a plain sentence goes to the screen.
+    /// Answer a request that failed on something internal. The exception goes to the log
+    /// and a plain message to the screen.
     /// </summary>
     private static async Task WriteFailure(HttpListenerResponse response, string what, Exception ex)
     {
@@ -3680,7 +4293,7 @@ public static class CncWebServer
         await WriteJson(response, new { error = ErrorServerFailure });
     }
 
-    /// <summary>Writes a bare sentence, for a response a person reads rather than the UI.</summary>
+    /// <summary>Writes plain text, for a response read directly rather than by the UI.</summary>
     private static async Task WriteText(HttpListenerResponse response, string text)
     {
         response.ContentType = ContentTypeText;
@@ -3690,8 +4303,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Reads a request body into memory, up to <paramref name="maxBytes"/>. Content-Length is
-    /// only a claim, so the read is capped as it goes rather than trusting it.
+    /// Read a request body into memory, up to <paramref name="maxBytes"/>. Content-Length
+    /// is not trusted, so the read is capped as it goes.
     /// </summary>
     /// <returns>The body, or null if it is larger than the limit.</returns>
     private static async Task<byte[]?> ReadBodyBytes(HttpListenerRequest request, int maxBytes)
@@ -3717,8 +4330,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Reads and parses a JSON request body, answering the request itself when the body is
-    /// too large, is not valid JSON, or is missing. A null result means it has been answered.
+    /// Read and parse a JSON request body, answering the request itself when the body is
+    /// too large, invalid or missing. A null result means the request was already answered.
     /// </summary>
     private static async Task<T?> ReadBody<T>(HttpListenerRequest request, HttpListenerResponse response)
         where T : class
@@ -3819,7 +4432,7 @@ public static class CncWebServer
 
     private static async Task HandleProbeSave(HttpListenerResponse response, ProbeSaveRequest req)
     {
-        // The same map the status announced: saving moves the autosave, so it needs nothing
+        // The same map the status reported. Saving moves the autosave, so nothing has to be
         // in memory.
         var probePoints = AppState.CurrentProbeGrid;
 
@@ -3830,32 +4443,19 @@ public static class CncWebServer
             return;
         }
 
-        if (string.IsNullOrEmpty(req.path))
-        {
-            response.StatusCode = HttpStatusBadRequest;
-            await WriteJson(response, new { error = ErrorNoPathSpecified });
-            return;
-        }
-
         try
         {
-            var path = PathHelpers.ExpandTilde(req.path);
+            // The terminal's rule, so one name is not saved as two different files.
+            // ResolveRequestPath refuses an empty path, and EnsureExtension leaves one alone.
+            string named = PathHelpers.EnsureExtension(req.path ?? string.Empty, ProbeGridExtensions);
 
-            // Ensure .pgrid extension
-            if (!path.EndsWith(".pgrid", StringComparison.OrdinalIgnoreCase))
+            string? path = ResolveRequestPath(
+                named, AppState.Session.LastProbeBrowseDirectory, out string? refusedPath);
+            if (path == null)
             {
-                path += ".pgrid";
-            }
-
-            // Convert to absolute path
-            if (!Path.IsPathRooted(path))
-            {
-                var baseDir = AppState.Session.LastProbeBrowseDirectory;
-                if (string.IsNullOrEmpty(baseDir))
-                {
-                    baseDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                }
-                path = Path.Combine(baseDir, path);
+                response.StatusCode = HttpStatusBadRequest;
+                await WriteJson(response, new { error = refusedPath });
+                return;
             }
 
             // Move autosave to user's chosen location
@@ -3884,16 +4484,16 @@ public static class CncWebServer
 
     private static async Task HandleProbeLoad(HttpListenerResponse response, ProbeLoadRequest req)
     {
-        if (string.IsNullOrEmpty(req.path))
-        {
-            response.StatusCode = HttpStatusBadRequest;
-            await WriteJson(response, new { error = ErrorNoPathSpecified });
-            return;
-        }
-
         try
         {
-            var path = PathHelpers.ExpandTilde(req.path);
+            string? path = ResolveRequestPath(
+                req.path, AppState.Session.LastProbeBrowseDirectory, out string? refusedPath);
+            if (path == null)
+            {
+                response.StatusCode = HttpStatusBadRequest;
+                await WriteJson(response, new { error = refusedPath });
+                return;
+            }
 
             if (!File.Exists(path))
             {
@@ -3902,21 +4502,19 @@ public static class CncWebServer
                 return;
             }
 
-            // Single source for the load ritual (reloads original G-code first if a grid was
-            // already applied, so this grid is not applied on top of the old one).
-            var grid = AppState.LoadProbeGridFromFile(path);
-
-            // Don't copy to autosave - loaded data is already saved (came from a file).
-            // Autosave is only for data from active probing that hasn't been saved yet.
-            // Clear any stale autosave to prevent "unsaved probe data" prompts.
-            Persistence.ClearProbeAutoSave();
+            // The one place a probe grid is loaded (it reloads the original G-code first if
+            // a grid was already applied, so this grid is not applied on top of the old one).
+            var (grid, refused) = AppState.LoadProbeGridFromFile(path);
+            if (grid == null)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { success = false, error = refused });
+                return;
+            }
 
             // Auto-apply if probe is complete
             bool complete = grid.HasCompleteData;
-            if (complete)
-            {
-                AppState.ApplyProbeData();
-            }
+            string? notApplied = complete ? AppState.ApplyProbeData() : null;
 
             // Update browse directory
             var dir = Path.GetDirectoryName(path);
@@ -3934,7 +4532,10 @@ public static class CncWebServer
                 totalPoints = grid.TotalPoints,
                 progress = grid.Progress,
                 complete,
-                applied = AppState.AreProbePointsApplied
+                applied = AppState.AreProbePointsApplied,
+
+                // Loaded either way; this says whether it also went into the G-code.
+                error = notApplied
             });
         }
         catch (Exception ex)
@@ -3944,21 +4545,34 @@ public static class CncWebServer
     }
 
     private static object GetProbeFiles(string dirPath) =>
-        GetFilesWithFilter(dirPath, ext => ext == ".pgrid");
+        GetFilesWithFilter(dirPath, ext => ProbeGridExtensions.Contains(ext));
+
+    /// <summary>Whether the terminal has taken the machine over.</summary>
+    private static bool ForceDisconnected()
+    {
+        lock (_clientsLock)
+        {
+            return _forceDisconnected;
+        }
+    }
 
     /// <summary>
     /// Forces disconnect of all connected WebSocket clients and releases the serial port.
-    /// Used by TUI when it needs to take over from web clients.
+    /// Used when a browser takes the machine over from another client.
     /// Returns the number of clients that were disconnected.
     /// </summary>
-    public static int ForceDisconnectAllClients()
+    /// <param name="requestedBy">
+    /// The browser asking for the machine. Only its own reconnect lifts the suppression.
+    /// </param>
+    public static int ForceDisconnectAllClients(string? requestedBy = null)
     {
-        // Suppress auto-reconnect so TUI can take over
-        _forceDisconnected = true;
-
         List<ClientConnection> clientsToClose;
         lock (_clientsLock)
         {
+            // Set with the clients cleared, in one step: a handshake landing between the two
+            // would clear it and leave the server reconnecting under the new owner.
+            _forceDisconnected = true;
+            _takeoverClientId = requestedBy;
             clientsToClose = _clients.ToList();
             _pendingClients.Clear();
             _clients.Clear();
@@ -4001,23 +4615,24 @@ public static class CncWebServer
         return clientsToClose.Count;
     }
 
-    private static async Task HandleForceDisconnect(HttpListenerResponse response)
+    private static async Task HandleForceDisconnect(HttpListenerContext context)
     {
-        int disconnected = ForceDisconnectAllClients();
-        await WriteJson(response, new { success = true, disconnected });
+        int disconnected = ForceDisconnectAllClients(
+            context.Request.Cookies[ClientIdCookieName]?.Value);
+
+        await WriteJson(context.Response, new { success = true, disconnected });
     }
 
     /// <summary>
-    /// Clears probe data from memory and deletes the autosave file.
-    /// In the single-file model, Clear and Discard are the same operation.
+    /// Deletes the saved height map, drops the map in memory, and puts the original G-code
+    /// back.
     /// </summary>
-    /// <returns>False if the autosave is still on disk, so the operator is not told the
-    /// data is gone while it waits to be offered again.</returns>
-    private static bool HandleProbeDiscard()
+    /// <returns>The reason nothing was cleared, or null once it was.</returns>
+    private static string? HandleProbeDiscard()
     {
-        bool cleared = AppState.DiscardProbeDataAndAutosave();
-        Logger.Log("HandleProbeDiscard: autosave cleared={0}", cleared);
-        return cleared;
+        string? notCleared = AppState.DiscardProbeDataAndAutosave();
+        Logger.Log("HandleProbeDiscard: {0}", notCleared ?? "cleared");
+        return notCleared;
     }
 
     /// <summary>
@@ -4067,13 +4682,13 @@ public static class CncWebServer
         };
         // Throttle progress broadcasts to avoid overwhelming WebSocket
         // But always broadcast phase changes immediately
-        DateTime lastToolChangeProgressBroadcast = DateTime.MinValue;
+        long lastToolChangeProgressBroadcast = 0;
         string? lastToolChangePhase = null;
         Action<ProgressInfo> onProgressChanged = progress =>
         {
-            var now = DateTime.Now;
+            long now = Environment.TickCount64;
             bool phaseChanged = progress.Phase != lastToolChangePhase;
-            if (!phaseChanged && (now - lastToolChangeProgressBroadcast).TotalMilliseconds < WebConstants.WebSocketBroadcastIntervalMs)
+            if (!phaseChanged && now - lastToolChangeProgressBroadcast < WebConstants.WebSocketBroadcastIntervalMs)
             {
                 return;  // Skip this update, same phase and too soon since last broadcast
             }
@@ -4086,21 +4701,13 @@ public static class CncWebServer
                 message = progress.Message
             });
         };
-        // As in HandleMillStart: this run takes down its own question, not one the milling
-        // run has put up since.
+        // As in HandleMillStart: this run clears its own prompt, not one the milling run
+        // published since.
         UserInputRequest? published = null;
         Action<UserInputRequest> onUserInputRequired = request =>
         {
             Logger.Log("Tool change user input required: {0}", request.Message);
-            published = request;
-            PendingPrompt.Set(request);
-            BroadcastMessage(WsMessageTypeToolChangeInput, new
-            {
-                title = request.Title,
-                message = request.Message,
-                options = request.Options,
-                id = request.Id
-            });
+            published = PublishPrompt(request);
         };
         Action<ControllerError> onError = error =>
         {
@@ -4153,12 +4760,11 @@ public static class CncWebServer
         }
         finally
         {
-            // However it ended - success, user abort, genuine failure, or an exception
-            // out of Resume() above - the tool change is over, so return the controller to
-            // Idle and DetectToolChange stops reporting one. This is the only place that
-            // releases it; HandleMillStopAsync awaits this task rather than releasing it
-            // itself, so a second release never lands here at the same time. Logged rather
-            // than thrown: the unsubscribes below have to run.
+            // However it ended - success, abort, failure, or an exception from Resume()
+            // above - the tool change is over, so return the controller to Idle and
+            // DetectToolChange stops reporting one. The only place that releases it:
+            // HandleMillStopAsync awaits this task rather than releasing it itself. Logged
+            // rather than thrown, because the unsubscribes below must run.
             try
             {
                 await toolChangeController.ReleaseAsync();
@@ -4188,8 +4794,8 @@ public static class CncWebServer
     /// <summary>
     /// Handle a user input response posted to the tool-change dialog endpoint. Shared by
     /// the tool-change controller's own prompts and the milling controller's M0/M1
-    /// prompt - whichever one is pending. See <see cref="PendingPrompt"/> for why the
-    /// answer has to name the question it answers.
+    /// prompt, whichever is pending. See <see cref="PendingPrompt"/> for why the answer
+    /// has to name the prompt it answers.
     /// </summary>
     private static async Task HandleToolChangeUserInput(HttpListenerResponse response, ToolChangeUserInputRequest req)
     {
@@ -4232,29 +4838,36 @@ public static class CncWebServer
     /// <summary>
     /// Handle depth adjustment. Used before milling to adjust cut depth.
     /// </summary>
-    private static void HandleDepthAdjustment(DepthAdjustmentRequest req)
+    /// <returns>
+    /// Why the request was refused, or null once it was carried out. An unrecognised action
+    /// is refused rather than answered with the unchanged depth.
+    /// </returns>
+    private static string? HandleDepthAdjustment(DepthAdjustmentRequest req)
     {
         if (req.depth.HasValue)
         {
             AppState.SetDepthAdjustment(req.depth.Value);
             Logger.Log("Depth adjustment set to {0:F2}mm", AppState.DepthAdjustment);
+            return null;
         }
-        else if (!string.IsNullOrEmpty(req.action))
+
+        switch (req.action?.ToLowerInvariant())
         {
-            switch (req.action.ToLowerInvariant())
-            {
-                case DepthActionIncrease:
-                    AppState.AdjustDepthShallower();
-                    break;
-                case DepthActionDecrease:
-                    AppState.AdjustDepthDeeper();
-                    break;
-                case DepthActionReset:
-                    AppState.ResetDepthAdjustment();
-                    break;
-            }
-            Logger.Log("Depth adjustment {0}: now {1:F2}mm", req.action, AppState.DepthAdjustment);
+            case DepthActionIncrease:
+                AppState.AdjustDepthShallower();
+                break;
+            case DepthActionDecrease:
+                AppState.AdjustDepthDeeper();
+                break;
+            case DepthActionReset:
+                AppState.ResetDepthAdjustment();
+                break;
+            default:
+                return ErrorInvalidRequest;
         }
+
+        Logger.Log("Depth adjustment {0}: now {1:F2}mm", req.action, AppState.DepthAdjustment);
+        return null;
     }
 
     private static object GetSettings()
@@ -4303,42 +4916,52 @@ public static class CncWebServer
     {
         var settings = AppState.Settings;
 
-        // Update only provided values
+        // Checked first, applied second: a half-applied update leaves the machine working to
+        // a mix of old and new settings.
+        // Which request field carries which setting. SettingRanges pairs the range with the
+        // property; this only says where the value came from.
+        var updates = new (double? Value, SettingBinding Setting)[]
+        {
+            (req.probeFeed, SettingRanges.ProbeFeed),
+            (req.probeMaxDepth, SettingRanges.ProbeMaxDepth),
+            (req.probeSafeHeight, SettingRanges.ProbeSafeHeight),
+            (req.probeMinimumHeight, SettingRanges.ProbeMinimumHeight),
+            (req.outlineTraceHeight, SettingRanges.OutlineTraceHeight),
+            (req.outlineTraceFeed, SettingRanges.OutlineTraceFeed),
+            (req.toolSetterX, SettingRanges.ToolSetterX),
+            (req.toolSetterY, SettingRanges.ToolSetterY),
+        };
+
+        // An unknown profile turns the tool setter off silently, so it is checked too.
+        if (req.machineProfile != null
+            && !MachineProfiles.GetProfileIds().Contains(req.machineProfile))
+        {
+            response.StatusCode = HttpStatusBadRequest;
+            await WriteJson(response, new { error = ErrorUnknownMachineProfile });
+            return;
+        }
+
+        foreach (var (value, setting) in updates)
+        {
+            if (value is double given && setting.Range.Check(given) is string refused)
+            {
+                response.StatusCode = HttpStatusBadRequest;
+                await WriteJson(response, new { error = refused });
+                return;
+            }
+        }
+
         if (req.machineProfile != null)
         {
             settings.MachineProfile = req.machineProfile;
         }
-        if (req.probeFeed.HasValue)
+
+        foreach (var (value, setting) in updates)
         {
-            settings.ProbeFeed = req.probeFeed.Value;
-        }
-        if (req.probeMaxDepth.HasValue)
-        {
-            settings.ProbeMaxDepth = req.probeMaxDepth.Value;
-        }
-        if (req.probeSafeHeight.HasValue)
-        {
-            settings.ProbeSafeHeight = req.probeSafeHeight.Value;
-        }
-        if (req.probeMinimumHeight.HasValue)
-        {
-            settings.ProbeMinimumHeight = req.probeMinimumHeight.Value;
-        }
-        if (req.outlineTraceHeight.HasValue)
-        {
-            settings.OutlineTraceHeight = req.outlineTraceHeight.Value;
-        }
-        if (req.outlineTraceFeed.HasValue)
-        {
-            settings.OutlineTraceFeed = req.outlineTraceFeed.Value;
-        }
-        if (req.toolSetterX.HasValue)
-        {
-            settings.ToolSetterX = req.toolSetterX.Value;
-        }
-        if (req.toolSetterY.HasValue)
-        {
-            settings.ToolSetterY = req.toolSetterY.Value;
+            if (value is double given)
+            {
+                setting.Write(settings, given);
+            }
         }
 
         Persistence.SaveSettings();
@@ -4358,7 +4981,7 @@ public static class CncWebServer
             return;
         }
 
-        AppState.TrustWorkZero(true);
+        AppState.SetWorkZeroTrusted(true);
         Logger.Log("HandleTrustWorkZero: work zero trusted via the web API");
         await WriteJson(response, new { success = true });
     }
@@ -4369,15 +4992,15 @@ public static class CncWebServer
     /// </summary>
     private static async Task HandleProbeRecoverAutosave(HttpListenerResponse response)
     {
-        if (AppState.ReadUsableAutosave() == null)
-        {
-            await WriteJson(response, new { success = false, error = ErrorNoAutosavedProbeData });
-            return;
-        }
-
         try
         {
-            var grid = AppState.ForceLoadProbeFromAutosave();
+            var (grid, refused) = AppState.ForceLoadProbeFromAutosave();
+            if (grid == null)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new { success = false, error = refused });
+                return;
+            }
 
             await WriteJson(response, new
             {
@@ -4389,14 +5012,6 @@ public static class CncWebServer
                 complete = grid.HasCompleteData,
                 sourceGCodeLoaded = AppState.CurrentFile != null
             });
-        }
-        catch (InvalidOperationException ex)
-        {
-            // The workflow's own refusal, in its own words - the terminal shows the same
-            // sentence. ErrorServerFailure would tell the operator to retry something that
-            // can never work.
-            Logger.Log("HandleProbeRecoverAutosave: refused - {0}", ex.Message);
-            await WriteJson(response, new { success = false, error = ex.Message });
         }
         catch (Exception ex)
         {

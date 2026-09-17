@@ -70,10 +70,10 @@ namespace coppercli.Tests
 
         /// <summary>
         /// After a block we could not model, the machine is somewhere we cannot compute.
-        /// The file's own recovery move must survive intact, so the parser must not
-        /// believe Z was where it had been before the G53, so "G0 Z5" looked like a move
-        /// to where the tool already was and was deleted, leaving the next cut to run at
-        /// the retract depth.
+        /// The file's own recovery move must survive intact. When the parser believed Z was
+        /// still where it had been before the G53, "G0 Z5" looked like a move to where the
+        /// tool already was and was deleted, leaving the next cut to run at the retract
+        /// depth.
         /// </summary>
         [Fact]
         public void RecoveryMoveAfterG53_IsNotDeletedAsZeroLength()

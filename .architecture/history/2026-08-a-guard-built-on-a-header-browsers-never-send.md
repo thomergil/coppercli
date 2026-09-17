@@ -24,9 +24,10 @@ blocks cross-site GETs.
 **Realized (the consequence) — a cross-site GET is indistinguishable from the operator's own
 navigation.** No `Origin`, no `Sec-Fetch-Site`: an `<img>` or `<script>` on any page the
 operator visits reaches this server and is allowed. That is safe only while no GET changes
-anything worth protecting — an invariant now load-bearing and enforced by nothing. It is
-already frayed: `GET /api/probe/status` calls `AppState.EnsureProbeDataLoaded()`, which
-mutates probe state. It is tolerable only because nothing there moves the machine.
+anything worth protecting — an invariant nothing enforces. It was already frayed then:
+`GET /api/probe/status` adopted the autosave as a side effect. That is closed —
+`ReadUsableAutosave` reads without adopting, and only the probe start paths call
+`EnsureProbeDataLoaded` — see 2026-09-three-owners-of-do-i-have-probe-data.
 
 **Realized (the bug that proved it) — a GET must never reserve the single client slot.**
 `ServeStaticFile` used to write `_pendingClients[...]` on every page fetch. A cross-site
@@ -58,7 +59,7 @@ multi-label name is what makes DNS rebinding possible. `host.zone.local` is refu
 same reason: mDNS answers for only one label before `.local`. The usability cost is known
 and accepted.
 
-**Still open, surfaced to the owner and not fixed:** about 28 endpoints in `HandleApi`
+**Still open, reported to the owner and not fixed:** about 28 endpoints in `HandleApi`
 answer a wrong-method request with an empty 200 rather than 405 — `ApiProbeApply` is the
 only one that does it right. And `NetworkHelpers.GetLocalIPAddresses` still filters on raw
 `"127."`/`"169.254."` string literals and walks the interfaces a second time. It is
@@ -70,7 +71,7 @@ then write down exactly what that leaves open. Here it is one sentence: a GET ch
 nothing — no motion, no file written, no state loaded, no client slot reserved. Everything
 that changes state is POST and stays POST.
 
-**Touches:** seam `web → browser (HTTP/WS)` (v2 → v3), rule `no-side-effect-on-get`, rule
+**Touches:** interface `web → browser (HTTP/WS)` (v2 → v3), rule `no-side-effect-on-get`, rule
 `web-ui-needs-no-typed-credential`, `coppercli/WebServer/RequestGuard.cs`,
 `coppercli/WebServer/CncWebServer.cs`, `coppercli/Helpers/NetworkHelpers.cs`,
 `coppercli.Tests/RequestGuardTests.cs`, `coppercli.Tests/LocalPeerTests.cs`,

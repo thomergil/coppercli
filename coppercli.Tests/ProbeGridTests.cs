@@ -82,6 +82,39 @@ namespace coppercli.Tests
             Assert.Equal(0.25, z, precision: 6);
         }
 
+        /// <summary>
+        /// Outside the probed area the map takes the nearest edge. Taking the board's highest
+        /// point instead stepped by the whole warp range at the boundary, which is where the
+        /// outermost traces are cut.
+        /// </summary>
+        [Fact]
+        public void InterpolateZ_OutsideTheGrid_TakesTheNearestEdge()
+        {
+            var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
+
+            for (int x = 0; x < grid.SizeX; x++)
+            {
+                for (int y = 0; y < grid.SizeY; y++)
+                {
+                    // Rises along X only, so the edge value is unambiguous.
+                    grid.AddPoint(x, y, grid.GetCoordinates(x, y).X / 100.0);
+                }
+            }
+
+            Assert.Equal(0.2, grid.MaxHeight, precision: 6);
+
+            // A hair past the low edge takes that edge, not the far corner.
+            Assert.Equal(0.0, grid.InterpolateZ(-0.001, 10), precision: 3);
+            Assert.Equal(0.0, grid.InterpolateZ(-5, 10), precision: 6);
+
+            // And past the high edge it stays at the high edge.
+            Assert.Equal(0.2, grid.InterpolateZ(25, 10), precision: 6);
+
+            // Continuous across the boundary: the step is what the old answer introduced.
+            Assert.Equal(
+                grid.InterpolateZ(20, 7), grid.InterpolateZ(20.0001, 7), precision: 6);
+        }
+
         [Fact]
         public void InterpolateZ_ReturnsProbedHeightOnAFlatBoard()
         {
@@ -206,8 +239,8 @@ namespace coppercli.Tests
         // =========================================================================
         // Neighbour deviation
         //
-        // This is what tells an untrustworthy reading from a good one: a height that
-        // disagrees with the board around it.
+        // This is the check that separates a bad reading from a good one: a height outside
+        // tolerance of the nodes around it.
         // =========================================================================
 
         [Fact]
@@ -223,8 +256,8 @@ namespace coppercli.Tests
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // The controller records the height before asking, so a node that counted
-            // itself would always look agreeable and the check would never fire.
+            // The controller records the height before checking, so a node that counted
+            // itself would always be within tolerance and the check would never fire.
             grid.RecordMeasurement(0, 0, -5.0);
 
             Assert.Null(grid.GetNeighbourDeviation(0, 0, -5.0));
@@ -264,8 +297,8 @@ namespace coppercli.Tests
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
-            // Only a diagonal is measured. It sits further away than one grid step, so
-            // it is not the expectation for this node.
+            // Only a diagonal is measured. It is further than one grid step away, so it is
+            // not used as the expected height for this node.
             grid.RecordMeasurement(1, 1, -0.40);
 
             Assert.Null(grid.GetNeighbourDeviation(0, 0, -0.40));
@@ -274,7 +307,7 @@ namespace coppercli.Tests
         [Theory]
         [InlineData(-3.0, 2.5)]   // pushed past the surface
         [InlineData(2.0, 2.5)]    // stopped short, on debris or a shorted clip
-        public void NeighbourDeviation_IsUnsignedSoBothDirectionsAreFaults(
+        public void NeighbourDeviation_IsUnsignedInBothDirections(
             double measured, double expectedDeviation)
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
@@ -291,9 +324,9 @@ namespace coppercli.Tests
         [Fact]
         public void NeighbourDeviation_OnAWarpedBoardStaysSmallBetweenAdjacentNodes()
         {
-            // A bowed board spans millimeters end to end while staying flat between any
-            // two adjacent nodes. Comparing against neighbors rather than the board's
-            // overall range is what keeps a real warp from reading as a fault.
+            // A bowed board spans millimetres end to end while staying flat between any two
+            // adjacent nodes. Comparing against neighbours rather than the overall range is
+            // what keeps a real warp from reading as a fault.
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(40, 40));
 
             for (int x = 0; x < grid.SizeX; x++)
@@ -310,5 +343,43 @@ namespace coppercli.Tests
             Assert.NotNull(deviation);
             Assert.Equal(0.0, deviation!.Value, 6);
         }
+
+        /// <summary>
+        /// Every screen and gate reads one answer for how much of a map is measured.
+        /// Derived from the counters, a skipped point reads as a finished map: Save and Apply
+        /// are offered for a map that cannot be applied, and Continue Probing disappears.
+        /// </summary>
+        [Fact]
+        public void AMapWithASkippedPoint_IsPartialHoweverFarTheQueueGot()
+        {
+            var grid = new ProbeGrid(5.0, new Vector2(0, 0), new Vector2(10, 10));
+
+            for (int x = 0; x < grid.SizeX; x++)
+            {
+                for (int y = 0; y < grid.SizeY; y++)
+                {
+                    if (x != 1 || y != 1)
+                    {
+                        grid.RecordMeasurement(x, y, 0.1);
+                    }
+                }
+            }
+
+            grid.SkipPoint(1, 1);
+
+            Assert.Equal(grid.TotalPoints, grid.Progress);       // looks finished...
+            Assert.Equal(ProbeDataState.Partial, grid.State);    // ...and is not
+            Assert.Equal(ProbeDataState.Partial, ProbeGrid.StateOf(grid));
+        }
+
+        [Fact]
+        public void TheStateOfNoMapAtAll_IsNone() =>
+            Assert.Equal(ProbeDataState.None, ProbeGrid.StateOf(null));
+
+        [Fact]
+        public void AMapWithNothingMeasured_IsReady() =>
+            Assert.Equal(
+                ProbeDataState.Ready,
+                new ProbeGrid(5.0, new Vector2(0, 0), new Vector2(10, 10)).State);
     }
 }

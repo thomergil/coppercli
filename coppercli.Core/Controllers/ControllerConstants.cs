@@ -1,17 +1,30 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Constants for controller layer. No magic strings or numbers.
+    /// What a run says to the operator, and the budgets it works to.
     ///
     /// SAFETY NOTE: CNC operations involve two coordinate systems:
     /// - Machine coordinates (G53): Absolute positions relative to home. Z=0 at top, negative down.
     /// - Work coordinates (G54 default): Relative to workpiece origin. Z=0 typically at PCB surface.
     ///
-    /// Retracts and tool changes use MACHINE coordinates (G53), so the destination does not move
+    /// Retracts and tool changes use machine coordinates (G53), so the destination does not move
     /// when the work offset changes. Always set the coordinate mode explicitly before such a move.
     /// </summary>
     public static class ControllerConstants
     {
+        /// <summary>
+        /// The words to show for a run that ended in an exception: the exception's own where
+        /// a workflow raised it deliberately, and the generic sentence otherwise.
+        ///
+        /// ObjectDisposedException derives from InvalidOperationException and its text names
+        /// an internal object, so it is excluded.
+        /// </summary>
+        public static string ShowableMessage(System.Exception ex) =>
+            ex is System.InvalidOperationException or System.TimeoutException
+                && ex is not (InvalidControllerStateException or System.ObjectDisposedException)
+                ? ex.Message
+                : ErrorRunFailed;
+
         // =========================================================================
         // Error messages
         // =========================================================================
@@ -21,64 +34,113 @@ namespace coppercli.Core.Controllers
         public const string ErrorCannotPause = "Cannot pause: controller is {0}";
         public const string ErrorCannotResume = "Cannot resume: controller is {0}";
         public const string ErrorCannotReset = "Cannot reset: controller is {0}";
-        public const string ErrorHomingFailed = "Homing did not complete, so milling cannot start.";
+        public const string ErrorHomingFailed = "Homing did not complete.";
 
         /// <summary>Shown when the machine itself reports that homing is switched off.</summary>
         public const string ErrorHomingDisabledOnMachine =
-            "This machine reports that homing is disabled in its own settings ($22), so it cannot establish " +
-            "the reference position that every safety retract depends on. Enable homing on the controller " +
-            "(and check the limit switches are wired) before milling.";
+            "Homing is disabled on the machine ($22). Enable it, then mill.";
 
         /// <summary>Homing failed and the machine explained why.</summary>
-        public const string ErrorHomingFailedBecause = "Homing did not complete, so milling cannot start. {0}";
-        public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted to a safe height. Stopped before moving.";
+        public const string ErrorHomingFailedBecause = "Homing did not complete. {0}";
+        public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted. Stopped.";
 
         /// <summary>Shown when a point could not be measured and the run carried on.</summary>
-        public const string ErrorProbePointSkipped =
-            "No contact at point {0} of {1}. It was left unmeasured, so the probe data is incomplete.";
+        public const string ErrorProbePointSkipped = "No contact at point {0} of {1}. Left unmeasured.";
 
         /// <summary>Shown when a stopped run cannot confirm the tool reached safe height.</summary>
         public const string ErrorStopRetractFailed =
-            "Stopped, but could not confirm the tool lifted clear. Check whether the tool is "
-            + "still down before you move the machine.";
-        public const string ErrorWorkOffsetUnknown = "The machine did not report its work offsets. Stopped rather than guess the Z origin.";
-        /// <summary>Title of the prompt that holds a job until the door is closed.</summary>
-        public const string DoorPromptTitle = "Enclosure Door";
+            "Stopped. Could not confirm the tool lifted - check it.";
+        public const string ErrorWorkOffsetUnknown = "No work offsets from the machine. Stopped.";
+        public const string ErrorToolOffsetNotTaken =
+            "The machine did not take the new tool's Z origin. Stopped.";
+
+        /// <summary>
+        /// The depth adjustment is written into the work origin and taken back out when the
+        /// run ends. Left in, every later job cuts by that much too deep or too shallow.
+        /// {0} is the amount still in the origin, in mm.
+        /// </summary>
+        public const string ErrorDepthAdjustmentNotRestored =
+            "The {0:F2}mm depth adjustment is still in the work origin - the machine would "
+            + "not take it back out. Set Z zero again before the next job.";
+
+        /// <summary>
+        /// The work origin was not written. Shown instead of a confirmation, because
+        /// recording an origin the machine does not have puts the next cut in the wrong
+        /// place and deletes the height map on the way.
+        /// </summary>
+        public const string ErrorWorkZeroNotWritten =
+            "The machine did not take the work origin. Check it is connected and not alarmed, then try again.";
+        /// <summary>
+        /// How many times the operator is asked to clear the machine before giving up. Read
+        /// by every screen that clears a door: a run, the jog screen and the connect flow.
+        /// </summary>
+        public const int MachineClearAttempts = 5;
+
+        /// <summary>
+        /// The operator answered the enclosure prompt this many times and the hold is still
+        /// there, which indicates a fault in the switch or its wiring.
+        /// </summary>
+        public const string ErrorDoorWillNotRelease = "Door will not clear. Check the switch.";
 
         /// <summary>Shown while GRBL still reports the door open.</summary>
-        public const string DoorOpenPrompt =
-            "The enclosure door is open. If a magnet is on the switch, take it off. Close "
-            + "the door, then press Continue.";
+        public const string DoorOpenPrompt = "Close the door.";
 
-        /// <summary>Shown once it is shut but the machine is still holding.</summary>
-        public const string DoorHoldingPrompt =
-            "The door is closed and the machine is holding. Press Continue to release the hold.";
+        /// <summary>Shown once it is closed but the machine is still holding.</summary>
+        public const string DoorHoldingPrompt = "Door closed. Continue?";
 
         /// <summary>
-        /// The door was opened and closed again while the machine was homing. GRBL holds
-        /// until something resumes it, and only the operator may decide that.
+        /// Shown while GRBL restores from the park. Says nothing about the tool or the
+        /// spindle: the same message is shown for a probe, where no spindle is running.
         /// </summary>
-        public const string ErrorDoorClosedDuringHoming =
-            "The door was opened while the machine was homing, so homing stopped. The door is "
-            + "closed now - start the job again.";
+        public const string DoorResumingMessage = "Resuming...";
 
-        public const string ErrorMachineDoorOpen = "The enclosure door is open. Close it, then start the job again.";
-        public const string ErrorMachineNotSettled = "The machine did not stop moving. Wait for it to finish, then start the job again.";
+
+        /// <summary>
+        /// The door was opened and closed while the machine was homing. GRBL holds until
+        /// it is resumed, and only the operator may do that.
+        /// </summary>
+        public const string ErrorDoorClosedDuringHoming = "Door opened during homing. Start again.";
+
+        public const string ErrorMachineDoorOpen = "Door open. Close it, then start again.";
+        /// <summary>
+        /// A controller raised a prompt with no subscriber on UserInputRequired. The run
+        /// would otherwise wait for an answer that cannot arrive, and only a restart clears it.
+        /// </summary>
+        public const string ErrorNoPromptHandler =
+            "The job could not ask for an answer. Restart coppercli.";
+
+        /// <summary>
+        /// A run could not move because the machine is at the door, alarmed or asleep.
+        /// </summary>
+        public const string ErrorMachineNotResponding =
+            "Machine not accepting moves. Check door, alarm and sleep.";
+
+        public const string ErrorDoorBlocksResume = "Holding at the door. Close it.";
+
+        /// <summary>
+        /// A run is parked on its own enclosure prompt, so the door overlay's own release
+        /// must not send the cycle start - the run's Continue is the answer.
+        /// </summary>
+        public const string ErrorDoorAnswerThePrompt = "Answer the job's door prompt.";
+        public const string ErrorMachineNotSettled = "Machine still moving. Wait, then start again.";
         public const string ErrorMillingDidNotStart =
-            "The job did not start streaming to the machine. This usually means the machine was left in probe mode - reconnect or reset, then try again.";
-        public const string ErrorMillingAlarm = "The machine raised an alarm during the job. Milling stopped.";
+            "The job did not start. Reconnect or reset, then try again.";
+        public const string ErrorMillingAlarm = "Alarm during the job. Milling stopped.";
+
+        /// <summary>An alarm found while settling, before the job has started.</summary>
+        public const string ErrorAlarmBeforeStart = "In alarm. Clear it, then unlock.";
 
         /// <summary>
-        /// What the operator is told when a run ends on an error the workflow does not
-        /// handle itself - a disk error, a port another program took.
+        /// Shown when a run ends on an error the workflow does not handle, such as a disk
+        /// error or a port another program holds.
         /// </summary>
-        public const string ErrorRunFailed =
-            "The run stopped on an unexpected error. Check the machine before doing anything else.";
+        public const string ErrorRunFailed = "The run stopped on an error. Check the machine.";
         public const string LogMillingAlarm = "Milling aborted: machine in alarm state ({0})";
         public const string ErrorProbeNoContact = "Probe failed: max depth reached without contact";
+        public const string ErrorProbeCycleNotOpen =
+            "Could not start the probe: the machine is busy or not connected.";
         public const string ErrorProbeHeightUnexpected =
-            "Probe height {0:F3}mm differs from the surrounding measurements by {1:F3}mm - "
-            + "check the board for debris before continuing.";
+            "Probe height {0:F3}mm is {1:F3}mm off the points around it. Check for debris.";
         public const string ErrorProbeTimeout = "Probe timed out";
         public const string ErrorToolSetterNotConfigured = "Tool setter position not configured";
         public const string ErrorTraceHeightUnsafe = "Trace height must be positive (current: {0:F3}mm)";
@@ -118,6 +180,13 @@ namespace coppercli.Core.Controllers
         public const string PhaseMilling = "Milling";
         public const string PhaseCompleting = "Completing";
         public const string PhaseWaitingForOperator = "Waiting for operator";
+
+        /// <summary>
+        /// Withdraws the message <see cref="PhaseWaitingForOperator"/> put on the screens.
+        /// A phase of its own rather than the run's next one, because the run does not know
+        /// where it is resuming to, and because the mill screen draws any phase but its own.
+        /// </summary>
+        public const string PhaseDoorCleared = "Door clear";
 
         /// <summary>How far past an M6 to look for the redundant M0 that follows it.</summary>
         public const int ToolChangeM0SearchLines = 8;
@@ -175,6 +244,9 @@ namespace coppercli.Core.Controllers
 
         public const string ToolChangePromptTitle = "Tool Change";
         public const string ToolChangePrompt = "Change to tool T{0} and press Continue";
+
+        /// <summary>The same prompt where the tool has a name in the file.</summary>
+        public const string ToolChangePromptNamed = "Change to tool T{0} ({1}) and press Continue";
         public const string ToolChangePromptZeroZ = "Jog to PCB surface, set Z0, then press Continue";
         public const string ToolChangeZeroZTitle = "Set Z Zero";
 
@@ -182,9 +254,9 @@ namespace coppercli.Core.Controllers
         // Operator pause (M0/M1) prompt
         // =========================================================================
 
-        /// <summary>Title for the M0/M1 pause dialog. Reuses the tool-change dialog
-        /// plumbing (see MillingController.HandleOperatorPauseAsync), so it needs its
-        /// own title rather than inheriting "Tool Change".</summary>
+        /// <summary>Title for the M0/M1 pause dialog. It reuses the tool-change dialog
+        /// (see MillingController.HandleOperatorPauseAsync), so it needs a title of its own
+        /// rather than "Tool Change".</summary>
         public const string OperatorPauseTitle = "Program Paused";
 
         /// <summary>
@@ -212,12 +284,20 @@ namespace coppercli.Core.Controllers
         public const int DoorResumeTimeoutMs = 5000;
 
         /// <summary>
-        /// How far a probed height may sit from its measured neighbors before the run
+        /// How many status reports GRBL's reading of the door switch may lag behind the
+        /// operator's answer. The substate arrives on the status poll, so the report in hand
+        /// when they answer predates them closing the door. Not a wait for the door itself -
+        /// see <see cref="MachineWait.ReleaseDoorHoldAsync"/>.
+        /// </summary>
+        public const int DoorReadingCatchUpReports = 3;
+
+        /// <summary>
+        /// How far a probed height may sit from its measured neighbours before the run
         /// pauses for the operator (mm).
         ///
         /// Adjacent nodes differ by the board's warp over one grid step plus probe
-        /// repeatability, together well under a tenth of a millimeter. A tip that stopped
-        /// somewhere other than the board lands whole tenths away.
+        /// repeatability, which together stay well under 0.1mm. A tip that stopped on
+        /// something other than the board reads whole tenths away.
         /// </summary>
         public const double ProbeHeightDeviationToleranceMm = 0.5;
     }

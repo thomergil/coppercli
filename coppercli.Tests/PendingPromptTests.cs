@@ -6,9 +6,9 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// An answer names the question it answers, because answering publishes the next question
-    /// from inside the answering call. These share one static slot; xUnit runs a class's
-    /// tests one at a time and no other class touches it.
+    /// An answer names the prompt it answers, because answering publishes the next prompt
+    /// from inside the answering call. These tests share one static slot; xUnit runs a
+    /// class's tests one at a time and no other class touches it.
     /// </summary>
     public class PendingPromptTests
     {
@@ -24,7 +24,7 @@ namespace coppercli.Tests
         };
 
         [Fact]
-        public void AnAnswerNamingThePendingPromptReachesTheRun()
+        public void AnAnswerNamingThePendingPrompt_ReachesTheRun()
         {
             var answers = new List<string>();
             var prompt = Prompt(answers);
@@ -36,11 +36,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A second tap on the button the previous question put on screen, arriving after
-        /// the run has replaced it.
+        /// A second tap on the button the previous prompt put on screen, arriving after the
+        /// run has replaced it.
         /// </summary>
         [Fact]
-        public void AnAnswerToAnAlreadyReplacedPromptIsRefused()
+        public void AnAnswerToAReplacedPrompt_IsRefused()
         {
             var answers = new List<string>();
             var first = Prompt(answers);
@@ -58,7 +58,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void TwoAnswersToOnePromptReachTheRunOnce()
+        public void TwoAnswersToOnePrompt_ReachTheRunOnce()
         {
             var answers = new List<string>();
             var prompt = Prompt(answers);
@@ -70,18 +70,18 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void AnAnswerWithNoPromptPendingIsRefused()
+        public void AnAnswerWithNoPromptPending_IsRefused()
         {
             ClearSlot();
             Assert.Equal(PromptAnswerResult.NothingPending, PendingPrompt.Answer("any", "Continue"));
         }
 
         /// <summary>
-        /// A run ending takes down only the question it published; the run it hands back to
-        /// may already have asked one.
+        /// A run ending clears only the prompt it published: another run may already have
+        /// published its own.
         /// </summary>
         [Fact]
-        public void EndingARunTakesDownOnlyItsOwnQuestion()
+        public void EndingARun_ClearsOnlyItsOwnPrompt()
         {
             var answers = new List<string>();
             var mine = Prompt(answers);
@@ -97,7 +97,7 @@ namespace coppercli.Tests
 
         /// <summary>
         /// ToolChangeController continues on anything that is not exactly "Abort", so only
-        /// an exact choice reaches it.
+        /// an exact option reaches it.
         /// </summary>
         [Theory]
         [InlineData(null)]
@@ -105,7 +105,7 @@ namespace coppercli.Tests
         [InlineData("abort")]
         [InlineData("Continue ")]
         [InlineData("anything")]
-        public void AnAnswerThatIsNotOneOfTheChoicesIsRefused(string? response)
+        public void AnAnswerThatIsNotAnOption_IsRefused(string? response)
         {
             var answers = new List<string>();
             var prompt = Prompt(answers);
@@ -119,11 +119,12 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Answering resumes the run on this thread, and the run publishes its next question
-        /// into this slot before the answer returns. Emptying it afterwards would wipe that.
+        /// Answering resumes the run on this thread, and the run publishes its next prompt
+        /// into this slot before the answer returns. Clearing it afterwards would discard
+        /// that.
         /// </summary>
         [Fact]
-        public void AnsweringLeavesTheQuestionTheRunPublishesInItsPlace()
+        public void Answering_LeavesTheNextPromptInTheSlot()
         {
             var answers = new List<string>();
             UserInputRequest? second = null;
@@ -151,7 +152,7 @@ namespace coppercli.Tests
 
         /// <summary>An answer that names no prompt is refused.</summary>
         [Fact]
-        public void AnAnswerNamingNoPromptIsRefused()
+        public void AnAnswerNamingNoPrompt_IsRefused()
         {
             var answers = new List<string>();
             var prompt = Prompt(answers);

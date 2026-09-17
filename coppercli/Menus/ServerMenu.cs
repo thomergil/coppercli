@@ -43,7 +43,7 @@ namespace coppercli.Menus
                 // a zero that was known before the disconnect is still good after it.
                 var preserveWorkZero = AppState.IsWorkZeroSet;
                 AppState.Machine.Disconnect();
-                AppState.TrustWorkZero(preserveWorkZero);
+                AppState.SetWorkZeroTrusted(preserveWorkZero);
                 Logger.Log($"ServerMenu: Preserved IsWorkZeroSet={preserveWorkZero} across server transition");
 
                 selectedPort = currentPort;
@@ -98,6 +98,9 @@ namespace coppercli.Menus
                 }
                 else
                 {
+                    // The baud menu's last entry keeps what is saved, so that is the start.
+                    selectedBaud = settings.SerialPortBaud;
+
                     if (portChoice.Option == PortOption.Manual)
                     {
                         selectedPort = MenuHelpers.Ask<string>("Enter port name:");
@@ -107,10 +110,7 @@ namespace coppercli.Menus
                         selectedPort = ports[portChoice.Data];
                     }
 
-                    // Select baud rate
-                    var baudOptions = CommonBaudRates.Select((b, i) => $"{i + 1}. {b}").ToArray();
-                    int baudChoice = MenuHelpers.ShowMenu("Select baud rate:", baudOptions);
-                    selectedBaud = CommonBaudRates[baudChoice];
+                    selectedBaud = MenuHelpers.AskBaudRate(selectedBaud);
                 }
             }
 
@@ -159,16 +159,16 @@ namespace coppercli.Menus
             }
             catch (Exception ex)
             {
+                // Only the menu waits for a keypress. Started with --server nobody is at the
+                // terminal, and waiting gives a supervisor a hung service instead of exit 1.
                 if (exitToMenu)
                 {
-                    MenuHelpers.ShowError($"Failed to start proxy: {ex.Message}");
+                    MenuHelpers.ShowFailureAndWait(CliConstants.FailedStartingTheProxy, ex);
                     return;
                 }
-                else
-                {
-                    AnsiConsole.MarkupLine($"[{ColorError}]Failed to start proxy: {ex.Message}[/]");
-                    Environment.Exit(1);
-                }
+
+                MenuHelpers.ShowFailure(CliConstants.FailedStartingTheProxy, ex);
+                Environment.Exit(1);
             }
 
             // Start web server in background thread
@@ -201,16 +201,16 @@ namespace coppercli.Menus
             if (webServerError != null)
             {
                 proxy.Stop();
+
                 if (exitToMenu)
                 {
-                    MenuHelpers.ShowError($"Web server failed: {webServerError.Message}");
+                    MenuHelpers.ShowFailureAndWait(
+                        CliConstants.FailedStartingTheWebServer, webServerError);
                     return;
                 }
-                else
-                {
-                    AnsiConsole.MarkupLine($"[{ColorError}]Web server failed: {webServerError.Message}[/]");
-                    Environment.Exit(1);
-                }
+
+                MenuHelpers.ShowFailure(CliConstants.FailedStartingTheWebServer, webServerError);
+                Environment.Exit(1);
             }
 
             // Handle Ctrl+C to exit cleanly
@@ -343,10 +343,9 @@ namespace coppercli.Menus
             {
                 var clientAddr = proxy.ClientAddress ?? "";
                 WriteLineTruncated($"  Client:         {AnsiSuccess}TUI @ {clientAddr}{AnsiReset}", winWidth);
-                if (proxy.ClientConnectedTime.HasValue)
+                if (proxy.ClientConnectedFor is TimeSpan connectedFor)
                 {
-                    var duration = DateTime.Now - proxy.ClientConnectedTime.Value;
-                    WriteLineTruncated($"  Connected:      {AnsiSuccess}{FormatDuration(duration)}{AnsiReset}", winWidth);
+                    WriteLineTruncated($"  Connected:      {AnsiSuccess}{FormatDuration(connectedFor)}{AnsiReset}", winWidth);
                 }
             }
             else if (CncWebServer.HasWebClient)

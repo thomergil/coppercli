@@ -29,18 +29,18 @@ The tests are always the same two questions:
 - *Can these ever disagree?* If yes, they eventually will, silently, and the machine acts
   on the stale one.
 
-What this forbids, with the shapes it takes here:
+What this forbids, and the forms it takes here:
 - A flag beside the state it describes. `IsPaused`, `IsActive` and `HasFinished` are
   derived from `State`; `AppState.IsProbing` is derived from the controller.
 - A boolean saying "X is outstanding" next to a field saying "how much X". That is one
   fact stored twice. Use one field, with zero meaning none.
-- The same predicate spelled out at each call site. Give it one home and call it.
+- The same predicate written out at each call site. Define it once and call it.
 - A constant duplicated between C# and JavaScript. Publish it through `/api/constants`;
   see `GetSharedConstants()`.
 - A comment restating a value the code owns. It disagrees the moment the code changes.
 
-Deriving a value once into a local for a consistent snapshot is not a second copy: it is a
-single read, reused within that scope. Two independent definitions are the violation.
+Reading a value into a local for a consistent snapshot is not a second copy: it is one read
+reused within that scope. Two independent definitions are the violation.
 
 **No duplicated code.** If you write similar code twice, extract it immediately. Search for existing helpers before writing new code. Three similar lines are worse than one abstraction. This applies to: logic, constants, patterns, error handling, and validation.
 
@@ -106,9 +106,12 @@ Before writing ANY user-facing UI code, search for existing patterns:
 
 **Menus:** Always use `MenuDef<T>` + `MenuItem<T>` + `MenuHelpers.ShowMenu()`. Never write raw `AnsiConsole.MarkupLine` menu items.
 
-**Prompts:** Use `MenuHelpers.AskString()`, `MenuHelpers.AskNumber()`, `MenuHelpers.Confirm()`. Never use raw `Console.ReadLine()`.
+**Prompts:** Use `MenuHelpers.AskString()`, `MenuHelpers.AskDouble()`, `MenuHelpers.Confirm()`. Never use raw `Console.ReadLine()`.
 
-**Errors:** Use `MenuHelpers.ShowError()`. Never write custom error display.
+**Errors:** Use `MenuHelpers.ShowError()` for a sentence you wrote,
+`MenuHelpers.ShowFailure()` for a caught exception, and `MenuHelpers.ShowRunError()` for
+what a run reported. Never write custom error display, and never put an exception's own text
+on the screen - `check-layering.sh` fails the build for it.
 
 **Before implementing UI, grep for:**
 - `MenuDef<` - how menus are built
@@ -179,7 +182,9 @@ Periodically audit the codebase for violations:
    grep -rn "fetch.*'/api" --include="*.js" coppercli/WebServer/wwwroot/js/
    ```
 
-6. **WebSocket message types require 4-point updates**: When adding a new WebSocket message type (e.g., `probe:error`), update all four locations:
+6. **A new height-map outcome** must reach `WorkZeroOutcome`, `GetSharedConstants().heightMapOutcomes`, the name in `constants.js`, its words in `HEIGHT_MAP_TEXT_BY_OUTCOME`, the `check()` in `helpers.js`, `CliConstants` for the terminal's wording, `JogMenu.ZeroedMessage`, and `WorkZeroOutcomeExtensions.LeftTheGCodeWrong` if it leaves the G-code wrong. `WebServerSequenceTests.EveryHeightMapOutcome_IsPublished` catches one missing from the payload; `check-layering.sh` catches a `ZEROED_*` name declared in `constants.js` and not validated in `helpers.js`; `browser/height-map-outcome.test.mjs` catches one with no words.
+
+7. **WebSocket message types require 4-point updates**: When adding a new WebSocket message type (e.g., `probe:error`), update all four locations:
    - `WebConstants.cs`: Add `WsMessageType*` constant
    - `constants.js`: Add `MSG_TYPE_*` constant
    - `CncWebServer.cs`: Add to `wsMessageTypes` object in `GetSharedConstants()`
@@ -193,6 +198,22 @@ Periodically audit the codebase for violations:
    grep -o 'MSG_TYPE_[A-Z_]*' coppercli/WebServer/wwwroot/js/helpers.js | sort -u
    # These should match (use diff to compare)
    ```
+
+### Browser tests
+
+`coppercli.Tests/browser/*.test.mjs` runs the real `wwwroot/js` modules against a stub page
+under `node --test`. No `package.json` and no dependencies; `dotnet test` does not see them,
+so run them directly:
+
+```bash
+node --test "coppercli.Tests/browser/*.test.mjs"
+```
+
+`status.test.mjs` covers what the browser draws; `page.test.mjs` covers that every id it
+writes to is on `index.html` and that every module the page loads can be loaded. The stub
+page takes its ids from `index.html`, so a write to an id the page does not have throws
+instead of silently creating one - but only for code a test actually runs, which is why the
+default payload carries every field `updateStatus` branches on.
 
 ### Settings Migrations
 
@@ -215,17 +236,19 @@ Migrations run automatically on `LoadSettings()`, rewrite the file once, and are
 ### Constants Location
 
 - **`coppercli.Core/Util/Constants.cs`** - Shared constants used by Core (serial timeouts, buffer sizes, GRBL defaults)
+- **`coppercli.Core/Settings/SettingRange.cs`** - What each numeric setting is called, its unit, and what it may be. The settings screen, the web API and the loader all check against this one table
 - **`coppercli/CliConstants.cs`** - CLI-specific constants (UI text, display settings, menu timing)
+- **`coppercli.Core/Controllers/ControllerConstants.cs`** - What a run says to the operator, and the budgets it works to. Both UIs read these, so every message a run raises is defined once
 - **`coppercli.Core/Util/GrblProtocol.cs`** - GRBL protocol constants (status strings, commands)
 
 ### Helper Organization
 
-- **`coppercli.Core/Controllers/MachineWait.cs`** - Status checks (`IsIdle`, `IsAlarm`, `IsHold`, `IsDoor`, `IsProblematic`), async wait functions, `HomeAsync` (single source of truth for homing). Every wait here is `WaitUntilAsync` with a different predicate; add a wait by calling it, never by writing another poll loop
-- **`coppercli.Core/Controllers/ControllerBase.cs`** - The state machine every workflow runs on: the transition table, `IsActive`/`IsPaused`/`HasFinished` derived from `State`, `TransitionTo` (throws on an illegal move), `TryTransitionTo` (for a move another thread may already have made), `WaitWhilePausedAsync`
+- **`coppercli.Core/Controllers/MachineWait.cs`** - Status checks (`IsIdle`, `IsAlarm`, `IsHold`, `IsDoor`, `IsUnavailable`), async wait functions, `HomeAsync` (single source of truth for homing), `GetDoorState` (which door state the machine is in, read by every screen that shows door text), `CanReleaseDoorHold` (the one door state with anything to ask the operator), `GetDoorMessage` (the words for a door state), `ReleaseDoorHoldAsync` (the only place a door hold is released) and `ClearDoorHoldAsync` (the loop every screen and every run follows to get out of Door: which states are answered, how many refused releases are enough, which are waited out - callers pass in how to ask and how to announce). It also holds the derived answers a screen needs: `GetActivity` for what the machine is doing, and `IsResponding`, `NeedsAttention`, `CanPause`, `CanResume` and `BlocksJobStart` for which controls apply. The terminal calls them and `/api/status` sends them, so no UI derives its own. Every wait here is `WaitUntilAsync` with a different predicate; add a wait by calling it, never by writing another poll loop
+- **`coppercli.Core/Controllers/ControllerBase.cs`** - The state machine every workflow runs on: the transition table, `IsActive`/`IsPaused`/`HasFinished` derived from `State`, `TransitionTo` (throws on an illegal move), `TryTransitionTo` (for a move another thread may already have made), `WaitWhilePausedAsync`, `EnsureDoorClosedAsync` (the one place a workflow asks the operator about the enclosure), `RetractToSafeZAsync` (the retract every run ends on, and the one place that knows not to queue that move at the door), `LiftAfterStopAsync` (that retract plus the one decision about whether to tell the operator the lift was not confirmed - a stop at the door never is)
 - **`coppercli.Core/Util/HeightGradient.cs`** - The color a probed height is drawn in. Both the terminal and the browser take their colors from here; neither computes a gradient
-- **`coppercli/WebServer/PendingPrompt.cs`** - The one question a run is waiting on, and the rule for answering it. An answer names the question it answers and must be one of the choices offered; a run publishes its next question into this same slot from inside the call that answers the last
-- **`MachineCommands.cs`** - Sync wrappers for MachineWait, G-code patterns (`MoveToSafeHeight`, `HomeAndWait`, `EnsureMachineReady`)
-- **`MenuHelpers.cs`** - Menus, prompts, confirmations, validation (`GetProbeDisabledReason`, `ValidateMillPreflight`)
+- **`coppercli/WebServer/PendingPrompt.cs`** - The one prompt a run is waiting on, and the rule for answering it. An answer names the prompt it answers and must be one of the options offered; a run publishes its next prompt into this same slot from inside the call that answers the last
+- **`MachineCommands.cs`** - Sync wrappers for MachineWait, G-code patterns (`MoveToSafeHeight`, `HomeAndWait`, `ReleaseDoorHold`)
+- **`MenuHelpers.cs`** - Menus, prompts, confirmations, validation (`GetMachineBlocker` for the machine, `GetProbeDisabledReason` and `CheckMillCanStart` for the job), and `WaitForDoorClear` (the terminal's overlay wrapped around `MachineWait.ClearDoorHoldAsync`, for a screen with no run behind it)
 - **`DisplayHelpers.cs`** - ANSI codes (`AnsiError`, `AnsiSuccess`, etc.), `WriteLineTruncated`, overlay box helpers
 - **`InputHelpers.cs`** - Key checking (`IsKey`, `IsEnterKey`, `IsEscapeKey`, `IsExitKey`), `ReadKeyPolling`
 
@@ -258,6 +281,15 @@ if (machine.Status.StartsWith("Alarm")) ...
 if (MachineWait.IsIdle(machine)) ...
 if (MachineWait.IsAlarm(machine)) ...
 
+// BAD - a screen working out what the machine is doing
+if (machine.Status.StartsWith("Door")) { label = "DOOR OPEN"; }
+button.Enabled = !machine.Status.StartsWith("Alarm");
+
+// GOOD - Core names the case, DisplayHelpers owns the words
+var activity = MachineWait.GetActivity(machine);
+label = DisplayHelpers.GetActivityText(activity, machine.Status);
+button.Enabled = !MachineWait.NeedsAttention(activity);
+
 // BAD - manual confirmation
 AnsiConsole.Confirm("Continue?");
 
@@ -272,12 +304,14 @@ For alerts/errors in full-screen TUI modes, use the overlay helpers in `DisplayH
 
 - **`ShowOverlayAndWait(message, subtext, color)`** - Draws centered overlay box and waits for Enter. Use for errors/alerts.
 - **`ShowOverlayTimed(message, durationMs, subtext, color)`** - Draws overlay for specified duration then returns. Use for confirmations.
+- **`ShowOverlayConfirm(message, defaultYes, color)`** - Draws a `[y/N]` overlay and returns the answer, or null if the operator pressed Escape. Use where the operator has something to decide.
 
-Both functions handle newlines in message/subtext automatically - the box height adjusts to fit content (6 fixed lines + N content lines). Structure: margin, border, padding, [content], padding, border, margin.
+All of these wrap message and subtext to the box width and handle newlines in them; the box height adjusts to fit content (6 fixed lines + N content lines). Structure: margin, border, padding, [content], padding, border, margin.
 
 For continuous redraws (MillMenu/MacroRunner), use the lower-level helpers:
-- **`GetOverlayBoxLine(lineIndex, boxWidth, contentLines[], colors[])`** - Dynamic height, array-based.
-- **`GetOverlayBoxLine(lineIndex, boxWidth, line1, color1, line2, color2)`** - Legacy 2-line version.
+- **`ShowOverlay(message, subtext, color)`** - Draws the box and returns, for a screen that does its own waiting.
+- **`BuildOverlayContent(message, subtext, messageColor, maxWidth)`** - The box's content lines and their colors, wrapped to fit. The one place message and subtext become an overlay's content.
+- **`GetOverlayBoxLine(lineIndex, boxWidth, contentLines[], colors[])`** - One line of the box.
 - **`CalculateOverlayBoxHeight(contentLines[])`** - Returns `OverlayBoxFixedLines + contentLines.Length`.
 - **`CalculateOverlayBoxWidth(contentLines[], maxWidth)`** - Respects min/max constraints.
 - **`CompositeOverlay(background, overlay, start, width)`** - Composites overlay onto background.
@@ -291,11 +325,10 @@ Machine state properties (e.g., `IsHomed`) belong in the `Machine` class, not in
 
 **Pattern: Homing as example**
 
-`MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed`, and it sets the
-flag only once it has evidence the machine actually homed. Read it in
-`coppercli.Core/Controllers/MachineWait.cs` rather than from an example here: a copy of
-the body in this file is a second definition, and it drifts the moment the real one
-changes.
+`MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed`, and it sets the flag
+only once it has evidence the machine homed. Read it in
+`coppercli.Core/Controllers/MachineWait.cs` rather than from an example here: a copy of the
+body in this file is a second definition and drifts as soon as the real one changes.
 
 All callers use this method:
 - **Sync CLI callers** use `MachineCommands.HomeAndWait()` which wraps `MachineWait.HomeAsync()`
@@ -359,6 +392,9 @@ dotnet build coppercli/coppercli.csproj
 dotnet run --project coppercli/coppercli.csproj
 dotnet build coppercli/coppercli.csproj -warnaserror  # treat warnings as errors
 ```
+
+CI runs `sh .architecture/rules/check-layering.sh` as a merge gate, alongside both test
+suites. Run it before you hand work over; it exits non-zero and names the rule it caught.
 
 ## Releases
 

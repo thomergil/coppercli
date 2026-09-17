@@ -4,9 +4,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The terminal and the browser both draw the height map, and an operator reads them
-    /// as the same picture. These pin the band boundaries and both ends, so a change has
-    /// to move both views together or fail here.
+    /// The terminal and the browser both draw the height map and must match. These tests
+    /// cover the band boundaries and both ends of the range.
     /// </summary>
     public class HeightGradientTests
     {
@@ -16,7 +15,7 @@ namespace coppercli.Tests
         [InlineData(0.50, 0, 255, 0)]      // green
         [InlineData(0.75, 255, 255, 0)]    // yellow
         [InlineData(1.00, 255, 0, 0)]      // highest: red
-        public void TheBandBoundaries_AreTheColoursTheGradientIsNamedFor(
+        public void TheBandBoundaries_AreTheNamedColours(
             double fraction, int r, int g, int b)
         {
             Assert.Equal((r, g, b), HeightGradient.Colour(fraction));

@@ -2,6 +2,7 @@
 
 using System.Linq;
 using System.Text.RegularExpressions;
+using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using Spectre.Console;
@@ -11,14 +12,14 @@ using static coppercli.Core.Util.Constants;
 namespace coppercli.Helpers
 {
     // =========================================================================
-    // Preflight validation (shared by TUI and WebServer)
+    // Whether a mill job can start, shared by the terminal and the web server
     // =========================================================================
 
     /// <summary>
-    /// Error codes for mill preflight validation.
+    /// What stops a mill job from starting.
     /// Used to decouple validation logic from UI-specific error messages.
     /// </summary>
-    public enum MillPreflightError
+    public enum MillBlocker
     {
         None,
         NotConnected,
@@ -28,13 +29,16 @@ namespace coppercli.Helpers
         /// <summary>The applied height map no longer describes this file or origin.</summary>
         ProbeSetupChanged,
         ProbeIncomplete,
-        AlarmState
+        AlarmState,
+
+        /// <summary>The machine is in $SLP and accepts nothing until it is reset.</summary>
+        Asleep
     }
 
     /// <summary>
-    /// Warning codes for mill preflight validation.
+    /// What the operator is warned about before a mill job starts.
     /// </summary>
-    public enum MillPreflightWarning
+    public enum MillWarning
     {
         NotHomed,
         DangerousCommands,
@@ -42,34 +46,34 @@ namespace coppercli.Helpers
     }
 
     /// <summary>
-    /// Result of mill preflight validation.
+    /// Whether a mill job can start, and why not.
     /// </summary>
-    /// <param name="CanStart">True if milling can start.</param>
     /// <param name="Error">Primary error preventing start, or None.</param>
     /// <param name="Warnings">List of warnings (non-blocking).</param>
     /// <param name="ProbeProgress">Probe progress if ProbeIncomplete (e.g., "5/20").</param>
     /// <param name="DangerousWarnings">List of dangerous file warnings if DangerousCommands warning.</param>
-    public record MillPreflightResult(
-        bool CanStart,
-        MillPreflightError Error,
-        List<MillPreflightWarning> Warnings,
+    public record MillStartCheck(
+        MillBlocker Error,
+        List<MillWarning> Warnings,
         string? ProbeProgress = null,
-        List<string>? DangerousWarnings = null);
-
-    /// <summary>
-    /// A menu item with a label, mnemonic key, option type, and optional enabled condition.
-    /// </summary>
-    public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<bool>? EnabledWhen = null, Func<string?>? DisabledReason = null)
+        List<string>? DangerousWarnings = null)
     {
-        /// <summary>
-        /// Returns true if this item is currently enabled (selectable).
-        /// </summary>
-        public bool IsEnabled => EnabledWhen?.Invoke() ?? true;
+        /// <summary>Whether a mill job can start, derived from the blocker.</summary>
+        public bool CanStart => Error == MillBlocker.None;
+    }
 
-        /// <summary>
-        /// Gets the disabled reason string, or null if enabled or no reason provided.
-        /// </summary>
-        public string? CurrentDisabledReason => IsEnabled ? null : DisabledReason?.Invoke();
+    /// <summary>One line of a menu.</summary>
+    /// <param name="Blocker">
+    /// Why this item cannot be chosen, or null when it can. One definition answers both
+    /// whether the item is selectable and what to say about it.
+    /// </param>
+    public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<string?>? Blocker = null)
+    {
+        /// <summary>Whether this item can be chosen.</summary>
+        public bool IsEnabled => CurrentDisabledReason == null;
+
+        /// <summary>Why it cannot be chosen, or null when it can.</summary>
+        public string? CurrentDisabledReason => Blocker?.Invoke();
     }
 
     /// <summary>
@@ -122,15 +126,55 @@ namespace coppercli.Helpers
     internal static class MenuHelpers
     {
         /// <summary>
-        /// Returns the reason probing is disabled, or null if probing is allowed.
-        /// Checks: connection, file loaded, work zero set.
+        /// What about the machine stops a job being started, or None. Probing and milling
+        /// both call this, so neither can be offered while the other is refused. The door is
+        /// excluded: the run handles the enclosure and can release the hold.
+        /// </summary>
+        public static MillBlocker GetMachineBlocker()
+        {
+            var activity = MachineWait.GetActivity(AppState.Machine);
+
+            if (!MachineWait.IsResponding(activity))
+            {
+                return MillBlocker.NotConnected;
+            }
+
+            if (!MachineWait.BlocksJobStart(activity))
+            {
+                return MillBlocker.None;
+            }
+
+            return activity == MachineActivity.Alarm ? MillBlocker.AlarmState : MillBlocker.Asleep;
+        }
+
+        /// <summary>
+        /// Why a menu entry that needs the machine is unavailable, or null. Jog and Macro
+        /// need no file or height map, so this is their whole check.
+        /// </summary>
+        public static string? GetMachineDisabledReason() =>
+            GetMillBlockerReason(new MillStartCheck(
+                GetMachineBlocker(), new List<MillWarning>()));
+
+        /// <summary>
+        /// Why probing is unavailable, or null when it can start. Shares the machine check
+        /// with CheckMillCanStart, and adds the file and work zero.
         /// </summary>
         public static string? GetProbeDisabledReason()
         {
-            if (!AppState.Machine.Connected)
+            string? machineReason = GetMachineDisabledReason();
+            if (machineReason != null)
             {
-                return DisabledConnect;
+                return machineReason;
             }
+
+            // The probe screen loads, applies and discards the height map, all of which
+            // rewrite the file a run is streaming. The menu says it in fewer words than a
+            // refusal does, but it asks the one predicate.
+            if (AppState.WhyTheFileCannotChange() != null)
+            {
+                return DisabledRunInProgress;
+            }
+
             if (AppState.CurrentFile == null)
             {
                 return DisabledNoFile;
@@ -143,25 +187,31 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Validates whether milling can start. Single source of truth for preflight checks.
-        /// Used by both TUI (GetMillDisabledReason) and WebServer (HandleMillPreflight).
+        /// Whether milling can start. One check, shared by the terminal and the web server.
+        /// Used by both TUI (GetMillDisabledReason) and WebServer (HandleMillCanStart).
         /// </summary>
-        public static MillPreflightResult ValidateMillPreflight()
+        /// <param name="probeGrid">
+        /// The map to judge against, which the caller has already read. Required: null here
+        /// means the job has no map, and a default would make that indistinguishable from a
+        /// caller that did not look.
+        /// </param>
+        public static MillStartCheck CheckMillCanStart(ProbeGrid? probeGrid)
         {
-            var warnings = new List<MillPreflightWarning>();
+            var warnings = new List<MillWarning>();
             List<string>? dangerousWarnings = null;
             string? probeProgress = null;
 
-            // Check connection
-            if (!AppState.Machine.Connected)
+            // An open port GRBL has not answered is not a machine to start a job on.
+            var machineBlocker = GetMachineBlocker();
+            if (machineBlocker == MillBlocker.NotConnected)
             {
-                return new MillPreflightResult(false, MillPreflightError.NotConnected, warnings);
+                return new MillStartCheck(machineBlocker, warnings);
             }
 
             // Check file loaded
             if (AppState.Machine.File.Count == 0)
             {
-                return new MillPreflightResult(false, MillPreflightError.NoFile, warnings);
+                return new MillStartCheck(MillBlocker.NoFile, warnings);
             }
 
             // Check for dangerous warnings in file (collect early, always returned)
@@ -173,7 +223,7 @@ namespace coppercli.Helpers
                     .ToList();
                 if (dangerousWarnings.Count > 0)
                 {
-                    warnings.Add(MillPreflightWarning.DangerousCommands);
+                    warnings.Add(MillWarning.DangerousCommands);
                 }
                 else
                 {
@@ -181,88 +231,104 @@ namespace coppercli.Helpers
                 }
             }
 
-            // The map for this job, whether or not anything has loaded it yet: a complete
-            // map sitting in the autosave still has to be applied before the job runs, or
-            // every cut is uncorrected.
-            var probeGrid = AppState.CurrentProbeGrid;
-
+            // A complete map in the autosave still has to be applied, or the cuts carry no
+            // height correction.
             if (probeGrid != null && !AppState.AreProbePointsApplied)
             {
                 if (!probeGrid.HasCompleteData)
                 {
                     probeProgress = $"{probeGrid.Progress}/{probeGrid.TotalPoints}";
-                    return new MillPreflightResult(false, MillPreflightError.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
+                    return new MillStartCheck(MillBlocker.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
                 }
-                return new MillPreflightResult(false, MillPreflightError.ProbeNotApplied, warnings, null, dangerousWarnings);
+                return new MillStartCheck(MillBlocker.ProbeNotApplied, warnings, null, dangerousWarnings);
             }
 
-            // A map that has been baked into the toolpath is the most dangerous one to
-            // get wrong: every cutting move already carries its corrections. If the
-            // setup has moved since it was measured, those corrections are for
-            // somewhere else, and the whole job cuts at the wrong depth.
+            // A map already baked into the toolpath carries its corrections in every cutting
+            // move, so if the setup has moved since it was measured the whole job cuts at the
+            // wrong depth.
             if (probeGrid != null && AppState.AreProbePointsApplied)
             {
-                var applicability = AppState.GetProbeApplicability();
-
-                if (applicability == ProbeApplicability.DifferentFile
-                    || applicability == ProbeApplicability.OriginMoved)
+                if (!AppState.GetProbeApplicability().IsUsable())
                 {
-                    return new MillPreflightResult(false, MillPreflightError.ProbeSetupChanged, warnings, null, dangerousWarnings);
+                    return new MillStartCheck(MillBlocker.ProbeSetupChanged, warnings, null, dangerousWarnings);
                 }
             }
 
-            // Check machine state (alarm)
-            if (MachineWait.IsAlarm(AppState.Machine))
+            if (machineBlocker != MillBlocker.None)
             {
-                return new MillPreflightResult(false, MillPreflightError.AlarmState, warnings, null, dangerousWarnings);
+                return new MillStartCheck(machineBlocker, warnings, null, dangerousWarnings);
             }
 
             // Check if homed (warning only - will home before milling)
             if (!AppState.Machine.IsHomed)
             {
-                warnings.Add(MillPreflightWarning.NotHomed);
+                warnings.Add(MillWarning.NotHomed);
             }
 
             // Check if machine profile is selected (warning only)
             if (MachineProfiles.GetProfile(AppState.Settings.MachineProfile) == null)
             {
-                warnings.Add(MillPreflightWarning.NoMachineProfile);
+                warnings.Add(MillWarning.NoMachineProfile);
             }
 
-            return new MillPreflightResult(true, MillPreflightError.None, warnings, null, dangerousWarnings);
+            return new MillStartCheck(MillBlocker.None, warnings, null, dangerousWarnings);
         }
 
         /// <summary>
-        /// Returns the reason milling is disabled, or null if milling is allowed.
-        /// Wrapper around ValidateMillPreflight() for simple menu disabled state.
-        /// Note: AlarmState is NOT checked here (handled by EnsureMachineReady in MillMenu).
+        /// Asks for a baud rate, offering the rates this project supports and an entry that
+        /// keeps the one already set.
         /// </summary>
-        public static string? GetMillDisabledReason() => DescribeMillBlockingError(ValidateMillPreflight());
+        /// <returns>The chosen rate, or <paramref name="current"/> if it was kept.</returns>
+        public static int AskBaudRate(int current)
+        {
+            var options = CommonBaudRates.Select((rate, i) => $"{i + 1}. {rate}")
+                .Append(BaudMenuKeepCurrent)
+                .ToArray();
+
+            int choice = ShowMenu(BaudMenuTitle, options);
+            return choice < CommonBaudRates.Length ? CommonBaudRates[choice] : current;
+        }
+
+        /// <summary>Reads the map for a caller that has not, then asks the check above.</summary>
+        public static MillStartCheck CheckMillCanStart() =>
+            CheckMillCanStart(AppState.CurrentProbeGrid);
 
         /// <summary>
-        /// The reason milling is blocked, or null when nothing blocks it: all clear, or an
-        /// alarm the ready-check reports instead. One mapping, so the menu entry and the
-        /// reason shown beside it cannot enumerate the cases differently.
+        /// Returns the reason milling is disabled, or null if milling is allowed.
+        /// Wrapper around CheckMillCanStart() for simple menu disabled state.
         /// </summary>
-        public static string? DescribeMillBlockingError(MillPreflightResult result) => result.Error switch
+        public static string? GetMillDisabledReason(ProbeGrid? probeGrid) =>
+            GetMillBlockerReason(CheckMillCanStart(probeGrid));
+
+        /// <inheritdoc cref="GetMillDisabledReason(ProbeGrid?)"/>
+        public static string? GetMillDisabledReason() =>
+            GetMillBlockerReason(CheckMillCanStart());
+
+        /// <summary>
+        /// The reason milling is blocked, or null. One mapping, so the menu entry and the
+        /// reason beside it cannot list different cases.
+        /// </summary>
+        public static string? GetMillBlockerReason(MillStartCheck result) => result.Error switch
         {
-            MillPreflightError.None => null,
-            MillPreflightError.NotConnected => DisabledConnect,
-            MillPreflightError.NoFile => DisabledNoFile,
-            MillPreflightError.ProbeNotApplied => DisabledProbeNotApplied,
-            MillPreflightError.ProbeSetupChanged => DisabledProbeSetupChanged,
-            MillPreflightError.ProbeIncomplete => string.Format(DisabledProbeIncomplete, result.ProbeProgress),
-            MillPreflightError.AlarmState => null,  // handled by the ready-check
+            MillBlocker.None => null,
+            MillBlocker.NotConnected => DisabledConnect,
+            MillBlocker.NoFile => DisabledNoFile,
+            MillBlocker.ProbeNotApplied => DisabledProbeNotApplied,
+            MillBlocker.ProbeSetupChanged => DisabledProbeSetupChanged,
+            MillBlocker.ProbeIncomplete => string.Format(DisabledProbeIncomplete, result.ProbeProgress),
+            MillBlocker.AlarmState => DisabledAlarm,
+            MillBlocker.Asleep => DisabledAsleep,
             _ => DisabledUnknown
         };
 
         /// <summary>
-        /// Checks if the machine is connected. Shows error and waits for keypress if not.
+        /// Whether the machine is answering. Shows the reason and waits for a keypress if not:
+        /// an open port GRBL has not replied on is not a machine to send a command to.
         /// </summary>
         /// <returns>True if connected, false otherwise.</returns>
         public static bool RequireConnection()
         {
-            if (!AppState.Machine.Connected)
+            if (!MachineWait.IsResponding(AppState.Machine))
             {
                 ShowError(ErrorNotConnected);
                 return false;
@@ -544,7 +610,14 @@ namespace coppercli.Helpers
                         }
                         break;
                     case ConsoleKey.Escape:
-                        return options.Length - 1; // Assume last option is Back/Exit
+                        // Every caller's last entry is the one that changes nothing - Back,
+                        // Cancel, or keep-what-you-have - so Escape picks it, if it is
+                        // enabled. Returning a blocked entry would run a refused action.
+                        if (enabledStates == null || enabledStates[options.Length - 1])
+                        {
+                            return options.Length - 1;
+                        }
+                        break;
                 }
 
                 // Move cursor back up to redraw
@@ -577,7 +650,7 @@ namespace coppercli.Helpers
 
         /// <summary>
         /// Displays a menu from a MenuDef and returns the selected MenuItem.
-        /// Disabled items (based on EnabledWhen) are shown dimmed and not selectable.
+        /// Disabled items are shown dimmed and not selectable, with the reason beside them.
         /// </summary>
         public static MenuItem<T>? ShowMenuWithRefresh<T>(string title, MenuDef<T> menu, int initialSelection = 0) where T : notnull
         {
@@ -609,51 +682,165 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Block until the door is closed and the hold released, drawing the enclosure
+        /// message over the current screen.
+        ///
+        /// The policy is MachineWait.ClearDoorHoldAsync, the same one a run follows; this
+        /// supplies the overlay it asks and announces through. A screen with a run behind it
+        /// draws what that run publishes and never calls this.
+        /// </summary>
+        /// <returns>
+        /// True once the machine is out of Door. False if the operator backed out, or if the
+        /// hold was still there after MachineClearAttempts releases.
+        /// </returns>
+        public static bool WaitForDoorClear(Machine machine)
+        {
+            var outcome = MachineWait.ClearDoorHoldAsync(
+                machine,
+                ask: message =>
+                {
+                    // Keys typed while a message was up are still buffered, and one of them
+                    // would answer this prompt before the operator has read it.
+                    InputHelpers.FlushKeyboard();
+
+                    // Defaults to yes: this prompt only appears once GRBL reports the door
+                    // closed, which is what it asks about.
+                    return Task.FromResult(
+                        DisplayHelpers.ShowOverlayConfirm(message, defaultYes: true) == true);
+                },
+                announce: message => DisplayHelpers.ShowOverlay(
+                    message, messageColor: DisplayHelpers.AnsiWarning),
+                // Escape while waiting out an open door or a park restore is the way out.
+                onPoll: EscapePressed)
+                .GetAwaiter().GetResult();
+
+            if (outcome == DoorClearOutcome.WillNotRelease)
+            {
+                DisplayHelpers.ShowOverlayAndWait(ControllerConstants.ErrorDoorWillNotRelease);
+            }
+
+            return outcome == DoorClearOutcome.Cleared;
+        }
+
+        /// <summary>
+        /// Report a caught exception to the operator. Its text names files, offsets and
+        /// types they cannot act on, so that goes to the log and the screen gets a sentence.
+        /// The one path a caught exception takes to the terminal, as WriteFailure is for the
+        /// browser.
+        /// </summary>
+        /// <param name="what">What was being done, named the way the operator asked for it.</param>
+        public static void ShowFailure(string what, System.Exception ex)
+        {
+            Logger.Log("{0} failed: {1}", what, ex);
+            AnsiConsole.MarkupLine(
+                $"[{ColorError}]{Markup.Escape(string.Format(ErrorSomethingFailed, what))}[/]");
+        }
+
+        /// <summary>
+        /// Show what a run reported. ControllerError carries the run's own wording, written
+        /// for the operator, so it is shown as it stands.
+        /// </summary>
+        public static void ShowRunError(ControllerError fromTheRun)
+        {
+            DisplayHelpers.ShowOverlay(fromTheRun.Message, messageColor: DisplayHelpers.AnsiError);
+        }
+
+        /// <summary>
+        /// ShowFailure, then waits for a keypress. For a screen that redraws straight
+        /// afterwards and would otherwise wipe the message before it is read.
+        /// </summary>
+        /// <inheritdoc cref="ShowFailure" path="/param"/>
+        public static void ShowFailureAndWait(string what, System.Exception ex)
+        {
+            ShowFailure(what, ex);
+            WaitEnter();
+        }
+
+        /// <summary>
+        /// Whether the operator has pressed Escape. Does not wait for a key, so a screen can
+        /// offer a way out of a wait it is polling. Any other key waiting is read and
+        /// dropped, so a screen that also reads keys must not call this.
+        /// </summary>
+        internal static bool EscapePressed() =>
+            Console.KeyAvailable && InputHelpers.IsEscapeKey(Console.ReadKey(true));
+
+        /// <summary>
+        /// A prompt as one block of text: title, then message. A prompt with no title is
+        /// just its message, so no empty heading is drawn.
+        /// </summary>
+        public static string FormatPrompt(string title, string message) =>
+            string.IsNullOrEmpty(title) ? message : $"{title}\n\n{message}";
+
+        /// <summary>
+        /// Draw a run's prompt over the current screen and answer it. The caller redraws
+        /// its own content afterwards.
+        ///
+        /// The door prompt defaults to yes, because it only appears once GRBL reports the
+        /// door closed. Every other prompt defaults to no, so a reflex Enter cannot resume
+        /// motion. ShowOverlayConfirm renders [Y/n] or [y/N] to match.
+        /// </summary>
+        /// <returns>True if the operator chose to continue.</returns>
+        public static bool ShowPromptOverlay(UserInputRequest request)
+        {
+            string text = FormatPrompt(request.Title, request.Message);
+
+            // A run answers one prompt and can publish the next from inside that call, so a
+            // keystroke still in the buffer would answer a prompt nobody has read.
+            InputHelpers.FlushKeyboard();
+
+            bool? proceed = DisplayHelpers.ShowOverlayConfirm(text, defaultYes: request.IsDoorPrompt);
+            string response = proceed == true
+                ? ControllerConstants.OptionContinue
+                : ControllerConstants.OptionAbort;
+            request.OnResponse(response);
+
+            return response == ControllerConstants.OptionContinue;
+        }
+
+        /// <summary>
         /// Displays a confirmation dialog. Returns true for yes, false for no.
         /// Escape returns the default value.
         /// Responds immediately on keypress (no Enter required).
         /// </summary>
-        public static bool Confirm(string message, bool defaultYes = false)
-        {
-            string hint = defaultYes ? "Y/n" : "y/N";
-            AnsiConsole.Markup($"{message} [{ColorPrompt}][[{hint}]][/] ");
-
-            while (true)
-            {
-                var key = Console.ReadKey(true);
-
-                if (InputHelpers.IsEnterKey(key) || InputHelpers.IsExitKey(key))
-                {
-                    AnsiConsole.WriteLine(defaultYes ? "y" : "n");
-                    return defaultYes;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.Y))
-                {
-                    AnsiConsole.WriteLine("y");
-                    return true;
-                }
-                if (InputHelpers.IsKey(key, ConsoleKey.N))
-                {
-                    AnsiConsole.WriteLine("n");
-                    return false;
-                }
-            }
-        }
+        public static bool Confirm(string message, bool defaultYes = false) =>
+            AskYesNo(message, defaultYes, offerQuit: false) ?? defaultYes;
 
         /// <summary>
         /// Displays a confirmation dialog with quit option.
         /// Returns true for yes, false for no, null for quit/Escape.
         /// Responds immediately on keypress (no Enter required).
         /// </summary>
-        public static bool? ConfirmOrQuit(string message, bool defaultYes = false)
+        public static bool? ConfirmOrQuit(string message, bool defaultYes = false) =>
+            AskYesNo(message, defaultYes, offerQuit: true);
+
+        /// <summary>
+        /// Prompts yes/no and returns on the first keypress. The hint lists which key does
+        /// what, including quit when the caller offers it, so what is drawn and what is
+        /// accepted are set together.
+        /// </summary>
+        /// <returns>Null where the operator quit, which only <paramref name="offerQuit"/>
+        /// allows.</returns>
+        private static bool? AskYesNo(string message, bool defaultYes, bool offerQuit)
         {
-            string hint = defaultYes ? "Y/n/q" : "y/N/q";
+            string hint = (defaultYes ? "Y/n" : "y/N") + (offerQuit ? "/q" : "");
             AnsiConsole.Markup($"{message} [{ColorPrompt}][[{hint}]][/] ");
 
             while (true)
             {
                 var key = Console.ReadKey(true);
 
+                if (InputHelpers.IsExitKey(key))
+                {
+                    if (offerQuit)
+                    {
+                        AnsiConsole.WriteLine();
+                        return null;
+                    }
+
+                    // No quit option, so Escape returns the default.
+                    AnsiConsole.WriteLine(defaultYes ? "y" : "n");
+                    return defaultYes;
+                }
                 if (InputHelpers.IsEnterKey(key))
                 {
                     AnsiConsole.WriteLine(defaultYes ? "y" : "n");
@@ -669,18 +856,15 @@ namespace coppercli.Helpers
                     AnsiConsole.WriteLine("n");
                     return false;
                 }
-                if (InputHelpers.IsExitKey(key))
-                {
-                    AnsiConsole.WriteLine();
-                    return null;
-                }
             }
         }
 
         /// <summary>
-        /// Prompts for a numeric value with quit option.
-        /// Returns the value, or null if user pressed q/Escape.
+        /// Prompts for a number, offering <paramref name="defaultValue"/>.
         /// </summary>
+        /// <returns>
+        /// The number typed, the default for an empty line, or null if Escape was pressed.
+        /// </returns>
         public static double? AskDouble(string prompt, double defaultValue)
         {
             while (true)
@@ -705,9 +889,11 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Prompts for a string value with quit option.
-        /// Returns the value, or null if user pressed Escape.
+        /// Prompts for text, offering <paramref name="defaultValue"/>.
         /// </summary>
+        /// <returns>
+        /// The text typed, the default for an empty line, or null if Escape was pressed.
+        /// </returns>
         public static string? AskString(string prompt, string defaultValue)
         {
             AnsiConsole.Markup($"{prompt} [{ColorPrompt}][[{Markup.Escape(defaultValue)}]][/]: ");

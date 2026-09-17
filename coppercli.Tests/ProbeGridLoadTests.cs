@@ -7,8 +7,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// A saved map decides the commanded Z of every cutting move, so the loader owes the
-    /// same checks the constructor makes. These pin the refusals, one per way a file lies.
+    /// A saved map sets the commanded Z of every cutting move, so the loader makes the same
+    /// checks the constructor does. One test per rejected file.
     /// </summary>
     public class ProbeGridLoadTests
     {
@@ -89,9 +89,8 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A non-finite origin compares false against every tolerance, so a file carrying one
-        /// would declare itself applicable to any job. A map that names a file has to carry an
-        /// origin that can be read, or it is refused - reading as "no setup recorded" would
-        /// get it through every gate instead.
+        /// would be applicable to any job. A map that names a file must carry a readable
+        /// origin or it is refused: reading as "no setup recorded" would pass every check.
         /// </summary>
         [Theory]
         [InlineData("NaN")]
@@ -105,7 +104,7 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A map written before the setup was recorded carries no origin at all. Those still
+        /// A map written before the setup was recorded carries no origin. Those still
         /// load; the refusal above is for a file that records one it cannot express.
         /// </summary>
         [Fact]

@@ -4,72 +4,320 @@
 
 **Everywhere**
 
-- **Stopping a probe lifts the tool clear.** Whichever way the run ends - the Stop button in
-  the terminal, the web UI, or a macro - the tool now rises to the probe safe height, and
-  coppercli tells you when it cannot confirm the tool got there. Stopping used to leave the
-  tip where the last descent put it. coppercli now says whether it confirmed the machine
-  stopped, instead of always reporting success.
+- **Changing a tool asks about the enclosure once, not twice.** If you close the door before
+  pressing Continue, the hold is released on that answer. It used to follow your Continue
+  with a second window asking whether the closed door should continue. A door still open when
+  you answer is still put to you once you close it. Same for the pause at an M0.
+- **An unrestored depth adjustment is reported.** The adjustment is written into the work
+  origin and taken back out when the run ends. A machine that would not take it back out -
+  alarmed at the end of a run, say - left it there silently, so every later job cut that much
+  too shallow, and the next run forgot the amount was outstanding at all.
+- **The height map no longer steps at the edge of the probed area.** A point a fraction of a
+  micron outside took the highest point measured anywhere on the board instead of the nearest
+  measured edge.
+- **"Resuming" no longer claims the spindle is starting.** The message shown while the
+  machine restores from the park said "tool moving, spindle starting" on every screen,
+  including a probe, where no spindle is running. It now reads "Resuming...".
+- **The door prompt defaults to yes**, and the question clears as soon as you answer it. It
+  stayed on screen through the release, which read as the door closure not being detected.
+- **A probe you stop no longer drives the tool down.** An interrupted single Z probe lifted
+  to an absolute work height. A probe starts from wherever you jogged to, under whatever
+  origin was last set, so that lift could be a descent. It uses machine coordinates now.
+- **Saving the height map keeps it.** Save deleted the autosave and, with it, the map the
+  job was using. The Mill button had been refusing to cut without it, and went green.
+- **An aborted tool change stops the machine and says whether the tool lifted**, as a
+  stopped probe and a stopped mill already did. It said only "cancelled".
+- **A new tool's Z origin is read back before the run continues.** A rejected write left the
+  new tool cutting with the old tool's length.
+- **Two taps of Probe Z send one probe.** Both used to find the machine free and both sent a
+  probe move.
+- **An outline trace that fails to start no longer blocks every later probe.**
+- **Stop reaches a probe that never started**, instead of leaving the machine marked busy
+  until you restart coppercli.
+- **The warning before zeroing X or Y describes the map it would discard.** A grid with
+  nothing measured yet was called "a complete height map" in the browser and "a partly
+  measured" one in the terminal.
+- **The dashboard counts measured points, not points attempted**, so a map with a skipped
+  point no longer reads as finished.
+- **The file screen offers to apply a height map that is only in the saved copy.** It said
+  nothing, and Mill then refused the job because the map had not been applied.
+- **A take-over that the server refuses says why**, rather than reloading the page into the
+  same dialog.
+- **A connection refused because the port is held elsewhere says so in coppercli's words**,
+  not the operating system's.
+- **Starting with `--server` exits when the port is taken**, instead of waiting for a
+  keypress on an unattended machine.
+- **The mill's time estimate no longer starts out negative** when the enclosure was open
+  before the first line went out.
+- **The terminal reaches its main menu again.** Every startup question - reload the file,
+  trust the work origin, keep the height map - came back as soon as you answered yes, so the
+  first question on launch repeated indefinitely. The only way out was Escape, which quit.
+- **The browser no longer treats a probe run with a skipped point as a finished map.** It
+  counted a skipped point as a measured one, so it offered to save a map the mill was
+  refusing at the same moment.
+- **Probing works again after a probe fails to start.** A probe that failed while starting
+  left the machine marked busy for the rest of the session, and every later probe and outline
+  trace was refused.
+- **A single Z probe in the browser can be stopped.** It says what went wrong rather than
+  always "no contact", and it stops the machine and lifts the tool when the enclosure opens
+  mid-probe. The probe move used to stay in GRBL's planner and run when the hold lifted.
+- **Homing and Go-to buttons are refused while a probe waits at the enclosure prompt.**
+  Homing there changes the coordinates the rest of the run measures in, and the run used to
+  carry on to the next point afterwards.
+- **A mill stopped at the enclosure says the tool may still be down**, as a stopped probe
+  already did. It used to say nothing.
+- **The height map records the machine's current origin.** Zeroing moved G54, but every map
+  measured afterwards still recorded the origin from before you zeroed, so a second pass over
+  the same board was refused as a setup that had changed.
+- **Canceling a jog-screen Z probe waits for the machine to stop.** It returned to the jog
+  keys with the probe move still running, and soft-reset GRBL instead of using the stop every
+  other cancel uses.
+- **The server status screen no longer crashes when a client disconnects while the screen is
+  redrawing.**
+- **The mill's elapsed time and ETA are measured on a clock that only moves forward.** A
+  daylight-saving change or an NTP correction moved the estimate by an hour mid-job.
+- **Save, Apply and Continue agree about the height map.** Each read a different answer to
+  whether a map exists, so Apply was hidden for a map the mill was telling you to apply.
+- **A failed feed-rate or depth change says so** instead of doing nothing.
+- **Taking the machine over holds it for the browser that asked.** The browser the take-over
+  disconnected used to reconnect first and get the machine back.
+- **Probing Z by hand no longer kills coppercli** if the enclosure opens while the tool is
+  descending. The probe's timeout was not caught anywhere, and the program exited with the
+  tool at the workpiece.
+- **A run whose door wait was already cancelled no longer spins.** It used 100% CPU sending
+  progress messages and never ended.
+- **Escape gets you out of an open door on the connect screen**, which had no way out at all.
+- **The probe screen stays up while the run asks about the enclosure.** The browser read the
+  question as the run having finished and returned to the dashboard mid-probe.
+- **A job whose final retract cannot be confirmed reports that**, instead of reporting the
+  job finished with the tool where it was. Same for an outline trace.
+- **Taking the machine over from the terminal no longer competes with the browser** for the
+  serial port.
+- **Escape at the baud rate menu keeps the rate you had**, instead of setting the last one in
+  the list.
+- **A file whose name contains a quote can be loaded.** The name went straight into the
+  list's markup, so the quote closed the attribute holding the path and the file could not be
+  selected; an angle bracket corrupted the rest of the list.
+- **One connection that fails while it is being accepted no longer stops the web server.**
+- **The line counter on the mill screen has one source**, so it no longer flickers between
+  two values arriving at different rates. A reconnect no longer shows an internal phase name.
+- **A clock change no longer disconnects anything.** Every timeout was measured against the
+  wall clock, so an NTP correction or a daylight-saving change could drop the browser and the
+  terminal at once, or leave a client that had gone undetected.
+- **The take-over prompt reads the server's answer**, not a phrase inside the error text.
+  Rewording that message removed the only way to reclaim a machine another browser holds.
+- **Save writes the height map you are looking at.** A map loaded from a file has no saved
+  copy to move, so Save was offered and then failed after you had chosen where to put it.
+  Save also used the map on disk rather than the one on screen, so a map measured for another
+  board could be written to your file and reported saved.
+- **Two probe starts arriving together leave one run.** The second used to pass the same
+  check while the first was still setting up, and whichever finished first stopped the other.
+- **A single Z probe now counts as the machine being busy.** It runs without a controller
+  behind it, so every check reported the machine free while the tool was descending, and a
+  jog or a second probe went through.
+- **A single Z probe that never touches says so.** The failure was discarded and the probe
+  appeared to do nothing.
+- **A failed settings save tells you**, instead of only reaching the log. The setting looked
+  changed until the next launch.
+- **Recovering with no saved height map says that**, rather than reporting it was measured
+  for a different file.
+- **Load and Upload keep their icons** while they work.
+- **A probe paused at the enclosure stays paused.** Resuming sent its moves into GRBL's
+  planner, where they ran when the hold lifted. The mill already refused this; now every job
+  does.
+- **The warning before zeroing X or Y covers a height map that is only in the saved copy.**
+  It asked about the map in memory, so a map you had not loaded was deleted with no warning.
+- **Escape ends the wait at an open door at once**, instead of up to five seconds later.
+- **Every refusal to change the height map says the same thing**, whichever button you
+  pressed, and is shown as a refusal rather than a server failure.
+- **A work zero that names an outcome nothing has words for is caught before release**, in
+  both the terminal and the browser.
+- **One door policy.** Which enclosure states you are asked about, how many refused releases
+  are enough, and which states are waited out is now decided in one place, for the terminal
+  and for a running job. The two used to differ on whether a stray keypress could answer the
+  question and on whether Escape got you out.
+- **A failure shows a sentence instead of an exception.** Twelve places in the terminal put
+  a file offset or a type name on screen; the details go to the log now.
+- **The jog screen's position rows are padded to the width they draw.** They were padded to
+  13 characters more than the row needs.
+- **The work origin is only recorded once the machine has taken it.** An alarmed, sleeping
+  or disconnected machine drops a `G10 L20`. coppercli used to record the origin anyway, and
+  for an X or Y zero delete the height map and its saved copy.
+- **Setting up a grid, loading one from a file or recovering the saved copy is refused
+  during a job**, as applying and discarding already were. Loading a grid while a probe was
+  running deleted the saved copy that run was writing into.
+- **Probing Z from the jog screen says what became of the height map**, as the other two
+  zero keys do. It used to say nothing.
+- **Zeroing no longer warns you to reload the file when only the saved copy would not
+  delete.** The G-code was correct, and the message said it was not.
+- **The browser says why a height map was discarded when you load another board**, as the
+  terminal does.
+- **The browser's warning before zeroing X or Y says what it costs**: the map and its saved
+  copy are deleted and you have to probe again, and zeroing only Z keeps it.
+- **A refused session-restore answer is reported** instead of being logged and reported as
+  done.
+- **The enclosure Continue button waits the full settle time.** A redraw re-enabled it after
+  one status update, which is shorter than a double tap.
+- **The enclosure message is drawn once in the browser**, not in the overlay and again
+  behind it.
+- **Applying, loading or discarding a height map is refused during a job**, as loading a
+  file already was. Discarding used to delete the saved copy and then refuse, so you were
+  told the map was gone while the machine was still cutting with it. The Probe screen is
+  disabled in the terminal while a job runs, for the same reason.
+- **Zeroing on the jog screen says what became of the height map**, and only when it
+  happened. It used to claim the map was re-applied even when the source file was missing.
+- **Discard+Start stops when the discard is refused**, instead of starting a probe anyway.
+- **Zeroing X or Y discards a height map that is only in the saved copy**, which the browser
+  had already warned would be invalidated.
+- **A macro stops if a zero leaves the height map wrong for the file**, as the terminal and
+  the browser already report.
+- **Discarding a height map reloads the original G-code before dropping the map.** If the
+  reload failed it used to report the map discarded while the corrections were still in the
+  file the machine would cut. If the original file is gone the discard is refused and says so.
+- **Zeroing X or Y with no height map no longer claims one was discarded.**
+- **Continue Probing and Discard+Start check the machine again when pressed.** The menu's
+  enabled state is drawn once, so a job started from the browser in between left them live.
+- **Zeroing in the browser says what became of the height map**, as the terminal does, and
+  warns when it could not be re-applied.
+- **Loading a file over the web loads the path it checked.** A relative name was validated
+  against the browse directory and then opened from wherever coppercli was started.
+- **A path of just `~` no longer reports an internal error.**
+- **A machine profile coppercli does not have is refused**, instead of being stored and
+  turning the tool setter off without saying so.
+- **A file path naming another computer is refused** by loading and saving too, not only by
+  the browser.
+- **Settings the machine cannot work to are refused.** A probe feed of zero, a negative
+  trace height or a value that is not a number went into a G-code line unchecked. The
+  terminal and the web interface check them now, one bad value refuses the whole change, and
+  a hand-edited settings file falls back to the default for anything unusable.
+- **Stop on the probe screen no longer stops a milling job.** With no probe running it
+  reset the machine, which aborted the cut and left the job reporting that it was still
+  running.
+- **Trusting the work zero from a previous session reports a refusal.** It used to close the
+  window and say nothing.
+- **The file browser stays on this computer.** A path naming another machine sent the
+  request to that machine's file server.
+- **The file a job is cutting cannot be replaced while it runs.** Loading a G-code file,
+  uploading one, loading a height map or restoring a session reset the machine's place in the
+  file to the start. Setting Z0 at a tool change did the same, by re-applying the height map,
+  so continuing re-cut the whole board with the new tool. All of those are refused during a
+  job. Zeroing X or Y is refused outright, because it moves the part under the rest of the
+  job. Setting Z0 at a tool change still works and now leaves the file alone, and the
+  confirmation says what became of the height map.
+- **One enclosure question, asked once.** The door prompt came from two places: the run
+  raised it, and the screen worked the door state out for itself and drew its own. You saw
+  two windows for the same question - one yellow with nothing to press, one blue with a y/n.
+  The run is the only source now, and each screen draws what it is sent.
+- **The browser's door window has a Stop on it.** It covers the whole page, so with only
+  Continue on it there was no way to abandon a job from there.
+- **Pressing a key twice cannot answer the next question.** Answering a prompt in the
+  terminal can raise the next one immediately - a tool change followed by the enclosure -
+  and the second keypress went to a question you had not read. Anything already typed is
+  discarded when a new prompt appears.
+- **The browser can no longer release a hold the job is asking about.** Its Continue now
+  answers the job's own question. Releasing the hold behind the job left it waiting for an
+  answer that never came.
+- **A probe stopped at the enclosure shows its question in the browser again** after a
+  reload, as milling and tool changes already did.
+- **Messages are shorter.** Every prompt and error says the same thing in fewer words.
+- **A tool change stops if it cannot confirm the tool lifted.** It used to move in X and Y
+  next regardless, with the tool possibly still down.
+- **Pressing R at a door hold no longer closes coppercli.** It reports that the door is
+  holding and the job stays paused.
+- **The jog controls are disabled when the machine drops off the link**, as they already
+  were when it needed attention.
+- **An outline trace asks about the enclosure** before it moves, as a probe and a job do,
+  and a trace refused for an unsafe height reports as failed rather than finished.
+- **Starting a job after opening the enclosure asks you to release the hold.** Closing the
+  door does not end the hold: the machine parks and waits to be resumed. Mill used to refuse
+  that state and tell you to wait for the machine to stop moving and clear an alarm, neither
+  of which applied. It now asks, and releases the hold when you say yes. The same prompt
+  appears for a tool change, on the jog screen, and while connecting, and it says which of
+  the three door states you are in: open, closed and holding, or restoring from the park.
+- **Every screen handles an open enclosure the same way.** Jog, Probe and Mill open as normal
+  and show "Close the door." over the top, and it returns if you open the door later. Once the
+  door is closed the message becomes "Door closed. Continue?". Probing used to run until the
+  first safety retract and then fail with "could not confirm the tool lifted to a safe
+  height", which does not mention the door. The jog screen only reported it if you pressed a
+  key. The web UI shows the same message and offers the same release.
+- **A long message fits the terminal.** The enclosure message is longer than one line, and
+  the overlay box cut it off at the border instead of wrapping it.
+- **Stopping a job at the enclosure no longer retracts the tool afterwards.** The retract
+  was sent while GRBL held at the door, so it sat in the planner until the hold was released
+  and the tool rose as you cleared the door rather than when you pressed Stop. A stopped
+  probe and a stopped tool change already handled this; a stopped job did not.
+- **Mill is refused while the machine is asleep**, as Probe already was, and says so.
+- **The probe screen no longer redraws hundreds of times a second at the door.** With the
+  door closed and the machine waiting to be resumed, the screen had nothing to wait for and
+  redrew continuously until the machine moved. The mill screen did the same.
+- **A probe interrupted by the enclosure retracts before it carries on.** The machine parks
+  with the tool at probe depth and the probe touching, and the run went straight to the next
+  point: an XY move that drags the probe across the board, then a probe cycle starting from a
+  switch that is already made, which the machine refuses with an alarm. It now lifts to the
+  safe height first.
+- **An alarm from the machine is written to the log**, with its code. A run stopped by an
+  alarm used to report only that the machine would not move, with nothing recording what the
+  machine had said. Rejected commands are logged the same way.
+- **Resume reports when it will not run.** Pressing Resume in the web UI while the machine
+  held at the door did nothing and reported success. It now gives the reason: at the door,
+  alarmed, disconnected, or not holding.
+- **Stopping a probe retracts the tool.** However the run ends - the Stop button in the
+  terminal, the web UI, or a macro - the tool now rises to the probe safe height, and
+  coppercli reports when it cannot confirm it got there. Stopping used to leave the tip where
+  the last descent put it, and always reported success.
 - **Force-disconnecting a terminal client stops the machine.** Taking the machine over from
   the web UI closed the connection and left GRBL working through its buffer.
 - **Quitting no longer leaves the machine running.** Closing the serial port does not stop
-  GRBL: it works through whatever is already in its buffer. Quitting the server mid-probe
-  left the tool moving after the port closed. coppercli now stops the machine first,
-  whichever way the connection is dropped. A machine sitting idle with nothing outstanding,
-  or a port that never answered as GRBL, is left alone.
-
+  GRBL: it works through whatever is in its buffer. Quitting the server mid-probe left the
+  tool moving after the port closed. coppercli now stops the machine first, however the
+  connection is dropped. A machine idle with nothing outstanding, or a port that never
+  answered as GRBL, is left alone.
 - **Stopping a probe no longer blocks the next one.** A stop could leave the controller
-  still claiming the machine, and every attempt to start again was refused with "Probing is
-  already running" until coppercli was restarted. A run now always ends, and starting or
-  stopping returns the controller to idle whatever the last run left behind. Milling could
-  be left the same way.
-
-- **A height map you have not applied stops the job.** A finished map sitting in the
-  autosave, not yet loaded, used to leave milling cleared to run with no height correction at
-  all while the probe screen said "complete". The mill check, Save and Apply now read the
-  same map the screen shows.
+  claiming the machine, and every later start was refused with "Probing is already running"
+  until coppercli was restarted. A run now always ends, and starting or stopping returns the
+  controller to idle whatever the last run left behind. Milling had the same fault.
+- **A height map you have not applied stops the job.** A finished map in the autosave, not
+  yet loaded, used to leave milling cleared to run with no height correction while the probe
+  screen said "complete". The mill check, Save and Apply now read the same map the screen
+  shows.
 - **Probing is refused without a work zero**, as it already was in the terminal. Grid
-  positions are work coordinates, so probing from an origin nobody set drives the tool
-  somewhere arbitrary.
-- **A saved height map is checked before it is used.** A `.pgrid` with impossible extents, too
-  few points, a point outside its own grid, or a height that is not a number is refused
+  positions are work coordinates, so probing from an unset origin drives the tool to
+  arbitrary XY.
+- **A saved height map is checked before it is used.** A `.pgrid` with impossible extents,
+  too few points, a point outside its own grid, or a height that is not a number is refused
   rather than loaded and cut with.
-- **A point the probe could not reach is reported when it is skipped**, rather than only
-  showing up later as a map that will not apply.
-- **Recovering a map measured for another job says so**, instead of reporting a server fault.
-- **Discarding probe data that could not be deleted says so**, instead of reporting success
-  and then showing the data again.
-
-
-- **An unexpected error no longer shows its exception text.** A disk error, or a port another
-  program held, put file paths and byte offsets on screen. The run now says it stopped and
-  the exception goes to the log. What a job says when it refuses something you can act on is
+- **A point the probe could not reach is reported when it is skipped**, rather than showing
+  up later as a map that will not apply.
+- **Recovering a map measured for another job reports that**, instead of a server fault.
+- **Discarding probe data that could not be deleted reports that**, instead of reporting
+  success and then showing the data again.
+- **An unexpected error no longer shows its exception text.** A disk error, or a port
+  another program held, put file paths and byte offsets on screen. The run now reports that
+  it stopped and the exception goes to the log. Messages for refusals you can act on are
   unchanged.
 
 **The web interface**
 
-- **Starting a probe no longer reports that one is already running.** The start button ran its
-  handler twice on one tap, so the second tap-that-never-happened was refused by the run the
-  first had just started.
+- **Starting a probe no longer reports that one is already running.** The start button ran
+  its handler twice on one tap, and the second call was refused by the run the first had
+  started.
 - **Tracing the outline holds the probe screen.** The stop is the only control that does
-  anything while the tool is walking the board; everything else is disabled until the trace
-  ends, including on a browser that joins or reloads part-way through.
-- **Tracing the outline no longer puts the probing window up.** A trace walks the tool around
+  anything while the tool is tracing the outline. Everything else is disabled until the
+  trace ends, including on a browser that joins or reloads part-way through.
+- **Tracing the outline no longer opens the probing window.** A trace moves the tool around
   the board and measures nothing, so there is no progress to show.
 - **A second tab of the same browser no longer stops the first from receiving status.**
   Opening one left the first tab able to send commands while it no longer received status
   updates.
-
-
-
 - **An answer to a prompt names the prompt it answers.** A tool change without a tool setter
-  asks two questions in a row, and answering the first puts the second up before the reply
-  arrives. A second tap on Continue released the "set Z0" step unread, and the job cut on the
-  previous tool's datum. An answer that names another question is now refused, the button
-  goes dead when tapped, and a new question takes no answer until it has been on screen
+  raises two prompts in a row, and answering the first publishes the second before the reply
+  arrives. A second tap on Continue answered the "set Z0" prompt unread, and the job cut on
+  the previous tool's offset. An answer that names another prompt is now rejected, the button
+  is disabled when tapped, and a new prompt accepts no answer until it has been on screen
   longer than a double-tap.
-- **Starting a job says whether it started.** Mill start, probe start and the outline trace
-  answered success whatever happened, so a start refused for an open door left the browser
-  showing a milling screen and then announcing the job complete.
+- **Starting a job reports whether it started.** Mill start, probe start and the outline
+  trace returned success whatever happened, so a start refused for an open door left the
+  browser on a milling screen that then reported the job complete.
 - **A finished job releases the screen.** A browser that joined or reloaded mid-job stayed
   locked to the milling screen afterwards, with the back button disabled.
 - **Probing from a browser keeps the computer awake**, as probing from the terminal already
@@ -81,47 +329,45 @@
   resume, unlock and the feed override still work, and a tool change still lets you jog to
   the surface to set Z0.
 - **The connection survives a busy job.** Several threads wrote to the same socket at once,
-  and homing blocked the socket that also carries the Stop button.
+  and homing blocked the socket that carries the Stop button.
 - **The machine is not disconnected while a job waits on the operator.** A job parked at a
   tool change or a program stop read as finished, so the last browser closing its tab could
-  close the serial port with the tool in the work. Tracing a probe grid's outline read the
-  same way.
+  close the serial port with the tool in the work. An outline trace read the same way.
 - Loading another G-code file is refused while a job is running.
 - Request bodies and uploads are bounded, a wrong HTTP method is answered rather than
   ignored, and malformed input no longer drops the connection.
 
 **Probing**
 
-- **The "probe took too long" warning is gone, and a real check replaces it.** That warning
-  timed the machine's drive to the next point rather than the probe itself, because the
-  retract and the move ahead of it are sent without waiting and the probe command waits for
-  both before it starts. Any longer drive, such as a jump to a new row, tripped it. Each
-  measured height is now compared against the heights already measured around it. Both
-  directions count, so a tip stopping short on debris is caught as well as one pushing past
-  the surface. A bowed board still passes, because neighboring points stay close together
-  however far the board moves end to end.
-- **A rejected height is measured again, not recorded.** Continuing after the check stopped
-  the run wrote the rejected reading into the map anyway, so the height taken before the
-  board was cleared became part of it and the map reported itself complete.
-- **The tool lifts before the run pauses**, and the job stops if that lift cannot be
-  confirmed. The pause previously left the tip resting on the copper.
-- **The web interface says why probing paused.** Grid probing reported its errors only to
-  the log file.
-- **A probe started from a macro can be stopped with Escape**, and refuses to start while
-  probing is already running instead of sending its own moves into that job.
+- **The "probe took too long" warning is replaced by a height check.** That warning timed
+  the move to the next point rather than the probe itself, because the retract and the move
+  before it are sent without waiting and the probe command waits for both. Any longer move,
+  such as a jump to a new row, tripped it. Each measured height is now compared against the
+  heights measured around it, in both directions, so a tip stopping short on debris is caught
+  as well as one pushing past the surface. A bowed board still passes, because neighbouring
+  points stay close together however far the board moves end to end.
+- **A rejected height is measured again, not recorded.** Continuing after the check paused
+  the run wrote the rejected reading into the map, so a height taken before the board was
+  cleared became part of it and the map reported itself complete.
+- **The tool retracts before the run pauses**, and the job stops if that retract cannot be
+  confirmed. The pause previously left the tip on the copper.
+- **The web interface reports why probing paused.** Grid probing logged its errors and
+  reported nothing.
+- **A probe started from a macro can be stopped with Escape**, and is refused while probing
+  is already running instead of sending its moves into that run.
 
 **Milling**
 
-- **The enclosure prompt no longer returns the moment it is answered.** The machine reports
-  the door on its status poll, so the answer was checked against a reading older than the
-  door. The job now waits for the machine to confirm, and asks again only if the door is
-  still open.
-- **Pausing while a tool-change or program-stop prompt is on screen keeps the job alive.**
+- **The enclosure prompt no longer returns as soon as it is answered.** The machine reports
+  the door on its status poll, so the answer was checked against a reading taken before the
+  door closed. The job now waits for the machine's reading to catch up, and prompts again
+  only if the door is still open.
+- **Pausing while a tool-change or program-stop prompt is on screen no longer ends the job.**
   It previously ended the job.
 - **Stopping a run that has already stopped itself leaves the machine usable.** It could
-  strand the controller for the rest of the session.
-- **Milling is offered only when the preflight checks pass.** An applied height map whose
-  work origin has since moved now fails that check, and the screen says which check failed.
+  leave the controller stuck for the rest of the session.
+- **Milling is offered only when the job can start.** An applied height map whose work
+  origin has since moved now fails that check, and the screen reports which check failed.
 
 **Elsewhere**
 
@@ -271,7 +517,6 @@
   probe mode), the controller sat idle for ever with nothing reported. The controller now
   returns the machine to a known mode before starting, confirms the stream actually began,
   and fails with a clear message if it did not.
-
 - **The estimated time remaining is stable and sensible.** It used to be computed from
   time-elapsed-since-you-pressed-go divided by lines done - but "elapsed" included homing
   and setup, so the first figure was wildly inflated and then lurched downward. It now
@@ -287,7 +532,6 @@
   and removed from it on another. Whenever a redraw coincided with a point being
   recorded — in practice after a few dozen points — the run was lost. The grid now owns
   that queue and hands out a copy, so no caller can enumerate the live list.
-
 - **A failure during probing no longer takes the whole program down.** Cleanup called
   `Reset()` on the controller from a `finally` block; when the failure came from the
   display thread the controller was legitimately still running, so `Reset()` threw
@@ -309,15 +553,12 @@
   apply the previous board's map, defaulting to yes; and a map that had already been
   applied to the toolpath was never re-checked, so moving the work origin afterwards left
   every cutting move carrying corrections measured somewhere else.
-
 - **Milling refuses when the applied height map no longer matches** the loaded file or
   the current work origin — the most dangerous case, because the corrections are already
   baked into every move.
-
 - **The warning when zeroing says what actually happens**: the map is deleted, including
   the saved copy, you will need to probe again, and zeroing only Z keeps it. It also only
   appears when the map genuinely describes the board in hand.
-
 - **Startup questions come from one place.** The sequence carried over from a previous
   session — reload the file, trust the work origin, resolve a stored height map — was
   written twice, once in the terminal startup and once in the browser client, and the two
@@ -361,7 +602,7 @@
 - Query-string parameter keys are named constants alongside the existing API-path and command constants, rather than string literals scattered through the request router.
 - The two probe-status responses (brief and full) derive their state from one shared snapshot, so they can no longer disagree on whether a map exists or has unsaved data.
 - The file browser's "where do I open" precedence (requested directory, else last used, else current) lives in one helper instead of being copied between the browse and save-location entry points.
-- Removed a write-only `SkipConfirmation` option that implied the milling controller honoured a "skip the depth confirmation" flag; nothing read it. The per-start depth confirmation is a terminal-only presentation step, and the web start is gated by the server-side preflight instead — the dead flag was removed so the code no longer suggests otherwise.
+- Removed a write-only `SkipConfirmation` option that implied the milling controller honoured a "skip the depth confirmation" flag; nothing read it. The per-start depth confirmation is a terminal-only presentation step, and the web start is gated by the server-side check instead — the dead flag was removed so the code no longer suggests otherwise.
 - Deleted ~200 lines of unused 3-D vector geometry (cross/dot product, rotations, normalisation, angle, interpolation) inherited from OpenCNCPilot; a PCB height-map tool only ever uses the component-wise min/max and magnitude, and the compiler confirms nothing else referenced the rest.
 
 ### Security

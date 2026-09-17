@@ -1,12 +1,13 @@
 // coppercli Web UI Screen Management
 
 import { state } from './state.js';
-import { $, showError, showInfo, isProblematicStatus } from './helpers.js';
-import { pollProbeStatus, showProbeComplete, dismissProbeComplete, fetchAndDisplayProbeData, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, showProbeSaveModal } from './probe.js';
+import { $, setText, showError, showInfo, format } from './helpers.js';
+import { pollProbeStatus, dismissProbeComplete, fetchAndDisplayProbeData, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, updateProbeInfoDisplay } from './probe.js';
 import { loadFiles } from './file.js';
 import { updateJogButtons, updateContinueMillingButton } from './jog.js';
 import {
     updateToolChangeDisplay,
+    updateDoorOverlay,
     updateDepthDisplay,
     updateMillGrid,
     applyMillControllerState,
@@ -25,16 +26,16 @@ import {
     CLASS_CONNECTED,
     CLASS_ALARM,
     CLASS_DISABLED,
-    CLASS_RUNNING,
-    CLASS_HOLD,
     CLASS_PROBE_OPEN,
     CLASS_PROBE_CONTACT,
+    CLASS_STATUS_ERROR,
+    CLASS_STATUS_SUCCESS,
+    CLASS_STATUS_WARNING,
+    CLASS_DISABLED_REASON,
+    DISABLED_REASON_SELECTOR,
+    CLASS_NONE,
     CLASS_CLICKABLE,
-    STATUS_RUN,
-    STATUS_HOLD,
-    STATUS_IDLE,
-    DOOR_OPEN_TEXT,
-    DOOR_CLOSED_TEXT,
+    HEADER_TEXT_BY_ACTIVITY,
     TEXT_DISCONNECTED,
     TEXT_CONNECTED,
     TEXT_RECONNECTING,
@@ -46,32 +47,35 @@ import {
     TEXT_PROBE_PIN_OPEN,
     TEXT_PROBE_PIN_CONTACT,
     TEXT_NOT_LOADED,
+    TEXT_POINT_COUNT,
+    TEXT_LINE_PROGRESS,
     POSITION_DECIMALS_BRIEF,
+    TEXT_POSITION_BRIEF,
     POSITION_DECIMALS_FULL,
     PROGRESS_PERCENT_MULTIPLIER,
     PROBE_STATE_NONE,
+    PROBE_STATE_COMPLETE,
     TEXT_PROBE_APPLIED,
     TEXT_PROBE_NOT_APPLIED,
-    TEXT_MILL_RUNNING,
-    TEXT_MILL_PAUSED,
     TEXT_NO_FILE_LOADED
 } from './constants.js';
 
 /**
- * The screen the machine is holding the operator on, or null. Derived from what the server
- * last reported, so no path that ends a run has to remember to unlock.
+ * The screen the operator is locked to, or null. Derived from the last status, so no path
+ * that ends a run has to remember to unlock.
  */
 function lockedScreen() {
-    // A trace moves the tool over the board, so it locks the screen as a grid probe does.
-    if (state.isProbing || state.tracingOutline) {
+    // A trace moves the tool, so it locks the screen like a grid probe. getIsTracing, not
+    // the last status: a trace this page just requested is already moving the tool.
+    if (state.isProbing || getIsTracing()) {
         return SCREEN_PROBE;
     }
     return state.isMilling ? SCREEN_MILL : null;
 }
 
 /**
- * Whether the operator may move to `screenId` now. Everything is held except the screen the
- * machine is working on, and the jog screen while a tool change waits for Z0.
+ * Whether the operator may switch to `screenId`. Everything is locked except the screen
+ * the machine is working on, and the jog screen while a tool change waits for Z0.
  */
 function navigationAllowed(screenId) {
     const locked = lockedScreen();
@@ -131,18 +135,20 @@ export function restoreScreenFromHash() {
     showScreen(SCREEN_DASHBOARD);
 }
 
-// Fetch probe data and optionally show save modal if complete and unsaved
-function fetchProbeDataAndMaybeShowSaveModal() {
-    fetchAndDisplayProbeData().then(() => {
-        // Save modal is now handled by checkAndShowUnsavedProbe on startup
-        // No need to show it here since state-based buttons handle this
-    });
+/**
+ * Write a position into the three elements named `<where>-x`, `-y` and `-z`. One place
+ * decides the number of decimals, so the screens cannot format it differently.
+ */
+function setAxisText(where, position) {
+    for (const axis of ['x', 'y', 'z']) {
+        setText(`${where}-${axis}`, position[axis].toFixed(POSITION_DECIMALS_FULL));
+    }
 }
 
 export function updateStatus(status) {
     state.connected = status.connected;
 
-    // Set before the probing and milling branches below, which lock the screen and read this.
+    // Set before the probing and milling branches below, which read it.
     state.awaitingZeroZ = isWaitingForZeroZ(status.toolChange);
     state.tracingOutline = !!status.tracingOutline;
 
@@ -160,13 +166,15 @@ export function updateStatus(status) {
     } else if (state.isProbing) {
         // Probing just finished - fetch complete data and show completion state
         state.isProbing = false;
-        if (status.probe && status.probe.progress === status.probe.total && status.probe.total > 0) {
-            fetchProbeDataAndMaybeShowSaveModal();
+        // The server's answer, not the counters: a skipped point comes off the queue
+        // without being measured, so progress can reach total on an unusable map.
+        if (status.probe && status.probe.state === PROBE_STATE_COMPLETE) {
+            fetchAndDisplayProbeData();
         } else {
             // Probing was cancelled - go back to setup
             dismissProbeComplete();
         }
-    } else if (status.probe && status.probe.progress === status.probe.total && status.probe.total > 0 && !state.probeDataDisplayed && !getIsTracing() && !status.milling) {
+    } else if (status.probe && status.probe.state === PROBE_STATE_COMPLETE && !state.probeDataDisplayed && !getIsTracing() && !status.milling) {
         // Reconnected after probing completed - fetch and display the probe data (once)
         // Handle both dashboard and probe screen cases, but only if probe-progress is visible
         // (to avoid interfering with file load which keeps probe-setup visible)
@@ -175,7 +183,7 @@ export function updateStatus(status) {
             !document.getElementById('probe-progress').classList.contains(CLASS_HIDDEN);
         if (state.currentScreen === SCREEN_DASHBOARD || probeProgressVisible) {
             state.probeDataDisplayed = true;
-            fetchProbeDataAndMaybeShowSaveModal();
+            fetchAndDisplayProbeData();
         }
     }
 
@@ -186,15 +194,14 @@ export function updateStatus(status) {
             if (status.file) {
                 document.getElementById('mill-filename').textContent = status.file.name || TEXT_UNKNOWN;
             }
-            // Show current phase from status (prevents showing stale text on reconnect)
-            if (status.millingPhase) {
-                document.getElementById('mill-phase').textContent = status.millingPhase;
-            }
+            // Cleared, not filled: millingPhase is the controller's own name for its step,
+            // and the run's next progress message carries words for the operator.
+            document.getElementById('mill-phase').textContent = '';
             showScreen(SCREEN_MILL, true);
         }
     } else if (state.isMilling) {
-        // The one place a milling run is declared over, however it ended. The mill:state
-        // broadcast is sooner, but only this sees every way a run can stop.
+        // The one place a milling run is marked over, however it ended. The mill:state
+        // broadcast arrives sooner but does not cover every way a run can stop.
         state.isMilling = false;
         endMillRun();
         if (status.controllerState === CONTROLLER_STATE_COMPLETED) {
@@ -203,7 +210,7 @@ export function updateStatus(status) {
         showScreen(SCREEN_DASHBOARD, true);
     }
 
-    // The back button goes where the jog screen does, so it asks the same question.
+    // The back button goes to the jog screen, so it uses the same check.
     document.getElementById('mill-back-btn').disabled = !navigationAllowed(SCREEN_JOG);
 
     // Pause button and feed controls follow the controller state.
@@ -215,58 +222,35 @@ export function updateStatus(status) {
     const posDisplay = document.getElementById('position-display');
 
     // Update connection indicator
-    // Treat status "Disconnected" as not connected even if serial port is open
-    // (GRBL hasn't responded yet)
-    const statusStr = status.status || '';
-    const effectivelyConnected = state.connected && statusStr !== TEXT_DISCONNECTED;
     indicator.classList.remove(CLASS_CONNECTED, CLASS_ALARM);
     statusText.classList.remove(CLASS_CLICKABLE);
-    if (effectivelyConnected) {
-        const isAlarm = isProblematicStatus(statusStr);
-        if (isAlarm) {
+    if (status.connected) {
+        if (status.needsAttention) {
             indicator.classList.add(CLASS_ALARM);
             statusText.classList.add(CLASS_CLICKABLE);
         } else {
             indicator.classList.add(CLASS_CONNECTED);
         }
-        statusText.textContent = statusStr || TEXT_CONNECTED;
+        statusText.textContent =
+            HEADER_TEXT_BY_ACTIVITY[status.machineActivity] || status.status || TEXT_CONNECTED;
     } else {
         statusText.textContent = TEXT_DISCONNECTED;
     }
 
     // Update position displays
     if (status.workPos) {
-        posDisplay.textContent = `X:${status.workPos.x.toFixed(POSITION_DECIMALS_BRIEF)} Y:${status.workPos.y.toFixed(POSITION_DECIMALS_BRIEF)} Z:${status.workPos.z.toFixed(POSITION_DECIMALS_BRIEF)}`;
+        posDisplay.textContent = format(
+            TEXT_POSITION_BRIEF,
+            status.workPos.x.toFixed(POSITION_DECIMALS_BRIEF),
+            status.workPos.y.toFixed(POSITION_DECIMALS_BRIEF),
+            status.workPos.z.toFixed(POSITION_DECIMALS_BRIEF));
 
-        document.getElementById('work-x').textContent = status.workPos.x.toFixed(POSITION_DECIMALS_FULL);
-        document.getElementById('work-y').textContent = status.workPos.y.toFixed(POSITION_DECIMALS_FULL);
-        document.getElementById('work-z').textContent = status.workPos.z.toFixed(POSITION_DECIMALS_FULL);
-
-        // Update jog screen work positions
-        const jogWorkX = document.getElementById('jog-work-x');
-        const jogWorkY = document.getElementById('jog-work-y');
-        const jogWorkZ = document.getElementById('jog-work-z');
-        if (jogWorkX) jogWorkX.textContent = status.workPos.x.toFixed(POSITION_DECIMALS_FULL);
-        if (jogWorkY) jogWorkY.textContent = status.workPos.y.toFixed(POSITION_DECIMALS_FULL);
-        if (jogWorkZ) jogWorkZ.textContent = status.workPos.z.toFixed(POSITION_DECIMALS_FULL);
-
-        // Update milling screen positions
-        const millX = document.getElementById('mill-x');
-        const millY = document.getElementById('mill-y');
-        const millZ = document.getElementById('mill-z');
-        if (millX) millX.textContent = status.workPos.x.toFixed(POSITION_DECIMALS_FULL);
-        if (millY) millY.textContent = status.workPos.y.toFixed(POSITION_DECIMALS_FULL);
-        if (millZ) millZ.textContent = status.workPos.z.toFixed(POSITION_DECIMALS_FULL);
+        setAxisText('work', status.workPos);
+        setAxisText('jog-work', status.workPos);
     }
 
-    // Update jog screen machine positions
     if (status.machinePos) {
-        const jogMachX = document.getElementById('jog-machine-x');
-        const jogMachY = document.getElementById('jog-machine-y');
-        const jogMachZ = document.getElementById('jog-machine-z');
-        if (jogMachX) jogMachX.textContent = status.machinePos.x.toFixed(POSITION_DECIMALS_FULL);
-        if (jogMachY) jogMachY.textContent = status.machinePos.y.toFixed(POSITION_DECIMALS_FULL);
-        if (jogMachZ) jogMachZ.textContent = status.machinePos.z.toFixed(POSITION_DECIMALS_FULL);
+        setAxisText('jog-machine', status.machinePos);
     }
 
     // Update probe pin indicator (BitZero status)
@@ -286,28 +270,31 @@ export function updateStatus(status) {
     const profileNameEl = document.getElementById('profile-status-name');
     if (status.machineProfile) {
         profileNameEl.textContent = status.machineProfile;
-        profileNameEl.className = '';
+        profileNameEl.className = CLASS_NONE;
     } else {
         profileNameEl.textContent = TEXT_NOT_LOADED;
-        profileNameEl.className = 'status-error';
+        profileNameEl.className = CLASS_STATUS_ERROR;
     }
 
     // Update dashboard file status
     const fileNameEl = document.getElementById('file-status-name');
     const hasFile = status.file && status.file.name;
+
+    // The server's answer, not a count of points: a skipped point makes progress reach
+    // total on a map that is not usable.
+    const hasProbe = status.probe && status.probe.state !== PROBE_STATE_NONE;
     state.hasFile = !!hasFile;
     if (hasFile) {
         fileNameEl.textContent = status.file.name;
-        fileNameEl.className = '';
+        fileNameEl.className = CLASS_NONE;
     } else {
         fileNameEl.textContent = TEXT_NOT_LOADED;
-        fileNameEl.className = 'status-error';
+        fileNameEl.className = CLASS_STATUS_ERROR;
         // Redirect to dashboard if on Probe/Mill screen without a file (and not locked)
         // Exception: stay on Probe screen if there's probe data (recovering from autosave)
-        const hasProbeData = status.probe && status.probe.state !== PROBE_STATE_NONE;
         if ((state.currentScreen === SCREEN_PROBE || state.currentScreen === SCREEN_MILL)
             && lockedScreen() === null) {
-            if (!(state.currentScreen === SCREEN_PROBE && hasProbeData)) {
+            if (!(state.currentScreen === SCREEN_PROBE && hasProbe)) {
                 showScreen(SCREEN_DASHBOARD);
             }
         }
@@ -316,22 +303,22 @@ export function updateStatus(status) {
     // Update dashboard probe status
     const probeStatusEl = document.getElementById('probe-status-info');
     const appliedEl = document.getElementById('probe-status-applied');
-    const hasProbe = status.probe && status.probe.total > 0;
     if (hasProbe) {
-        probeStatusEl.textContent = `${status.probe.progress}/${status.probe.total} points`;
-        probeStatusEl.className = '';
+        probeStatusEl.textContent = format(
+            TEXT_POINT_COUNT, status.probe.measured, status.probe.total);
+        probeStatusEl.className = CLASS_NONE;
         if (status.probeApplied) {
             appliedEl.textContent = TEXT_PROBE_APPLIED;
-            appliedEl.className = 'status-success';
+            appliedEl.className = CLASS_STATUS_SUCCESS;
         } else {
             appliedEl.textContent = TEXT_PROBE_NOT_APPLIED;
-            appliedEl.className = 'status-warning';
+            appliedEl.className = CLASS_STATUS_WARNING;
         }
     } else {
         probeStatusEl.textContent = TEXT_NOT_LOADED;
-        probeStatusEl.className = 'status-error';
+        probeStatusEl.className = CLASS_STATUS_ERROR;
         appliedEl.textContent = '';
-        appliedEl.className = '';
+        appliedEl.className = CLASS_NONE;
     }
 
     // Update probe screen buttons based on state from server
@@ -339,24 +326,16 @@ export function updateStatus(status) {
         updateProbeButtonsFromState(status.probe.state, status.probe.hasUnsavedData);
     }
 
-    // Unconditional: the screen is held by whether a run owns the machine, which is true
-    // whether or not there is a grid to report.
+    // Unconditional: the screen lock depends on whether a run owns the machine, not on
+    // whether there is a grid to report.
     applyProbeRunLock();
 
-    // Update probe setup screen info display
-    const probeInfoEl = document.getElementById('probe-info');
-    if (probeInfoEl && hasProbe && !state.isProbing && !getIsTracing()) {
+    // Update probe setup screen info display. probe.js owns the wording; this only says
+    // when to show it.
+    if (hasProbe && !state.isProbing && !getIsTracing()) {
         const p = status.probe;
-        const pct = Math.round((p.progress / p.total) * 100);
-        if (p.progress === p.total) {
-            probeInfoEl.textContent = `Grid: ${p.sizeX || '?'}x${p.sizeY || '?'} = ${p.total} points (complete)`;
-        } else if (p.progress > 0) {
-            probeInfoEl.textContent = `Grid: ${p.sizeX || '?'}x${p.sizeY || '?'} = ${p.total} points (${p.progress} probed, ${pct}%)`;
-        } else {
-            probeInfoEl.textContent = `Grid: ${p.sizeX || '?'}x${p.sizeY || '?'} = ${p.total} points`;
-        }
+        updateProbeInfoDisplay(p.sizeX, p.sizeY, p.total, p.progress);
     }
-
 
     // Update feed override
     if (status.feedOverride) {
@@ -370,32 +349,12 @@ export function updateStatus(status) {
         const progressFill = document.getElementById('progress-fill');
         const progressPercent = document.getElementById('progress-percent');
         const progressLines = document.getElementById('progress-lines');
-        const millStatus = document.getElementById('mill-status');
 
         if (progressFill) progressFill.style.width = (progress * PROGRESS_PERCENT_MULTIPLIER) + '%';
         if (progressPercent) progressPercent.textContent = Math.round(progress * PROGRESS_PERCENT_MULTIPLIER) + '%';
         if (progressLines && status.file.currentLine != null && status.file.totalLines != null) {
-            progressLines.textContent = `${status.file.currentLine} / ${status.file.totalLines}`;
-        }
-
-        // Update status indicator
-        if (millStatus) {
-            if (status.status === STATUS_RUN) {
-                millStatus.textContent = TEXT_MILL_RUNNING;
-                millStatus.className = 'mill-status ' + CLASS_RUNNING;
-            } else if (status.doorOpen) {
-                millStatus.textContent = DOOR_OPEN_TEXT;
-                millStatus.className = 'mill-status ' + CLASS_HOLD;
-            } else if (status.doorAwaitingResume) {
-                millStatus.textContent = DOOR_CLOSED_TEXT;
-                millStatus.className = 'mill-status ' + CLASS_HOLD;
-            } else if (status.status === STATUS_HOLD) {
-                millStatus.textContent = TEXT_MILL_PAUSED;
-                millStatus.className = 'mill-status ' + CLASS_HOLD;
-            } else {
-                millStatus.textContent = status.status || STATUS_IDLE;
-                millStatus.className = 'mill-status';
-            }
+            progressLines.textContent = format(
+                TEXT_LINE_PROGRESS, status.file.currentLine, status.file.totalLines);
         }
     }
 
@@ -406,7 +365,7 @@ export function updateStatus(status) {
         updateButtonState('mill-btn', status.buttons.mill);
     }
 
-    // Update jog screen button states (for alarm/door state)
+    // Update the jog screen's buttons from the status.
     updateJogButtons(status);
 
     // Update "Continue Milling" button on jog screen (tool change WaitingForZeroZ phase)
@@ -414,6 +373,9 @@ export function updateStatus(status) {
 
     // Update tool change display on mill screen
     updateToolChangeDisplay(status.toolChange);
+
+    // The enclosure message, shown when no run is prompting about it.
+    updateDoorOverlay(status);
 
     // Update depth adjustment display
     updateDepthDisplay(status.depthAdjustment);
@@ -434,17 +396,17 @@ function updateButtonState(buttonId, buttonState) {
         btn.classList.remove(CLASS_DISABLED);
         btn.title = '';
         // Remove reason text if present
-        const reasonSpan = btn.querySelector('.disabled-reason');
+        const reasonSpan = btn.querySelector(DISABLED_REASON_SELECTOR);
         if (reasonSpan) reasonSpan.remove();
     } else {
         btn.disabled = true;
         btn.classList.add(CLASS_DISABLED);
         btn.title = buttonState.reason || '';
         // Add or update reason text
-        let reasonSpan = btn.querySelector('.disabled-reason');
+        let reasonSpan = btn.querySelector(DISABLED_REASON_SELECTOR);
         if (!reasonSpan) {
             reasonSpan = document.createElement('span');
-            reasonSpan.className = 'disabled-reason';
+            reasonSpan.className = CLASS_DISABLED_REASON;
             btn.appendChild(reasonSpan);
         }
         reasonSpan.textContent = buttonState.reason ? ` (${buttonState.reason})` : '';

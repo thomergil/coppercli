@@ -17,8 +17,21 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Architecture rules
+        run: sh .architecture/rules/check-layering.sh
+
       - name: Build (warnings are errors)
         run: dotnet build coppercli.sln -warnaserror
 
       - name: Test
         run: dotnet test coppercli.Tests/coppercli.Tests.csproj --no-build --verbosity normal
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Browser tests
+        run: |
+          ls coppercli.Tests/browser/*.test.mjs > /dev/null
+          node --test "coppercli.Tests/browser/*.test.mjs"

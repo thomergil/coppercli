@@ -109,11 +109,12 @@ namespace coppercli.Macro
             DisplayHelpers.WriteLineTruncated("", winWidth);
 
             // Status line
-            var statusColor = MachineWait.IsProblematic(machine)
+            var activity = MachineWait.GetActivity(machine);
+            var statusColor = MachineWait.IsUnavailable(activity)
                 ? DisplayHelpers.AnsiError
                 : DisplayHelpers.AnsiSuccess;
             DisplayHelpers.WriteLineTruncated(
-                $"Status: {statusColor}{machine.Status}{DisplayHelpers.AnsiReset}  " +
+                $"Status: {statusColor}{DisplayHelpers.GetActivityText(activity, machine.Status)}{DisplayHelpers.AnsiReset}  " +
                 $"X:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.X:F3}{DisplayHelpers.AnsiReset} " +
                 $"Y:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.Y:F3}{DisplayHelpers.AnsiReset} " +
                 $"Z:{DisplayHelpers.AnsiWarning}{machine.WorkPosition.Z:F3}{DisplayHelpers.AnsiReset}",
@@ -135,21 +136,34 @@ namespace coppercli.Macro
             int viewEnd = Math.Min(viewStart + maxVisibleSteps, _commands.Count);
 
             // Calculate overlay box dimensions if needed
+            string[] overlayLines = Array.Empty<string>();
+            string[] overlayColors = Array.Empty<string>();
             int boxWidth = 0;
             int boxStartRow = 0;
             int boxEndRow = 0;
             int boxLeftPad = 0;
             if (overlayMessage != null)
             {
-                boxWidth = DisplayHelpers.CalculateOverlayBoxWidth(overlayMessage, overlaySubtext ?? "", winWidth);
+                (overlayLines, overlayColors) = DisplayHelpers.BuildOverlayContent(
+                    overlayMessage, overlaySubtext, DisplayHelpers.AnsiWarning, winWidth);
+
+                boxWidth = DisplayHelpers.CalculateOverlayBoxWidth(overlayLines, winWidth);
                 boxLeftPad = (winWidth - boxWidth) / 2;
 
                 // Center vertically in the step list area
+                int boxHeight = DisplayHelpers.CalculateOverlayBoxHeight(overlayLines);
                 int stepAreaStart = HeaderLines + (viewStart > 0 ? 1 : 0);
                 int stepAreaHeight = viewEnd - viewStart;
-                boxStartRow = stepAreaStart + Math.Max(0, (stepAreaHeight - DisplayHelpers.OverlayBoxHeight) / 2);
-                boxEndRow = boxStartRow + DisplayHelpers.OverlayBoxHeight - 1;
+                boxStartRow = stepAreaStart + Math.Max(0, (stepAreaHeight - boxHeight) / 2);
+                boxEndRow = boxStartRow + boxHeight - 1;
             }
+
+            // One row of the box drawn over whatever the step list has on that row.
+            string OverlayRow(string background, int row) => DisplayHelpers.CompositeOverlay(
+                background,
+                DisplayHelpers.GetOverlayBoxLine(row - boxStartRow, boxWidth, overlayLines, overlayColors),
+                boxLeftPad,
+                winWidth);
 
             int currentRow = HeaderLines;
 
@@ -189,12 +203,7 @@ namespace coppercli.Macro
                 // Check if this row should have overlay
                 if (overlayMessage != null && currentRow >= boxStartRow && currentRow <= boxEndRow)
                 {
-                    int boxLine = currentRow - boxStartRow;
-                    string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
-                        overlayMessage, DisplayHelpers.AnsiWarning,
-                        overlaySubtext ?? "", DisplayHelpers.AnsiDim);
-                    string composited = DisplayHelpers.CompositeOverlay(line, boxContent, boxLeftPad, winWidth);
-                    DisplayHelpers.WriteLineTruncated(composited, winWidth);
+                    DisplayHelpers.WriteLineTruncated(OverlayRow(line, currentRow), winWidth);
                 }
                 else
                 {
@@ -208,18 +217,12 @@ namespace coppercli.Macro
             {
                 while (currentRow <= boxEndRow)
                 {
-                    int boxLine = currentRow - boxStartRow;
-                    string boxContent = DisplayHelpers.GetOverlayBoxLine(boxLine, boxWidth,
-                        overlayMessage, DisplayHelpers.AnsiWarning,
-                        overlaySubtext ?? "", DisplayHelpers.AnsiDim);
                     // CompositeOverlay handles empty margin lines (returns background)
-                    string composited = DisplayHelpers.CompositeOverlay("", boxContent, boxLeftPad, winWidth);
-                    DisplayHelpers.WriteLineTruncated(composited, winWidth);
+                    DisplayHelpers.WriteLineTruncated(OverlayRow(string.Empty, currentRow), winWidth);
                     currentRow++;
                 }
             }
 
-            // Original code continues below with "more below" and footer
             // Show "more below" indicator
             if (viewEnd < _commands.Count)
             {
@@ -326,12 +329,18 @@ namespace coppercli.Macro
             try
             {
                 var file = GCodeFile.Load(path);
-                AppState.LoadGCodeIntoMachine(file);
+                string? refused = AppState.LoadGCodeIntoMachine(file).Refused;
+                if (refused != null)
+                {
+                    Logger.Log("Macro: {0}", refused);
+                    return false;
+                }
+
                 return true;
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Error loading file: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowFailure(CliConstants.FailedLoadingTheFile, ex);
                 return false;
             }
         }
@@ -352,7 +361,7 @@ namespace coppercli.Macro
             var machine = AppState.Machine;
             string axes = args.Length > 0 ? args[0].ToUpper() : "XYZ";
 
-            // Build the axis string for G10 L20 P1
+            // Build the axis words for the work-offset command.
             string axisCmd = "";
             bool zeroingZ = false;
             if (axes.Contains('X'))
@@ -375,7 +384,19 @@ namespace coppercli.Macro
                 zeroingZ = true;
             }
 
-            MachineCommands.SetWorkZeroAndWait(machine, axisCmd);
+            var zeroed = MachineCommands.SetWorkZeroAndWait(machine, axisCmd);
+            if (zeroed.Refused != null)
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(zeroed.Refused)}[/]");
+                return false;
+            }
+
+            // The rest of the macro would cut with corrections that do not match the origin.
+            if (zeroed.Outcome.LeftTheGCodeWrong())
+            {
+                AnsiConsole.MarkupLine($"[{ColorError}]{MacroErrorHeightMapWrong}[/]");
+                return false;
+            }
 
             // If zeroing Z, move to safe height (matches JogMenu behavior)
             if (zeroingZ)
@@ -396,9 +417,8 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // ProbeController owns single probing, and ProbeZSingleAsync reports the
-            // result directly. Do not route it through a callback on AppState: nothing in
-            // the tree invokes one, so such a probe can only ever report a timeout.
+            // ProbeController owns single probing, and ProbeZSingleAsync returns the result
+            // directly.
             var controller = AppState.Probe;
 
             if (controller.IsActive)
@@ -410,9 +430,9 @@ namespace coppercli.Macro
             controller.Options = ProbeOptions.FromSettings(AppState.Settings);
 
             // Probing descends at the probe feed and can take minutes, so the macro keeps
-            // watching for the abort key rather than blocking on the result. A soft reset
-            // is what actually halts a G38.2 already under way; cancelling alone would
-            // abandon the wait and leave the tool descending.
+            // watching for the abort key rather than blocking. A soft reset is what stops a
+            // G38.2 already running: cancelling alone abandons the wait and leaves the tool
+            // descending.
             using var cts = new CancellationTokenSource();
             var probeTask = Task.Run(() => controller.ProbeZSingleAsync(cts.Token));
 
@@ -473,23 +493,20 @@ namespace coppercli.Macro
             // measured somewhere else.
             var applicability = AppState.GetProbeApplicability();
 
-            if (applicability == ProbeApplicability.DifferentFile)
+            if (!applicability.IsUsable())
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]The height map was measured for a different file[/]");
-                return false;
-            }
-
-            if (applicability == ProbeApplicability.OriginMoved)
-            {
-                AnsiConsole.MarkupLine($"[{ColorError}]The work origin has moved since the height map was measured[/]");
+                string why = AppState.GetInapplicableReason(
+                    applicability, probePoints.Context.SourceFile);
+                AnsiConsole.MarkupLine($"[{ColorError}]The height map cannot be applied: {why}[/]");
                 return false;
             }
 
             // Milling a warped board with no height compensation is exactly what this
             // command exists to prevent, so a failure here must fail the macro.
-            if (!AppState.ApplyProbeData())
+            string? notApplied = AppState.ApplyProbeData();
+            if (notApplied != null)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Could not apply probe data[/]");
+                AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(notApplied)}[/]");
                 return false;
             }
 
@@ -550,9 +567,11 @@ namespace coppercli.Macro
         private bool WaitForIdle()
         {
             var machine = AppState.Machine;
-            var deadline = DateTime.Now.AddMilliseconds(IdleWaitTimeoutMs);
+            // Monotonic: a wall clock that steps under this wait would either end it at once
+            // or never.
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
 
-            while (DateTime.Now < deadline)
+            while (elapsed.ElapsedMilliseconds < IdleWaitTimeoutMs)
             {
                 if (CheckAbort())
                 {

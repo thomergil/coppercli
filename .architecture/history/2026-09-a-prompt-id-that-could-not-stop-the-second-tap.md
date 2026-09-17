@@ -14,7 +14,7 @@ closes the double-tap.
 
 **Realized:** it does not. The answer resumes the run on the answering thread, and the run
 publishes its next question before the answer returns.
-`ControllerBaseTests.AnsweringOnePromptPublishesTheNextBeforeItReturns` holds that
+`ControllerBaseTests.AnsweringAPrompt_PublishesTheNextBeforeItReturns` holds that
 ordering. By the time a second tap lands, the browser has redrawn the button for the new
 question. The tap carries that question's own valid id, so the server has no grounds to
 refuse it. The operator answers a question they never read.

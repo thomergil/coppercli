@@ -55,36 +55,47 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Zeros the work offset for the specified axes (e.g., "X0 Y0 Z0").
+        /// Zeros the work offset, waits for it, records that the origin is known, and hands
+        /// the height map to AppState.HandleWorkZeroChange. The one place a front end sets
+        /// the work zero.
         /// </summary>
-        public static void ZeroWorkOffset(Machine machine, string axes)
+        /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
+        /// <returns>Why nothing was sent, and what became of the height map.</returns>
+        public static WorkZeroResult SetWorkZeroAndWait(Machine machine, string axes)
         {
-            Logger.Log($"ZeroWorkOffset: sending {CmdZeroWorkOffset} {axes}");
-            machine.SendLine(Inv($"{CmdZeroWorkOffset} {axes}"));
-        }
+            // Refused before the offset is written. Moving the datum invalidates the height
+            // map baked into the file the run is streaming.
+            if (AppState.IsRunInProgress && AppState.ZeroTouchesXY(axes))
+            {
+                Logger.Log("SetWorkZeroAndWait: refused, a run owns the machine (axes={0})", axes);
+                return new WorkZeroResult(
+                    CliConstants.ErrorZeroXYDuringRun, WorkZeroOutcome.NothingToDo);
+            }
 
-        /// <summary>
-        /// Zeros the work offset (async), waits for completion, sets IsWorkZeroSet flag,
-        /// and handles probe grid state (re-applies if Z-only, discards if XY).
-        /// This is the single source of truth for setting work zero - all UI code should use this.
-        /// </summary>
-        public static void SetWorkZeroAndWait(Machine machine, string axes)
-        {
-            MachineWait.ZeroWorkOffsetAsync(machine, axes).GetAwaiter().GetResult();
-            AppState.WorkZeroWasSet();
-            AppState.HandleWorkZeroChange(axes);
+            // Nothing is recorded until GRBL has taken the offset. Marking an origin the
+            // machine does not have would also discard the height map on an X/Y zero.
+            string? notWritten = MachineWait.ZeroWorkOffsetAsync(machine, axes)
+                .GetAwaiter().GetResult();
+
+            if (notWritten != null)
+            {
+                Logger.Log("SetWorkZeroAndWait: {0} (axes={1})", notWritten, axes);
+                return new WorkZeroResult(notWritten, WorkZeroOutcome.NothingToDo);
+            }
+
+            AppState.MarkWorkZeroSet();
+            var outcome = AppState.HandleWorkZeroChange(axes);
 
             // Zeroing all three axes establishes a full origin worth offering to trust on
-            // the next launch. Persisting it here means neither front end has to remember
-            // to, so no caller has to do it afterwards.
-            string upper = axes.ToUpperInvariant();
-            if (upper.Contains('X') && upper.Contains('Y') && upper.Contains('Z'))
+            // the next launch. Saved here, so neither front end has to remember to.
+            if (AppState.ZeroIsFullOrigin(axes))
             {
                 AppState.Session.HasStoredWorkZero = true;
                 Persistence.SaveSession();
             }
 
             Logger.Log($"SetWorkZeroAndWait: work zero set (axes={axes})");
+            return new WorkZeroResult(null, outcome);
         }
 
         /// <summary>
@@ -134,7 +145,6 @@ namespace coppercli.Helpers
             return GotoAbsoluteXY(machine, file.Center.X, file.Center.Y);
         }
 
-        
         /// <summary>
         /// Sets absolute distance mode (G90).
         /// </summary>
@@ -144,29 +154,13 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Clears Door state if present by sending CycleStart.
-        /// Returns true if Door was cleared, false if no action needed.
-        /// Does NOT handle Alarm state - caller should check for Alarm separately.
-        /// Wraps MachineWait.ClearDoorStateAsync for sync callers.
+        /// Release a door hold and report the door state left behind. Wraps
+        /// MachineWait.ReleaseDoorHoldAsync for sync callers.
         /// </summary>
-        public static bool ClearDoorState(Machine machine)
+        public static DoorState ReleaseDoorHold(Machine machine)
         {
-            return MachineWait.ClearDoorStateAsync(machine).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
-        /// Prepares machine for an operation by waiting for the machine to settle, waiting for Idle,
-        /// and checking for Alarm. Returns true if machine is ready, false if in Alarm state.
-        /// Use at the start of milling, probing, or other operations that require a clean state.
-        /// Wraps MachineWait.EnsureMachineReadyAsync for sync callers.
-        /// </summary>
-        public static bool EnsureMachineReady(Machine machine, int idleTimeoutMs = 0)
-        {
-            if (idleTimeoutMs <= 0)
-            {
-                idleTimeoutMs = IdleWaitTimeoutMs;
-            }
-            return MachineWait.EnsureMachineReadyAsync(machine, idleTimeoutMs).GetAwaiter().GetResult();
+            return MachineWait.ReleaseDoorHoldAsync(machine, ControllerConstants.DoorResumeTimeoutMs)
+                .GetAwaiter().GetResult();
         }
 
     }

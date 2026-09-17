@@ -1,9 +1,14 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using coppercli.Core.Controllers;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
 using Xunit;
 using static coppercli.Core.Communication.Machine;
+using static coppercli.Core.Controllers.ControllerConstants;
+using static coppercli.Core.Util.GrblProtocol;
 
 namespace coppercli.Tests
 {
@@ -12,6 +17,9 @@ namespace coppercli.Tests
     /// </summary>
     public class ToolChangeControllerTests
     {
+        /// <summary>What this file calls the door prompt, which carries no title of its own.</summary>
+        private const string DoorLabel = "<door>";
+
         // =========================================================================
         // Test helpers
         // =========================================================================
@@ -76,7 +84,7 @@ namespace coppercli.Tests
         [Fact]
         public void Constructor_WithNullHasToolSetter_Throws()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             Assert.Throws<ArgumentNullException>(() =>
                 new ToolChangeController(
                     machine,
@@ -88,7 +96,7 @@ namespace coppercli.Tests
         [Fact]
         public void Constructor_WithNullGetPosition_Throws()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             Assert.Throws<ArgumentNullException>(() =>
                 new ToolChangeController(
                     machine,
@@ -100,7 +108,7 @@ namespace coppercli.Tests
         [Fact]
         public void Constructor_WithNullGetConfig_Throws()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             Assert.Throws<ArgumentNullException>(() =>
                 new ToolChangeController(
                     machine,
@@ -116,7 +124,7 @@ namespace coppercli.Tests
         [Fact]
         public void NewController_HasIdleState()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
             Assert.Equal(ControllerState.Idle, controller.State);
@@ -126,7 +134,7 @@ namespace coppercli.Tests
         [Fact]
         public void NewController_HasNoCurrentToolChange()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
             Assert.Null(controller.CurrentToolChange);
@@ -135,7 +143,7 @@ namespace coppercli.Tests
         [Fact]
         public void HasToolSetter_DelegatesToFunction()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             bool hasSetter = true;
 
             var controller = new ToolChangeController(
@@ -176,7 +184,7 @@ namespace coppercli.Tests
         [Fact]
         public void WithToolSetter_HasToolSetterReturnsTrue()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine, hasToolSetter: true, toolSetterPos: (-100, -50));
 
             Assert.True(controller.HasToolSetter);
@@ -185,7 +193,7 @@ namespace coppercli.Tests
         [Fact]
         public void WithoutToolSetter_HasToolSetterReturnsFalse()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine, hasToolSetter: false);
 
             Assert.False(controller.HasToolSetter);
@@ -198,7 +206,7 @@ namespace coppercli.Tests
         [Fact]
         public void Reset_AfterCompletion_AllowsNewToolChange()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
             // Manually set to completed state via reflection or complete a tool change
@@ -301,7 +309,7 @@ namespace coppercli.Tests
         [Fact]
         public void Controller_HasOptionsProperty()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
             // Verify Options is accessible and has defaults
@@ -312,7 +320,7 @@ namespace coppercli.Tests
         [Fact]
         public void Controller_OptionsCanBeSet()
         {
-            var machine = CreateMockMachine();
+            using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
             controller.Options = new ToolChangeOptions
@@ -323,6 +331,197 @@ namespace coppercli.Tests
 
             Assert.Equal(15.0, controller.Options.ProbeMaxDepth);
             Assert.Equal(75.0, controller.Options.ProbeFeed);
+        }
+
+        // =========================================================================
+        // Enclosure door
+        //
+        // The operator opens the enclosure to reach the tool, which leaves GRBL holding.
+        // Releasing that hold restarts the spindle, so it needs the operator's consent - but
+        // closing the door and pressing Continue is that consent. A door already closed and
+        // holding at that moment is released without a second question; one still open is
+        // put to them once it closes.
+        // =========================================================================
+
+        /// <summary>
+        /// The operator changes the tool, closes the door, then presses Continue. The door is
+        /// closed and holding at that moment, so releasing it needs no second question: they
+        /// have just answered one about the same door.
+        /// </summary>
+        [Fact]
+        public async Task ContinuingWithTheDoorAlreadyClosed_AsksOnce()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            var prompts = new List<UserInputRequest>();
+            controller.UserInputRequired += request =>
+            {
+                prompts.Add(request);
+
+                // The operator opens the enclosure to reach the tool, and closes it before
+                // answering.
+                if (prompts.Count == 1)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+                request.OnResponse(OptionContinue);
+            };
+
+            await controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            Assert.DoesNotContain(prompts, p => p.IsDoorPrompt);
+            Assert.Equal(1, machine.CycleStartCount);
+            Assert.False(MachineWait.IsDoor(machine));
+        }
+
+        /// <summary>
+        /// A door still open when they press Continue is a different thing: they have not
+        /// closed it, so once they do it is put to them.
+        /// </summary>
+        [Fact]
+        public async Task ADoorStillOpenWhenTheyContinue_IsPutToTheOperator()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            var prompts = new List<UserInputRequest>();
+            controller.UserInputRequired += request =>
+            {
+                prompts.Add(request);
+
+                // Answered with the enclosure still open.
+                if (prompts.Count == 1)
+                {
+                    machine.SimulateDoorOpen();
+                }
+                request.OnResponse(OptionContinue);
+            };
+
+            // The run announces "close the door" and waits; the operator closes it then.
+            controller.ProgressChanged += progress =>
+            {
+                if (progress.Message == ControllerConstants.DoorOpenPrompt)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+            };
+
+            await controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            var doorPrompt = Assert.Single(prompts, p => p.IsDoorPrompt);
+            Assert.Equal(DoorHoldingPrompt, doorPrompt.Message);
+            Assert.Equal(1, machine.CycleStartCount);
+        }
+
+        /// <summary>
+        /// The operator opens the enclosure to jog to the surface, closes it, and answers the
+        /// zero-Z prompt. That call site releases the hold on its own.
+        /// </summary>
+        [Fact]
+        public async Task ZeroZPrompt_ReleasesTheDoorItWasAnsweredAt()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            controller.UserInputRequired += request =>
+            {
+                // The door is held only at the second prompt, not the first.
+                if (request.Title == ToolChangeZeroZTitle)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+                request.OnResponse(OptionContinue);
+            };
+
+            await controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            Assert.Equal(1, machine.CycleStartCount);
+            Assert.False(MachineWait.IsDoor(machine));
+        }
+
+        /// <summary>
+        /// The same for the tool-change prompt. Without a case that reaches only this call
+        /// site, either could be deleted and the other would cover it.
+        /// </summary>
+        [Fact]
+        public async Task ToolChangePrompt_ReleasesTheDoorBeforeTheZeroZPrompt()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            int cycleStartsBeforeZeroZ = -1;
+            controller.UserInputRequired += request =>
+            {
+                if (request.Title == ToolChangePromptTitle)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+                else if (request.Title == ToolChangeZeroZTitle)
+                {
+                    cycleStartsBeforeZeroZ = machine.CycleStartCount;
+                }
+                request.OnResponse(OptionContinue);
+            };
+
+            await controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            Assert.Equal(1, cycleStartsBeforeZeroZ);
+            Assert.Equal(1, machine.CycleStartCount);
+        }
+
+        [Fact]
+        public async Task AbandoningTheDoorPrompt_CancelsTheToolChange()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+
+            var errors = new List<ControllerError>();
+            controller.ErrorOccurred += errors.Add;
+
+            controller.UserInputRequired += request =>
+            {
+                if (request.IsDoorPrompt)
+                {
+                    request.OnResponse(OptionAbort);
+                    return;
+                }
+
+                // Answered with the enclosure still open, so the door is put to them once
+                // it closes - which is the prompt this test abandons.
+                machine.SimulateDoorOpen();
+                request.OnResponse(OptionContinue);
+            };
+
+            controller.ProgressChanged += progress =>
+            {
+                if (progress.Message == ControllerConstants.DoorOpenPrompt)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+            };
+
+            var toolChange = controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            // Bounded: the door it abandons never closes, so a version that stopped
+            // aborting would hang the suite instead of failing it.
+            Assert.Same(
+                toolChange,
+                await Task.WhenAny(toolChange, Task.Delay(ControllerConstants.DoorResumeTimeoutMs)));
+
+            Assert.False(await toolChange);
+            Assert.Equal(0, machine.CycleStartCount);
+
+            // Stopped at the door: the soft reset cleared the hold, so the tool's position
+            // is unknown. The probe and the mill both report that.
+            Assert.Contains(
+                errors, e => e.Message == ControllerConstants.ErrorStopRetractFailed);
+
+            // The abort happens with the machine still holding, so a retract queued now
+            // would run when the hold is released. One G53 Z move belongs to the clearance
+            // raise at the start; cleanup must not add a second.
+            Assert.Equal(1, machine.SentCommands.Count(
+                c => c.Contains(CmdMachineCoords) && c.Contains("Z")));
         }
     }
 }

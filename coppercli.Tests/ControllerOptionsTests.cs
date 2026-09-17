@@ -5,8 +5,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// One factory per option type fills every field from settings, so any two call sites
-    /// get identical options from identical settings.
+    /// One factory per option type fills every field from settings, so two call sites with
+    /// the same settings get the same options.
     /// </summary>
     public class ControllerOptionsTests
     {
@@ -34,11 +34,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The height check has no setting behind it, so every run must get the shipped
-        /// tolerance rather than a zero that would silently accept every reading.
+        /// The height check has no setting, so every run must get the default tolerance
+        /// rather than a zero, which would accept every reading.
         /// </summary>
         [Fact]
-        public void ProbeOptions_FromSettings_CarriesTheShippedHeightTolerance()
+        public void ProbeOptions_FromSettings_CarriesTheDefaultHeightTolerance()
         {
             var o = ProbeOptions.FromSettings(new MachineSettings());
 

@@ -4,11 +4,11 @@ namespace coppercli.Core.Controllers
     /// The step of work a milling run is on.
     ///
     /// This names what the machine is doing, never the state of the run.
-    /// <see cref="ControllerState"/> says whether a run is paused, waiting on a person,
+    /// <see cref="ControllerState"/> holds whether a run is paused, waiting on the operator,
     /// finishing or finished; read it through the predicates on
-    /// <see cref="ControllerBase"/>. Naming one of those here too would let the two be set
-    /// apart and disagree, and <see cref="ToolChange"/> is the value Resume reads to decide
-    /// whether to skip the M0 pcb2gcode emits after an M6.
+    /// <see cref="ControllerBase"/>. Naming one of those here as well would let the two be
+    /// set separately and disagree. <see cref="ToolChange"/> is the value Resume reads to
+    /// decide whether to skip the M0 pcb2gcode emits after an M6.
     /// </summary>
     public enum MillingPhase
     {

@@ -1,5 +1,7 @@
 #nullable enable
 using System;
+using System.Collections.Concurrent;
+using System.Linq;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -9,6 +11,7 @@ using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
 using Xunit;
 using static coppercli.Core.Controllers.ControllerConstants;
+using static coppercli.Core.Util.Constants;
 
 namespace coppercli.Tests
 {
@@ -41,10 +44,9 @@ namespace coppercli.Tests
         private const double FastMoveSpeedMmPerSec = 10000.0;
         private const int FastHomingDurationMs = 50;
 
-        // Generous relative to the real time a run needs (dominated by the fixed
-        // settle/idle-settle/homing delays above): pre-fix, the controller never
-        // reaches the event or state under test, so these bound the wait rather than
-        // hang the suite.
+        // Far above the real time a run needs (dominated by the fixed settle/idle-settle/
+        // homing delays above), so a controller that never reaches the event under test
+        // fails the test instead of hanging the suite.
         private const int ToolChangeWaitTimeoutMs = 20_000;
         private const int CompletionWaitTimeoutMs = 30_000;
         private const int StateTransitionWaitTimeoutMs = 5_000;
@@ -74,6 +76,18 @@ namespace coppercli.Tests
             $"M6 T{toolNumber}",
             "G1 X1 Y1 F100",
         };
+
+        /// <summary>
+        /// Enough cutting moves that a test can pause or open the door while the stream is
+        /// still running, whatever else the suite is doing.
+        /// </summary>
+        private static readonly string[] ALongCut =
+            new[] { "G21", "G90" }
+                .Concat(Enumerable.Range(1, LongCutMoves)
+                    .Select(i => GCodeFormat.Inv($"G1 X{i % 10} Y{i % 7} F60")))
+                .ToArray();
+
+        private const int LongCutMoves = 200;
 
         private static readonly string[] FileWithoutToolChange =
         {
@@ -319,6 +333,433 @@ namespace coppercli.Tests
             {
                 controller.UserInputRequired -= OnUserInputRequired;
             }
+        }
+
+        /// <summary>
+        /// Collects every prompt a run raises, so a test can subscribe before the run starts
+        /// and read them in order. The one-shot waiter above cannot: a prompt raised before
+        /// it subscribes is lost, and the door prompt is raised immediately.
+        /// </summary>
+        private sealed class PromptRecorder
+        {
+            private readonly ConcurrentQueue<UserInputRequest> _requests = new();
+
+            public PromptRecorder(MillingController controller)
+            {
+                controller.UserInputRequired += _requests.Enqueue;
+            }
+
+            /// <summary>Every prompt raised so far, for asserting none was.</summary>
+            public IReadOnlyCollection<UserInputRequest> All => _requests;
+
+            public async Task<UserInputRequest> NextAsync(int timeoutMs)
+            {
+                await WaitUntilAsync(() => !_requests.IsEmpty, timeoutMs);
+
+                if (!_requests.TryDequeue(out var request))
+                {
+                    throw new TimeoutException(UserInputTimeoutMessage);
+                }
+                return request;
+            }
+        }
+
+        // =========================================================================
+        // Door tests
+        //
+        // Opening the enclosure makes GRBL park and hold, and closing it does not end the
+        // hold (GetDoorState returns WaitingForResume for Door:0). An open door is waited
+        // out; a closed one raises a prompt, because only then does a cycle start do
+        // anything, and it restarts the spindle. A job start that refuses the state leaves
+        // the operator with no way to send that cycle start.
+        // =========================================================================
+
+        [Fact]
+        public async Task MachineThatWillNotSettle_FailsTheRunWithAReason()
+        {
+            // The readiness gate that used to refuse a moving machine was removed, because
+            // it also refused a door hold the controller can release. Settling catches it
+            // now, so it has to report what it found.
+            var machine = CreateMachineWithFile("G21", "G90", "G1 X1 Y1 F100");
+            machine.Status = GrblProtocol.StatusRun;
+
+            string? reported = await RunAndCaptureErrorAsync(machine);
+
+            Assert.Equal(ErrorMachineNotSettled, reported);
+        }
+
+        [Fact]
+        public async Task AnAlarmBeforeTheJob_SaysToClearIt()
+        {
+            var machine = CreateMachineWithFile("G21", "G90", "G1 X1 Y1 F100");
+            machine.Status = GrblProtocol.StatusAlarm;
+
+            string? reported = await RunAndCaptureErrorAsync(machine);
+
+            Assert.Equal(ErrorAlarmBeforeStart, reported);
+        }
+
+        [Fact]
+        public async Task ResumeAtADoorHold_IsRefusedNotQueued()
+        {
+            // A machine holding at the door takes lines into its planner and runs them when
+            // the hold is released. Restarting the stream here would leave a full buffer and
+            // three screens reporting a running job. Reported rather than thrown: the
+            // terminal calls Resume straight from a key press with nothing to catch it.
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            var run = controller.StartAsync();
+            await WaitUntilAsync(() => controller.State == ControllerState.Running,
+                CompletionWaitTimeoutMs);
+
+            controller.Pause();
+            await WaitUntilAsync(() => controller.State == ControllerState.Paused,
+                StateTransitionWaitTimeoutMs);
+
+            machine.SimulateDoorClosedAndHolding();
+
+            ControllerError? refused = null;
+            controller.ErrorOccurred += error => refused = error;
+
+            controller.Resume();
+
+            Assert.Equal(ErrorDoorBlocksResume, refused?.Message);
+            Assert.False(refused?.IsFatal, "a door hold leaves the run paused, not failed");
+            Assert.Equal(ControllerState.Paused, controller.State);
+
+            machine.SimulateDoorReleased();
+            await controller.StopAsync();
+            await AwaitRunOutcomeAsync(run);
+        }
+
+        [Fact]
+        public async Task DoorOpenedWhileSettling_IsPromptedNotTimedOut()
+        {
+            // The enclosure prompt is raised once before settling. A door opened during
+            // settling used to cost the whole settle timeout and then fail; now it prompts
+            // again and restarts the timeout.
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+                StateTransitionWaitTimeoutMs);
+            machine.SimulateDoorClosedAndHolding();
+
+            var request = await prompts.NextAsync(ShortSettleMs * 4);
+            Assert.Equal(DoorHoldingPrompt, request.Message);
+            request.OnResponse(OptionContinue);
+
+            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
+            Assert.False(MachineWait.IsDoor(machine));
+
+            await controller.StopAsync();
+            await AwaitRunOutcomeAsync(run);
+        }
+
+        [Fact]
+        public async Task TheSettleTimeout_RestartsAfterTheDoorIsHandled()
+        {
+            // The operator's time at the enclosure must not count against the machine's
+            // settle timeout, or a slow walk back reports "the machine did not stop moving"
+            // for a machine that is stopped.
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = SettleableBudgetMs }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            string? reported = null;
+            controller.ErrorOccurred += error => reported = error.Message;
+
+            var run = controller.StartAsync();
+
+            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+                StateTransitionWaitTimeoutMs);
+            machine.SimulateDoorClosedAndHolding();
+
+            var request = await prompts.NextAsync(SettleableBudgetMs);
+
+            // Answer only after the whole settle timeout would have run out.
+            await Task.Delay(SettleableBudgetMs + TestPollIntervalMs * 10);
+            request.OnResponse(OptionContinue);
+
+            await WaitUntilAsync(() => controller.State == ControllerState.Running,
+                CompletionWaitTimeoutMs);
+
+            Assert.Equal(ControllerState.Running, controller.State);
+            Assert.Null(reported);
+
+            await controller.StopAsync();
+            await AwaitRunOutcomeAsync(run);
+        }
+
+        [Fact]
+        public async Task DoorOpenedMidCut_IsPromptedNotStalled()
+        {
+            // GRBL holds and the stream stalls. Neither screen's resume can release a door
+            // hold, so without this the only exits are Stop or a soft reset, and the job is
+            // lost.
+            // A cut long enough that the stream is still running when the door opens. A
+            // three-line file can finish first, making the result depend on timing.
+            using var machine = CreateFastFakeMachine(ALongCut);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            // The door opens off the stream's own progress rather than a delay, so the cut
+            // is always still running when it happens.
+            machine.FilePositionChanged += () =>
+            {
+                if (machine.FilePosition == DoorOpensAtLine)
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+            try
+            {
+                var request = await prompts.NextAsync(CompletionWaitTimeoutMs);
+                Assert.Equal(DoorHoldingPrompt, request.Message);
+                Assert.True(MachineWait.IsDoor(machine));
+
+                request.OnResponse(OptionContinue);
+
+                await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
+                Assert.False(MachineWait.IsDoor(machine));
+            }
+            finally
+            {
+                await controller.StopAsync();
+                await AwaitRunOutcomeAsync(run);
+            }
+        }
+
+        /// <summary>Partway through <see cref="ALongCut"/>, so the stream is still running.</summary>
+        private const int DoorOpensAtLine = 10;
+
+        /// <summary>
+        /// The M0 prompt tells the operator the tool is still down, so this is when they open
+        /// the enclosure. Closing it and answering the pause is consent to restart, so the
+        /// hold is released without asking about the same door again.
+        /// </summary>
+        [Fact]
+        public async Task ContinuingPastAnM0_ReleasesTheDoorWithoutAskingAgain()
+        {
+            using var machine = CreateFastFakeMachine("G21", "G90", "M0", "G1 X1 Y1 F100");
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+            try
+            {
+                var pause = await prompts.NextAsync(CompletionWaitTimeoutMs);
+
+                // The operator opens the enclosure to do what the pause asked, closes it,
+                // then answers.
+                machine.SimulateDoorClosedAndHolding();
+                pause.OnResponse(OptionContinue);
+
+                await WaitUntilAsync(() => controller.HasFinished, CompletionWaitTimeoutMs);
+                Assert.Equal(ControllerState.Completed, controller.State);
+                Assert.DoesNotContain(prompts.All, p => p.IsDoorPrompt);
+            }
+            finally
+            {
+                await AwaitRunOutcomeAsync(run);
+            }
+        }
+
+        /// <summary>
+        /// Abandoning the enclosure prompt ends the run, and a run that ends at the door
+        /// queues no retract: GRBL keeps the move in its planner and runs it the moment the
+        /// operator clears the hold, with nobody watching.
+        /// </summary>
+        [Fact]
+        public async Task AbandoningTheDoorPrompt_QueuesNoRetract()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+                StateTransitionWaitTimeoutMs);
+            machine.SimulateDoorClosedAndHolding();
+
+            var request = await prompts.NextAsync(ShortSettleMs * 4);
+            Assert.Equal(DoorHoldingPrompt, request.Message);
+
+            machine.ClearSentCommands();
+            request.OnResponse(OptionAbort);
+            await AwaitRunOutcomeAsync(run);
+
+            // G53 G0 Z, the machine-coordinate retract: the work-coordinate form never
+            // appears on this path, so matching on it would assert nothing.
+            Assert.DoesNotContain(machine.SentCommands,
+                c => c.StartsWith(GrblProtocol.CmdMachineCoords, StringComparison.Ordinal)
+                    && c.Contains(" Z", StringComparison.Ordinal));
+        }
+
+        /// <summary>Time a settle test is willing to spend on a machine that never settles.</summary>
+        private const int ShortSettleMs = 1_500;
+
+        /// <summary>
+        /// A timeout a machine can settle within: the phase needs PostIdleSettleMs of
+        /// unbroken idle, so anything shorter fails however the machine behaves.
+        /// </summary>
+        private const int SettleableBudgetMs = PostIdleSettleMs + 3_000;
+
+        /// <summary>
+        /// Runs a job until it fails and returns the message shown. The run is expected to
+        /// fail: these cover the states the settling phase refuses.
+        /// </summary>
+        private static async Task<string?> RunAndCaptureErrorAsync(MockMachine machine)
+        {
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+            };
+
+            string? reported = null;
+            controller.ErrorOccurred += error => reported = error.Message;
+
+            await AwaitRunOutcomeAsync(controller.StartAsync());
+            Assert.Equal(ControllerState.Failed, controller.State);
+            return reported;
+        }
+
+        private static async Task AwaitRunOutcomeAsync(Task run)
+        {
+            try
+            {
+                await run;
+            }
+            catch (InvalidOperationException)
+            {
+                // The refusal the test is about; its text arrives through ErrorOccurred.
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        [Fact]
+        public async Task JobStartAtClosedDoor_PromptsThenReleasesTheHold()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+            machine.SimulateDoorClosedAndHolding();
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            // The door prompt is the first thing a run does, so the subscription has to
+            // be in place before it starts.
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            var request = await prompts.NextAsync(StateTransitionWaitTimeoutMs);
+            Assert.Contains(OptionContinue, request.Options);
+            Assert.True(MachineWait.IsDoor(machine), "the machine should still be holding while it asks");
+
+            request.OnResponse(OptionContinue);
+
+            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
+            Assert.False(MachineWait.IsDoor(machine));
+
+            await controller.StopAsync();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+
+        [Fact]
+        public async Task JobStartAtOpenDoor_Waits_ThenPromptsWhenClosed()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+            machine.SimulateDoorOpen();
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            // An open door has nothing to answer, so the run waits without prompting. GRBL
+            // would ignore a cycle start here anyway.
+            await Task.Delay(DoorResumeTimeoutMs + StateTransitionWaitTimeoutMs);
+            Assert.True(MachineWait.IsDoor(machine));
+            Assert.Empty(prompts.All);
+
+            // A closed door raises a prompt, because the cycle start restarts the spindle.
+            machine.SimulateDoorClosedAndHolding();
+
+            var asked = await prompts.NextAsync(DoorResumeTimeoutMs * 3);
+            Assert.Equal(DoorHoldingPrompt, asked.Message);
+            asked.OnResponse(OptionContinue);
+
+            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
+            Assert.False(MachineWait.IsDoor(machine));
+
+            await controller.StopAsync();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+
+        /// <summary>
+        /// A move sent while GRBL holds at the door sits in its planner and runs when the
+        /// hold is released, so the tool would rise as the operator cleared the door rather
+        /// than at the stop. The stop reports the door because its soft reset clears it.
+        /// </summary>
+        [Fact]
+        public async Task StopAtDoor_QueuesNoRetract()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+            machine.SimulateDoorOpen();
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            using var cts = new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+            await WaitUntilAsync(() => controller.IsRunInProgress, StateTransitionWaitTimeoutMs);
+            machine.ClearSentCommands();
+
+            // Cancelling is how a Stop reaches the run, and cleanup runs as it unwinds.
+            cts.Cancel();
+            try { await run; } catch (OperationCanceledException) { }
+
+            Assert.DoesNotContain(machine.SentCommands,
+                c => c.StartsWith(GrblProtocol.CmdMachineCoords));
         }
 
         [Fact]

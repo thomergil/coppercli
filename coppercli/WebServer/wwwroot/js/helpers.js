@@ -10,22 +10,27 @@ import {
     TOAST_INFO_DURATION_MS,
     CLASS_SHOW,
     API_CONSTANTS,
-    PROMPT_KIND_OPERATOR_PAUSE,
     PROMPT_OPTION_CONTINUE,
+    PROMPT_OPTION_ABORT,
     // Duplicated constants (validated against server)
     PROBE_STATE_NONE,
     PROBE_STATE_READY,
     PROBE_STATE_PARTIAL,
     PROBE_STATE_COMPLETE,
+    DEPTH_ACTION_INCREASE,
+    DEPTH_ACTION_DECREASE,
+    DEPTH_ACTION_RESET,
+    WS_PATH,
+    WS_QUERY_PARAM_CLIENT_ID,
+    CLIENT_ID_COOKIE_NAME,
+    WEBSOCKET_PING_INTERVAL_MS,
     POSITION_DECIMALS_BRIEF,
     POSITION_DECIMALS_FULL,
     HEIGHT_RANGE_EPSILON,
     MILL_MIN_RANGE_THRESHOLD,
-    STATUS_ALARM_PREFIX,
-    STATUS_DOOR,
-    STATUS_RUN,
-    STATUS_HOLD,
-    STATUS_IDLE,
+    MACHINE_ACTIVITY_DOOR_OPEN,
+    MACHINE_ACTIVITY_DOOR_HOLDING,
+    MACHINE_ACTIVITY_DOOR_RESUMING,
     CONTROLLER_STATE_IDLE,
     CONTROLLER_STATE_INITIALIZING,
     CONTROLLER_STATE_RUNNING,
@@ -37,7 +42,6 @@ import {
     CONTROLLER_STATE_CANCELLED,
     PHASE_MILLING,
     PHASE_TRACING_OUTLINE,
-    PHASE_WAITING_FOR_TOOL_CHANGE,
     PHASE_WAITING_FOR_ZERO_Z,
     CMD_PING,
     CMD_JOG_MODE,
@@ -70,10 +74,32 @@ import {
     ICON_PAUSE,
     ICON_RESUME,
     TEXT_NO_FILES,
-    CLASS_SELECTED
+    CLASS_SELECTED,
+    CLASS_HIDDEN,
+    CLASS_CONFIRM_DANGER,
+    CLASS_LOADING,
+    TEXT_CONFIRM_TITLE,
+    TEXT_ZERO_XY_INVALIDATES,
+    TEXT_PROBE_STATE_READY,
+    TEXT_PROBE_STATE_PARTIAL,
+    TEXT_PROBE_STATE_COMPLETE,
+    ZEROED_MAP_REAPPLIED,
+    ZEROED_MAP_NOT_REAPPLIED,
+    ZEROED_MAP_NOT_DISCARDED,
+    PROBE_FILE_EXTENSION,
+    ZEROED_MAP_DISCARDED,
+    ZEROED_FILE_LEFT_ALONE,
 } from './constants.js';
 
 // Get element by ID with null safety
+/**
+ * Fill a `{0}`-style template. The text lives in constants.js; this puts the values in, so
+ * no module writes a sentence at the point of use.
+ */
+export function format(template, ...values) {
+    return values.reduce((text, value, i) => text.split(`{${i}}`).join(String(value)), template);
+}
+
 export function $(id) {
     return document.getElementById(id);
 }
@@ -114,17 +140,9 @@ export function updatePauseButton(btn, isPaused, pauseClass = null, resumeClass 
 }
 
 /**
- * Whether the machine needs a person before it will move again. Mirrors
- * MachineWait.IsProblematic in Core.
- */
-export function isProblematicStatus(statusStr) {
-    return statusStr.startsWith(STATUS_ALARM_PREFIX) || statusStr === STATUS_DOOR;
-}
-
-/**
- * Asks the server to do something and says whether it did. A refusal the server explained
- * reaches the caller as `error`; a request that never completed does not, because its
- * exception text is for the log rather than the operator.
+ * POST to the server and report whether it succeeded. A refusal the server explained comes
+ * back as `error`; a request that never completed does not, because its exception text is
+ * for the log.
  */
 export async function postJson(url, body = null) {
     try {
@@ -166,6 +184,40 @@ export function addTouchRepeat(btn, action) {
     btn.addEventListener('touchcancel', clear);
 }
 
+/**
+ * Text from the filesystem, ready to put inside markup. A name carrying a quote would
+ * otherwise end the attribute it sits in, and the file becomes unloadable; an angle bracket
+ * corrupts the rest of the list.
+ */
+export function escapeMarkup(text) {
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Show `busyText` on a button while something runs, and put the button back afterwards.
+ * Restores the markup rather than the word: these buttons carry an icon, and writing
+ * textContent removes it for good.
+ */
+export function whileBusy(btn, busyText) {
+    if (!btn) {
+        return () => { };
+    }
+
+    const wasShowing = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = busyText;
+
+    return () => {
+        btn.disabled = false;
+        btn.innerHTML = wasShowing;
+    };
+}
+
 // Toast notifications (DRY helper)
 function showToast(message, type, duration) {
     const toast = document.createElement('div');
@@ -188,11 +240,23 @@ export function showInfo(message) {
     showToast(message, 'info', TOAST_INFO_DURATION_MS);
 }
 
+/** The question currently on screen, so a second one does not strand it. */
+let pendingConfirm = null;
+
 // Confirm dialog (replaces browser confirm())
 // Returns a Promise that resolves to true (yes) or false (no)
 // Options: { danger: true } adds warning styling (red text, warning icon)
-export function showConfirm(message, title = 'Confirm', options = {}) {
+export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
     return new Promise((resolve) => {
+        // One modal and one pair of buttons, so a second question overwrites the first's
+        // handlers. Answered false first, or the first promise never settles.
+        if (pendingConfirm) {
+            const stranded = pendingConfirm;
+            pendingConfirm = null;
+            stranded(false);
+        }
+        pendingConfirm = resolve;
+
         const modal = $('confirm-modal');
         const titleEl = $('confirm-title');
         const messageEl = $('confirm-message');
@@ -202,16 +266,17 @@ export function showConfirm(message, title = 'Confirm', options = {}) {
         // Apply danger styling if requested
         titleEl.textContent = title;
         if (options.danger) {
-            messageEl.innerHTML = '⚠️ ' + message;
-            messageEl.classList.add('confirm-danger');
+            messageEl.innerHTML = '⚠️ ' + escapeMarkup(message);
+            messageEl.classList.add(CLASS_CONFIRM_DANGER);
         } else {
             messageEl.textContent = message;
-            messageEl.classList.remove('confirm-danger');
+            messageEl.classList.remove(CLASS_CONFIRM_DANGER);
         }
 
         const cleanup = () => {
-            modal.classList.add('hidden');
-            messageEl.classList.remove('confirm-danger');
+            pendingConfirm = null;
+            modal.classList.add(CLASS_HIDDEN);
+            messageEl.classList.remove(CLASS_CONFIRM_DANGER);
             yesBtn.onclick = null;
             noBtn.onclick = null;
         };
@@ -219,7 +284,7 @@ export function showConfirm(message, title = 'Confirm', options = {}) {
         yesBtn.onclick = () => { cleanup(); resolve(true); };
         noBtn.onclick = () => { cleanup(); resolve(false); };
 
-        modal.classList.remove('hidden');
+        modal.classList.remove(CLASS_HIDDEN);
     });
 }
 
@@ -275,15 +340,15 @@ export class FileBrowser {
         this.selectedFile = null;
 
         if (!data.entries || data.entries.length === 0) {
-            this.listEl.innerHTML = `<div class="loading">${TEXT_NO_FILES}</div>`;
+            this.listEl.innerHTML = `<div class="${CLASS_LOADING}">${TEXT_NO_FILES}</div>`;
             return;
         }
 
         this.listEl.innerHTML = data.entries.map(entry => `
-            <div class="file-item" data-path="${entry.path}" data-isdir="${entry.isDir}">
+            <div class="file-item" data-path="${escapeMarkup(entry.path)}" data-isdir="${entry.isDir === true}">
                 <span class="file-icon">${entry.isDir ? '📁' : this.fileIcon}</span>
-                <span class="file-name">${entry.name}</span>
-                ${entry[this.metaField] ? `<span class="file-meta">${this.formatMeta(entry[this.metaField])}</span>` : ''}
+                <span class="file-name">${escapeMarkup(entry.name)}</span>
+                ${entry[this.metaField] ? `<span class="file-meta">${escapeMarkup(this.formatMeta(entry[this.metaField]))}</span>` : ''}
             </div>
         `).join('');
 
@@ -377,6 +442,27 @@ export async function validateConstants() {
             check(PROBE_STATE_COMPLETE, server.probeStates.complete, 'PROBE_STATE_COMPLETE');
         }
 
+        // The socket's own address, and the ping interval that has to stay inside the
+        // server's idle timeout.
+        if (server.socket) {
+            check(WS_PATH, server.socket.path, 'WS_PATH');
+            check(WS_QUERY_PARAM_CLIENT_ID, server.socket.clientIdParam, 'WS_QUERY_PARAM_CLIENT_ID');
+            check(CLIENT_ID_COOKIE_NAME, server.socket.clientIdCookie, 'CLIENT_ID_COOKIE_NAME');
+
+            if (WEBSOCKET_PING_INTERVAL_MS >= server.socket.timeoutMs) {
+                mismatches.push(
+                    `WEBSOCKET_PING_INTERVAL_MS=${WEBSOCKET_PING_INTERVAL_MS} is not under the `
+                    + `server's socket timeout of ${server.socket.timeoutMs}ms`);
+            }
+        }
+
+        // Depth adjustment actions
+        if (server.depthActions) {
+            check(DEPTH_ACTION_INCREASE, server.depthActions.increase, 'DEPTH_ACTION_INCREASE');
+            check(DEPTH_ACTION_DECREASE, server.depthActions.decrease, 'DEPTH_ACTION_DECREASE');
+            check(DEPTH_ACTION_RESET, server.depthActions.reset, 'DEPTH_ACTION_RESET');
+        }
+
         // Display decimals
         if (server.decimals) {
             check(POSITION_DECIMALS_BRIEF, server.decimals.brief, 'POSITION_DECIMALS_BRIEF');
@@ -389,13 +475,39 @@ export async function validateConstants() {
             check(MILL_MIN_RANGE_THRESHOLD, server.thresholds.millMinRange, 'MILL_MIN_RANGE_THRESHOLD');
         }
 
-        // Status strings
-        if (server.status) {
-            check(STATUS_ALARM_PREFIX, server.status.alarm, 'STATUS_ALARM_PREFIX');
-            check(STATUS_DOOR, server.status.door, 'STATUS_DOOR');
-            check(STATUS_RUN, server.status.run, 'STATUS_RUN');
-            check(STATUS_HOLD, server.status.hold, 'STATUS_HOLD');
-            check(STATUS_IDLE, server.status.idle, 'STATUS_IDLE');
+        if (server.probeGridExtension) {
+            check(PROBE_FILE_EXTENSION, server.probeGridExtension, 'PROBE_FILE_EXTENSION');
+        }
+
+        if (server.zeroWarning) {
+            check(TEXT_ZERO_XY_INVALIDATES, server.zeroWarning.discardsMap,
+                'TEXT_ZERO_XY_INVALIDATES');
+            check(TEXT_PROBE_STATE_READY, server.zeroWarning.unmeasured,
+                'TEXT_PROBE_STATE_READY');
+            check(TEXT_PROBE_STATE_PARTIAL, server.zeroWarning.partlyMeasured,
+                'TEXT_PROBE_STATE_PARTIAL');
+            check(TEXT_PROBE_STATE_COMPLETE, server.zeroWarning.complete,
+                'TEXT_PROBE_STATE_COMPLETE');
+        }
+
+        if (server.heightMapOutcomes) {
+            check(ZEROED_MAP_REAPPLIED, server.heightMapOutcomes.reapplied, 'ZEROED_MAP_REAPPLIED');
+            check(ZEROED_MAP_NOT_REAPPLIED, server.heightMapOutcomes.notReapplied,
+                'ZEROED_MAP_NOT_REAPPLIED');
+            check(ZEROED_MAP_NOT_DISCARDED, server.heightMapOutcomes.notDiscarded,
+                'ZEROED_MAP_NOT_DISCARDED');
+            check(ZEROED_MAP_DISCARDED, server.heightMapOutcomes.discarded, 'ZEROED_MAP_DISCARDED');
+            check(ZEROED_FILE_LEFT_ALONE, server.heightMapOutcomes.fileLeftAlone,
+                'ZEROED_FILE_LEFT_ALONE');
+        }
+
+        // What the machine is doing
+        if (server.machineActivities) {
+            check(MACHINE_ACTIVITY_DOOR_OPEN, server.machineActivities.doorOpen, 'MACHINE_ACTIVITY_DOOR_OPEN');
+            check(MACHINE_ACTIVITY_DOOR_HOLDING, server.machineActivities.doorHolding,
+                'MACHINE_ACTIVITY_DOOR_HOLDING');
+            check(MACHINE_ACTIVITY_DOOR_RESUMING, server.machineActivities.doorResuming,
+                'MACHINE_ACTIVITY_DOOR_RESUMING');
         }
 
         // Controller states
@@ -412,21 +524,15 @@ export async function validateConstants() {
             check(CONTROLLER_STATE_CANCELLED, server.controllerStates.cancelled, 'CONTROLLER_STATE_CANCELLED');
         }
 
-        if (server.promptKinds) {
-            check(PROMPT_KIND_OPERATOR_PAUSE, server.promptKinds.operatorPause,
-                'PROMPT_KIND_OPERATOR_PAUSE');
-        }
-
         if (server.promptOptions) {
             check(PROMPT_OPTION_CONTINUE, server.promptOptions.carryOn, 'PROMPT_OPTION_CONTINUE');
+            check(PROMPT_OPTION_ABORT, server.promptOptions.abandon, 'PROMPT_OPTION_ABORT');
         }
 
         // Workflow phases
         if (server.phases) {
             check(PHASE_MILLING, server.phases.milling, 'PHASE_MILLING');
             check(PHASE_TRACING_OUTLINE, server.phases.tracingOutline, 'PHASE_TRACING_OUTLINE');
-            check(PHASE_WAITING_FOR_TOOL_CHANGE, server.phases.waitingForToolChange,
-                'PHASE_WAITING_FOR_TOOL_CHANGE');
             check(PHASE_WAITING_FOR_ZERO_Z, server.phases.waitingForZeroZ, 'PHASE_WAITING_FOR_ZERO_Z');
         }
 

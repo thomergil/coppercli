@@ -35,8 +35,7 @@ namespace coppercli.Macro
                 var menu = new MenuDef<MacroAction>(
                     new MenuItem<MacroAction>("Load Macro...", 'l', MacroAction.Load),
                     new MenuItem<MacroAction>($"Run {macroFileName}", 'r', MacroAction.Run,
-                        EnabledWhen: () => hasLoadedMacro,
-                        DisabledReason: () => hasLoadedMacro ? null : "load macro first"),
+                        Blocker: () => hasLoadedMacro ? null : "load macro first"),
                     new MenuItem<MacroAction>("Back", 'q', MacroAction.Back)
                 );
 
@@ -157,12 +156,12 @@ namespace coppercli.Macro
             }
             catch (MacroParseException ex)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Macro parse error: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowFailure(CliConstants.FailedReadingTheMacro, ex);
                 MenuHelpers.ShowPrompt("");
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Error running macro: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowFailure(CliConstants.FailedRunningTheMacro, ex);
                 MenuHelpers.ShowPrompt("");
             }
         }

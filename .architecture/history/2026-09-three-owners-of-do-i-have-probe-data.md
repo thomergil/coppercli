@@ -16,7 +16,7 @@ A finished height map sitting in the autosave and not yet loaded made that null,
 preflight found no map to apply and cleared the job to run with no height correction. The
 probe screen, reading the file, reported the map complete at the same time. Three auditors
 reached that independently and a skeptic proved it with a failing test,
-`WebServerSequenceTests.ACompleteMapTheStatusAnnounces_StopsTheMillUntilItIsApplied`.
+`WebServerSequenceTests.ACompleteMapTheStatusReports_StopsTheMillUntilApplied`.
 
 It is one owner now. `AppState.ReadUsableAutosave()` is the only place the `ProbeContext`
 applicability test runs, and it reads without adopting, so `GET /api/probe/status` can call

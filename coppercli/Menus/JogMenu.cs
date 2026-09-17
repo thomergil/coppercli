@@ -8,7 +8,6 @@ using coppercli.Helpers;
 using Spectre.Console;
 using static coppercli.CliConstants;
 using static coppercli.Core.Util.Constants;
-using static coppercli.Core.Util.GrblProtocol;
 using static coppercli.Helpers.DisplayHelpers;
 
 namespace coppercli.Menus
@@ -16,7 +15,8 @@ namespace coppercli.Menus
     /// <summary>
     /// Jog menu for jogging and zeroing the machine.
     /// Vi-style: press digit (1-5 or 1-9 depending on mode) then direction.
-    /// Features a "cockpit" layout on wide terminals.
+    /// Draws the cockpit layout where the terminal is big enough, and a note about its size
+    /// where it is not.
     /// </summary>
     internal static class JogMenu
     {
@@ -34,7 +34,7 @@ namespace coppercli.Menus
                 var probeContact = machine.PinStateProbe;
                 var hasFile = AppState.CurrentFile != null;
                 return new JogDisplayState(
-                    StatusColor: MachineWait.IsProblematic(machine) ? AnsiError : AnsiSuccess,
+                    StatusColor: MachineWait.IsUnavailable(machine) ? AnsiError : AnsiSuccess,
                     WorkPos: machine.WorkPosition,
                     MachinePos: machine.MachinePosition,
                     XyColor: probeContact ? AnsiDim : AnsiInfo,
@@ -101,6 +101,22 @@ namespace coppercli.Menus
 
                     RedrawScreen(machine, mode);
 
+                    // The enclosure is open, so nothing this screen sends will move the
+                    // machine. Show the message over the jog display, and again if it
+                    // opens later.
+                    if (MachineWait.IsDoor(machine))
+                    {
+                        Logger.Log("JogMenu: holding at the enclosure, status={0}:{1}",
+                            machine.Status, machine.StatusSubState);
+
+                        if (!MenuHelpers.WaitForDoorClear(machine))
+                        {
+                            return;
+                        }
+                        Console.Clear();
+                        continue;
+                    }
+
                     var keyOrNull = InputHelpers.ReadKeyPolling();
                     if (keyOrNull == null)
                     {
@@ -120,9 +136,37 @@ namespace coppercli.Menus
             }
         }
 
+        /// <summary>The labels the two position rows are drawn with, padded to one width.</summary>
+        internal const string WorkLabel = " Work:    ";
+
+        /// <inheritdoc cref="WorkLabel"/>
+        internal const string MachineLabel = " Machine: ";
+
+        /// <summary>The width each coordinate is drawn in.</summary>
+        private const int PositionValueWidth = 9;
+
+        /// <summary>The spaces between one axis and the next.</summary>
+        private const string AxisGap = "   ";
+
         /// <summary>
-        /// Builds a boxed line: ║ content padded to innerWidth ║
+        /// How wide a position row draws, for the padding that fills the rest of the box.
+        /// Derived from the parts the row is built from, so the two cannot disagree.
         /// </summary>
+        internal static int PositionContentWidth =>
+            WorkLabel.Length
+            + 3 * ("X:".Length + PositionValueWidth)
+            + 2 * AxisGap.Length;
+
+        /// <summary>
+        /// One position row: a label, then X, Y and Z in a fixed-width field each. Both rows
+        /// are drawn from here, so a change to one cannot leave the other a different width.
+        /// </summary>
+        internal static string PositionRow(string label, Core.Util.Vector3 p, string color) =>
+            $"{label}X:{color}{p.X,PositionValueWidth:F3}{AnsiReset}{AxisGap}"
+            + $"Y:{color}{p.Y,PositionValueWidth:F3}{AnsiReset}{AxisGap}"
+            + $"Z:{color}{p.Z,PositionValueWidth:F3}{AnsiReset}";
+
+        /// <summary>Builds a boxed line: ║ content padded to innerWidth ║</summary>
         private static string BoxLine(string content, int innerWidth)
         {
             int displayLen = CalculateDisplayLength(content);
@@ -168,7 +212,7 @@ namespace coppercli.Menus
             }
             else
             {
-                DrawCompactLayout(machine, mode, winWidth, winHeight);
+                DrawSizeHint(winWidth, winHeight);
             }
         }
 
@@ -204,23 +248,27 @@ namespace coppercli.Menus
             const int col3Row12Width = 35;       // Rows 1-2 content width
             const int col3Row3Width = 26;        // Row 3 content width
             const int probeContentWidth = 17;    // " Probe:   Contact" display width
-            const int prefixPokeLeft = 7;        // How far "prefix" pokes left into gap2
+            const int prefixPokeLeft = 7;        // Columns the prefix label takes out of gap2
 
             // Header - Status line with right-aligned hints
             var hints = $"{AnsiDim}?=Help  Esc to exit{AnsiReset}";
-            var statusContent = $" Status: {statusColor}{machine.Status}{AnsiReset}";
+            var statusContent =
+                $" Status: {statusColor}{GetActivityText(MachineWait.GetActivity(machine), machine.Status)}{AnsiReset}";
             int statusDisplayLen = CalculateDisplayLength(statusContent);
-            int hintsDisplayLen = 19; // "?=Help  Esc to exit"
+            int hintsDisplayLen = CalculateDisplayLength(hints);
             int statusPadding = Math.Max(1, innerWidth - statusDisplayLen - hintsDisplayLen - 1);
             WriteLineTruncated(BoxBorder('╔', '╗', innerWidth), winWidth);
             WriteLineTruncated(BoxLine($"{statusContent}{new string(' ', statusPadding)}{hints}", innerWidth), winWidth);
             WriteLineTruncated(BoxBorder('╠', '╣', innerWidth), winWidth);
 
-            // Position display - coordinates are fixed width, padding expands on right
-            int posContentWidth = 62;  // "Work:    X:  -999.999   Y:  -999.999   Z:  -999.999"
-            int posPadding = Math.Max(0, innerWidth - posContentWidth - 1);
-            WriteLineTruncated(BoxLine($" Work:    X:{AnsiWarning}{wp.X,9:F3}{AnsiReset}   Y:{AnsiWarning}{wp.Y,9:F3}{AnsiReset}   Z:{AnsiWarning}{wp.Z,9:F3}{AnsiReset}{new string(' ', posPadding)}", innerWidth), winWidth);
-            WriteLineTruncated(BoxLine($" Machine: X:{AnsiDim}{mp.X,9:F3}{AnsiReset}   Y:{AnsiDim}{mp.Y,9:F3}{AnsiReset}   Z:{AnsiDim}{mp.Z,9:F3}{AnsiReset}{new string(' ', posPadding)}", innerWidth), winWidth);
+            // Coordinates are fixed width, so the padding expands on the right.
+            int posPadding = Math.Max(0, innerWidth - PositionContentWidth - 1);
+            WriteLineTruncated(
+                BoxLine(PositionRow(WorkLabel, wp, AnsiWarning) + new string(' ', posPadding), innerWidth),
+                winWidth);
+            WriteLineTruncated(
+                BoxLine(PositionRow(MachineLabel, mp, AnsiDim) + new string(' ', posPadding), innerWidth),
+                winWidth);
             // Probe pin status (BitZero)
             var probeColor = machine.PinStateProbe ? AnsiError : AnsiSuccess;
             var probeText = machine.PinStateProbe ? "Contact" : "Open";
@@ -235,9 +283,6 @@ namespace coppercli.Menus
             }
 
             // Joystick area with dynamic spacing
-            // XY joystick is 16 chars wide (H box + W/J center + L box)
-            // Z joystick is 5 chars wide (single box with connector)
-            // Info column is ~22 chars (Mode/Feed/Dist labels + values)
             const int xyJoyWidth = 20;   // "X- │ A │     │ D │ X+" with breathing room
             const int zJoyWidth = 5;     // "┌───┐" = 5
             const int infoWidth = 16;    // Mode/Feed/Dist area (smaller = more gap space)
@@ -286,9 +331,10 @@ namespace coppercli.Menus
         }
 
         /// <summary>
-        /// Shows a message when terminal is too small for cockpit layout.
+        /// Two lines saying the terminal is too small for the cockpit layout, and how to
+        /// leave.
         /// </summary>
-        private static void DrawCompactLayout(Machine machine, JogMode mode, int winWidth, int winHeight)
+        private static void DrawSizeHint(int winWidth, int winHeight)
         {
             bool needsWidth = winWidth < CockpitMinWidth;
             bool needsHeight = winHeight < CockpitMinHeight;
@@ -360,27 +406,38 @@ namespace coppercli.Menus
             }
             if (InputHelpers.IsKey(key, ConsoleKey.U))
             {
+                // Unlock clears whatever is holding the machine. At the door it goes
+                // through the same helper the draw loop uses, so a door hold always has a
+                // way out of this screen.
+                if (MachineWait.IsDoor(machine))
+                {
+                    MenuHelpers.WaitForDoorClear(machine);
+                    Console.Clear();
+                    return true;
+                }
+
                 MachineCommands.Unlock(machine);
-                if (MachineWait.IsDoor(machine) || MachineWait.IsHold(machine))
+                if (MachineWait.CanResume(machine))
                 {
                     machine.CycleStart();
                 }
-                ShowOverlayTimed("Unlocked", ConfirmationDisplayMs);
+                ShowOverlayTimed(UnlockedMessage, ConfirmationDisplayMs);
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.R))
             {
                 machine.SoftReset();
-                ShowOverlayTimed("Reset", ConfirmationDisplayMs, messageColor: AnsiWarning);
+                ShowOverlayTimed(ResetMessage, ConfirmationDisplayMs, messageColor: AnsiWarning);
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.Spacebar))
             {
-                if (MachineWait.IsHold(machine))
+                var activity = MachineWait.GetActivity(machine);
+                if (MachineWait.CanResume(activity))
                 {
                     machine.CycleStart();
                 }
-                else if (machine.Status == StatusRun)
+                else if (MachineWait.CanPause(activity))
                 {
                     machine.FeedHold();
                 }
@@ -388,13 +445,16 @@ namespace coppercli.Menus
             }
             if (InputHelpers.IsKey(key, ConsoleKey.L))
             {
-                // Z-only zeroing (Level): SetWorkZeroAndWait re-applies probe grid if it was applied
-                bool hadProbeApplied = AppState.AreProbePointsApplied;
-                MachineCommands.SetWorkZeroAndWait(machine, "Z0");
-                var zMsg = hadProbeApplied
-                    ? "Z zeroed (probe grid re-applied)"
-                    : "Z zeroed";
-                ShowOverlayTimed(zMsg, ConfirmationDisplayMs);
+                // Z-only zeroing (Level). What it did to the height map depends on whether
+                // a run is streaming the file.
+                var zeroed = MachineCommands.SetWorkZeroAndWait(machine, "Z0");
+                if (zeroed.Refused != null)
+                {
+                    ShowOverlayTimed(zeroed.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    return true;
+                }
+
+                ShowZeroed(ZeroedZ, zeroed.Outcome);
                 MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
                 return false; // Exit after zeroing
             }
@@ -407,10 +467,14 @@ namespace coppercli.Menus
                 }
 
                 Logger.Log("JogMenu: D0 pressed, zeroing all axes");
-                // SetWorkZeroAndWait discards probe data when XY is zeroed
-                MachineCommands.SetWorkZeroAndWait(machine, "X0 Y0 Z0");
+                var allZeroed = MachineCommands.SetWorkZeroAndWait(machine, "X0 Y0 Z0");
+                if (allZeroed.Refused != null)
+                {
+                    ShowOverlayTimed(allZeroed.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    return true;
+                }
 
-                ShowOverlayTimed("All axes zeroed", ConfirmationDisplayMs);
+                ShowZeroed(ZeroedAllAxes, allZeroed.Outcome);
                 MachineCommands.MoveToSafeHeight(machine, Constants.RetractZMm);
                 return false; // Exit after zeroing
             }
@@ -500,32 +564,59 @@ namespace coppercli.Menus
         }
 
         /// <summary>
+        /// The confirmation after zeroing. An outcome that left the G-code wrong is shown as
+        /// an error, because the operator has to reload the file before cutting.
+        /// </summary>
+        private static void ShowZeroed(string zeroed, WorkZeroOutcome outcome) =>
+            ShowOverlayTimed(
+                ZeroedMessage(zeroed, outcome),
+                ConfirmationDisplayMs,
+                messageColor: outcome.LeftTheGCodeWrong() ? AnsiError : null);
+
+        /// <summary>The confirmation after zeroing, naming what became of the height map.</summary>
+        internal static string ZeroedMessage(string zeroed, WorkZeroOutcome outcome) => outcome switch
+        {
+            WorkZeroOutcome.MapReapplied => string.Format(ZeroedMapReapplied, zeroed),
+            WorkZeroOutcome.MapNotReapplied => string.Format(ZeroedMapNotReapplied, zeroed),
+            WorkZeroOutcome.MapNotDiscarded => string.Format(ZeroedMapNotDiscarded, zeroed),
+            WorkZeroOutcome.MapDiscarded => string.Format(ZeroedMapDiscarded, zeroed),
+            WorkZeroOutcome.FileLeftAlone => string.Format(ZeroedFileLeftAlone, zeroed),
+            _ => zeroed
+        };
+
+        /// <summary>
+        /// The map a zero would discard, or null if there is nothing worth warning about.
+        /// Whichever of memory and the saved copy holds it: asked of ProbePoints alone, an
+        /// autosaved map was deleted with no warning. One measured on another board is
+        /// discarded either way, so it does not count.
+        /// </summary>
+        internal static ProbeGrid? MapAZeroWouldDiscard()
+        {
+            var grid = AppState.CurrentProbeGrid;
+            return AppState.DescribeApplicability(grid).IsUsable() ? grid : null;
+        }
+
+        /// <summary>
         /// Checks if probe data exists and prompts user to confirm zeroing.
         /// Returns true if user confirms or no probe data exists.
         /// </summary>
         private static bool ConfirmZeroWithProbeData(string axisDescription)
         {
-            // Only a map that describes the job in hand is worth warning about: a file
-            // measured on another board is not the operator's data to lose.
-            if (AppState.ProbePoints == null
-                || AppState.GetProbeApplicability() != ProbeApplicability.Applicable)
+            if (MapAZeroWouldDiscard() is not ProbeGrid grid)
             {
                 return true;
             }
 
-            var grid = AppState.CurrentProbeGrid;
-            string what = grid != null && !grid.HasCompleteData
-                ? "an unfinished height map"
-                : "a height map";
+            // One arm per state. Two arms over three described a grid with nothing measured
+            // as partly measured here, and as complete in the browser.
+            string what = grid.State switch
+            {
+                ProbeDataState.Complete => CompleteMap,
+                ProbeDataState.Partial => PartlyMeasuredMap,
+                _ => UnmeasuredMap
+            };
 
-            // Say what actually happens: it is deleted, including the saved copy, and
-            // re-probing is the longest part of the job. And say what does not cost
-            // anything, because the operator may only need Z.
-            return MenuHelpers.Confirm(
-                $"You have {what} for this board. It was measured from the current X/Y origin, " +
-                $"so zeroing {axisDescription} discards it - including the saved copy - and you " +
-                $"will need to probe again. Zeroing only Z keeps it. Continue?",
-                false);
+            return MenuHelpers.Confirm(string.Format(ZeroDiscardsMap, what, axisDescription), false);
         }
 
         /// <summary>
@@ -540,9 +631,8 @@ namespace coppercli.Menus
 
             Logger.Log("JogMenu: ProbeZ starting");
 
-            // Through the factory every other caller uses. Built by hand here, this took
-            // two of the operator's settings and left the rest at class defaults - the
-            // safe height and minimum retract among them.
+            // Through the factory every other caller uses, so this probe gets the same safe
+            // height and minimum retract as the rest.
             controller.Options = Core.Controllers.ProbeOptions.FromSettings(settings);
 
             // Use CancellationTokenSource for user cancellation
@@ -559,9 +649,12 @@ namespace coppercli.Menus
                 if (Console.KeyAvailable && InputHelpers.IsExitKey(Console.ReadKey(true)))
                 {
                     Logger.Log("JogMenu: ProbeZ cancelled by user");
+
+                    // Cancelled, then waited out: the probe's own teardown stops the machine
+                    // and lifts the tool.
                     cts.Cancel();
-                    machine.SoftReset();  // Reset to clear state
-                    return;
+                    ShowOverlay(ProbeStatusStopping);
+                    break;
                 }
                 Thread.Sleep(StatusPollIntervalMs);
             }
@@ -575,8 +668,15 @@ namespace coppercli.Menus
                 if (success)
                 {
                     // Zero Z at probe position
-                    MachineCommands.SetWorkZeroAndWait(machine, "Z0");
-                    Logger.Log("JogMenu: Z zeroed after probe");
+                    var afterProbe = MachineCommands.SetWorkZeroAndWait(machine, "Z0");
+                    if (afterProbe.Refused != null)
+                    {
+                        ShowOverlayTimed(
+                            afterProbe.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                        return;
+                    }
+
+                    ShowZeroed(ZeroedZ, afterProbe.Outcome);
                 }
                 else
                 {
@@ -584,9 +684,22 @@ namespace coppercli.Menus
                     ShowOverlayAndWait(ControllerConstants.ErrorProbeNoContact);
                 }
             }
-            catch (AggregateException ex) when (ex.InnerException is OperationCanceledException)
+            catch (AggregateException ex)
             {
-                Logger.Log("JogMenu: ProbeZ was cancelled");
+                // Every way a probe ends badly arrives here wrapped. A probe that never
+                // triggers, and one interrupted by the enclosure opening, both throw
+                // TimeoutException; nothing above this catches, so an unmatched filter here
+                // took the process down with the tool at the workpiece.
+                var cause = ex.InnerException;
+
+                if (cause is OperationCanceledException)
+                {
+                    Logger.Log("JogMenu: ProbeZ was cancelled");
+                    return;
+                }
+
+                Logger.Log("JogMenu: ProbeZ failed - {0}", ex);
+                ShowOverlayAndWait(ControllerConstants.ErrorProbeNoContact);
             }
         }
     }

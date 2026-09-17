@@ -23,9 +23,9 @@ namespace coppercli.Tests
     /// </summary>
     // The culture is set on this thread only. It flows into the awaits below with the
     // execution context, so the code under test formats under it while tests on other
-    // threads keep their own. Do not use DefaultThreadCurrentCulture: it applies to the
-    // whole process, so a test asserting on a formatted number would pass or fail
-    // according to what runs beside it.
+    // threads keep their own. Do not use DefaultThreadCurrentCulture: it applies to the whole
+    // process, so a test asserting on a formatted number would depend on what runs beside
+    // it.
     public class CultureInvariantGCodeTests : IDisposable
     {
         private readonly CultureInfo _original = CultureInfo.CurrentCulture;

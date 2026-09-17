@@ -65,6 +65,97 @@ namespace coppercli.Tests
             }
         }
 
+        /// <summary>
+        /// The adjustment is written into the work origin and taken back out when the run
+        /// ends. A machine that will not take it back out leaves every later job cutting by
+        /// that much too shallow, so the operator has to be told.
+        /// </summary>
+        [Fact]
+        public async Task ADepthAdjustmentTheMachineWillNotGiveBack_IsReported()
+        {
+            using var machine = new FakeMachine();
+            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { DepthAdjustment = -0.05f, RequireHoming = false }
+            };
+
+            var errors = new List<ControllerError>();
+            controller.ErrorOccurred += errors.Add;
+
+            // Taken at the start, refused at the end, as an alarmed GRBL does.
+            controller.StateChanged += state =>
+            {
+                if (state == ControllerState.Completing)
+                {
+                    machine.RefuseWorkOffsetWrites = true;
+                }
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try { await controller.StartAsync(cts.Token); }
+            catch (OperationCanceledException) { }
+
+            Assert.Contains(
+                errors,
+                e => e.Message == string.Format(
+                    ControllerConstants.ErrorDepthAdjustmentNotRestored, -0.05));
+        }
+
+        /// <summary>
+        /// A run whose restore was refused leaves its adjustment in the origin. The next run
+        /// must still cut at the depth the operator asked for, measured from the zero they
+        /// touched off - not from the shifted origin the last run left.
+        /// </summary>
+        [Fact]
+        public async Task AfterARestoreTheMachineRefused_TheNextRunStillCutsWhatWasAskedFor()
+        {
+            using var machine = new FakeMachine();
+            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
+
+            double baseline = machine.G54Offset.Z;
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { DepthAdjustment = -0.05f, RequireHoming = false }
+            };
+
+            // The first run takes the adjustment and is refused when it tries to give it back.
+            controller.StateChanged += state =>
+            {
+                if (state == ControllerState.Completing)
+                {
+                    machine.RefuseWorkOffsetWrites = true;
+                }
+            };
+
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+            {
+                try { await controller.StartAsync(cts.Token); }
+                catch (OperationCanceledException) { }
+            }
+
+            Assert.Equal(baseline - 0.05, machine.G54Offset.Z, precision: 4);
+
+            // The same controller, as AppState holds one for the session: it is the only
+            // record that the origin is still shifted.
+            controller.Reset();
+            machine.RefuseWorkOffsetWrites = false;
+            ClearCommands(machine);
+
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+            {
+                try { await controller.StartAsync(cts.Token); }
+                catch (OperationCanceledException) { }
+            }
+
+            // Measured from the operator's zero, so still 0.05 - not 0.10.
+            double? applied = AppliedWorkOffsetZ(machine);
+            Assert.NotNull(applied);
+            Assert.Equal(baseline - 0.05, applied!.Value, precision: 4);
+        }
+
         [Fact]
         public async Task RepeatedMills_DoNotStackTheDepthAdjustment()
         {
@@ -205,7 +296,7 @@ namespace coppercli.Tests
             var machine = new MockMachine
             {
                 Status = GrblProtocol.StatusIdle,
-                MachinePosition = new Vector3(0, 0, Constants.MillStartSafetyZ),
+                MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ),
                 WorkPosition = new Vector3(0, 0, 0),
                 G54Offset = new Vector3(0, 0, InitialG54Z),
                 WorkOffsetQuerySucceeds = true,

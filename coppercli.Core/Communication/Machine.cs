@@ -20,9 +20,9 @@ namespace coppercli.Core.Communication
     public class Machine : IMachine
     {
         /// <summary>
-        /// What the machine is being driven to do. Whether there is a link at all is
-        /// <see cref="Connected"/>'s to answer, and every guard that must refuse a
-        /// disconnected machine asks that.
+        /// What the machine is being driven to do. Whether a link exists is
+        /// <see cref="Connected"/>, which is what a guard against a disconnected machine
+        /// reads.
         /// </summary>
         public enum OperatingMode
         {
@@ -32,7 +32,7 @@ namespace coppercli.Core.Communication
             /// <summary>Streaming a G-code file.</summary>
             SendFile,
 
-            /// <summary>A probe is under way; the reply is awaited.</summary>
+            /// <summary>A probe is running and the reply is outstanding.</summary>
             Probe
         }
 
@@ -181,42 +181,55 @@ namespace coppercli.Core.Communication
             private set { _filePosition = value; }
         }
 
-        private OperatingMode _mode = OperatingMode.Manual;
+        private int _mode = (int)OperatingMode.Manual;
+
+        /// <summary>
+        /// What the machine is being driven for. Written by a controller and read from the
+        /// request threads that refuse a jog mid-probe, so reads and writes are atomic.
+        /// </summary>
         public OperatingMode Mode
         {
-            get { return _mode; }
+            get { return (OperatingMode)Volatile.Read(ref _mode); }
             private set
             {
-                if (_mode == value)
+                if (Interlocked.Exchange(ref _mode, (int)value) == (int)value)
                 {
                     return;
                 }
 
-                _mode = value;
                 RaiseEvent(OperatingModeChanged);
             }
         }
 
-        private string _status = StatusDisconnected;
-        private DateTime _lastStateClearAttempt = DateTime.MinValue;
+        /// <summary>
+        /// GRBL's state word and its substate, held as one value. Read separately they can
+        /// be torn across a write: a reader between the two stores would see a pair the
+        /// machine was never in, and "Door" with substate "0" is the one pair that says a
+        /// cycle start may go out.
+        /// </summary>
+        private sealed record StatusReading(string Word, string SubState);
+
+        /// <inheritdoc cref="StatusReading"/>
+        private StatusReading _state = new(StatusDisconnected, string.Empty);
+
+        private long _lastStateClearAttemptMs;
         private const int StateClearIntervalMs = 500;
 
         /// <summary>
-        /// When true, enables automatic Door/Alarm state clearing.
-        /// Enable only in menus that display status (MainMenu, JogMenu).
+        /// When true, the machine clears an alarm itself while in Manual mode. It never
+        /// clears a door hold: only the operator may release that. Enable only in menus
+        /// that display status (MainMenu, JogMenu).
         /// </summary>
         public bool EnableAutoStateClear { get; set; } = false;
 
         public string Status
         {
-            get { return _status; }
+            get { return Volatile.Read(ref _state).Word; }
             private set { SetStatus(value, string.Empty); }
         }
 
-        private string _statusSubState = string.Empty;
-
         /// <inheritdoc/>
-        public string StatusSubState => _statusSubState;
+        public string StatusSubState => Volatile.Read(ref _state).SubState;
 
         /// <summary>
         /// Records the state and its substate together, announcing a change to either.
@@ -225,13 +238,13 @@ namespace coppercli.Core.Communication
         /// </summary>
         private void SetStatus(string state, string subState)
         {
-            if (_status == state && _statusSubState == subState)
+            var current = Volatile.Read(ref _state);
+            if (current.Word == state && current.SubState == subState)
             {
                 return;
             }
 
-            _status = state;
-            _statusSubState = subState;
+            Volatile.Write(ref _state, new StatusReading(state, subState));
             RaiseEvent(StatusChanged);
         }
 
@@ -295,8 +308,8 @@ namespace coppercli.Core.Communication
 
                 if (!Connected)
                 {
-                    // Back to the resting mode, so a link that drops mid-stream cannot
-                    // leave the next connection believing a file is still sending.
+                    // Back to the default mode, so a link that drops mid-stream does not
+                    // leave the next connection thinking a file is still sending.
                     Mode = OperatingMode.Manual;
                 }
 
@@ -364,10 +377,10 @@ namespace coppercli.Core.Communication
             _settings = settings ?? new MachineSettings();
         }
 
-        // ConcurrentQueue rather than Queue.Synchronized: the latter makes each call
-        // atomic but not a Count/Peek-then-Dequeue sequence, so a Clear() from a UI or
-        // web thread landing between them threw and killed the serial worker - taking
-        // the connection down mid-cut, at exactly the moment someone hit Reset.
+        // ConcurrentQueue rather than Queue.Synchronized: the latter makes each call atomic
+        // but not a Count/Peek-then-Dequeue sequence, so a Clear() from a UI or web thread
+        // landing between them threw and killed the serial worker, dropping the connection
+        // mid-cut.
         private readonly ConcurrentQueue<string> Sent = new();
         private readonly ConcurrentQueue<string> ToSend = new();
         private readonly ConcurrentQueue<char> ToSendPriority = new();
@@ -392,7 +405,7 @@ namespace coppercli.Core.Communication
                 // Monotonic: a DST shift or NTP step must not stall status polling for
                 // an hour, nor expire every deadline at once.
                 var RunTime = System.Diagnostics.Stopwatch.StartNew();
-                long LastStatusPollMs = 500;
+                long LastStatusPollMs = Constants.FirstStatusPollDelayMs;
                 long LastFilePosUpdateMs = 0;
                 bool filePosChanged = false;
 
@@ -561,6 +574,9 @@ namespace coppercli.Core.Communication
 
                             if (errorline != null)
                             {
+                                Controllers.ControllerLog.Log(
+                                    "GRBL rejected {0}: {1}", errorline, line);
+
                                 RaiseEvent(ReportError, $"{line}: {errorline}");
 
                                 CommandRejected?.Invoke(new GrblRejection(
@@ -594,7 +610,10 @@ namespace coppercli.Core.Communication
                         }
                         else if (line.StartsWith(ResponseAlarmPrefix))
                         {
-                            // Controllers.ControllerLog.Log($"GRBL_ALARM: \"{line}\"");
+                            // Logged here because an alarm ends whatever was running, and
+                            // the controller only reports that the machine stopped moving.
+                            // Without the code, the log cannot say which alarm it was.
+                            Controllers.ControllerLog.Log("GRBL alarm: {0}", line);
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
                             ToSend.Clear();
@@ -724,10 +743,10 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Whether GRBL may still have work queued, so the machine must be stopped before the
-        /// port closes. A port that never answered as GRBL is left alone. Idle is not enough
-        /// on its own: a line sent moments ago is in GRBL's receive buffer, unparsed, while
-        /// the status still reads Idle.
+        /// Whether GRBL may still have work queued, so the machine must be stopped before
+        /// the port closes. A port that never answered as GRBL is left alone. Idle alone is
+        /// not enough: a line just sent sits unparsed in GRBL's receive buffer while the
+        /// status still reads Idle.
         /// </summary>
         internal static bool NeedsStopBeforeDisconnect(bool connected, string status, int bytesSent) =>
             connected
@@ -735,8 +754,8 @@ namespace coppercli.Core.Communication
             && (status != GrblProtocol.StatusIdle || bytesSent > 0);
 
         /// <summary>
-        /// Stop the machine, since GRBL keeps working through its planner buffer after the
-        /// port closes. Written straight to the connection rather than queued: Connected is
+        /// Stop the machine, because GRBL keeps working through its planner buffer after
+        /// the port closes. Written straight to the connection rather than queued: Connected is
         /// already false, so the send queue is no longer being drained.
         /// </summary>
         private void SendStop()
@@ -1001,21 +1020,8 @@ namespace coppercli.Core.Communication
 
             OverrideChanged?.Invoke();
 
-            // These commands query GRBL's modal state ($G) and coordinate offsets ($#).
-            // They are commented out because:
-            // 1. They get queued immediately, before GRBL has time to process the soft reset.
-            //    GRBL needs ~500ms (ResetWaitMs) after reset before accepting commands.
-            //    This causes "Missing the expected G-code word value" errors.
-            // 2. The initial connection (lines 294-295) already sends $G/$# with proper timing.
-            // 3. No callers depend on these being sent immediately:
-            //    - ConnectionMenu: WaitForGrblResponse just polls status, doesn't need $G/$#
-            //    - JogMenu (M key): Immediately homes, doesn't need prior state
-            //    - JogMenu (R key): Manual reset, state updates via polling
-            //    - JogMenu (ProbeZ cancel): Just clearing state
-            //    - CncWebServer API/WebSocket reset: No wait, would error immediately
-            //    - MachineWait.StopAndResetAsync: Waits AFTER this returns, too late
-            // SendLine(CmdViewGCodeState);
-            // SendLine(CmdViewParameters);
+            // Nothing is asked of GRBL here: a $G or $# sent now queues before the soft
+            // reset finishes and comes back as a parse error. Connect sends both, with a wait.
         }
 
         public void SendControl(byte controlchar)
@@ -1193,21 +1199,27 @@ namespace coppercli.Core.Communication
             Mode = OperatingMode.Manual;
         }
 
-        public void ProbeStart()
+        /// <inheritdoc/>
+        public bool ProbeStart()
         {
             if (!Connected)
             {
                 RaiseEvent(Info, "Not Connected");
-                return;
+                return false;
             }
 
-            if (Mode != OperatingMode.Manual)
+            // Compared and set in one step, so two taps of Probe Z cannot both find Manual
+            // and both send a G38.2.
+            if (Interlocked.CompareExchange(
+                    ref _mode, (int)OperatingMode.Probe, (int)OperatingMode.Manual)
+                != (int)OperatingMode.Manual)
             {
                 RaiseEvent(Info, "Can't start probing while running!");
-                return;
+                return false;
             }
 
-            Mode = OperatingMode.Probe;
+            RaiseEvent(OperatingModeChanged);
+            return true;
         }
 
         public void ProbeStop()
@@ -1562,17 +1574,17 @@ namespace coppercli.Core.Communication
             // Auto-clear Alarm (only in Manual mode, rate-limited, when enabled).
             //
             // Door is deliberately NOT auto-cleared. GRBL reports Door when the safety
-            // interlock opens; sending CycleStart there restarts the spindle and resumes
-            // motion while someone has their hands in the machine. Resuming after the
-            // enclosure has been opened is the operator's decision to make, not ours.
+            // interlock opens, and a CycleStart there restarts the spindle and resumes
+            // motion while the operator may be reaching in. Only the operator may resume
+            // after the enclosure has been opened.
             if (Mode == OperatingMode.Manual && EnableAutoStateClear)
             {
-                var now = DateTime.Now;
-                if ((now - _lastStateClearAttempt).TotalMilliseconds > StateClearIntervalMs)
+                long now = Environment.TickCount64;
+                if (now - _lastStateClearAttemptMs > StateClearIntervalMs)
                 {
                     if (Status.StartsWith(StatusAlarm))
                     {
-                        _lastStateClearAttempt = now;
+                        _lastStateClearAttemptMs = now;
                         ToSend.Enqueue(CmdUnlock);
                     }
                 }

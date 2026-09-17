@@ -1,14 +1,13 @@
 // coppercli Web UI WebSocket
 
 import { state } from './state.js';
-import { showError, showInfo, showConfirm } from './helpers.js';
+import { showError, showInfo, showConfirm, postJson } from './helpers.js';
 import { updateStatus, showConnectionStatus } from './screens.js';
 import {
     MAX_RECONNECT_ATTEMPTS,
     RECONNECT_DELAY_MS,
     FORCE_DISCONNECT_RECONNECT_DELAY_MS,
     WEBSOCKET_PING_INTERVAL_MS,
-    ERROR_OTHER_CLIENT_SUBSTRING,
     CMD_PING,
     MSG_TYPE_STATUS,
     MSG_TYPE_MILL_STATE,
@@ -27,7 +26,12 @@ import {
     TEXT_FORCE_DISCONNECT_FAILED,
     TITLE_FORCE_DISCONNECT,
     API_FORCE_DISCONNECT,
-    WS_CLOSE_REASON_FORCE_DISCONNECT
+    WS_CLOSE_REASON_FORCE_DISCONNECT,
+    FORCE_DISCONNECT_RELOAD_DELAY_MS,
+    WS_PATH,
+    WS_QUERY_PARAM_CLIENT_ID,
+    CLIENT_ID_COOKIE_NAME,
+    TEXT_CONNECTION_ERROR
 } from './constants.js';
 import { handleMillControllerEvent, handleToolChangeControllerEvent } from './mill.js';
 import { checkAndShowTrustZero } from './trust-zero.js';
@@ -35,16 +39,18 @@ import { checkAndShowTrustZero } from './trust-zero.js';
 let pingInterval = null;
 
 function getClientIdFromCookie() {
-    const match = document.cookie.match(/coppercli_client_id=([^;]+)/);
+    const match = document.cookie.match(
+        new RegExp(`${CLIENT_ID_COOKIE_NAME}=([^;]+)`));
     return match ? match[1] : null;
 }
 
 export function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const clientId = getClientIdFromCookie();
+    const base = `${protocol}//${window.location.host}${WS_PATH}`;
     const wsUrl = clientId
-        ? `${protocol}//${window.location.host}/ws?clientId=${clientId}`
-        : `${protocol}//${window.location.host}/ws`;
+        ? `${base}?${WS_QUERY_PARAM_CLIENT_ID}=${clientId}`
+        : base;
 
     state.ws = new WebSocket(wsUrl);
 
@@ -91,8 +97,7 @@ export function connectWebSocket() {
                     handleToolChangeControllerEvent(msg.type, msg.data);
                     break;
                 case MSG_TYPE_PROBE_ERROR:
-                    // A skipped point is worth telling the operator without the red of a
-                    // run that ended.
+                    // A skipped point is worth reporting, but not as an error.
                     if (msg.data.isFatal === false) {
                         showInfo(msg.data.message);
                     } else {
@@ -100,7 +105,7 @@ export function connectWebSocket() {
                     }
                     break;
                 case MSG_TYPE_CONNECTION_ERROR:
-                    handleConnectionError(msg.data.error);
+                    handleConnectionError(msg.data);
                     break;
             }
         } catch (err) {
@@ -141,23 +146,25 @@ export function sendCommand(type, data = {}) {
     }
 }
 
-async function handleConnectionError(error) {
-    // Check if this is an "another client connected" error
-    const isOtherClientConnected = error && error.includes(ERROR_OTHER_CLIENT_SUBSTRING);
+async function handleConnectionError(data) {
+    const error = data?.error;
 
-    if (isOtherClientConnected) {
+    // The server says whether another client holds the machine. Read from the value, not
+    // from the sentence: a reword would silently stop offering the take-over.
+    if (data?.otherClientConnected === true) {
         // Show force-disconnect confirmation using the standard modal
         if (await showConfirm(TEXT_FORCE_DISCONNECT_CONFIRM, TITLE_FORCE_DISCONNECT)) {
-            try {
-                await fetch(API_FORCE_DISCONNECT, { method: 'POST' });
-                setTimeout(() => location.reload(), 500);
-            } catch (err) {
-                console.error('force disconnect failed', err);
-                showError(TEXT_FORCE_DISCONNECT_FAILED);
+            // This drops the serial port, so a refusal is shown rather than reloaded past.
+            const taken = await postJson(API_FORCE_DISCONNECT);
+            if (!taken.ok) {
+                showError(taken.error || TEXT_FORCE_DISCONNECT_FAILED);
+                return;
             }
+
+            setTimeout(() => location.reload(), FORCE_DISCONNECT_RELOAD_DELAY_MS);
         }
     } else {
         // Generic connection error
-        showError(error || 'Connection error');
+        showError(error || TEXT_CONNECTION_ERROR);
     }
 }

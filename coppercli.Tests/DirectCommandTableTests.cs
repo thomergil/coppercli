@@ -5,20 +5,20 @@ using static coppercli.WebServer.WebConstants;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// The HTTP endpoints and the WebSocket commands run one table, so a message reaches the
-    /// machine only by naming an entry in it.
+    /// The HTTP endpoints and the WebSocket commands share one table, so a message reaches
+    /// the machine only by naming an entry in it.
     /// </summary>
     public class DirectCommandTableTests
     {
         /// <summary>
-        /// A message with no type names no command. Matching null would pick out the entries
-        /// that have no WebSocket command, which include the feed override.
+        /// A message with no type matches no command. Matching null would select the entries
+        /// with no WebSocket command, which include the feed override.
         /// </summary>
         [Theory]
         [InlineData(null)]
         [InlineData("")]
         [InlineData("not-a-command")]
-        public void AMessageNamingNoCommandRunsNothing(string? type)
+        public void AMessageWithNoCommand_RunsNothing(string? type)
         {
             Assert.Null(CncWebServer.FindWsCommand(type));
         }
@@ -42,8 +42,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Stop, hold, resume, unlock and the feed override are the controls an operator
-        /// reaches for because a job is running, so only they are allowed while one is.
+        /// Stop, hold, resume, unlock and the feed override are the controls used during a
+        /// job, so only they are allowed while one is running.
         /// </summary>
         [Theory]
         [InlineData(WsCmdReset, true)]
@@ -57,7 +57,7 @@ namespace coppercli.Tests
         [InlineData(WsCmdGotoRef, false)]
         [InlineData(WsCmdGotoZ0, false)]
         [InlineData(WsCmdProbeZ, false)]
-        public void OnlyTheControlsForARunningJobMayRunDuringOne(string type, bool duringRun)
+        public void OnlyTheJobControls_RunDuringAJob(string type, bool duringRun)
         {
             Assert.Equal(duringRun, CncWebServer.FindWsCommand(type)?.DuringRun);
         }

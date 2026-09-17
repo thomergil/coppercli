@@ -195,7 +195,7 @@ namespace coppercli.Core.GCode
             NumberFormatInfo nfi = new NumberFormatInfo();
             nfi.NumberDecimalSeparator = ".";
 
-            // Defense in depth: find first feed rate and output it early.
+            // Find the first feed rate and output it early, so no move runs before one is set.
             // Without this, standalone F values (e.g., "G01 F600" with no coords) are lost
             // during regeneration, causing GRBL errors for commands before any motion.
             double firstFeed = 0;

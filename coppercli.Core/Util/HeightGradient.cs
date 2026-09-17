@@ -2,11 +2,8 @@ namespace coppercli.Core.Util
 {
     /// <summary>
     /// The color a probed height is drawn in, from blue at the lowest point through cyan,
-    /// green and yellow to red at the highest.
-    ///
-    /// Computed here so both views of the height map show the same board. The terminal
-    /// encodes the answer as an ANSI color and the browser as CSS; neither works out the
-    /// gradient itself.
+    /// green and yellow to red at the highest. Computed here so both views match: the
+    /// terminal encodes the result as ANSI and the browser as CSS.
     /// </summary>
     public static class HeightGradient
     {
@@ -17,9 +14,8 @@ namespace coppercli.Core.Util
         public const double BandWidth = 0.25;
 
         /// <summary>
-        /// The color for a height expressed as a fraction of the measured range, where 0
-        /// is the lowest point on the board and 1 the highest. Values outside that are
-        /// clamped, so a point off the end of the range still draws.
+        /// The color for a height as a fraction of the measured range, 0 for the lowest
+        /// point and 1 for the highest. Values outside that are clamped.
         /// </summary>
         public static (int R, int G, int B) Colour(double fraction)
         {

@@ -19,22 +19,26 @@ namespace coppercli.Core.Controllers
     /// <remarks>
     /// <para><b>Probe Data Lifecycle - 4-State Model</b></para>
     ///
-    /// <para>UI state is determined by the progress of the grid in hand: the one in memory,
-    /// or the autosave when nothing is loaded and it describes the job in hand
-    /// (<c>AppState.ReadUsableAutosave</c>). Autosave state determines Save vs Clear button
-    /// behavior.</para>
+    /// <para>UI state is determined by how much of the current grid is measured: the one in
+    /// memory, or the autosave when nothing is loaded and it matches the current file and
+    /// origin (<c>AppState.ReadUsableAutosave</c>). Whether an autosave exists decides Save
+    /// vs Clear.</para>
     ///
-    /// <para><b>State Machine (see ComputeProbeState):</b></para>
+    /// <para><b>State Machine (see <see cref="ProbeGrid.State"/>):</b></para>
     /// <code>
     /// ┌─────────────────────────────────────────────────────────────────────────┐
     /// │  STATE     │ CONDITION              │ START BUTTON   │ SAVE/DISCARD    │
     /// ├────────────┼────────────────────────┼────────────────┼─────────────────┤
     /// │  none      │ no grid                │ disabled       │ disabled        │
-    /// │  ready     │ grid, progress=0       │ [Start]        │ disabled        │
-    /// │  partial   │ progress&gt;0, unmeasured  │ [Continue]     │ [Discard]*      │
+    /// │  ready     │ grid, nothing measured │ [Start]        │ disabled        │
+    /// │  partial   │ some node unmeasured   │ [Continue]     │ [Discard]*      │
     /// │  complete  │ every node measured    │ disabled       │ [Save]*/[Clear] │
     /// └─────────────────────────────────────────────────────────────────────────┘
     /// * Only if hasUnsavedData (a usable autosave exists)
+    ///
+    /// Measured, never counted: Progress counts points taken off the queue, which a skipped
+    /// probe also does, so a map with a skipped point reaches progress = total and is not
+    /// complete.
     /// </code>
     ///
     /// <para><b>State Transitions:</b></para>
@@ -59,7 +63,7 @@ namespace coppercli.Core.Controllers
     ///              │ All points probed
     ///              ▼
     ///     ┌─────────────────┐
-    ///     │ complete        │  progress = total
+    ///     │ complete        │  every node measured
     ///     │ [Save]/[Clear]  │
     ///     └────────┬────────┘
     ///              │ Save/Discard/Clear
@@ -77,11 +81,14 @@ namespace coppercli.Core.Controllers
     ///
     /// <para><b>Implementation:</b></para>
     /// <list type="bullet">
-    ///   <item><c>ComputeProbeState(grid)</c> - Returns state (none/ready/partial/complete).</item>
-    ///   <item><c>AppState.ReadUsableAutosave()</c> - The autosave, when it was measured for
-    ///   this file and origin. Answers hasUnsavedData and stands in when nothing is loaded.</item>
+    ///   <item><c>ProbeGrid.State</c>, and <c>ProbeGrid.StateOf(grid)</c> where there may be
+    ///   no map - the one answer to how much of a map is measured. The web server names the
+    ///   wire spelling; nothing else computes the state.</item>
+    ///   <item><c>AppState.ReadUsableAutosave()</c> - The autosave, if it was measured for
+    ///   this file and origin. Sets hasUnsavedData and is used when nothing is loaded.</item>
     ///   <item><c>Persistence.SaveProbeProgress()</c> - Updates autosave after each point.</item>
-    ///   <item><c>Persistence.SaveProbeToFile(path)</c> - Moves autosave to user location.</item>
+    ///   <item><c>Persistence.SaveProbeToFile(path)</c> - Writes the map to the operator's
+    ///   file, takes it on if it lived only in the autosave, then deletes the autosave.</item>
     ///   <item><c>Persistence.ClearProbeAutoSave()</c> - Deletes autosave.</item>
     /// </list>
     /// </remarks>
@@ -92,6 +99,9 @@ namespace coppercli.Core.Controllers
         // =========================================================================
 
         private readonly IMachine _machine;
+
+        /// <inheritdoc/>
+        protected override IMachine Machine => _machine;
 
         // =========================================================================
         // State
@@ -129,12 +139,16 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// True while this run is tracing the grid outline. The trace moves the tool but
-        /// measures nothing, so a progress display keys off the grid probe instead.
+        /// measures nothing, so progress displays read the grid probe instead.
+        ///
+        /// Derived from IsRunInProgress, not IsActive: a run waiting on the enclosure prompt
+        /// still owns the machine, and built on IsActive both of these went false while it
+        /// waited, which the browser read as the run having finished.
         /// </summary>
-        public bool IsTracingOutline => IsActive && Phase == ProbePhase.TracingOutline;
+        public bool IsTracingOutline => IsRunInProgress && Phase == ProbePhase.TracingOutline;
 
         /// <inheritdoc/>
-        public bool IsMeasuringGrid => IsActive && !IsTracingOutline;
+        public bool IsMeasuringGrid => IsRunInProgress && !IsTracingOutline;
 
         public ProbeGrid? Grid => _grid;
 
@@ -224,9 +238,11 @@ namespace coppercli.Core.Controllers
                     await TraceOutlineCoreAsync(ct);
                 }
 
+                await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
+
                 // Safety retract to machine coords (truly safe height)
                 Phase = ProbePhase.SafetyRetracting;
-                bool retracted = await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
+                bool retracted = await MachineWait.SafetyRetractZAsync(_machine, Constants.SafeClearanceZ,
                     Constants.ZHeightWaitTimeoutMs, ct);
 
                 ct.ThrowIfCancellationRequested();
@@ -234,8 +250,12 @@ namespace coppercli.Core.Controllers
                 if (!retracted)
                 {
                     // The next move is an XY rapid; without a confirmed retract it would
-                    // drag the probe across the board.
-                    throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
+                    // drag the probe across the board. Name the door or the alarm when that
+                    // is why the machine did not move.
+                    throw new InvalidOperationException(
+                        MachineWait.NeedsAttention(_machine)
+                            ? ControllerConstants.ErrorMachineNotResponding
+                            : ControllerConstants.ErrorSafetyRetractFailed);
                 }
 
                 // Move to first probe point at safe height
@@ -267,6 +287,13 @@ namespace coppercli.Core.Controllers
                         break;
                     }
 
+                    // The enclosure opened mid-probe. GRBL parks and every wait below
+                    // fails, so handle the door before the next point.
+                    if (MachineWait.IsDoor(_machine))
+                    {
+                        await RecoverFromDoorAsync(ct).ConfigureAwait(false);
+                    }
+
                     // Sort points by distance for optimal path
                     SortPointsByDistance();
 
@@ -284,32 +311,43 @@ namespace coppercli.Core.Controllers
                         (int)((_currentPointIndex / (double)_grid.TotalPoints) * 100),
                         string.Format(MessageProbeProgress, _currentPointIndex + 1, _grid.TotalPoints)));
 
-                    // Move to point
-                    Phase = ProbePhase.MovingToPoint;
-                    await MoveToPointAsync(coords, ct);
+                    bool success;
+                    Vector3 position;
+                    try
+                    {
+                        // Move to point
+                        Phase = ProbePhase.MovingToPoint;
+                        await MoveToPointAsync(coords, ct);
 
-                    Phase = ProbePhase.Probing;
-                    var (success, position) = await ProbePointAsync(ct);
+                        Phase = ProbePhase.Probing;
+                        (success, position) = await ProbePointAsync(ct);
+                    }
+                    catch (TimeoutException) when (MachineWait.IsDoor(_machine))
+                    {
+                        // The enclosure opened part-way through this point, so GRBL parked
+                        // and the reply never arrived. Handle the door, then probe this
+                        // point again: nothing was recorded, so it is still queued.
+                        await RecoverFromDoorAsync(ct).ConfigureAwait(false);
+                        continue;
+                    }
 
                     // Record result
                     Phase = ProbePhase.RecordingResult;
                     if (success)
                     {
-                        // Judged before it is recorded. A reading we do not trust must
-                        // not reach the map or the autosave, and the point must stay on
-                        // the queue so resuming re-probes it rather than moving on with
-                        // the bad height baked in.
-                        var verdict = await RetractAndJudgeHeightAsync(point, position.Z, ct);
+                        // Checked before it is recorded: a suspect reading must not reach
+                        // the map or the autosave, and the point must stay queued so
+                        // resuming re-probes it.
+                        var outcome = await RetractAndCheckHeightAsync(point, position.Z, ct);
 
-                        if (verdict == HeightVerdict.Cancelled)
+                        if (outcome == HeightOutcome.Cancelled)
                         {
                             break;
                         }
 
-                        if (verdict == HeightVerdict.Remeasure)
+                        if (outcome == HeightOutcome.Remeasure)
                         {
-                            // Nothing recorded, so the point is still queued and the next
-                            // pass picks it up again.
+                            // Nothing recorded, so the next pass picks this point up.
                             continue;
                         }
 
@@ -343,8 +381,8 @@ namespace coppercli.Core.Controllers
                             null,
                             IsFatal: false));
 
-                        // The next move is an XY rapid, so the lift has to be confirmed
-                        // before it, exactly as at the start of the run.
+                        // The next move is an XY rapid, so confirm the retract first, as
+                        // at the start of the run.
                         if (!await RaiseZToSafeHeightAsync(ct))
                         {
                             throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
@@ -352,16 +390,16 @@ namespace coppercli.Core.Controllers
                     }
                 }
 
-                // Leave by exception rather than returning, so a cancelled run always
-                // unwinds through CleanupAsync, which is where it stops and lifts.
+                // Throw rather than return, so a cancelled run always unwinds through
+                // CleanupAsync, which stops the machine and retracts.
                 ct.ThrowIfCancellationRequested();
 
                 // Final retract
                 Phase = ProbePhase.FinalRetract;
                 if (!await RaiseZToSafeHeightAsync(ct))
                 {
-                    // The operator is about to reach in, so an unconfirmed lift ends the run
-                    // as failed rather than reporting a job that finished cleanly.
+                    // The operator is about to reach in, so an unconfirmed retract fails
+                    // the run rather than reporting it finished.
                     throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
                 }
 
@@ -379,31 +417,15 @@ namespace coppercli.Core.Controllers
         {
             ControllerLog.Log("ProbeController.CleanupAsync: starting, status={0}", _machine.Status);
 
-            // Stop motion and clear GRBL's command buffer
-            await MachineWait.StopAndResetAsync(_machine);
-
-            // Then lift clear of the work. Every way a run ends reaches here, so this is the
-            // one place a stopped probe retracts. Bounded on its own token, because the run's
-            // is already cancelled and a stop must not appear to hang.
-            using var lift = new CancellationTokenSource(Constants.CancelRetractTimeoutMs);
-            bool clear;
-            try
-            {
-                clear = await RaiseZToSafeHeightAsync(lift.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                // The budget ran out mid-wait, so the tool is not confirmed clear.
-                clear = false;
-            }
-
-            if (!clear)
-            {
-                EmitError(new ControllerError(ErrorStopRetractFailed, null, IsFatal: false));
-            }
+            // Stop motion, clear GRBL's buffer, then retract to the run's own safe height.
+            // Work coordinates, because a grid probe owns the frame it measured in.
+            await StopAndLiftAsync(RaiseZToSafeHeightAsync, Constants.CancelRetractTimeoutMs)
+                .ConfigureAwait(false);
 
             ControllerLog.Log("ProbeController.CleanupAsync: done");
         }
+
+
 
         /// <inheritdoc/>
         protected override void ResetRunState()
@@ -436,13 +458,17 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // A trace walks the tool around the board, so it is a run like any other.
-            // Everything that asks whether the machine is busy reads this state.
+            // A trace moves the tool, so it is a run like any other and everything that
+            // asks whether the machine is busy reads this state.
             TransitionTo(ControllerState.Initializing);
             Phase = ProbePhase.TracingOutline;
 
             try
             {
+                // A trace moves the tool over the board, so the enclosure is settled before
+                // it starts, as it is for a grid probe and a job.
+                await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
+
                 TransitionTo(ControllerState.Running);
                 await TraceOutlineCoreAsync(ct);
                 TransitionTo(ControllerState.Completing);
@@ -478,10 +504,11 @@ namespace coppercli.Core.Controllers
             if (Options.TraceHeight <= 0)
             {
                 ControllerLog.Log("TraceOutline: REFUSED - trace height {0:F3} is not positive", Options.TraceHeight);
-                EmitError(new ControllerError(
-                    string.Format(ControllerConstants.ErrorTraceHeightUnsafe, Options.TraceHeight),
-                    IsFatal: true));
-                return;
+
+                // Thrown, not returned: returning here unwinds as a normal finish and the
+                // run reports Completed for a trace that never ran.
+                throw new InvalidOperationException(
+                    string.Format(ControllerConstants.ErrorTraceHeightUnsafe, Options.TraceHeight));
             }
 
             double minX = _grid.Min.X;
@@ -494,13 +521,13 @@ namespace coppercli.Core.Controllers
                 _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
             // Safety retract to machine coords first
-            ControllerLog.Log("TraceOutline: safety retract to machine Z={0:F1}", Constants.MillStartSafetyZ);
-            if (!await MachineWait.SafetyRetractZAsync(_machine, Constants.MillStartSafetyZ,
+            ControllerLog.Log("TraceOutline: safety retract to machine Z={0:F1}", Constants.SafeClearanceZ);
+            if (!await MachineWait.SafetyRetractZAsync(_machine, Constants.SafeClearanceZ,
                     Constants.ZHeightWaitTimeoutMs, ct))
             {
-                ControllerLog.Log("TraceOutline: REFUSED - safety retract not confirmed");
-                EmitError(new ControllerError(ControllerConstants.ErrorSafetyRetractFailed, null, IsFatal: true));
-                return;
+                // Thrown, not returned: returning unwinds as a normal finish and the run
+                // reports Completed for a retract nobody confirmed.
+                throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
             }
 
             // Move to first corner at safe height
@@ -532,6 +559,14 @@ namespace coppercli.Core.Controllers
             {
                 ct.ThrowIfCancellationRequested();
 
+                // Both waits below give up the moment the machine parks at the door, and the
+                // next corner would then be queued into a held machine and run when the hold
+                // is released. Handle the enclosure first, and retract before moving again.
+                if (MachineWait.IsDoor(_machine))
+                {
+                    await RecoverFromDoorAsync(ct).ConfigureAwait(false);
+                }
+
                 ControllerLog.Log("TraceOutline: moving to ({0:F3}, {1:F3})", x, y);
                 _machine.SendLine(CmdAbsolute);
                 _machine.SendLine(Inv($"{CmdLinearMove} X{x:F3} Y{y:F3} F{Options.TraceFeed:F0}"));
@@ -549,7 +584,7 @@ namespace coppercli.Core.Controllers
             _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.SafeHeight:F3}"));
 
             // An alarm or an open door makes these return false in milliseconds with the
-            // rapid still unexecuted, so the answer decides whether the tool is clear.
+            // rapid unexecuted, so the return value decides whether the tool is clear.
             bool reached = await MachineWait.WaitForZHeightAsync(
                 _machine, Options.SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
             bool stopped = await MachineWait.WaitForIdleAsync(
@@ -559,22 +594,19 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Lift off the point just probed, and hold the run if the height it reported
-        /// does not agree with the board around it.
+        /// Retract from the point just probed, and pause the run if the measured height
+        /// disagrees with the neighbouring nodes.
         ///
-        /// The question is whether the tip stopped where the board is, and the height
-        /// answers it directly. Timing the probe cannot: the retract and the rapid ahead
-        /// of it are queued without waiting so GRBL can buffer them, and G38.2
-        /// synchronises that buffer before it moves, so the reply's arrival measures all
-        /// three together. The grid owns the comparison, since it owns both the lattice
-        /// and the heights; this decides what the run does with the answer.
+        /// The height is compared, not the probe timing: the retract and the rapid before it
+        /// are queued without waiting so GRBL can buffer them, and G38.2 drains that buffer
+        /// before it moves, so the reply time covers all three. ProbeGrid owns the
+        /// comparison; this decides what the run does with it.
         ///
-        /// How far to lift follows from that answer. A reading we trust keeps the short
-        /// buffered retract, which is what makes the traverse smooth. A reading we do not
-        /// stops the run for a person, and once someone has to reach into the machine,
-        /// clearance matters and smoothness does not.
+        /// The retract distance follows: an accepted reading keeps the short buffered
+        /// retract that makes the traverse fast, a rejected one retracts to the safe height
+        /// because the operator is about to reach in.
         /// </summary>
-        private async Task<HeightVerdict> RetractAndJudgeHeightAsync(
+        private async Task<HeightOutcome> RetractAndCheckHeightAsync(
             (int X, int Y) point, double measuredZ, CancellationToken ct)
         {
             double? deviation = _grid!.GetNeighbourDeviation(point.X, point.Y, measuredZ);
@@ -584,13 +616,11 @@ namespace coppercli.Core.Controllers
                 || deviation.Value <= Options.HeightDeviationTolerance)
             {
                 await RetractZAsync(measuredZ, ct);
-                return HeightVerdict.Accepted;
+                return HeightOutcome.Accepted;
             }
 
-            // Confirmed, unlike the buffered retract above: nothing else will check the
-            // tool is clear before the machine is left parked on the board. Someone is
-            // about to be invited to reach into it, so an unconfirmed lift stops the job
-            // rather than parking it on the workpiece.
+            // Confirmed, unlike the buffered retract above: nothing else checks the tool
+            // is clear before the operator is asked to reach in.
             if (!await RaiseZToSafeHeightAsync(ct))
             {
                 throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
@@ -602,29 +632,47 @@ namespace coppercli.Core.Controllers
                 null,
                 IsFatal: false));
 
-            // The operator can press Pause from a UI thread at any moment, and Paused has
-            // no edge to itself. Tested and set under one lock, so a pause landing between
-            // the two cannot fail the run just as they intervene.
+            // The operator can press Pause from a UI thread at any time, and Paused has no
+            // transition to itself. Tested and set under one lock so a pause landing between
+            // the two cannot fail the run.
             TryTransitionTo(ControllerState.Paused);
 
             await WaitWhilePausedAsync(ct);
 
-            // Resuming says the operator dealt with whatever caused this, not that the
-            // reading became good. Measure the point again.
-            return ct.IsCancellationRequested ? HeightVerdict.Cancelled : HeightVerdict.Remeasure;
+            // Resuming means the operator dealt with the cause, not that the reading was
+            // good. Measure the point again.
+            return ct.IsCancellationRequested ? HeightOutcome.Cancelled : HeightOutcome.Remeasure;
         }
 
         /// <summary>What the run does with a probed height.</summary>
-        private enum HeightVerdict
+        private enum HeightOutcome
         {
-            /// <summary>Agrees with the board around it. Record it.</summary>
+            /// <summary>Within tolerance of its neighbours. Record it.</summary>
             Accepted,
 
-            /// <summary>The operator was asked and has resumed. Probe the point again.</summary>
+            /// <summary>The operator resumed. Probe the point again.</summary>
             Remeasure,
 
-            /// <summary>Cancelled while the operator was deciding.</summary>
+            /// <summary>Cancelled while the run was paused.</summary>
             Cancelled
+        }
+
+        /// <summary>
+        /// Handles the enclosure, then retracts to the safe height.
+        ///
+        /// A door park leaves the tool where GRBL restored it, which is at probe depth with
+        /// the probe still touching. The next thing the loop does is an XY rapid and another
+        /// G38.2, so without this the probe is dragged across the board and the probe cycle
+        /// starts from a triggered switch, which GRBL answers with an alarm.
+        /// </summary>
+        private async Task RecoverFromDoorAsync(CancellationToken ct)
+        {
+            await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
+
+            if (!await RaiseZToSafeHeightAsync(ct))
+            {
+                throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
+            }
         }
 
         private Task RetractZAsync(double currentZ, CancellationToken ct)
@@ -653,7 +701,7 @@ namespace coppercli.Core.Controllers
             // the time cancellation arrives.
             using var registration = ct.Register(() => probeTcs.TrySetCanceled());
 
-            _machine.ProbeStart();
+            MachineWait.OpenProbeCycle(_machine);
 
             try
             {
@@ -661,7 +709,8 @@ namespace coppercli.Core.Controllers
                 _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
 
                 return await MachineWait.AwaitReplyOrTimeoutAsync(probeTcs.Task,
-                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct);
+                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct,
+                    _machine);
             }
             finally
             {
@@ -694,22 +743,39 @@ namespace coppercli.Core.Controllers
 
             using var registration = ct.Register(() => tcs.TrySetCanceled());
 
+            // Set once the move is on the machine, which is what decides whether there is
+            // anything to stop.
+            bool moveIsOut = false;
+
+            // Opened before the try, so the ProbeStop in its finally cannot close a cycle
+            // this call did not open.
+            MachineWait.OpenProbeCycle(_machine);
+
             _machine.ProbeFinished += OnProbeFinished;
             try
             {
-                _machine.ProbeStart();
-
                 // Use relative mode so we probe DOWN from current position
                 _machine.SendLine(CmdRelative);
                 _machine.SendLine(Inv($"{CmdProbeToward} Z-{Options.MaxDepth:F3} F{Options.ProbeFeed:F1}"));
                 _machine.SendLine(CmdAbsolute);
+                moveIsOut = true;
 
                 var (success, position) = await MachineWait.AwaitReplyOrTimeoutAsync(tcs.Task,
-                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct);
+                    Constants.ProbeReplyTimeoutMs, ControllerConstants.ErrorProbeTimeout, ct,
+                    _machine);
 
                 ControllerLog.Log(LogProbeZSingle, success, position.Z);
 
                 return (success, position.Z);
+            }
+            catch when (moveIsOut)
+            {
+                // GRBL still holds the probe move and will run it when the hold releases,
+                // so closing the cycle below is not enough. Machine coordinates, because a
+                // single probe starts from an arbitrary jog under whatever origin is set.
+                await StopAndLiftAsync(Constants.SafeClearanceZ, Constants.CancelRetractTimeoutMs)
+                    .ConfigureAwait(false);
+                throw;
             }
             finally
             {

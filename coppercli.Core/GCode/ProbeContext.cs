@@ -8,9 +8,9 @@ namespace coppercli.Core.GCode
     ///
     /// A height map is Z heights indexed by X/Y in work coordinates. Those numbers only
     /// mean anything against the board they were taken from and the origin they were
-    /// measured relative to - move either and they describe somewhere else. Carrying the
-    /// binding on the map (and in the saved file) is what lets the question "is this map
-    /// usable here?" have one answer instead of being inferred from scattered state.
+    /// measured relative to: move either and they describe somewhere else. Storing that
+    /// binding on the map, and in the saved file, is what lets one check decide whether the
+    /// map is usable, instead of inferring it from scattered state.
     /// </summary>
     public readonly record struct ProbeContext(string SourceFile, Vector3 WorkOrigin)
     {
@@ -34,5 +34,20 @@ namespace coppercli.Core.GCode
 
         /// <summary>No record of the setup it was measured in, so it cannot be checked.</summary>
         Unknown
+    }
+
+    /// <summary>Extension methods on <see cref="ProbeApplicability"/>.</summary>
+    public static class ProbeApplicabilityExtensions
+    {
+        /// <summary>
+        /// Whether the map may be used for the current job. Unknown counts as usable: a map
+        /// with no recorded setup cannot be shown to be wrong, and rejecting all of them
+        /// would discard maps saved before the setup was recorded.
+        ///
+        /// Every check that keeps, drops or refuses a map calls this, so no two screens can
+        /// judge the same map differently.
+        /// </summary>
+        public static bool IsUsable(this ProbeApplicability applicability) =>
+            applicability is ProbeApplicability.Applicable or ProbeApplicability.Unknown;
     }
 }

@@ -39,14 +39,31 @@ namespace coppercli.Core.Util
         public const string StatusAlarm = "Alarm";
         public const string StatusDoor = "Door";
 
-        // GRBL reports the door as Door:<n>. 0 = closed and ready to resume, 1 = ajar,
-        // 2 = opened with a parking retract under way, 3 = closed and resuming. Without
-        // the number "Door" cannot tell an open door from a closed one waiting on the
-        // operator, and the display sits on "Door" after they have already closed it.
+        // States coppercli does not drive: GRBL reports them, screens show the word, and no
+        // control changes.
+        public const string StatusJog = "Jog";
+        public const string StatusHome = "Home";
+        public const string StatusCheck = "Check";
+
+        // $SLP. Not one of the three above: GetActivity gives it its own member and
+        // NeedsAttention disables the controls for it.
+        public const string StatusSleep = "Sleep";
+
+        // GRBL reports the door as Door:<n>. 0 = closed and waiting for a cycle start,
+        // 1 = ajar, 2 = the parking retract is running, 3 = restoring from the park.
+        // Only 0 and 1 report the switch. GRBL has not re-read it during the retract, so
+        // 2 counts as open; 3 follows a cycle start the operator asked for, so it counts
+        // as closed.
         public const string DoorSubStateClosed = "0";
         public const string DoorSubStateAjar = "1";
-        public const string DoorSubStateOpening = "2";
+        public const string DoorSubStateRetracting = "2";
         public const string DoorSubStateResuming = "3";
+
+        // Hold and Alarm carry a number too. Nothing branches on either, so they are named
+        // only where a test needs a machine that reported one.
+        public const string HoldSubStateComplete = "0";
+        public const string AlarmSubStateHardLimit = "1";
+
         public const string StatusDisconnected = "Disconnected";
 
         // =========================================================================

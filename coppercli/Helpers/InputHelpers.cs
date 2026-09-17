@@ -65,7 +65,9 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// Flushes any buffered keyboard input to prevent keypresses from bleeding into subsequent prompts.
+        /// Throws away anything already typed. Call it before drawing a prompt that replaced
+        /// another in the same place: the keystroke that answered the first would otherwise
+        /// answer the second, which the operator has not read.
         /// </summary>
         public static void FlushKeyboard()
         {

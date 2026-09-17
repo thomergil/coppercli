@@ -1089,8 +1089,9 @@ header {
     margin: 4px 0;
 }
 
-/* Tool change overlay */
-.toolchange-overlay {
+/* Tool change overlay, and the enclosure message that covers the whole page */
+.toolchange-overlay,
+.door-overlay {
     position: absolute;
     top: 0;
     left: 0;
@@ -1103,7 +1104,30 @@ header {
     z-index: 100;
 }
 
-.toolchange-overlay.hidden {
+/* An open door stops every screen, not just the one the job is on, so this one is fixed
+   to the viewport and sits above the run's own overlay. */
+.door-overlay {
+    position: fixed;
+    z-index: 200;
+}
+
+/* Nothing to answer, so it does not cover the page: the operator still has to reach Stop
+   and the rest of the screen while the machine waits at the enclosure. */
+.door-overlay.door-overlay-message {
+    bottom: auto;
+    background: none;
+    pointer-events: none;
+}
+
+.door-overlay.door-overlay-message .toolchange-content {
+    background: rgba(26, 26, 46, 0.97);
+    border-bottom: 2px solid var(--warning-color);
+    width: 100%;
+    text-align: center;
+}
+
+.toolchange-overlay.hidden,
+.door-overlay.hidden {
     display: none;
 }
 

@@ -42,7 +42,7 @@ appear to hang. That token expiring can throw `OperationCanceledException` rathe
 return false, so both count as unconfirmed and the operator is told.
 
 **Lesson → new rule `closing-the-port-does-not-stop-grbl`.** Order matters: a lift queued
-before the soft reset is wiped by it, so `StoppingARun_LiftsTheToolToSafeHeight` asserts M5 precedes the
+before the soft reset is wiped by it, so `StoppingARun_RetractsToSafeHeight` asserts M5 precedes the
 retract rather than merely containing it, and reversing the two fails the test.
 
 **Touches:** rule `closing-the-port-does-not-stop-grbl`, `coppercli.Core/Communication/Machine.cs`,

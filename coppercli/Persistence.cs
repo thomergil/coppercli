@@ -43,9 +43,9 @@ namespace coppercli
         }
 
         /// <summary>
-        /// The autosave, parsed, or null when there is none or it cannot be read. A fresh
-        /// object each time: callers adopt it as the live grid and probe into it, so a shared
-        /// instance would make this method describe memory rather than the file.
+        /// The parsed autosave, or null if there is none or it cannot be read. A new object
+        /// each time: callers adopt it as the live grid and probe into it, so a shared
+        /// instance would report memory rather than the file.
         /// </summary>
         public static ProbeGrid? ReadProbeAutoSave()
         {
@@ -94,7 +94,9 @@ namespace coppercli
                 {
                     var json = File.ReadAllText(path);
                     json = MigrateSettings(json);
-                    return JsonSerializer.Deserialize<MachineSettings>(json) ?? new MachineSettings();
+                    var loaded = JsonSerializer.Deserialize<MachineSettings>(json) ?? new MachineSettings();
+                    RepairOutOfRangeSettings(loaded);
+                    return loaded;
                 }
             }
             catch (Exception ex)
@@ -102,6 +104,27 @@ namespace coppercli
                 QuarantineUnreadableFile(GetSettingsPath(), ex);
             }
             return new MachineSettings();
+        }
+
+        /// <summary>
+        /// Put back the default for any setting the file cannot supply a usable value for.
+        /// Repaired rather than refused, so one bad value cannot stop coppercli starting.
+        /// </summary>
+        internal static void RepairOutOfRangeSettings(MachineSettings settings)
+        {
+            var defaults = new MachineSettings();
+
+            foreach (var binding in SettingRanges.All)
+            {
+                string? refused = binding.Range.Check(binding.Read(settings));
+                if (refused == null)
+                {
+                    continue;
+                }
+
+                Logger.Log("Settings: {0} Using the default instead.", refused);
+                binding.Write(settings, binding.Read(defaults));
+            }
         }
 
         /// <summary>
@@ -150,8 +173,10 @@ namespace coppercli
             }
             catch (Exception ex)
             {
-                // The user believes their settings were kept; say so if they were not.
+                // Shown, not only logged: the setting looks changed on screen and is gone
+                // at the next launch.
                 Logger.Log("SaveSettings failed: {0}", ex.Message);
+                AnsiConsole.MarkupLine($"[{ColorWarning}]{SettingsNotSaved}[/]");
             }
         }
 
@@ -196,9 +221,9 @@ namespace coppercli
         {
             Logger.Log("Could not read {0} ({1}); using defaults", path, ex.Message);
 
-            // Said out loud, not only to a log that is off unless --debug: the operator
-            // is about to run with default probe feeds, depths and tool-setter position
-            // instead of their own.
+            // Shown on screen, not only logged (the log is off without --debug): the
+            // operator is about to run with default probe feeds, depths and tool-setter
+            // position.
             AnsiConsole.MarkupLine(
                 $"[{ColorWarning}]Could not read {Markup.Escape(Path.GetFileName(path))} - " +
                 $"using default settings. The unreadable file has been kept alongside it.[/]");
@@ -250,8 +275,8 @@ namespace coppercli
             }
         }
 
-        /// <returns>False if the file is still there, so no caller tells the operator the
-        /// data is gone while it waits on disk to be offered again.</returns>
+        /// <returns>False if the file is still there, so no caller reports the data gone
+        /// while it is still on disk.</returns>
         public static bool ClearProbeAutoSave()
         {
             var path = GetProbeAutoSavePath();
@@ -275,16 +300,19 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Saves probe data by moving the autosave file to the user's chosen location.
-        /// This is the only way to "save" probe data in the simplified model.
-        /// After saving, the autosave is deleted and state returns to None.
+        /// Saves the height map to the operator's chosen file, then deletes the autosave, so
+        /// nothing offers the same map back as unsaved work.
         /// </summary>
         public static bool SaveProbeToFile(string newPath)
         {
-            var autosavePath = GetProbeAutoSavePath();
-            if (!File.Exists(autosavePath))
+            // The map the screens offered to save: the one in memory, or the autosave when
+            // nothing is loaded. Read from the raw file state, this saved a map measured for
+            // another board.
+            var grid = AppState.CurrentProbeGrid;
+
+            if (grid == null)
             {
-                Logger.Log("SaveProbeToFile: no autosave file exists");
+                Logger.Log("SaveProbeToFile: nothing to save");
                 return false;
             }
 
@@ -297,13 +325,24 @@ namespace coppercli
                     Directory.CreateDirectory(targetDir);
                 }
 
-                // Move the autosave to user's location
-                File.Move(autosavePath, newPath, overwrite: true);
+                grid.Save(newPath);
 
-                // Clear session autosave path (file no longer exists there)
-                SaveSession();
+                // The autosave only goes once the map is in hand. Deleted while the map
+                // lived only there, the save took it out of the job, and the Mill button -
+                // which had been refusing an unapplied map - cleared.
+                if (AppState.ProbePoints == null && AppState.AdoptProbeGrid(grid) != null)
+                {
+                    Logger.Log("SaveProbeToFile: wrote {0}, keeping the autosave", newPath);
+                    return true;
+                }
 
-                Logger.Log($"SaveProbeToFile: moved {autosavePath} to {newPath}");
+                var autosavePath = GetProbeAutoSavePath();
+                if (File.Exists(autosavePath))
+                {
+                    File.Delete(autosavePath);
+                }
+
+                Logger.Log($"SaveProbeToFile: wrote the height map to {newPath}");
                 return true;
             }
             catch (Exception ex)

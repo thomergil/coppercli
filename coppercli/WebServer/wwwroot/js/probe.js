@@ -1,7 +1,7 @@
 // coppercli Web UI Probe Screen
 
 import { state } from './state.js';
-import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson } from './helpers.js';
+import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson, format } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     API_STATUS,
@@ -47,6 +47,10 @@ import {
     TEXT_CLEAR,
     TEXT_ENTER_FILENAME,
     TEXT_PROBE_RECOVERED,
+    TEXT_GRID_SUMMARY,
+    TEXT_GRID_COMPLETE,
+    TEXT_GRID_PROGRESS,
+    TEXT_GRID_SIZE_UNKNOWN,
     TEXT_RECOVERY_FAILED,
     TEXT_SETUP_FAILED,
     TEXT_TRACE_FAILED,
@@ -86,7 +90,7 @@ export async function setupProbeGrid() {
     updateProbeInfoDisplay(data.sizeX, data.sizeY, data.totalPoints, 0);
     renderProbeGrid(data.sizeX, data.sizeY);
     // The new grid decides every button on this screen, so read it back rather than
-    // setting them here as well.
+    // setting them here too.
     await refreshProbeState();
 }
 
@@ -106,9 +110,9 @@ export function renderProbeGrid(sizeX, sizeY) {
     }
 }
 
-// What this page knows about the trace that the server has not reported yet: true from
-// asking for one until the first status shows it, false from stopping until the last status
-// stops showing it. Null the rest of the time, when the server's answer is the only one.
+// This page's view of the trace before the server reports it: true from requesting one until
+// the first status shows it, false from stopping until the last status stops showing it.
+// Null the rest of the time, when the server's value is the only one.
 let traceOverride = null;
 
 export function getIsTracing() {
@@ -123,7 +127,7 @@ export async function traceOutline() {
 
     traceOverride = true;
 
-    // Turns the start button into the stop and disables everything else.
+    // Turns the start button into Stop and disables everything else.
     applyProbeRunLock();
 
     try {
@@ -138,11 +142,11 @@ export async function traceOutline() {
     } finally {
         traceOverride = false;
 
-        // Hands every control back to the state the server reports: label, colour, enabled.
+        // Reset every control from the state the server reports: label, colour, enabled.
         await refreshProbeState();
 
-        // Then keep the start button disabled a moment longer, in case a finger is still
-        // on STOP, and let the state decide again rather than forcing it enabled.
+        // Keep the start button disabled a moment longer in case of a second tap on STOP,
+        // then let the state decide again rather than forcing it enabled.
         startBtn.disabled = true;
         setTimeout(() => { refreshProbeState(); }, TRACE_BUTTON_SETTLE_MS);
     }
@@ -152,7 +156,7 @@ async function stopTrace() {
     // Prevent status updates from showing probe progress view after trace stops
     state.probeDataDisplayed = true;
 
-    // The server answers whether it confirmed the machine stopped, the same answer
+    // The server reports whether it confirmed the machine stopped, the same value
     // stopProbing reads. The finally in traceOutline restores the button either way.
     const { ok, error } = await postJson(API_PROBE_STOP);
     if (!ok) {
@@ -160,8 +164,8 @@ async function stopTrace() {
     }
 }
 
-// Ends when the server says the trace is over. One failed request must not unlock the
-// screen while the tool is still moving, but a server that has stopped answering is
+// Ends when the server reports the trace over. One failed request must not unlock the
+// screen while the tool is still moving, but a server that has stopped responding is
 // reported rather than left holding the screen locked.
 async function pollTraceStatus() {
     let failures = 0;
@@ -216,8 +220,8 @@ function resetProbeUI() {
 export async function stopProbing() {
     const { ok, error } = await postJson(API_PROBE_STOP);
     if (!ok) {
-        // The tool may still be down, so leave the progress view up rather than showing a
-        // setup screen that says the run is over.
+        // The tool may still be down, so leave the progress view up rather than a setup
+        // screen that implies the run is over.
         showError(error || ERROR_STOP_NOT_SENT);
         return;
     }
@@ -236,7 +240,7 @@ export async function toggleProbePause() {
     if (!ok) {
         showError(error || TEXT_PAUSE_FAILED);
     }
-    // The next status decides what the button says.
+    // The next status sets the button text.
 }
 
 // Update pause button based on probe status
@@ -303,8 +307,8 @@ export async function pollProbeStatus() {
     state.isProbePollRunning = true;
 
     try {
-        // The server's answer ends the loop, so a dropped status broadcast cannot leave it
-        // spinning.
+        // The server's reply ends the loop, so a dropped status broadcast cannot leave it
+        // running.
         for (;;) {
             try {
                 const response = await fetch(API_PROBE_STATUS);
@@ -453,7 +457,7 @@ export async function recoverAutosave() {
     }
 
     state.probeDataDisplayed = true;
-    showInfo(TEXT_PROBE_RECOVERED.replace('{0}', data.progress).replace('{1}', data.total));
+    showInfo(format(TEXT_PROBE_RECOVERED, data.progress, data.total));
     await fetchAndDisplayProbeData();
 }
 
@@ -561,17 +565,22 @@ export async function loadSelectedProbeFile() {
     }
 }
 
-// Update the probe info display with grid size and progress
-function updateProbeInfoDisplay(sizeX, sizeY, totalPoints, progress) {
-    const infoEl = document.getElementById('probe-info');
+/**
+ * The grid line on the probe setup screen. The one place it is worded: the status poll in
+ * screens.js writes the same element, and a second copy here drifted from that one.
+ */
+export function updateProbeInfoDisplay(sizeX, sizeY, totalPoints, progress) {
+    const summary = format(
+        TEXT_GRID_SUMMARY,
+        sizeX || TEXT_GRID_SIZE_UNKNOWN,
+        sizeY || TEXT_GRID_SIZE_UNKNOWN,
+        totalPoints);
+
     const pct = Math.round((progress / totalPoints) * 100);
-    if (progress === totalPoints) {
-        infoEl.textContent = `Grid: ${sizeX}x${sizeY} = ${totalPoints} points (complete)`;
-    } else if (progress > 0) {
-        infoEl.textContent = `Grid: ${sizeX}x${sizeY} = ${totalPoints} points (${progress} probed, ${pct}%)`;
-    } else {
-        infoEl.textContent = `Grid: ${sizeX}x${sizeY} = ${totalPoints} points`;
-    }
+    setText('probe-info',
+        progress === totalPoints ? format(TEXT_GRID_COMPLETE, summary)
+        : progress > 0 ? format(TEXT_GRID_PROGRESS, summary, progress, pct)
+        : summary);
 }
 
 export function initProbeScreen() {

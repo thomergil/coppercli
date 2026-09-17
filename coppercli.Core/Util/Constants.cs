@@ -88,6 +88,13 @@ namespace coppercli.Core.Util
         public const int FilePosUpdateIntervalMs = 500;
 
         /// <summary>
+        /// How long the worker leaves GRBL alone before its first status query. Seeded into
+        /// the last-poll time, so a board still settling after the port opens is not asked
+        /// for a report it cannot answer.
+        /// </summary>
+        public const int FirstStatusPollDelayMs = 500;
+
+        /// <summary>
         /// Grace period after connection to ignore spurious errors (ms).
         /// Some controllers send garbage during initialization.
         /// </summary>
@@ -174,6 +181,15 @@ namespace coppercli.Core.Util
         public const double PositionToleranceMm = 0.1;
 
         /// <summary>
+        /// How far a work offset read back may sit from the value written (mm). Tight,
+        /// because the machine either stored the number or it did not: the only slack is
+        /// the three decimals the G-code is written with. The position tolerance is far
+        /// wider than a depth adjustment, so using it here confirmed writes that never
+        /// landed.
+        /// </summary>
+        public const double WorkOffsetToleranceMm = 0.001;
+
+        /// <summary>
         /// Epsilon for height range comparisons.
         /// Used to determine if there's meaningful height variation in probe data.
         /// </summary>
@@ -185,22 +201,12 @@ namespace coppercli.Core.Util
         // =========================================================================
 
         /// <summary>
-        /// Z position to retract to after milling completes (mm, machine coordinates).
-        /// -1mm from top provides clearance while avoiding limit switch.
+        /// Where the tool is parked whenever it has to be clear of the work: before a job
+        /// starts, after it finishes, at a tool change, and after a stop (mm, machine
+        /// coordinates). 1mm below the top clears the workpiece without reaching the limit
+        /// switch.
         /// </summary>
-        public const double MillCompleteZ = -1.0;
-
-        /// <summary>
-        /// Z position to retract to before starting mill (mm, machine coordinates).
-        /// Prevents dragging across workpiece if Z was left low from previous operation.
-        /// </summary>
-        public const double MillStartSafetyZ = -1.0;
-
-        /// <summary>
-        /// Z clearance height for tool changes (mm, machine coordinates).
-        /// -1mm from top provides clearance while avoiding limit switch.
-        /// </summary>
-        public const double ToolChangeClearanceZ = -1.0;
+        public const double SafeClearanceZ = -1.0;
 
         // =========================================================================
         // Tool setter defaults
@@ -283,26 +289,36 @@ namespace coppercli.Core.Util
         // Connection error messages
         // =========================================================================
 
-        /// <summary>Error sent to rejected proxy client before closing connection.</summary>
-        public const string ProxyConnectionRejected = "Connection rejected: another client is already connected. Close the existing connection first.\r\n";
-
-        /// <summary>Prefix to detect proxy connection rejection messages.</summary>
+        /// <summary>
+        /// Prefix to detect proxy connection rejection messages. This is the wire: a reader
+        /// tells "another client has it", which the operator can take over, from "the port is
+        /// held elsewhere", which they cannot, by which of these two sentences it received.
+        /// </summary>
         public const string ProxyConnectionRejectedPrefix = "Connection rejected:";
+
+        /// <summary>
+        /// Error sent to rejected proxy client before closing connection. Built from the
+        /// prefix, so a reword cannot leave the readers matching text nobody sends.
+        /// </summary>
+        public const string ProxyConnectionRejected = ProxyConnectionRejectedPrefix
+            + " another client is already connected. Close the existing connection first.\r\n";
 
         /// <summary>Prefix for serial port busy error from proxy.</summary>
         public const string ProxySerialPortBusyPrefix = "Cannot access";
 
-        /// <summary>Error sent when serial port is in use by web client.</summary>
-        public const string ProxySerialPortInUse = "Serial port in use: a web client is connected. Force disconnect to continue.\r\n";
-
         /// <summary>Prefix to detect serial port in use by web client.</summary>
         public const string ProxySerialPortInUsePrefix = "Serial port in use:";
 
-        /// <summary>Message sent to client before force-disconnecting them.</summary>
-        public const string ProxyForceDisconnect = "Force disconnect: another client is taking over.\r\n";
+        /// <summary>Error sent when serial port is in use by web client.</summary>
+        public const string ProxySerialPortInUse = ProxySerialPortInUsePrefix
+            + " a web client is connected. Force disconnect to continue.\r\n";
 
         /// <summary>Prefix to detect force disconnect messages.</summary>
         public const string ProxyForceDisconnectPrefix = "Force disconnect:";
+
+        /// <summary>Message sent to client before force-disconnecting them.</summary>
+        public const string ProxyForceDisconnect = ProxyForceDisconnectPrefix
+            + " another client is taking over.\r\n";
 
         /// <summary>Delay after sending force disconnect message before closing connection.</summary>
         public const int ForceDisconnectMessageDelayMs = 200;

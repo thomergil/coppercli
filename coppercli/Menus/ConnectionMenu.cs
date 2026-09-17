@@ -134,9 +134,7 @@ namespace coppercli.Menus
 
                     settings.SerialPortName = selectedPort;
 
-                    var baudOptions = CommonBaudRates.Select((b, i) => $"{i + 1}. {b}").ToArray();
-                    int baudChoice = MenuHelpers.ShowMenu("Select baud rate:", baudOptions);
-                    settings.SerialPortBaud = CommonBaudRates[baudChoice];
+                    settings.SerialPortBaud = MenuHelpers.AskBaudRate(settings.SerialPortBaud);
                 }
                 else if (connChoice.Option == ConnType.Ethernet)
                 {
@@ -290,13 +288,14 @@ namespace coppercli.Menus
                         }
                         break;
                     case ConnectionResult.Error:
-                        AnsiConsole.MarkupLine($"[{ColorError}]Connection failed: {Markup.Escape(message ?? "Unknown error")}[/]");
+                        AnsiConsole.MarkupLine(
+                $"[{ColorError}]{Markup.Escape(message ?? string.Format(ErrorSomethingFailed, FailedConnecting))}[/]");
                         break;
                 }
             }
             catch (Exception ex)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Connection failed: {Markup.Escape(ex.Message)}[/]");
+                MenuHelpers.ShowFailureAndWait(CliConstants.FailedConnecting, ex);
             }
             finally
             {
@@ -331,7 +330,7 @@ namespace coppercli.Menus
             // Don't announce Alarm state - it will be cleared silently
             if (grblStatus != StatusIdle && !grblStatus.StartsWith(StatusAlarm))
             {
-                AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected! GRBL status: {grblStatus}[/]");
+                AnsiConsole.MarkupLine($"[{ColorSuccess}]Connected. Machine is {grblStatus}.[/]");
             }
             // Save connection settings and remember this as the last successful connection type
             AppState.Session.LastSuccessfulConnectionType = AppState.Settings.ConnectionType;
@@ -632,7 +631,10 @@ namespace coppercli.Menus
 
             if (error != null)
             {
-                return (ConnectionResult.Error, error.Message);
+                // The exception's own text names sockets and ports the operator cannot act
+                // on, so it goes to the log and the caller shows a sentence.
+                Logger.Log("{0} failed: {1}", CliConstants.FailedConnecting, error);
+                return (ConnectionResult.Error, null);
             }
             if (timedOut)
             {
@@ -693,7 +695,7 @@ namespace coppercli.Menus
         public static void OfferToHome()
         {
             var machine = AppState.Machine;
-            if (!machine.Connected)
+            if (!MachineWait.IsResponding(machine))
             {
                 return;
             }
@@ -709,20 +711,73 @@ namespace coppercli.Menus
                 return;
             }
 
-            // Clear any alarm/door state before homing
-            while (MachineWait.IsProblematic(machine))
+            // Homing needs a machine that is neither alarmed nor holding at the door.
+            //
+            // The alarm arm is bounded by attempts, not a deadline: most of the wait is the
+            // operator walking to the machine and back, and a timer would expire while they
+            // are away. The door is MachineWait.ClearDoorHoldAsync's, with this screen's own
+            // confirmation and message.
+            int unlocks = 0;
+
+            while (MachineWait.IsUnavailable(machine))
             {
                 if (MachineWait.IsDoor(machine))
                 {
-                    AnsiConsole.MarkupLine($"[{ColorWarning}]Door is open. Close the door and press Enter.[/]");
-                    Console.ReadLine();
-                    MachineCommands.ClearDoorState(machine);
+                    var outcome = MachineWait.ClearDoorHoldAsync(
+                        machine,
+                        ask: message =>
+                        {
+                            // Keys typed while the message above was up are still buffered,
+                            // and one of them would answer this before it has been read.
+                            InputHelpers.FlushKeyboard();
+
+                            // The cycle start restarts the spindle and moves the tool back,
+                            // so the operator asks for it, here as in a run.
+                            bool? release = MenuHelpers.ConfirmOrQuit(message, false);
+                            if (release == null)
+                            {
+                                Environment.Exit(0);
+                            }
+
+                            return Task.FromResult(release == true);
+                        },
+                        announce: message =>
+                            AnsiConsole.MarkupLine($"[{ColorWarning}]{Markup.Escape(message)}[/]"),
+                        // A door that stays open would otherwise hold this screen with no key
+                        // that ends it.
+                        onPoll: MenuHelpers.EscapePressed)
+                        .GetAwaiter().GetResult();
+
+                    if (outcome == DoorClearOutcome.WillNotRelease)
+                    {
+                        MenuHelpers.ShowError(ControllerConstants.ErrorDoorWillNotRelease);
+                    }
+
+                    if (outcome != DoorClearOutcome.Cleared)
+                    {
+                        return;
+                    }
+
+                    continue;
                 }
-                else if (MachineWait.IsAlarm(machine))
+
+                if (unlocks >= ControllerConstants.MachineClearAttempts)
                 {
-                    // Silently clear alarm state
-                    MachineCommands.Unlock(machine);
+                    MenuHelpers.ShowError(
+                        MachineWait.IsAlarm(machine) ? ErrorAlarmWillNotClear : ErrorMachineWillNotClear);
+                    return;
                 }
+
+                if (!MachineWait.IsAlarm(machine))
+                {
+                    // Unavailable for a reason neither the operator nor this loop can act
+                    // on here - asleep, or not answering. Say so rather than spin.
+                    MenuHelpers.ShowError(ErrorMachineWillNotClear);
+                    return;
+                }
+
+                unlocks++;
+                MachineCommands.Unlock(machine);
                 Thread.Sleep(CommandDelayMs);
             }
 

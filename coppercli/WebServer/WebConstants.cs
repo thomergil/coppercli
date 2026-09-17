@@ -103,8 +103,8 @@ public static class WebConstants
     /// Marks the prompt the browser shows for a plain program stop, so it can tell one
     /// from the tool-change prompt arriving in the same field.
     ///
-    /// A kind of prompt, not a run state. PROMPT_KIND_OPERATOR_PAUSE in constants.js must
-    /// match it; validateConstants compares the two at startup.
+    /// A kind of prompt, not a run state. The browser draws the prompt from its own fields
+    /// and does not branch on this, so it is not published through /api/constants.
     /// </summary>
     public const string PromptKindOperatorPause = "WaitingForOperator";
 
@@ -150,6 +150,13 @@ public static class WebConstants
     public const string ApiReset = "/api/reset";
     public const string ApiFeedhold = "/api/feedhold";
     public const string ApiResume = "/api/resume";
+
+    /// <summary>
+    /// Releases a door hold the operator has confirmed is safe. Separate from ApiResume,
+    /// which refuses at a door: a cycle start there restarts the spindle, so it goes
+    /// through this path, which only the door modal calls.
+    /// </summary>
+    public const string ApiDoorRelease = "/api/door/release";
     public const string ApiZero = "/api/zero";
     public const string ApiGotoOrigin = "/api/goto-origin";
     public const string ApiGotoCenter = "/api/goto-center";
@@ -161,7 +168,7 @@ public static class WebConstants
     public const string ApiFileLoad = "/api/file/load";
     public const string ApiFileUpload = "/api/file/upload";
     public const string ApiFileInfo = "/api/file/info";
-    public const string ApiMillPreflight = "/api/mill/preflight";
+    public const string ApiMillCanStart = "/api/mill/can-start";
     public const string ApiMillStart = "/api/mill/start";
     public const string ApiMillPause = "/api/mill/pause";
     public const string ApiMillResume = "/api/mill/resume";
@@ -243,6 +250,12 @@ public static class WebConstants
 
     // --- Request Path Prefixes ---
     public const string WsPath = "/ws";
+
+    /// <summary>
+    /// Names the browser that owns this session. The socket carries it as a query parameter
+    /// and the page carries it as a cookie, so both sides read it from here.
+    /// </summary>
+    public const string ClientIdCookieName = "coppercli_client_id";
     public const string ApiPathPrefix = "/api/";
 
     // --- Response Security Headers (see ApplySecurityHeaders) ---
@@ -268,7 +281,7 @@ public static class WebConstants
     public const int HttpStatusPayloadTooLarge = 413;
     public const int HttpStatusServerError = 500;
 
-    // Note: MillStopDelayMs is in CliConstants, MillCompleteZ is in coppercli.Core.Util.Constants
+    // Note: MillStopDelayMs is in CliConstants, SafeClearanceZ is in coppercli.Core.Util.Constants
 
     // --- API Error Messages ---
     public const string ErrorNoFileLoaded = "No file loaded";
@@ -282,6 +295,12 @@ public static class WebConstants
     public const string ErrorServerFailure =
         "Something went wrong. Try again; if it keeps happening, check the computer running coppercli.";
     public const string ErrorMachineNotConnected = "Machine not connected";
+
+    /// <summary>Resume was asked for on a machine that is not holding.</summary>
+    public const string ErrorNothingToResume = "The machine is not holding, so there is nothing to resume.";
+
+    /// <summary>A door release was asked for on a machine that is not at the door.</summary>
+    public const string ErrorNoDoorToRelease = "The machine is not at the door.";
     public const string ErrorCannotPauseNotRunning = "Cannot pause: not running";
     public const string ErrorCannotResumeNotPaused = "Cannot resume: not paused";
     public const string ErrorCannotResumeToolChangeActive = "Cannot resume: tool change in progress";
@@ -296,22 +315,35 @@ public static class WebConstants
     public const string ErrorExpectedMultipart = "Expected multipart/form-data";
     public const string ErrorMissingBoundary = "Missing boundary";
     public const string ErrorNoFileInUpload = "No file in upload";
-    public const string ErrorNoPathSpecified = "No path specified";
+    public const string ErrorNoPathSpecified = "No path specified.";
     public const string ErrorFileNotFound = "File not found";
-    public const string ErrorNoCompleteProbeData = "No complete probe data to save";
+    /// <summary>The terminal's words for the same refusal, so the two cannot drift apart.</summary>
+    public const string ErrorNoCompleteProbeData = CliConstants.ProbeErrorNoComplete;
     public const string ErrorProbeSaveFailed = "Could not save the probe data. Try another folder.";
     public const string ErrorNoToolChangeInProgress = "No tool change in progress";
     public const string ErrorMillingNotPaused = "Milling not paused";
     public const string ErrorNoPendingUserInput = "No pending user input request";
 
     /// <summary>Shown when an answer is not one of the choices the question offered.</summary>
-    public const string ErrorNotAnOption = "That is not one of the choices offered.";
+    public const string ErrorNotAnOption = "That is not one of the options offered.";
 
     /// <summary>Shown when an answer names a prompt other than the one on screen.</summary>
     public const string ErrorPromptAlreadyAnswered =
         "That question has already been answered. Answer the one on screen now.";
 
     public const string ErrorMachineBusy = "The machine is busy with a job. Stop it first.";
+
+    /// <summary>A path naming another computer rather than this one.</summary>
+    public const string ErrorPathNotOnThisComputer = "That path is not on this computer.";
+
+    /// <summary>A profile id that is not one of the machines coppercli knows.</summary>
+    public const string ErrorUnknownMachineProfile = "Unknown machine profile.";
+
+    /// <summary>A leading prefix Windows reads as a host name rather than a directory.</summary>
+    public const string WindowsUncPrefix = @"\\";
+
+    /// <inheritdoc cref="WindowsUncPrefix"/>
+    public const string UnixUncPrefix = "//";
     public const string ErrorMillingAlreadyRunning = "A job is already running. Stop it first.";
     public const string ErrorNoProbeGrid = "No probe grid. Run Setup first.";
     public const string ErrorBodyTooLarge = "Too much data in one request. Nothing was sent to the machine.";
@@ -322,7 +354,6 @@ public static class WebConstants
     public const string ErrorAlreadyConnected = "Already connected. Close the existing connection first.";
     public const string ErrorPortInUse = "Serial port is in use by another connection. Close the existing connection first.";
     public const string ErrorNoStoredWorkZero = "No stored work zero to trust";
-    public const string ErrorNoAutosavedProbeData = "No autosaved probe data";
 
     // --- API Error Message Formats ---
     public const string ErrorInvalidFileType = "Invalid file type: {0}";
@@ -339,17 +370,18 @@ public static class WebConstants
     public const string DepthActionDecrease = "decrease";
     public const string DepthActionReset = "reset";
 
-    // --- Preflight Error Messages ---
-    public const string PreflightErrorNotConnected = "Machine not connected";
-    public const string PreflightErrorNoFile = "No G-Code file loaded";
-    public const string PreflightErrorProbeNotApplied = "Probe data exists but not applied";
-    public const string PreflightErrorProbeSetupChanged =
+    // --- Reasons milling cannot start ---
+    public const string MillBlockedNotConnected = "Machine not connected";
+    public const string MillBlockedNoFile = "No G-Code file loaded";
+    public const string MillBlockedProbeNotApplied = "Probe data exists but not applied";
+    public const string MillBlockedProbeSetupChanged =
         "The applied height map was measured for a different file or work origin. Probe again before milling.";
-    public const string PreflightErrorProbeIncomplete = "Probe incomplete ({0})";
-    public const string PreflightErrorAlarm = "Machine is in ALARM state - home or unlock first";
-    public const string PreflightWarningNotHomed = "Machine not homed - will home before milling";
-    public const string PreflightWarningNoProfile = "No machine profile selected";
+    public const string MillBlockedProbeIncomplete = "Probe incomplete ({0})";
+    public const string MillBlockedAlarm = "Machine is in ALARM state - home or unlock first";
+    public const string MillBlockedAsleep = "Machine is asleep - reset it first";
+    public const string MillWarningNotHomed = "Machine not homed - will home before milling";
+    public const string MillWarningNoProfile = "No machine profile selected";
 
-    /// <summary>Generic preflight error when error type is unknown.</summary>
-    public const string PreflightErrorUnknown = "Unknown error";
+    /// <summary>Shown when the reason is a case nobody mapped.</summary>
+    public const string MillBlockedUnknown = "Unknown error";
 }

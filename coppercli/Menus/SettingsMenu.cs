@@ -1,5 +1,6 @@
 // Extracted from Program.cs
 
+using coppercli.Core.Settings;
 using Spectre.Console;
 using coppercli.Helpers;
 using static coppercli.CliConstants;
@@ -31,7 +32,7 @@ namespace coppercli.Menus
             new MenuItem<SettingAction>("Jog Feed Slow", 'g', SettingAction.JogFeedSlow),
             new MenuItem<SettingAction>("Jog Distance Slow", 'e', SettingAction.JogDistanceSlow),
             new MenuItem<SettingAction>("Probe Feed", 'p', SettingAction.ProbeFeed),
-            new MenuItem<SettingAction>("Probe Max Depth", 'm', SettingAction.ProbeMaxDepth),
+            new MenuItem<SettingAction>("Probe Max Depth", 'x', SettingAction.ProbeMaxDepth),
             new MenuItem<SettingAction>("Probe Safe Height", 'h', SettingAction.ProbeSafeHeight),
             new MenuItem<SettingAction>("Outline Trace Height", 'o', SettingAction.OutlineTraceHeight),
             new MenuItem<SettingAction>("Outline Trace Feed", 'r', SettingAction.OutlineTraceFeed),
@@ -93,31 +94,31 @@ namespace coppercli.Menus
                         SetupToolSetter(saveSettings);
                         break;
                     case SettingAction.JogFeed:
-                        settings.JogFeed = MenuHelpers.Ask("Jog Feed:", settings.JogFeed);
+                        AskInRange(SettingRanges.JogFeed);
                         break;
                     case SettingAction.JogDistance:
-                        settings.JogDistance = MenuHelpers.Ask("Jog Distance:", settings.JogDistance);
+                        AskInRange(SettingRanges.JogDistance);
                         break;
                     case SettingAction.JogFeedSlow:
-                        settings.JogFeedSlow = MenuHelpers.Ask("Jog Feed (Slow):", settings.JogFeedSlow);
+                        AskInRange(SettingRanges.JogFeedSlow);
                         break;
                     case SettingAction.JogDistanceSlow:
-                        settings.JogDistanceSlow = MenuHelpers.Ask("Jog Distance (Slow):", settings.JogDistanceSlow);
+                        AskInRange(SettingRanges.JogDistanceSlow);
                         break;
                     case SettingAction.ProbeFeed:
-                        settings.ProbeFeed = MenuHelpers.Ask("Probe Feed:", settings.ProbeFeed);
+                        AskInRange(SettingRanges.ProbeFeed);
                         break;
                     case SettingAction.ProbeMaxDepth:
-                        settings.ProbeMaxDepth = MenuHelpers.Ask("Probe Max Depth:", settings.ProbeMaxDepth);
+                        AskInRange(SettingRanges.ProbeMaxDepth);
                         break;
                     case SettingAction.ProbeSafeHeight:
-                        settings.ProbeSafeHeight = MenuHelpers.Ask("Probe Safe Height:", settings.ProbeSafeHeight);
+                        AskInRange(SettingRanges.ProbeSafeHeight);
                         break;
                     case SettingAction.OutlineTraceHeight:
-                        settings.OutlineTraceHeight = MenuHelpers.Ask("Outline Trace Height:", settings.OutlineTraceHeight);
+                        AskInRange(SettingRanges.OutlineTraceHeight);
                         break;
                     case SettingAction.OutlineTraceFeed:
-                        settings.OutlineTraceFeed = MenuHelpers.Ask("Outline Trace Feed (mm/min):", settings.OutlineTraceFeed);
+                        AskInRange(SettingRanges.OutlineTraceFeed);
                         break;
                     case SettingAction.ToggleDebugLogging:
                         settings.EnableDebugLogging = !settings.EnableDebugLogging;
@@ -131,6 +132,31 @@ namespace coppercli.Menus
                     case SettingAction.Back:
                         return;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Ask for a setting and keep asking until the value is in range. The ranges are
+        /// Core's, so the terminal and the web API refuse the same values.
+        /// </summary>
+        private static void AskInRange(SettingBinding setting)
+        {
+            var settings = AppState.Settings;
+            string prompt = string.IsNullOrEmpty(setting.Range.Unit)
+                ? $"{setting.Range.Name}:"
+                : $"{setting.Range.Name} ({setting.Range.Unit}):";
+
+            while (true)
+            {
+                double given = MenuHelpers.Ask(prompt, setting.Read(settings));
+                string? refused = setting.Range.Check(given);
+                if (refused == null)
+                {
+                    setting.Write(settings, given);
+                    return;
+                }
+
+                MenuHelpers.ShowError(refused);
             }
         }
 

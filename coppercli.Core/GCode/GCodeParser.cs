@@ -140,10 +140,9 @@ namespace coppercli.Core.GCode
 
         /// <summary>
         /// Classifies the M-code that would stop file streaming at this line, if any.
-        /// Built on the same GCodeSplitter/GCodeNumbers pairing Machine.SetFile uses to
-        /// decide which lines pause in the first place, so "what does this pause mean"
-        /// has one answer shared by the code that gates the pause and the code that
-        /// reacts to it (MillingController, once the stream has actually stopped there).
+        /// Built on the same GCodeSplitter/GCodeNumbers pair Machine.SetFile uses to decide
+        /// which lines pause, so the code that pauses the stream and the code that reacts to
+        /// it (MillingController) classify the line the same way.
         /// </summary>
         public static GCodeNumbers.PauseMCode ClassifyPauseLine(string line)
         {
