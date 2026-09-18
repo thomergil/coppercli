@@ -41,8 +41,8 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// The one place a front end sets the work zero, so the height map passes through
-        /// AppState.HandleWorkZeroChange every time the datum moves.
+        /// Front ends set work zero here so every origin change calls
+        /// AppState.HandleWorkZeroChange to update the height map.
         /// </summary>
         /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
         /// <returns>Why nothing was sent, and what became of the height map.</returns>

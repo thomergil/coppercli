@@ -36,10 +36,8 @@ namespace coppercli.Core.GCode
     public static class ProbeApplicabilityExtensions
     {
         /// <summary>
-        /// Whether the map may be used for the current job, and the only place that decides
-        /// it. Unknown counts as usable, because a map with no recorded setup cannot be shown
-        /// to be wrong and rejecting every one would discard maps saved before the setup was
-        /// recorded.
+        /// Whether the map may be used for the current job. Unknown counts as usable
+        /// because older maps did not record the setup needed to check them.
         /// </summary>
         public static bool IsUsable(this ProbeApplicability applicability) =>
             applicability is ProbeApplicability.Applicable or ProbeApplicability.Unknown;

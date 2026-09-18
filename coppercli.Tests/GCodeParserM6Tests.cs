@@ -7,10 +7,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Covers the recognizers Machine.cs gates a running job on: IsM6Line and IsM0Line, the
-    /// tool number and name read from the lines around an M6, and agreement with
-    /// ClassifyPauseLine. Tool changes have no reference implementation in OpenCNCPilot, so
-    /// these tests are the only statement of what coppercli treats as an M6.
+    /// Tests M6 and M0 recognition, tool details near M6, and agreement with
+    /// ClassifyPauseLine. OpenCNCPilot has no reference tool-change implementation.
     /// </summary>
     public class GCodeParserM6Tests
     {
@@ -224,7 +222,7 @@ namespace coppercli.Tests
         [InlineData("M6")]
         [InlineData("t2 m06")]
         [InlineData("M06 (Tool change.)")]
-        public void ToolChangeLines_AreRecognisedIdenticallyByBothRecognisers(string line)
+        public void ToolChangeLines_MatchBothRecognitionChecks(string line)
         {
             Assert.True(GCodeParser.IsM6Line(line));
             Assert.Equal(GCodeNumbers.PauseMCode.ToolChange, GCodeParser.ClassifyPauseLine(line));
@@ -250,7 +248,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void ARealMCodeIsStillFoundWhenTheLineAlsoCarriesAComment()
+        public void MCodeWithComment_IsRecognized()
         {
             Assert.Equal(GCodeNumbers.PauseMCode.ProgramEnd,
                 GCodeParser.ClassifyPauseLine("M2 ( Program end. )"));

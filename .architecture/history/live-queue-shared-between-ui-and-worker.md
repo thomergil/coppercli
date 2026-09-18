@@ -16,9 +16,8 @@ enumerate the live list. Cleanup stops the controller first, wraps cleanup, and 
 than propagates. `ControllerBase.ValidTransitions` records `Completing → Cancelled`. Fixed in
 `4698964`. `coppercli.Core/GCode/ProbeGrid.cs`,
 `coppercli.Core/Controllers/ControllerBase.cs`,
-`coppercli.Core/Controllers/ProbeController.cs`; rule `no-live-collections-across-seams`;
+`coppercli.Core/Controllers/ProbeController.cs`; rule `no-live-collections-across-threads`;
 interface `ui → controllers`.
 
-**Rule:** Never hand a live mutable collection from a worker to a UI; own it and return a
-snapshot. Cleanup must not throw over the error that caused it. Model the states an operator
-can reach: an abort during a final phase is normal, not exceptional.
+**Rule:** Return a snapshot when a UI reads a worker's mutable collection. Preserve the
+original error if cleanup also fails. Allow an operator to abort during the final phase.

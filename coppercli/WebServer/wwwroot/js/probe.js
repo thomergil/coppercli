@@ -108,9 +108,8 @@ export function renderProbeGrid(sizeX, sizeY) {
     }
 }
 
-// This page's view of the trace before the server reports it: true from requesting one until
-// the first status shows it, false from stopping until the last status stops showing it.
-// Null the rest of the time, when the server's value is the only one.
+// Track trace start and stop until the next server status arrives. Null means the
+// server's value applies.
 let traceOverride = null;
 
 export function getIsTracing() {
@@ -319,8 +318,7 @@ export async function pollProbeStatus() {
     // Completion is handled in updateStatus, from the status broadcast.
 }
 
-// Paints the measured cells in the colors the server computed. The gradient itself lives in
-// HeightGradient.cs, so this view and the terminal's draw the same board.
+// Paint measured cells using server colors from HeightGradient.cs, shared with the terminal.
 function updateProbeGridDisplay(points, colors) {
     document.querySelectorAll('.probe-cell').forEach(cell => {
         const x = parseInt(cell.dataset.x);
@@ -536,8 +534,8 @@ export async function loadSelectedProbeFile() {
 }
 
 /**
- * The grid line on the probe setup screen. The one place it is worded: the status poll in
- * screens.js writes the same element, and a second copy here drifted from that one.
+ * Format the grid line on the probe setup screen. The status poll in screens.js also
+ * writes this element, so both callers use this formatter.
  */
 export function updateProbeInfoDisplay(sizeX, sizeY, totalPoints, progress) {
     const summary = format(

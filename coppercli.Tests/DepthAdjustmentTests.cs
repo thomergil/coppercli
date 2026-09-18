@@ -63,12 +63,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The adjustment is written into the work origin and taken back out when the run ends.
-        /// A refused restore leaves the shift in the origin, so every later job cuts that much
-        /// off the depth asked for, and the error names the amount left behind.
+        /// A refused restore leaves the depth adjustment in the work origin.
+        /// Report the amount so the operator knows the next job would use the wrong depth.
         /// </summary>
         [Fact]
-        public async Task ADepthAdjustmentTheMachineWillNotGiveBack_IsReported()
+        public async Task RefusedDepthAdjustmentRestore_IsReported()
         {
             using var machine = new FakeMachine();
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
@@ -101,12 +100,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A refused restore leaves that run's adjustment in the origin. The next run still
-        /// cuts the depth the operator asked for, measured from the zero they touched off
-        /// rather than from the shifted origin.
+        /// A refused restore leaves the prior adjustment in the work origin.
+        /// The next run must still use the depth requested from the original work zero.
         /// </summary>
         [Fact]
-        public async Task AfterARestoreTheMachineRefused_TheNextRunStillCutsWhatWasAskedFor()
+        public async Task RunAfterRefusedRestore_UsesRequestedDepth()
         {
             using var machine = new FakeMachine();
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
@@ -269,12 +267,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// _depthAdjustment is one run's snapshot of MillingOptions.DepthAdjustment and
-        /// ResetRunState clears it. _outstandingDepthAdjustment records how much of that shift
-        /// is still in GRBL's G54 Z, so it survives Reset and the next run takes it back out.
+        /// ResetRunState clears the current run's _depthAdjustment. The separate
+        /// _outstandingDepthAdjustment persists until a later run removes it from G54 Z.
         /// </summary>
         [Fact]
-        public async Task MillingAfterAFailedRestore_StillTakesOutTheOldAdjustmentNextRun()
+        public async Task NextRun_RemovesOutstandingDepthAdjustment()
         {
             const double InitialG54Z = -2.0;
             const float RunOneAdjustment = -0.05f;

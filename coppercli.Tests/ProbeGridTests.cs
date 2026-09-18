@@ -85,12 +85,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Outside the probed area the map takes the height of the nearest edge. Taking the
-        /// board's highest point instead steps by the whole warp range at the edge, where the
-        /// outermost traces are cut.
+        /// Outside the probed area, interpolation uses the nearest edge height. Using
+        /// the board's maximum height would add a step where outer traces are cut.
         /// </summary>
         [Fact]
-        public void InterpolateZ_OutsideTheGrid_TakesTheNearestEdge()
+        public void InterpolateZ_OutsideGrid_UsesNearestEdge()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
@@ -242,7 +241,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void NeighborDeviation_IgnoresTheNodesOwnRecordedHeight()
+        public void NeighborDeviation_ExcludesCurrentNode()
         {
             var grid = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20));
 
@@ -335,9 +334,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// State is the single answer every screen and gate reads for how much of a map is
-        /// measured. Computed from Progress alone, a map with a skipped point reads as
-        /// complete, so Save and Apply are offered for a map that cannot be applied.
+        /// A skipped point leaves the map partial even when Progress reaches TotalPoints.
+        /// Save and Apply must not be offered for that map.
         /// </summary>
         [Fact]
         public void AMapWithASkippedPoint_IsPartialHoweverFarTheQueueGot()

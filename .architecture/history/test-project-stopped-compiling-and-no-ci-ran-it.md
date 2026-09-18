@@ -16,5 +16,4 @@ push and the release build has a test step. `coppercli.Tests/Fakes/FakeMachine.c
 `coppercli.Tests/Fakes/MockMachine.cs`, `.github/workflows/`; interface
 `controllers → machine`.
 
-**Rule:** A test that CI does not run does not exist. Audit the doubles as well: one that
-no-ops the commands under test turns a red suite green.
+**Rule:** Run the C# test project in CI. Test doubles must model the commands whose effects the tests assert.

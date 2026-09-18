@@ -26,9 +26,7 @@ operator's way out of a controller that is stuck.
 `coppercli.Core/Controllers/ControllerBase.cs`, `coppercli.Core/Controllers/IController.cs`,
 `coppercli/WebServer/CncWebServer.cs`, `coppercli/Menus/MillMenu.cs`,
 `coppercli/Menus/ProbeMenu.cs`, `coppercli.Tests/ControllerBaseTests.cs`,
-`coppercli.Tests/ProbeControllerTests.cs`; rule `one-way-back-to-idle`; interface
+`coppercli.Tests/ProbeControllerTests.cs`; rule `releaseasync-returns-controller-to-idle`; interface
 `ui → controllers` v5.
 
-**Rule:** A task completing and a run being over are one fact, and the controller owns it.
-Anything else holding a handle to a run holds it to await, never to answer whether a run is
-going.
+**Rule:** Use controller state to decide whether a run is active. Keep task handles only to await completion.

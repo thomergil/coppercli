@@ -15,5 +15,4 @@ uncommitted work backed up outside Dropbox. `CLAUDE.md` already tells agents to 
 conflicted copies and not to compile unasked; what it did not say is that source files
 already saved and verified can disappear.
 
-**Rule:** On a long session in this tree, confirming an edit landed says nothing about ten
-minutes later. When code you know you wrote is gone, suspect the sync.
+**Rule:** Recheck edited files after synchronization during long sessions. If an edit disappears, inspect Dropbox before editing the same file again.

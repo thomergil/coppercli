@@ -99,7 +99,7 @@ namespace coppercli.Tests
         /// Points AppState back at this fixture's machine. Another test in this collection
         /// may have replaced it, and AppState is process-wide.
         /// </summary>
-        public void TakeBackAppState()
+        public void RestoreFixtureState()
         {
             if (!ReferenceEquals(AppState.Machine, _machine))
             {

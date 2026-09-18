@@ -1,10 +1,9 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// The step of work a tool change is on: physical operations, never the run's own state,
-    /// which is <see cref="ControllerState"/>. Two phases wait on the operator and each screen
-    /// shows something different - WaitingForToolChange prompts for the tool,
-    /// WaitingForZeroZ offers the jog screen - and in every other phase the machine is moving.
+    /// Name each step of a tool change; <see cref="ControllerState"/> records run status.
+    /// WaitingForToolChange prompts for the tool, and WaitingForZeroZ allows jogging.
+    /// The machine moves during the other active phases.
     ///
     /// With a tool setter, the offset is measured:
     ///   RaisingZ → MovingToToolSetter → MeasuringReference → RaisingZ

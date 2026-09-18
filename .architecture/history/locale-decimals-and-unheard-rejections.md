@@ -18,5 +18,4 @@ invariant regardless of the operator's locale, a side effect accepted deliberate
 `coppercli.Tests/CultureInvariantGCodeTests.cs`; rules `culture-invariant-gcode`,
 `fail-safe-on-uncertainty`; interface `machine → GRBL`.
 
-**Rule:** A command that was sent is not a command that was done. Formatting for a machine is
-not formatting for a human.
+**Rule:** Format numbers for GRBL with invariant decimals. Treat an offset write as applied only after GRBL accepts it.

@@ -12,7 +12,7 @@ other.
 
 **Fix:** The gate accepts Idle or Hold. `FakeMachine` reports `Hold:0` for `ProgramStop` and
 `OptionalStop` only. `coppercli.Tests/Fakes/FakeMachine.cs`,
-`coppercli.Core/Controllers/MillingController.cs`; rule `fake-answers-like-the-machine`;
+`coppercli.Core/Controllers/MillingController.cs`; rule `test-doubles-reproduce-grbl-responses`;
 interfaces `controllers → machine`, `ui → controllers`.
 Still open in the operator-pause feature as landed: the browser's `isMilling` switch in
 `coppercli/WebServer/wwwroot/js/mill.js` has no `WaitingForUserInput` case although the

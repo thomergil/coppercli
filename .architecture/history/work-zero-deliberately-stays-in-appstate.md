@@ -22,6 +22,4 @@ against a recorded `ProbeContext`, never because a file exists. `coppercli/AppSt
 **Rejected:** Moving the flag into `Machine`, and deriving it from GRBL's G54, for the reason
 above. The audit's recommendation was overruled.
 
-**Rule:** `machine-state-single-writer` governs facts the machine owns. A fact the operator
-asserted about the workpiece is session state. Before applying the rule to a new flag, ask
-which of the two it is.
+**Rule:** Keep `IsWorkZeroSet` in `AppState`, because it records the operator's assertion about this session's workpiece. Do not derive it from GRBL's stored G54 offset.

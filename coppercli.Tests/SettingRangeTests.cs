@@ -15,7 +15,7 @@ namespace coppercli.Tests
         private const double Marker = 12345.0;
 
         [Fact]
-        public void EverySetting_ReadsAndWritesItsOwnProperty()
+        public void EachSetting_ReadsAndWritesMatchingProperty()
         {
             foreach (var binding in SettingRanges.All)
             {
@@ -96,7 +96,7 @@ namespace coppercli.Tests
         /// make the machine unconfigurable.
         /// </summary>
         [Fact]
-        public void ACoordinateSetting_TakesZeroAndNegativeValues()
+        public void RangesAllowingNonPositive_AcceptZeroAndNegativeValues()
         {
             foreach (var binding in SettingRanges.All.Where(b => !b.Range.MustBePositive))
             {

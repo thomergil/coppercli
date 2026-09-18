@@ -125,7 +125,7 @@ namespace coppercli.Tests
         /// that worked as one that may have left the machine moving.
         /// </summary>
         [Fact]
-        public void TheStopBudget_CoversTheTeardownItWaitsOn()
+        public void ControllerCancelTimeout_CoversStopSequenceAndRetract()
         {
             int teardown = (Constants.CommandDelayMs * 2)
                 + Constants.ResetWaitMs

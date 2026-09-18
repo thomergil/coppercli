@@ -11,8 +11,8 @@ public static class WebConstants
     public const int WebSocketMaxMessageBytes = 64 * 1024;
 
     /// <summary>
-    /// Controller events arrive faster than the connection can carry them, so status goes
-    /// out at this interval instead of on every event.
+    /// Send status at this interval because controller events occur faster than socket
+    /// updates should be sent.
     /// </summary>
     public const int WebSocketBroadcastIntervalMs = 300;
 
@@ -47,8 +47,8 @@ public static class WebConstants
     public const int RequestBodyMaxBytes = 1024 * 1024;
 
     /// <summary>
-    /// Largest file upload accepted. Parsing holds the bytes, a string of them and the split
-    /// parts at once. G-code for a board runs to a few megabytes.
+    /// Largest file upload accepted. Parsing holds the bytes, decoded text, and split
+    /// parts in memory together; board G-code is usually a few megabytes.
     /// </summary>
     public const int UploadMaxBytes = 16 * 1024 * 1024;
 
@@ -167,8 +167,8 @@ public static class WebConstants
     public const string ApiForceDisconnect = "/api/force-disconnect";
     public const string ApiTrustWorkZero = "/api/trust-work-zero";
 
-    /// <summary>Questions carried over from the previous session, and answers to them.
-    /// Same source as the terminal startup, so the two cannot drift apart.</summary>
+    /// <summary>Questions and answers for restoring a session. The terminal startup
+    /// uses the same source.</summary>
     public const string ApiSessionRestore = "/api/session/restore";
     public const string ApiProbeRecoverAutosave = "/api/probe/recover-autosave";
 
@@ -274,7 +274,7 @@ public static class WebConstants
     public const string ErrorNoFileInUpload = "No file in upload";
     public const string ErrorNoPathSpecified = "No path specified.";
     public const string ErrorFileNotFound = "File not found";
-    /// <summary>The terminal's words for the same refusal, so the two cannot drift apart.</summary>
+    /// <summary>Uses the terminal's message for the same refusal.</summary>
     public const string ErrorNoCompleteProbeData = CliConstants.ProbeErrorNoComplete;
     public const string ErrorProbeSaveFailed = "Could not save the probe data. Try another folder.";
     public const string ErrorNoToolChangeInProgress = "No tool change in progress";

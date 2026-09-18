@@ -13,7 +13,7 @@ namespace coppercli.Tests.Fakes
 {
     /// <summary>
     /// A GRBL on a loopback port that the real Machine can connect to, stream to, and read
-    /// status from. Moves land instantly, so tests do not wait for travel.
+    /// status from. Moves complete immediately, so tests do not wait for travel.
     /// </summary>
     public sealed class FakeGrbl : IDisposable
     {
@@ -97,7 +97,7 @@ namespace coppercli.Tests.Fakes
         public void SimulateDoorClosedAndHolding() =>
             SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed);
 
-        /// <summary>Writes state and substate together, so neither can carry the other's leftovers.</summary>
+        /// <summary>Writes state and substate together so neither retains an earlier value.</summary>
         private void SetState(string state, string subState)
         {
             _state = state;

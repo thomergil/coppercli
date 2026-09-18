@@ -1,8 +1,8 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// The step of work a grid probing run is on. Whether the run finished, was cancelled or
-    /// failed belongs to <see cref="ControllerState"/>; naming those here stored one fact twice.
+    /// Name each step of grid probing. <see cref="ControllerState"/> records whether
+    /// the run finished, was cancelled, or failed.
     /// </summary>
     public enum ProbePhase
     {

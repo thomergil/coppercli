@@ -16,7 +16,7 @@ namespace coppercli.Tests
     // only machine these run against, so GRBL behavior it does not simulate is untested.
     public class MachineWaitTests
     {
-        /// <summary>Long enough that a wait running the full budget fails the test.</summary>
+        /// <summary>Long enough that a wait running to its timeout fails the test.</summary>
         private const int HangDetectTimeoutMs = 4000;
         private const double RetractStartZ = -10.0;
         private const double RetractTargetZ = -1.0;
@@ -294,9 +294,8 @@ namespace coppercli.Tests
         [Fact]
         public async Task TheCatchUpAndTheRelease_ShareOneTimeout()
         {
-            // The restore outlasts the whole budget, so the release wait ends by running out
-            // of time; the elapsed figure shows whether it ran on the budget the catch-up
-            // left or on a fresh one.
+            // The restore outlasts the timeout. Elapsed time shows whether the switch
+            // reading wait and release wait share that timeout.
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
             machine.DoorRestoreMs = StatusPollIntervalMs * 8;
 
@@ -312,7 +311,7 @@ namespace coppercli.Tests
 
             Assert.NotEqual(DoorState.None, left);
             Assert.True(elapsed.ElapsedMilliseconds < StatusPollIntervalMs * 10,
-                $"spent {elapsed.ElapsedMilliseconds}ms on a budget of {StatusPollIntervalMs * 6}ms");
+                $"spent {elapsed.ElapsedMilliseconds}ms with a timeout of {StatusPollIntervalMs * 6}ms");
         }
 
         [Fact]
@@ -581,7 +580,7 @@ namespace coppercli.Tests
         [InlineData(GrblProtocol.StatusJog, "", MachineActivity.Other)]
         [InlineData(GrblProtocol.StatusCheck, "", MachineActivity.Other)]
         [InlineData(GrblProtocol.StatusSleep, "", MachineActivity.Sleep)]
-        public void GetActivity_NamesWhatTheMachineIsDoing(
+        public void GetActivity_MapsGrblStatesToActivities(
             string status, string subState, MachineActivity expected)
         {
             var machine = new MockMachine { Status = status, StatusSubState = subState };
@@ -713,7 +712,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task WaitForIdle_ReturnsFalseAtOnceWhenTheMachineAlarms()
+        public async Task WaitForIdle_ReturnsFalseImmediatelyOnAlarm()
         {
             var machine = new MockMachine { Status = GrblProtocol.StatusAlarm };
 
@@ -753,7 +752,7 @@ namespace coppercli.Tests
         /// ProbeReplyTimeoutMs: three minutes with the tool down and nothing on screen.
         /// </summary>
         [Fact]
-        public async Task ReplyWait_TimesOutWhenTheMachineStopsResponding()
+        public async Task ReplyWait_ThrowsWhenDoorOpens()
         {
             var machine = new MockMachine { Status = GrblProtocol.StatusRun };
             var neverAnswers = new TaskCompletionSource<bool>();
@@ -777,23 +776,21 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Every wait in MachineWait runs through WaitUntilAsync, whose condition can turn
-        /// true as the budget runs out; reported as a timeout, a retract that did land reads
-        /// as one that did not. A zero budget skips the loop body, so only the re-check after
-        /// it is under test.
+        /// A condition can become true as WaitUntilAsync reaches its timeout. Its final check
+        /// must report success in that case, even when a zero timeout skips the polling loop.
         /// </summary>
         [Fact]
-        public async Task AConditionAlreadyTrueWhenTheBudgetIsGone_IsNotATimeout()
+        public async Task AlreadyTrueAtZeroTimeout_Succeeds()
         {
             using var machine = new MockMachine { Status = GrblProtocol.StatusIdle, Connected = true };
 
             Assert.True(
                 await MachineWait.WaitForIdleAsync(machine, 0),
-                "a machine already Idle when the budget ran out was reported as a timeout");
+                "a machine already Idle at the timeout was reported as timed out");
         }
 
         [Fact]
-        public async Task AConditionStillFalseWhenTheBudgetIsGone_IsATimeout()
+        public async Task StillFalseAtZeroTimeout_Fails()
         {
             using var machine = new MockMachine { Status = GrblProtocol.StatusRun, Connected = true };
 

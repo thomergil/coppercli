@@ -1,4 +1,4 @@
-// Three kinds of constant live here.
+// Constants in this file have three sources.
 //
 // 1. JS-only: no server counterpart.
 // 2. Duplicated from the server: the value must match its C# counterpart, because the
@@ -12,8 +12,7 @@ export const MAX_RECONNECT_ATTEMPTS = 120;  // Together with RECONNECT_DELAY_MS,
 export const RECONNECT_DELAY_MS = 1000;
 export const FORCE_DISCONNECT_RECONNECT_DELAY_MS = 5000;
 
-// How long the page waits before reloading into the machine it just took over, so the
-// server has finished closing the other client's socket.
+// Delay reloading after takeover until the server closes the previous client's socket.
 export const FORCE_DISCONNECT_RELOAD_DELAY_MS = 500;
 export const WEBSOCKET_PING_INTERVAL_MS = 10000;  // Keep-alive ping; must stay under the server's WebSocketTimeoutMs
 export const JOG_TOUCH_REPEAT_MS = 200;

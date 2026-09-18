@@ -79,7 +79,7 @@ namespace coppercli.Tests
         /// published its own.
         /// </summary>
         [Fact]
-        public void EndingARun_ClearsOnlyItsOwnPrompt()
+        public void ClearingOldPrompt_DoesNotClearNewPrompt()
         {
             var answers = new List<string>();
             var mine = Prompt(answers);
@@ -117,12 +117,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Answering resumes the run on this thread, and the run publishes its next prompt
-        /// into the slot before the answer returns. Clearing the slot afterwards would
-        /// discard that prompt.
+        /// Answering runs the callback on this thread, and the callback may publish the next
+        /// prompt before the answer returns. Clearing Current afterwards would discard it.
         /// </summary>
         [Fact]
-        public void Answering_LeavesTheNextPromptInTheSlot()
+        public void Answering_DoesNotClearNextPrompt()
         {
             var answers = new List<string>();
             UserInputRequest? second = null;

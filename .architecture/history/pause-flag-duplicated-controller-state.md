@@ -37,7 +37,7 @@ reasoning that clearing it would let the next run stack a second adjustment.
 `ApplyDepthAdjustmentAsync` never reads the flag; it re-reads G54 every time. Keeping a
 persistent bool beside a per-run amount was itself a defect: a later run with adjustment 0
 computes `restoredZ == currentZ`, passes the restore's tolerance check, and clears the flag
-while the earlier shift stays baked into G54 permanently. The pair collapsed into one field,
+while the earlier shift remains in G54 permanently. The pair collapsed into one field,
 `_outstandingDepthAdjustment`, where 0 means the origin is clean.
 
 **Rule:** Anything derivable from `State` is not stored. Before excluding a field from the

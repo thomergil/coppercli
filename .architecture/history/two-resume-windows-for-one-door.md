@@ -19,7 +19,7 @@ so the probe run can call `EnsureDoorClosedAsync`.
 Four more places where the channel had been missed:
 
 - `MenuHelpers.WaitForDoorClear` released the hold from the jog screen's draw loop with no
-  operator action, a regression against `never-auto-clear-a-safety-gate`; no test covered it
+  operator action, a regression against `manual-door-release-and-required-homing`; no test covered it
   because the screen and the release lived in the same function.
 - `/api/status` recovered a pending prompt from the milling controller only, so a probe run
   waiting on the enclosure prompt was invisible to a browser that had reloaded, and the
@@ -64,14 +64,11 @@ and it was too narrow.
 `coppercli/Macro/MacroRunner.cs`, `coppercli/WebServer/CncWebServer.cs`,
 `coppercli/WebServer/wwwroot/js/mill.js`, `coppercli/WebServer/wwwroot/js/jog.js`,
 `coppercli.Tests/Fakes/DoorModel.cs`, `.architecture/rules/check-layering.sh`; rules
-`never-auto-clear-a-safety-gate`, `one-field-per-fact`,
-`a-new-distinction-lands-with-its-callers`, `resume-is-not-approval`,
-`the-browser-draws-what-it-was-handed`, `a-test-must-be-able-to-fail`,
-`fake-answers-like-the-machine`, `a-redrawn-control-settles-before-it-answers`; interface
+`manual-door-release-and-required-homing`, `one-field-per-fact`,
+`new-state-cases-update-callers`, `remeasure-probe-point-after-operator-resume`,
+`browser-uses-core-status-values`, `tests-detect-plausible-defects`,
+`test-doubles-reproduce-grbl-responses`, `delay-input-after-prompt-redraw`; interface
 `web → browser` v7 (`canReleaseDoor`, `doorMessage`, `machineUnavailable`;
 `DetectPendingPrompt` replaces `DetectOperatorPause`).
 
-**Rule:** When a fact has one owner but several ways to reach a screen, the screens will
-disagree exactly as if the fact had several owners. Count the channels as well as the owners.
-A rule enforced at a lower layer is only as wide as what that layer can see, so the guard
-belongs where the runs are visible.
+**Rule:** Show each door state through one channel: a prompt when the operator can answer, and progress otherwise. A screen with a run displays its events without checking the door independently. Apply run restrictions where controller state is available.

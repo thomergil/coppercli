@@ -183,13 +183,13 @@ export function updateStatus(status) {
                 document.getElementById('mill-filename').textContent = status.file.name || TEXT_UNKNOWN;
             }
             // millingPhase is the controller's own name for its step, so it is not shown here.
-            // The run's next progress message carries words for the operator.
+            // The next progress message supplies the operator text.
             document.getElementById('mill-phase').textContent = '';
             showScreen(SCREEN_MILL, true);
         }
     } else if (state.isMilling) {
-        // The one place a milling run is marked over, however it ended. The mill:state
-        // broadcast arrives sooner but does not cover every way a run can stop.
+        // End the run here for every stop reason. The earlier mill:state broadcast
+        // does not cover all stop paths.
         state.isMilling = false;
         endMillRun();
         if (status.controllerState === CONTROLLER_STATE_COMPLETED) {

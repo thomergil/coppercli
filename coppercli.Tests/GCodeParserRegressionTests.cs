@@ -112,7 +112,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void UnknownGCodeAlongsideAMove_KeepsTheMove()
+        public void UnknownGCodeWithMotion_PreservesMotion()
         {
             var file = ParseLines("G21", "G90", "G0 X0 Y0 Z0", "G1 X10 Y10 G64 F100");
 

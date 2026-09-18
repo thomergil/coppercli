@@ -35,7 +35,7 @@ namespace coppercli.Tests
         public WebServerSequenceTests(WebServerFixture web)
         {
             _web = web;
-            _web.TakeBackAppState();
+            _web.RestoreFixtureState();
         }
 
         private HttpClient Client => _web.Client;
@@ -398,11 +398,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The status payload carries every derived value, so no screen works one out from
-        /// the raw GRBL status. A missing field, or one of the old door booleans, fails here.
+        /// The status payload includes derived values so screens do not interpret the raw
+        /// GRBL status. This test detects missing fields or older door booleans.
         /// </summary>
         [Fact]
-        public async Task TheStatus_CarriesEveryDerivedAnswer()
+        public async Task Status_IncludesDerivedMachineFields()
         {
             var status = await GetJson(WebConstants.ApiStatus);
 
@@ -487,7 +487,7 @@ namespace coppercli.Tests
         /// payload. A second copy in the browser could show the wrong sentence for a state.
         /// </summary>
         [Fact]
-        public async Task TheDoorMessage_ComesFromTheStatus()
+        public async Task Status_DoorMessageMatchesControllerText()
         {
             _web.Grbl.SimulateDoorOpen();
             WebServerFixture.WaitUntil(
@@ -922,7 +922,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void APathUnderHome_KeepsWhatFollowsTheTilde()
+        public void TildePath_PreservesRelativeSuffix()
         {
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
@@ -944,7 +944,7 @@ namespace coppercli.Tests
         /// monitor reads it.
         /// </summary>
         [Fact]
-        public async Task AProbeStopDuringAMillRun_LeavesTheMachineAlone()
+        public async Task ProbeStopDuringMill_DoesNotStopMill()
         {
             await WhileAMillRunHoldsAtTheDoor(async () =>
             {
@@ -995,7 +995,7 @@ namespace coppercli.Tests
         /// pair stores a value in another setting's place with nothing to show for it.
         /// </summary>
         [Fact]
-        public async Task EverySettingInARequest_LandsOnItsOwnSetting()
+        public async Task EachSettingInRequest_UpdatesMatchingProperty()
         {
             // Distinct values, so a crossed pair cannot read back as the right one.
             var sent = new
@@ -1094,7 +1094,7 @@ namespace coppercli.Tests
         /// it the operator is not told the corrections in the file are wrong.
         /// </summary>
         [Fact]
-        public async Task TheZeroResponse_CarriesWhatBecameOfTheMap()
+        public async Task ZeroResponse_IncludesHeightMapOutcome()
         {
             string board = await GivenAGridIsReadyAndTheBoardStays();
             try
@@ -1132,8 +1132,8 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A Y zero during a run is refused for the same reason an X zero is: the map is
-        /// baked into the file the run is streaming.
+        /// Refuse Y zero during a run because the streamed file already contains
+        /// corrections from the current height map.
         /// </summary>
         [Fact]
         public async Task ZeroingOnlyYDuringARun_IsRefused()
@@ -1213,7 +1213,7 @@ namespace coppercli.Tests
         /// the other, and would parse the autosave twice per broadcast.
         /// </summary>
         [Fact]
-        public async Task TheStatus_DescribesOneMapToEveryPartOfItself()
+        public async Task Status_UsesOneProbeMapSnapshot()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
@@ -1238,7 +1238,7 @@ namespace coppercli.Tests
         /// would clear that block.
         /// </summary>
         [Fact]
-        public async Task SavingAMapThatLivesOnlyInTheAutosave_KeepsItInTheJob()
+        public async Task SavingAutosavedMap_RetainsMapForJob()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
@@ -1299,7 +1299,7 @@ namespace coppercli.Tests
         /// in the Mill button.
         /// </summary>
         [Fact]
-        public async Task CheckMillCanStart_JudgesTheMapItWasHanded()
+        public async Task CheckMillCanStart_UsesProvidedMap()
         {
             await GivenAGridIsReady();
             AppState.DiscardProbeData();
@@ -1321,7 +1321,7 @@ namespace coppercli.Tests
         /// descending, and a command of the operator's own returns 409 while it is set.
         /// </summary>
         [Fact]
-        public async Task WhileAProbeCycleIsOpen_ACommandOfTheOperatorsOwnIsRefused()
+        public async Task ZeroCommandDuringProbeCycle_IsRefused()
         {
             await GivenAGridIsReady();
             Assert.False(MachineWait.IsProbeCycleOpen(AppState.Machine));
@@ -1542,7 +1542,7 @@ namespace coppercli.Tests
         /// refusal during a run comes before the delete, so both copies stay.
         /// </summary>
         [Fact]
-        public async Task DiscardingAMapDuringARun_KeepsTheSavedCopy()
+        public async Task DiscardDuringRun_PreservesAutosave()
         {
             await WhileAMillRunHoldsAtTheDoor(() =>
             {
@@ -1562,18 +1562,18 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A run tracks its place in the loaded file by line number. Replacing the file
-        /// resets that to the start, so the job carries on from the top of the program.
+        /// resets that number and would restart the job.
         /// </summary>
         [Fact]
-        public async Task ARunInProgress_KeepsTheFileItIsStreaming()
+        public async Task MillRun_RejectsLoadedFileReplacement()
         {
             await WhileAMillRunHoldsAtTheDoor(() =>
             {
                 var loaded = AppState.Machine.File;
                 AppState.Machine.FileGoto(1);
 
-                // LoadGCodeIntoMachine is the one path every loader takes. Even the file
-                // already loaded is refused there, because reloading resets the line count.
+                // Every loader calls LoadGCodeIntoMachine. Even the current file is
+                // refused because reloading resets the line count.
                 Assert.Equal(
                     CliConstants.ErrorFileChangeDuringRun,
                     AppState.LoadGCodeIntoMachine(AppState.CurrentFile!).Refused);
@@ -1589,7 +1589,7 @@ namespace coppercli.Tests
         /// of IsRunInProgress could be dropped with nothing failing.
         /// </summary>
         [Fact]
-        public async Task AProbeRunInProgress_KeepsTheFileAndTheMap()
+        public async Task ProbeRun_RejectsFileAndOriginChanges()
         {
             await GivenAGridIsReady();
 
@@ -1623,12 +1623,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// Zeroing changes what the height map is measured against, so outside a run the map
-        /// is discarded or re-applied. During a run it is left alone, because it is baked
-        /// into the file being streamed.
+        /// Zeroing changes the height map's work origin. During a run, keep the map and
+        /// streamed file unchanged because that file already contains its corrections.
         /// </summary>
         [Fact]
-        public async Task ZeroingDuringARun_KeepsTheMapTheRunIsCutting()
+        public async Task ZeroDuringRun_PreservesAppliedMapAndLoadedFile()
         {
             await WhileAMillRunHoldsAtTheDoor(() =>
             {

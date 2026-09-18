@@ -118,9 +118,8 @@ namespace coppercli.Core.Controllers
 
             await MonitorMillingAsync(ct);
 
-            // A cancelled run has not completed. Falling through to CompleteAsync would
-            // try to move Paused -> Completing, which the FSM forbids, so an operator
-            // who abandoned a tool change would be told the job failed.
+            // Cancellation must stop before CompleteAsync. Otherwise an abandoned tool
+            // change attempts an invalid Paused -> Completing transition.
             ct.ThrowIfCancellationRequested();
 
             await CompleteAsync(ct);
@@ -154,9 +153,8 @@ namespace coppercli.Core.Controllers
 
             _depthAdjustment = 0;
 
-            // _outstandingDepthAdjustment is deliberately not cleared: it measures what is
-            // still in GRBL's G54 Z, which no reset here can take back out. Clearing it would
-            // strand that shift, and the next run would measure from a zero that had moved.
+            // Keep _outstandingDepthAdjustment until GRBL's G54 Z is restored. Clearing
+            // it here would make the next run use a shifted work origin.
         }
 
         public override void Pause()
@@ -169,9 +167,8 @@ namespace coppercli.Core.Controllers
 
             _machine.FeedHold();
 
-            // Phase is left alone: Resume reads it to decide whether the M0 after an M6 is
-            // redundant, and ControllerState is what carries paused. Transition before
-            // cancelling, because cancelling wakes the monitor loop, which reads IsPaused at once.
+            // Keep Phase for Resume's M0-after-M6 check; ControllerState records the pause.
+            // Transition before cancelling because cancellation wakes the monitor loop.
             TransitionTo(ControllerState.Paused);
             _pauseCts?.Cancel();
         }
@@ -295,8 +292,7 @@ namespace coppercli.Core.Controllers
 
             while (stableCount < settleSeconds && !ct.IsCancellationRequested)
             {
-                // Handle the door, then restart the settle budget so the operator's time
-                // does not count against it.
+                // Restart the settle timeout after the operator handles the door.
                 if (MachineWait.IsDoor(_machine))
                 {
                     await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
@@ -414,10 +410,9 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // Ask GRBL for its stored offsets and read G54 specifically. WorkOffset is
-            // the combined WCO (G54 + G92 + tool length offset), but we write back with
-            // G10 L2 P1, which sets G54 alone - so restoring the combined figure into
-            // the G54 slot would move the Z origin rather than put it back.
+            // Read G54 from GRBL before writing it with G10 L2 P1. WorkOffset includes
+            // G92 and tool-length offsets; writing that combined value to G54 would
+            // move the Z origin.
             bool offsetsKnown = await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct).ConfigureAwait(false);
 
             ct.ThrowIfCancellationRequested();
@@ -468,9 +463,8 @@ namespace coppercli.Core.Controllers
             _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{restoredZ:F3}"));
             await Task.Delay(CommandDelayMs).ConfigureAwait(false);
 
-            // Confirm it landed before believing it. On the abort path GRBL has just been
-            // soft-reset and may still be alarmed, in which case it rejects the write -
-            // and forgetting the amount anyway would strand it in the origin for good.
+            // A soft reset may leave GRBL in Alarm, where it rejects the offset write.
+            // Keep the adjustment amount until the new G54 value is confirmed.
             if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs).ConfigureAwait(false)
                 || Math.Abs(_machine.G54Offset.Z - restoredZ) > WorkOffsetToleranceMm)
             {
@@ -734,31 +728,26 @@ namespace coppercli.Core.Controllers
 
             Phase = MillingPhase.ToolChange;
 
-            // Announcing first leaves a window in which the run is still Running, and a
-            // subscriber that finishes inside it calls Resume() on a controller that was never
-            // paused, which throws on an unhandled thread.
+            // Pause before notifying subscribers; a subscriber may call Resume()
+            // immediately and must see the Paused state.
             var pauseCts = _pauseCts;
             TransitionTo(ControllerState.Paused);
             ToolChangeDetected?.Invoke(info);
 
-            // Cancel the source this detection parked on. A subscriber that resumed
-            // inline has already installed a fresh one, and cancelling that would leave
-            // the monitor loop spinning on a pre-cancelled token for the rest of the job.
+            // Cancel the captured source. A subscriber may have resumed inline and
+            // installed a new source, which must remain active.
             pauseCts?.Cancel();
         }
 
         /// <summary>
-        /// Detects an M0/M1 and prompts the operator to continue or stop, using the same
-        /// RequestUserInputAsync that ToolChangeController uses for its own prompts. That
-        /// parks the run in WaitingForUserInput and puts it back, so there is no Paused
-        /// window here for a subscriber to race.
+        /// Ask the operator to continue or stop at M0/M1 through RequestUserInputAsync,
+        /// also used for tool changes. It keeps state at WaitingForUserInput while open.
         /// </summary>
         private async Task HandleOperatorPauseAsync(int prevLine, CancellationToken ct)
         {
-            // The machine stays where the hold left it, because a feed hold resumes the
-            // motion GRBL still has buffered from wherever the tool is. Retracting and coming
-            // back would have to land on the same point to the micron, so the prompt warns
-            // that the tool is still down instead.
+            // A feed hold resumes buffered motion from the tool's current position.
+            // Keep the tool in place because a retract and return may shift the cut;
+            // warn the operator that the tool is still down.
             string? note = FindPauseNote(prevLine);
             string message = note == null
                 ? OperatorPausePrompt
@@ -781,8 +770,7 @@ namespace coppercli.Core.Controllers
 
             if (response != OptionContinue)
             {
-                // Ends the run through the same cancellation path an external Stop takes, so
-                // the retract and spindle-off run once, from one place, either way.
+                // Use the external Stop cleanup path so retract and spindle-off run once.
                 throw new OperationCanceledException();
             }
 

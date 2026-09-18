@@ -44,7 +44,7 @@ namespace coppercli
     public static class WorkZeroOutcomeExtensions
     {
         /// <summary>
-        /// Whether the loaded G-code now carries corrections that do not match the origin,
+        /// Whether the loaded G-code contains corrections that do not match the origin,
         /// which the operator clears by reloading the file.
         /// </summary>
         public static bool LeftTheGCodeWrong(this WorkZeroOutcome outcome) =>

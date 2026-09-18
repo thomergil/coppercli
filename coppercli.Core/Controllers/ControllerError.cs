@@ -12,7 +12,7 @@ namespace coppercli.Core.Controllers
 
         Exception? Exception = null,
 
-        /// <summary>False when the run carries on after reporting this.</summary>
+        /// <summary>False when the run continues after reporting this.</summary>
         bool IsFatal = true
     );
 }

@@ -27,7 +27,7 @@ Worked through in the session after `168392e`.
 `coppercli.Core/Controllers/ControllerConstants.cs`,
 `coppercli.Core/Controllers/IProbeController.cs`, `coppercli.Tests/ProbeControllerTests.cs`,
 `coppercli.Tests/ProbeGridTests.cs`; rules `monotonic-time-and-event-counts`,
-`resume-is-not-approval`, `fail-safe-on-uncertainty`; interfaces `probe data lifecycle`
+`remeasure-probe-point-after-operator-resume`, `fail-safe-on-uncertainty`; interfaces `probe data lifecycle`
 v1 → v2, `ui → controllers`.
 
 **Rejected:** The first replacement returned a boolean.
@@ -40,8 +40,4 @@ which failed; two independent auditors found it and the author did not. "Keep go
 distinguish "this reading was fine" from "a person intervened", and that difference decides
 whether a suspect measurement is committed.
 
-**Rule:** A question about the workpiece is answered from the measurement, never from elapsed
-time. Before timing a code path, ask what else is inside the interval; in this layer the
-deliberate returns without awaiting mean an interval almost always contains more than the
-call that opened it. A return value that decides whether to commit a suspect measurement
-names why it is continuing, and a boolean cannot.
+**Rule:** Compare a height with neighboring measurements before accepting it. Check every operation included in a timed interval before using its duration. Return `Accepted`, `Remeasure` or `Cancelled` so the caller can decide whether to record the reading.

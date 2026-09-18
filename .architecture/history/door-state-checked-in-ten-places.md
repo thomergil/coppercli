@@ -9,7 +9,7 @@ the tool moved.
 and the spindle restarts if one was running. Each screen decided which door state it was in
 by asking one question whose two arms were assumed to cover the door. No type owned the
 question. Follows the defect in
-`readiness-gate-refused-what-the-controller-could-release.md`; this entry records what
+`readiness-check-refused-closed-door-hold.md`; this entry records what
 correcting the door then required everywhere else.
 
 **Fix:** `MachineWait.GetDoorState` owns the question and returns a `DoorState`. `IsDoorOpen`
@@ -33,7 +33,7 @@ was Idle and the machine is cutting. Both doubles now queue behind the hold, ign
 start while the switch reads ajar, report `Door:3` while restoring, and return to `Run` when
 a file is streaming. `FakeMachineDoorTests` checks this.
 `WebServerSequenceTests.ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead` pins rule
-`machine-readiness-is-the-controllers`: it drives the real HTTP API against a real `Machine`
+`controllers-check-machine-readiness`: it drives the real HTTP API against a real `Machine`
 over a loopback `FakeGrbl` and asserts the run reaches the enclosure prompt. The same round
 found that every grep in `check-layering.sh` tolerated a missing path, so the script returned
 0 from any directory holding none of the code; it now checks its own paths first.
@@ -55,9 +55,9 @@ ordering to defend against.
 `coppercli.Tests/Fakes/MockMachine.cs`, `coppercli.Tests/Fakes/FakeGrbl.cs`,
 `coppercli.Tests/FakeMachineDoorTests.cs`, `coppercli.Tests/MillingControllerTests.cs`,
 `coppercli.Tests/WebServerSequenceTests.cs`, `.architecture/rules/check-layering.sh`; rules
-`a-new-distinction-lands-with-its-callers`, `a-grep-is-not-the-guard`,
-`an-undecided-choice-is-recorded-not-shipped`, `machine-readiness-is-the-controllers`,
-`fake-answers-like-the-machine`, `a-test-must-be-able-to-fail`, `one-field-per-fact`;
+`new-state-cases-update-callers`, `behavior-rules-require-behavior-tests`,
+`record-unresolved-design-decisions`, `controllers-check-machine-readiness`,
+`test-doubles-reproduce-grbl-responses`, `tests-detect-plausible-defects`, `one-field-per-fact`;
 interface `controllers → machine` v3.
 
 **Rejected:**
@@ -69,18 +69,18 @@ interface `controllers → machine` v3.
   with no caller looks like a handled case, so treat one as unfinished work.
 - Deciding what the door does to a paused run. GRBL has one resume, so the cycle start that
   releases a door hold releases a feed hold with it, and a run that was paused when the door
-  opened carries on cutting while `ControllerState` still reads `Paused`. Two fixes were
+  opened continues cutting while `ControllerState` still reads `Paused`. Two fixes were
   attempted: re-assert the feed hold immediately after the cycle start (the tool moves for
   GRBL's reaction time), and let the release end the pause (which is what the prompt the
   operator answered says it does). Neither follows from the code; it is a product decision
   about what the operator is promised. Recorded as an undecided GAP on `controllers → machine`
   for the owner to pick, rather than shipped with one of the two picked.
-- Proving rule `machine-readiness-is-the-controllers` by grep. The check greps for
+- Proving rule `controllers-check-machine-readiness` by grep. The check greps for
   `EnsureMachineReady` and for hand-rolled idle waits; it was proved bypassable by
   re-introducing the gate as `if (MachineWait.IsUnavailable(machine)) return ...`, which
   passes every grep and restores the whole defect. The grep catches one spelling; the test
   catches the behavior however it is written.
 
-**Rule:** When a state has more cases than the code branches on, give the cases one owner and
-have every screen read it. Fixing the branches one screen at a time leaves the next screen
-wrong, so a change that keeps reaching new places needs another audit round before release.
+**Rule:** Define every door case in `MachineWait.GetDoorState` and use that result in each
+screen. Review every caller when adding a case; updating one screen leaves the others with
+the old classification.

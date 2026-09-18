@@ -73,9 +73,8 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Takes a point off the queue without a height - the probe did not reach the
-        /// surface and the operator chose to carry on. The node stays unmeasured, so the
-        /// map is still incomplete.
+        /// Remove a failed point from this probe pass without recording a height.
+        /// The map remains incomplete until that point is measured.
         /// </summary>
         public void SkipPoint(int x, int y)
         {
@@ -266,8 +265,8 @@ namespace coppercli.Core.GCode
         public int MeasuredCount => _measuredCount;
 
         /// <summary>
-        /// How much of this map is measured. Every screen and gate reads this rather than
-        /// comparing Progress with TotalPoints.
+        /// Whether the map has no, partial, or complete measurements. Screens and
+        /// availability checks use this instead of comparing Progress with TotalPoints.
         /// </summary>
         public ProbeDataState State =>
             HasCompleteData ? ProbeDataState.Complete
@@ -278,7 +277,7 @@ namespace coppercli.Core.GCode
         public static ProbeDataState StateOf(ProbeGrid grid) => grid?.State ?? ProbeDataState.None;
 
         /// <summary>
-        /// The grid for a job: the file's extent grown by the margin, at the given spacing.
+        /// Create a grid over the file's extent plus the margin, at the given spacing.
         /// </summary>
         public static ProbeGrid ForJob(Vector2 fileMin, Vector2 fileMax, double margin, double gridSize)
         {
@@ -289,11 +288,10 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Refuses a loaded grid the constructor would have refused: extents that are not
-        /// finite or not ordered, and fewer than two nodes on an axis. Below two, the spacing
-        /// is a division by zero and InterpolateZ returns one height for the whole board.
+        /// Reject non-finite or unordered extents and fewer than two nodes per axis.
+        /// With fewer than two nodes, spacing divides by zero and interpolation uses one height.
         /// </summary>
-        private static void RequireUsableShape(ProbeGrid map)
+        private static void ValidateLoadedGridGeometry(ProbeGrid map)
         {
             if (map.SizeX < MinNodesPerAxis || map.SizeY < MinNodesPerAxis
                 || map.SizeX > MaxNodesPerAxis || map.SizeY > MaxNodesPerAxis)
@@ -519,10 +517,9 @@ namespace coppercli.Core.GCode
                         map.SizeX = int.Parse(r["SizeX"]);
                         map.SizeY = int.Parse(r["SizeY"]);
 
-                        // The same shape the constructor demands. A loaded file decides the
-                        // commanded Z of every cutting move, so it gets the same check as a
-                        // grid built in memory.
-                        RequireUsableShape(map);
+                        // Apply constructor geometry checks to loaded files, whose heights
+                        // set the commanded Z of cutting moves.
+                        ValidateLoadedGridGeometry(map);
 
                         map.Points = new double?[map.SizeX, map.SizeY];
 
@@ -536,8 +533,8 @@ namespace coppercli.Core.GCode
 
                         if (!string.IsNullOrEmpty(sourceFile))
                         {
-                            // A map naming a file must carry an origin that can be read. An
-                            // unreadable one would drop it to Unknown, which no gate refuses.
+                            // A map that names a source file must contain a readable origin.
+                            // Otherwise it becomes Unknown and passes availability checks.
                             if (!TryParseOrigin(r, out Vector3 origin))
                             {
                                 throw new InvalidDataException(MalformedMessage);

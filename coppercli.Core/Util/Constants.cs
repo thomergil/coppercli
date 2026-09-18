@@ -18,7 +18,7 @@ namespace coppercli.Core.Util
         public static readonly NumberFormatInfo DecimalOutputFormat = new() { NumberDecimalSeparator = ".", NumberDecimalDigits = 3 };
 
         /// <summary>
-        /// The build number carries the letter suffix, so 'f' is 102. GRBL 1.1f is the first
+        /// The build number stores the letter suffix, so 'f' is 102. GRBL 1.1f is the first
         /// with the real-time status report format this code reads.
         /// </summary>
         public static readonly Version MinimumGrblVersion = new(1, 1, 'f');
@@ -123,8 +123,8 @@ namespace coppercli.Core.Util
 
         /// <summary>
         /// How far a work offset read back may sit from the value written, in mm. The only
-        /// slack is the three decimals the G-code carries; PositionToleranceMm is wider than
-        /// a depth adjustment and confirmed writes that never landed.
+        /// difference comes from G-code's three decimal places; PositionToleranceMm is wider
+        /// than a depth adjustment and has accepted writes that GRBL did not apply.
         /// </summary>
         public const double WorkOffsetToleranceMm = 0.001;
 

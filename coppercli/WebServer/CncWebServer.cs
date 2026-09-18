@@ -21,14 +21,11 @@ using static coppercli.WebServer.WebConstants;
 namespace coppercli.WebServer;
 
 /// <summary>
-/// The browser-facing half of coppercli: an HttpListener serving wwwroot from embedded
-/// resources, a JSON API under /api/, and a WebSocket at /ws carrying status out and jog
-/// commands in. Workflows live in the coppercli.Core controllers; the handlers here turn a
-/// request into a call on one of them, and its result back into JSON.
+/// Serves the embedded web UI, the /api/ JSON API, and the /ws WebSocket for status and
+/// jog commands. HTTP handlers call workflows in coppercli.Core and return their results.
 ///
-/// Stop paths take their locks in one order: <see cref="_toolChangeAbortLock"/>, then the
-/// tool-change run task's own unwind, then <see cref="_millStopLock"/> - never the reverse,
-/// so the two cannot deadlock against each other.
+/// Stop paths acquire <see cref="_toolChangeAbortLock"/>, wait for the tool-change task,
+/// then acquire <see cref="_millStopLock"/>. Keep this order to avoid deadlock.
 /// </summary>
 public static class CncWebServer
 {
@@ -39,13 +36,12 @@ public static class CncWebServer
     {
         public required WebSocket Socket { get; init; }
 
-        /// <summary>The browser's own id from its cookie, or null if it sent none.</summary>
+        /// <summary>The browser id from its cookie, or null if absent.</summary>
         public string? Id { get; init; }
 
         /// <summary>
-        /// When the client last said anything, on the monotonic clock. Read and written under
-        /// <see cref="_clientsLock"/>. Wall-clock time steps with NTP and daylight saving, and
-        /// every socket would look silent at once.
+        /// Last client activity on the monotonic clock, read and written under
+        /// <see cref="_clientsLock"/>. Wall-clock changes could expire every client together.
         /// </summary>
         public long LastActivityMs { get; set; }
 
@@ -76,10 +72,8 @@ public static class CncWebServer
     private static int _baudRate = Constants.DefaultBaudRate;
     private static bool _isReconnecting = false;
     /// <summary>
-    /// Whether a browser took the machine over, so the server must not reconnect. Read and
-    /// written under <see cref="_clientsLock"/>: set outside it, a client finishing its
-    /// handshake could clear it after the takeover had already decided, and the server would
-    /// reopen the serial port it just released.
+    /// Whether a browser takeover prevents the server from reconnecting. Read and write under
+    /// <see cref="_clientsLock"/> so a concurrent handshake cannot clear it after takeover.
     /// </summary>
     private static bool _forceDisconnected;
 
@@ -91,41 +85,33 @@ public static class CncWebServer
     private static string? _takeoverClientId;
     private static readonly object _reconnectLock = new();
 
-    // Only ever assigned a fresh instance synchronously in HandleMillStart, before the run
-    // that uses it is scheduled - see the compare-and-clear remarks on that assignment.
+    // HandleMillStart assigns a new instance before scheduling the run; the run clears
+    // this field only if it still holds that instance.
     private static CancellationTokenSource? _millCts;
 
-    // The Task backing the in-flight controller.StartAsync() started by HandleMillStart,
-    // so StopMillingAsync can wait for that run's own cancellation-driven cleanup instead
-    // of racing it with a second, independent StopAsync/Reset.
+    // Track the StartAsync task so StopMillingAsync waits for its cleanup before resetting
+    // the controller.
     private static Task? _millRunTask;
 
-    // Serializes StopMillingAsync so only one caller drives the milling controller's FSM
-    // at a time: the combined stop path (HandleMillStopAsync) and a tool change that ends
-    // without success on its own can both reach it around the same moment.
+    // The combined stop path and a failed tool change can call StopMillingAsync together.
+    // Serialize them so only one changes the controller state at a time.
     private static readonly SemaphoreSlim _millStopLock = new(1, 1);
 
-    // Tool change controller cancellation and pending user input. _toolChangeCts is only
-    // ever assigned a fresh instance synchronously in HandleMillStart's onToolChange
-    // callback, before the run that uses it is scheduled.
+    // HandleMillStart's onToolChange callback assigns a new token before scheduling
+    // the tool-change run.
     private static CancellationTokenSource? _toolChangeCts;
 
-    // The Task backing the in-flight StartToolChangeControllerAsync started when M6 is
-    // detected, so HandleMillStopAsync can wait for that run's own cancellation-driven
-    // cleanup (including the Reset back to Idle it performs) instead of racing it with a
-    // second, independent Reset() from here.
+    // Track the tool-change task so HandleMillStopAsync waits for its cleanup and reset
+    // before attempting another reset.
     private static Task? _toolChangeRunTask;
 
-    // Serializes HandleMillStopAsync, the single entry point for an operator-initiated
-    // stop (the Stop button and the tool-change dialog's Abort button both funnel
-    // through it - see its remarks), so two concurrent stop/abort requests do not both
-    // try to drive both controllers' teardown at once.
+    // Serialize Stop and Abort requests through HandleMillStopAsync so two callers
+    // cannot stop both controllers concurrently.
     private static readonly SemaphoreSlim _toolChangeAbortLock = new(1, 1);
 
-    // The running probe-controller run: a grid probe or an outline trace. Both drive the one
-    // controller, so they can never both be running. Released by that run's finally under a
-    // compare-and-clear (ReleaseProbeRunAsync), not disposed: a stop whose bounded wait times
-    // out leaves the run still holding this token.
+    // Grid probes and outline traces share this controller and cannot run together.
+    // The run clears its token in finally only if it is still current, without
+    // disposing it; a timed-out stop leaves the run using that token.
     private static CancellationTokenSource? _probeCts;
     private static Task? _probeTask;
 
@@ -315,7 +301,7 @@ public static class CncWebServer
                 // Cancel first so the runs unwind while the machine is still reachable:
                 // their teardown stops it and retracts. A run left going would send moves to
                 // the next connection.
-                var (probeCts, probeTask) = ProbeRun();
+                var (probeCts, probeTask) = GetCurrentProbeRun();
 
                 var running = new[] { probeTask, _millRunTask, _toolChangeRunTask }
                     .Where(task => task != null)
@@ -689,8 +675,8 @@ public static class CncWebServer
 
     /// <summary>
     /// Run a direct command, or return why it could not. <paramref name="offTheCallingThread"/>
-    /// is for the WebSocket: homing blocks for as long as homing takes, and the same socket
-    /// carries the Stop button.
+    /// is for the WebSocket: homing blocks until it finishes, and the socket must remain
+    /// available to receive Stop.
     /// </summary>
     /// <returns>Null once the command has been sent, or the reason it was refused.</returns>
     private static string? RunDirectCommand(DirectCommand command, bool offTheCallingThread = false)
@@ -1331,8 +1317,8 @@ public static class CncWebServer
         || (_machine != null && MachineWait.IsProbeCycleOpen(_machine));
 
     /// <summary>
-    /// Whether a workflow is moving the machine, so a move of the caller's own would land
-    /// in the middle of one. Narrower than <see cref="AnyOperationRunning"/>.
+    /// Whether a workflow controls machine motion and a separate command would interfere.
+    /// Narrower than <see cref="AnyOperationRunning"/>.
     /// </summary>
     private static bool MachineIsBeingDriven()
     {
@@ -1358,8 +1344,8 @@ public static class CncWebServer
 
     private static object GetStatus()
     {
-        // The app's machine, which exists before the server starts, so every status has the
-        // same shape and the browser never fills in defaults of its own.
+        // AppState.Machine exists before the server starts. Use it when _machine is unset
+        // so every status response contains the same fields.
         var machine = _machine ?? AppState.Machine;
 
         var controller = AppState.Milling;
@@ -1374,11 +1360,10 @@ public static class CncWebServer
         // Still running while the run waits on the operator or retracts.
         var isMilling = ControllerBase.IsRunInProgressState(controllerState);
 
-        // Tool change state from AppState (set by controller event), falling back to
-        // whatever prompt any run has published. Both flow through the same overlay
-        // client-side, and this field is the only way a client that reloaded or reconnected
-        // mid-prompt can recover it - the toolchange:input WS broadcast that announced it
-        // live is one-shot and already missed by then.
+        // Use AppState's state set by the tool-change event, or the current prompt,
+        // for the shared dialog.
+        // Status must include it because a reconnecting client missed the one-time
+        // toolchange:input broadcast.
         var toolChange = DetectToolChange() ?? DetectPendingPrompt();
 
         var settings = AppState.Settings;
@@ -1398,7 +1383,7 @@ public static class CncWebServer
         {
             connected = MachineWait.IsResponding(activity),
 
-            // GRBL's own word, for display only. See rule the-browser-draws-what-it-was-handed.
+            // GRBL's own word, for display only. See rule browser-uses-core-status-values.
             status,
 
             machineActivity = activity.ToString(),
@@ -1487,10 +1472,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// The prompt any run is waiting on, read from the slot rather than from one controller,
-    /// so a probe or outline trace's enclosure prompt reaches a client that reloaded as the
-    /// mill's does. Shaped so the one client-side handler that reconstructs a tool-change
-    /// overlay reconstructs this too, without needing to know which run raised it.
+    /// Return the current prompt for any run, including a probe or outline trace after
+    /// the client reloads. Use the same payload as the tool-change overlay.
     /// </summary>
     private static object? DetectPendingPrompt()
     {
@@ -1513,19 +1496,14 @@ public static class CncWebServer
     };
 
     /// <summary>
-    /// Publish a run's prompt to the browser: into the prompt slot, so an answer can name
-    /// what it answers, and over the socket for clients already watching. The only place the
-    /// three runs do this.
+    /// Store the prompt for later answers and send it to connected browsers.
     /// </summary>
     /// <returns>
-    /// What was published. The run clears this from the slot when it ends, by which time
-    /// another run may have published its own.
+    /// The stored prompt. The run clears it only if it is still current.
     /// </returns>
     private static UserInputRequest PublishPrompt(UserInputRequest request)
     {
-        // Id carries the request's own GUID, so a client recovering this prompt from
-        // GetStatus (see DetectPendingPrompt) can compare it against this broadcast and tell
-        // it from one already answered.
+        // Keep the request id so a client can match the status payload to this broadcast.
         var published = new UserInputRequest
         {
             Id = request.Id,
@@ -1537,9 +1515,8 @@ public static class CncWebServer
             {
                 request.OnResponse(response);
 
-                // Answer clears the slot before calling this, and the run continues inside
-                // that call, publishing its next prompt from here. An empty slot means
-                // nothing replaced this one, so the dialog closes.
+                // Answer clears the pending prompt before calling this, but the callback
+                // may publish another. Close the dialog only if none is pending.
                 if (PendingPrompt.Current == null)
                 {
                     BroadcastMessage(WsMessageTypeToolChangeComplete, new { success = true });
@@ -1804,9 +1781,8 @@ public static class CncWebServer
                 probeZ = WsCmdProbeZ
             }
 
-            // API paths are not published. A path the client has wrong answers 404, which is
-            // loud; a second copy of two dozen of them that nothing reads and nothing checks
-            // is a set of facts that can quietly disagree.
+            // API paths stay in each side's constants. A wrong client path returns 404;
+            // publishing another unused copy would add values that are never checked.
         };
     }
 
@@ -2055,17 +2031,17 @@ public static class CncWebServer
 
     private static void ProbeZSingle()
     {
-        // Through the same slot as every other probe, so /api/probe/stop reaches this one.
+        // Register this probe as the current run so /api/probe/stop can stop it.
         var probeCts = new CancellationTokenSource();
-        if (!TryClaimProbeRun(probeCts))
+        if (!TrySetCurrentProbeRun(probeCts))
         {
             probeCts.Dispose();
             BroadcastMessage(WsMessageTypeProbeError, new { message = ErrorMachineBusy });
             return;
         }
 
-        // Inside the try: the slot is taken and the run task that hands it back does not
-        // exist yet. AppState.Probe builds the controller on first use, and can throw.
+        // The current run is set before its task exists. AppState.Probe can throw while
+        // constructing the controller, so construction belongs in this try block.
         try
         {
             var controller = AppState.Probe;
@@ -2100,8 +2076,8 @@ public static class CncWebServer
                 }
                 finally
                 {
-                    // The slot alone: this probe stopped no idle timer and started no sleep
-                    // prevention, so there is nothing else of the server's to hand back.
+                    // This probe started no idle timer or sleep prevention. Clear only
+                    // its current-run entry.
                     ClearCurrentProbeRun(probeCts);
                 }
             }));
@@ -2430,8 +2406,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// One serialization of a loaded G-code file, shared by the upload, load and status
-    /// responses. The wire shape is then the same at every endpoint.
+    /// Builds the loaded G-code summary for upload, load, and status responses so they
+    /// return the same fields.
     /// </summary>
     private static object FileSummary(GCodeFile file, string? droppedMap = null) => new
     {
@@ -2580,8 +2556,8 @@ public static class CncWebServer
             Logger.Log("Mill controller state: {0}", state);
             BroadcastMessage(WsMessageTypeMillState, new { state = state.ToString() });
         };
-        // The controller reports progress at 10Hz, faster than the socket should carry. A
-        // phase change goes out at once; the rest wait for the interval.
+        // The controller reports progress at 10 Hz. Send phase changes immediately and
+        // limit other socket updates to the interval.
         long lastProgressBroadcast = 0;
         string? lastProgressPhase = null;
         Action<ProgressInfo> onProgressChanged = progress =>
@@ -2615,11 +2591,10 @@ public static class CncWebServer
                 lineNumber = info.LineNumber
             });
 
-            // The server starts the tool-change controller itself; the browser asks for
-            // nothing. toolChangeCts is assigned here, before Task.Run schedules the body that
-            // uses it, and StartToolChangeControllerAsync compares against it before clearing
-            // the field, so a second tool change cannot erase a newer run's handle. Tracked in
-            // _toolChangeRunTask so HandleMillStopAsync can await this exact run.
+            // Assign toolChangeCts before scheduling the task, then compare it before
+            // clearing the shared field so cleanup cannot clear a later run's handle.
+            // The server starts this run without another browser request and tracks it in
+            // _toolChangeRunTask for HandleMillStopAsync to await.
             var toolChangeCts = new CancellationTokenSource();
             _toolChangeCts = toolChangeCts;
             _toolChangeRunTask = Task.Run(async () =>
@@ -2634,10 +2609,8 @@ public static class CncWebServer
                 }
             });
         };
-        // The mill controller's own prompt (M0/M1), which shares the tool-change dialog's
-        // message and the one prompt slot (see PendingPrompt), because the two can never be
-        // pending at once. Held here so this run's teardown clears its own prompt and not one
-        // the tool change published since.
+        // Milling prompts (M0/M1) and tool-change prompts use the same PendingPrompt entry.
+        // Keep this request so teardown clears it only if it still belongs to this run.
         UserInputRequest? published = null;
         Action<UserInputRequest> onUserInputRequired = request =>
         {
@@ -2675,11 +2648,9 @@ public static class CncWebServer
         SleepPrevention.Start();
         Logger.Log("Sleep prevention started: {0}", SleepPrevention.IsActive);
 
-        // Not awaited: the events above carry the run's progress. millCts is captured before
-        // Task.Run schedules the body that reads it, and the finally below compares against it
-        // before clearing the shared fields, so a second start cannot erase a newer run's
-        // handle; the task is tracked in _millRunTask so a stop can await this exact run
-        // winding down rather than driving the same FSM beside it (see HandleMillStopAsync).
+        // Capture millCts before scheduling the task, then compare it in finally so an
+        // older run cannot clear a newer run's fields. _millRunTask lets Stop await this
+        // run's teardown before using the controller again (see HandleMillStopAsync).
         var millCts = _millCts;
         _millRunTask = Task.Run(async () =>
         {
@@ -2703,10 +2674,9 @@ public static class CncWebServer
                 controller.UserInputRequired -= onUserInputRequired;
                 controller.ErrorOccurred -= onError;
 
-                // Everything below is shared with whichever run is on the machine now. A run
-                // that outlives its successor's start must not take any of it back: clearing
-                // the prompt strands the operator answering one, and re-arming the door
-                // auto-clear hands a safety gate back to software in the middle of a cut.
+                // These fields may now belong to a newer run. Clearing its prompt would
+                // hide the operator's question; enabling automatic door release during a
+                // cut would let software resume the machine.
                 if (ReferenceEquals(_millCts, millCts))
                 {
                     _millCts = null;
@@ -2725,7 +2695,7 @@ public static class CncWebServer
                 }
                 else
                 {
-                    Logger.Log("Milling controller finished; a newer run owns the machine");
+                    Logger.Log("Milling controller finished; a newer run is active");
                 }
             }
         });
@@ -2735,24 +2705,18 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Tears down both controllers, however the run was interrupted: an operator's Stop must
-    /// stop a tool change too, so a stray "$X" issued while cleaning up milling does not clear
-    /// an alarm the tool change is about to drive straight through. The Stop button and the
-    /// tool-change dialog's Abort both come through here, serialized on
-    /// <see cref="_toolChangeAbortLock"/> and bounded, so a caller that cannot get in is told
-    /// the stop was not confirmed rather than left hanging; nothing reachable from the
-    /// tool-change run task may call in, because that would await its own task, and a tool
-    /// change that fails on its own tears the milling run down through
-    /// <see cref="StopMillingAsync"/> instead.
+    /// Stop tool change and milling under <see cref="_toolChangeAbortLock"/> so a milling
+    /// reset cannot clear a tool-change alarm. A tool-change task must call
+    /// <see cref="StopMillingAsync"/> instead, because this method would await that task.
     /// </summary>
     /// <returns>False if a lock, or a run's cancellation-driven unwind, did not complete
     /// within <see cref="ControllerCancelTimeoutMs"/> - the caller must not tell the
     /// operator the machine has stopped.</returns>
     private static async Task<bool> HandleMillStopAsync()
     {
-        var budget = Stopwatch.StartNew();
+        var stopElapsed = Stopwatch.StartNew();
 
-        bool acquiredAbortLock = await _toolChangeAbortLock.WaitAsync(RemainingStopTimeoutMs(budget));
+        bool acquiredAbortLock = await _toolChangeAbortLock.WaitAsync(RemainingStopTimeoutMs(stopElapsed));
         if (!acquiredAbortLock)
         {
             Logger.Log("Mill stop: timed out waiting for a previous stop/abort to finish");
@@ -2767,9 +2731,9 @@ public static class CncWebServer
             _toolChangeCts?.Cancel();
 
             bool toolChangeStopped = toolChangeRunTask == null
-                || await AwaitRunTeardownAsync(toolChangeRunTask, "Tool change", budget);
+                || await AwaitRunTeardownAsync(toolChangeRunTask, "Tool change", stopElapsed);
 
-            bool millStopped = await StopMillingAsync(budget);
+            bool millStopped = await StopMillingAsync(stopElapsed);
 
             Logger.Log("Mill stop complete");
             return toolChangeStopped && millStopped;
@@ -2781,26 +2745,22 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Tears down the milling controller alone, however its run ended. Split out from
-    /// <see cref="HandleMillStopAsync"/> so a tool change that ends without success on its own
-    /// can tear down the milling run it interrupted without awaiting its own task, and
-    /// serialized on <see cref="_millStopLock"/>: cancelling _millCts wakes the StartAsync
-    /// parked in HandleMillStart, which runs its own CleanupAsync and terminal-state
-    /// transition, and a StopAsync or Reset driven from here at the same time races that
-    /// unwind into an illegal transition that throws.
+    /// Stop milling after a tool change fails or an operator requests Stop.
+    /// <see cref="_millStopLock"/> prevents a second reset while StartAsync handles
+    /// cancellation, cleanup, and its terminal-state transition.
     /// </summary>
-    /// <returns>False if the lock, or the run's unwind, did not complete within
+    /// <returns>False if the lock wait or run cleanup exceeded
     /// <see cref="ControllerCancelTimeoutMs"/>.</returns>
-    private static async Task<bool> StopMillingAsync(Stopwatch? budget = null)
+    private static async Task<bool> StopMillingAsync(Stopwatch? stopElapsed = null)
     {
-        budget ??= Stopwatch.StartNew();
+        stopElapsed ??= Stopwatch.StartNew();
 
         if (_machine == null)
         {
             return true;
         }
 
-        bool acquiredStopLock = await _millStopLock.WaitAsync(RemainingStopTimeoutMs(budget));
+        bool acquiredStopLock = await _millStopLock.WaitAsync(RemainingStopTimeoutMs(stopElapsed));
         if (!acquiredStopLock)
         {
             Logger.Log("Mill stop: timed out waiting for a previous stop to finish");
@@ -2828,13 +2788,12 @@ public static class CncWebServer
             bool stopped = true;
             if (runTask != null)
             {
-                // A run is in flight: let its own cancellation unwind drive cleanup and
-                // the terminal-state transition (see remarks above) instead of racing it.
-                stopped = await AwaitRunTeardownAsync(runTask, "Mill", budget);
+                // Wait for StartAsync to clean up and change state after cancellation.
+                stopped = await AwaitRunTeardownAsync(runTask, "Mill", stopElapsed);
             }
 
-            // Only once the run has unwound. A teardown that overran is still stopping the
-            // machine and retracting, and a second reset would cancel that retract.
+            // A timed-out run may still be stopping the machine and retracting.
+            // Reset only after that work finishes.
             if (stopped)
             {
                 await controller.ReleaseAsync();
@@ -2850,8 +2809,7 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// What is left of a stop's time budget. A stop takes two locks and then waits for the
-    /// run to unwind; one budget across all three bounds the total wait.
+    /// Return the remaining stop timeout after waiting for locks and run cleanup.
     /// </summary>
     private static int RemainingStopTimeoutMs(Stopwatch elapsed)
     {
@@ -2860,20 +2818,19 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Wait for a controller's run task to unwind after cancellation, bounded so a stalled
-    /// run cannot hang the caller. A fault is logged rather than rethrown, because the
-    /// teardown that follows is the reason for waiting.
+    /// Wait for a controller's run task after cancellation, up to the remaining stop
+    /// timeout. Log task failures while allowing the stop sequence to continue.
     /// </summary>
-    /// <returns>True if the run task unwound within <see cref="ControllerCancelTimeoutMs"/>.</returns>
-    private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label, Stopwatch? budget = null)
+    /// <returns>True if the run task finished within <see cref="ControllerCancelTimeoutMs"/>.</returns>
+    private static async Task<bool> AwaitRunTeardownAsync(Task runTask, string label, Stopwatch? stopElapsed = null)
     {
-        budget ??= Stopwatch.StartNew();
-        int remaining = RemainingStopTimeoutMs(budget);
+        stopElapsed ??= Stopwatch.StartNew();
+        int remaining = RemainingStopTimeoutMs(stopElapsed);
 
         var completed = await Task.WhenAny(runTask, Task.Delay(remaining));
         if (completed != runTask)
         {
-            Logger.Log("{0}: run task did not unwind within {1}ms of the stop budget", label, remaining);
+            Logger.Log("{0}: run task did not finish within the remaining {1}ms stop timeout", label, remaining);
             return false;
         }
 
@@ -2890,9 +2847,8 @@ public static class CncWebServer
 
     private static async Task HandleProbeSetup(HttpListenerResponse response, ProbeSetupRequest req)
     {
-        // Setting up replaces the grid and deletes the autosave, which a running probe is
-        // still writing into. SetupProbeGrid refuses a run below; homing is this gate's own,
-        // because the funnel does not cover it.
+        // Setup replaces the grid and autosave. SetupProbeGrid rejects active runs;
+        // check homing here because SetupProbeGrid does not check it.
         if (_machine?.IsHoming ?? false)
         {
             response.StatusCode = HttpStatusConflict;
@@ -2948,15 +2904,14 @@ public static class CncWebServer
     /// <summary>Starts an outline trace, or returns why it will not. See <see cref="StartMilling"/>.</summary>
     private static string? StartProbeTraceOutline()
     {
-        if (!TryTakeProbeGrid(out var grid, out string? refusal))
+        if (!TryGetProbeGridForRun(out var grid, out string? refusal))
         {
             return refusal;
         }
 
-        // Claimed before the run is scheduled, so its finally cannot release a handle that
-        // has not been stored yet.
+        // Set the current run before scheduling its task so cleanup sees the same token.
         var traceCts = new CancellationTokenSource();
-        if (!TryClaimProbeRun(traceCts))
+        if (!TrySetCurrentProbeRun(traceCts))
         {
             traceCts.Dispose();
             return ErrorMachineBusy;
@@ -2966,19 +2921,19 @@ public static class CncWebServer
         return null;
     }
 
-    /// <summary>Guards claiming and releasing the one probe run slot.</summary>
+    /// <summary>Protects the current probe token and task from concurrent requests.</summary>
     private static readonly object ProbeRunLock = new();
 
     /// <summary>
     /// The probe run's task, read under the lock that publishes and clears it.
     /// </summary>
-    private static Task? ProbeTask() => ProbeRun().Task;
+    private static Task? GetCurrentProbeTask() => GetCurrentProbeRun().Task;
 
     /// <summary>
     /// The current probe run's token and task, read together. Read apart, a run that ends
     /// between the two leaves a caller cancelling one run and waiting on another.
     /// </summary>
-    private static (CancellationTokenSource? Cts, Task? Task) ProbeRun()
+    private static (CancellationTokenSource? Cts, Task? Task) GetCurrentProbeRun()
     {
         lock (ProbeRunLock)
         {
@@ -2986,7 +2941,7 @@ public static class CncWebServer
         }
     }
 
-    /// <summary>Hands the probe run slot back, for a test that races the claim.</summary>
+    /// <summary>Clears the current probe token and task between concurrency tests.</summary>
     internal static void ClearCurrentProbeRunForTest()
     {
         lock (ProbeRunLock)
@@ -2997,18 +2952,16 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Take the one probe run slot, or find it taken. Claimed and published in one step,
-    /// because requests are served concurrently: a check that published its handle later would
-    /// let a second request pass, both would subscribe their handlers to one controller, and
-    /// the loser's finally would release the winner.
+    /// Store the probe token only when no probe token is set. The check and assignment share
+    /// a lock so concurrent requests cannot both start runs on the same controller.
     /// </summary>
-    internal static bool TryClaimProbeRun(CancellationTokenSource cts)
+    internal static bool TrySetCurrentProbeRun(CancellationTokenSource cts)
     {
         lock (ProbeRunLock)
         {
             if (_probeCts != null)
             {
-                Logger.Log("Probe start refused: a probe run already owns the machine");
+                Logger.Log("Probe start refused: another probe run is active");
                 return false;
             }
 
@@ -3018,9 +2971,8 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Publish a run's task beside the claim it started under. A run can reach its own
-    /// finally before Task.Run returns, so a bare assignment stores a finished task in a
-    /// slot the release has already cleared.
+    /// Store the task only if its token is still current. The run may finish before Task.Run
+    /// returns, so an unconditional assignment could restore a task after cleanup cleared it.
     /// </summary>
     private static void PublishProbeTask(CancellationTokenSource cts, Task task)
     {
@@ -3034,17 +2986,17 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Hand the run slot back, if it is still this run's. The stop endpoint finds the machine
-    /// by this slot, so a late release would take it from the run that holds it.
+    /// Clear the current probe token and task only if the token matches. A completed run
+    /// must not clear a newer run's task, which the stop endpoint needs.
     /// </summary>
-    /// <returns>False when a newer run holds the slot, so nothing was released.</returns>
+    /// <returns>False when the token does not match and nothing was cleared.</returns>
     internal static bool ClearCurrentProbeRun(CancellationTokenSource cts)
     {
         lock (ProbeRunLock)
         {
             if (!ReferenceEquals(_probeCts, cts))
             {
-                Logger.Log("Probe run finished; a newer run owns the machine");
+                Logger.Log("Probe run finished; a newer probe run is active");
                 return false;
             }
 
@@ -3054,7 +3006,7 @@ public static class CncWebServer
         }
     }
 
-    /// <summary>Releases the slot and everything else a probe run holds.</summary>
+    /// <summary>Clears the current probe run and releases its controller.</summary>
     private static async Task ReleaseProbeRunAsync(CancellationTokenSource cts)
     {
         if (!ClearCurrentProbeRun(cts))
@@ -3062,9 +3014,8 @@ public static class CncWebServer
             return;
         }
 
-        // Return the controller to Idle whatever the run left behind, so the server and
-        // the controller agree about whether a run is going. Logged rather than thrown,
-        // because this runs from the run task's finally.
+        // Release the controller after this run ends so its state returns to Idle.
+        // Log failures here because this runs from the task's finally block.
         try
         {
             await AppState.Probe.ReleaseAsync();
@@ -3085,10 +3036,10 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Take the grid a probe run will use, or return why there will be no run. The grid
-    /// probe and the outline trace drive one controller, so only one may run.
+    /// Get the grid for a probe run or return the reason the run cannot start.
+    /// A grid probe and outline trace share one controller.
     /// </summary>
-    private static bool TryTakeProbeGrid(
+    private static bool TryGetProbeGridForRun(
         [NotNullWhen(true)] out ProbeGrid? grid, out string? refusal)
     {
         grid = null;
@@ -3104,13 +3055,12 @@ public static class CncWebServer
         if (AppState.Probe.IsRunInProgress)
         {
             Logger.Log("Probe start refused: controller is {0}, probe task {1}",
-                AppState.Probe.State, ProbeTask() == null ? "absent" : "running");
+                AppState.Probe.State, GetCurrentProbeTask() == null ? "absent" : "running");
             refusal = CliConstants.ProbeErrorAlreadyRunning;
             return false;
         }
 
-        // The refusal carries: a map left on disk because a run holds the file is a different
-        // thing to the operator from no map at all.
+        // Preserve the reason for failing to load a saved map; it differs from no map.
         refusal = AppState.EnsureProbeDataLoaded();
         if (refusal != null)
         {
@@ -3132,8 +3082,8 @@ public static class CncWebServer
         UserInputRequest? published = null;
         Action<UserInputRequest> onUserInputRequired = request => published = PublishPrompt(request);
 
-        // Setup is inside the try: the finally below holds the only release of the run slot,
-        // and ReleaseAsync stops an unfinished run, so it can throw.
+        // Setup is inside the try so the finally clears the current run if setup throws.
+        // ReleaseAsync may throw while stopping an unfinished run.
         try
         {
             // Start from Idle, whatever the last run left behind.
@@ -3179,7 +3129,7 @@ public static class CncWebServer
     /// <summary>Starts a grid probe, or returns why it will not. See <see cref="StartMilling"/>.</summary>
     private static async Task<string?> StartProbing()
     {
-        if (!TryTakeProbeGrid(out var grid, out string? refusal))
+        if (!TryGetProbeGridForRun(out var grid, out string? refusal))
         {
             return refusal;
         }
@@ -3187,7 +3137,7 @@ public static class CncWebServer
         // Claimed before the first await, so a second request cannot pass the check above
         // while this one is still setting up.
         var probeCts = new CancellationTokenSource();
-        if (!TryClaimProbeRun(probeCts))
+        if (!TrySetCurrentProbeRun(probeCts))
         {
             probeCts.Dispose();
             return ErrorMachineBusy;
@@ -3195,8 +3145,8 @@ public static class CncWebServer
 
         var controller = AppState.Probe;
 
-        // The probe run prompts about the enclosure and shares the prompt slot with the
-        // mill and tool-change runs. None of the three can be pending at once.
+        // Probe, mill, and tool-change runs share one pending prompt. Only one can wait
+        // for an answer at a time.
         UserInputRequest? published = null;
         Action<UserInputRequest> onUserInputRequired = request =>
         {
@@ -3261,7 +3211,7 @@ public static class CncWebServer
                 {
                     Unsubscribe();
 
-                    // Clear this run's own prompt, not one another run published since.
+                    // Keep a prompt published by a newer run.
                     bool wasOurs = published != null && ReferenceEquals(PendingPrompt.Current, published);
                     PendingPrompt.ClearIfCurrent(published);
                     if (wasOurs)
@@ -3298,31 +3248,28 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Why a probe stop must not touch the machine, or null. With no probe run in progress
-    /// this endpoint resets GRBL, which would abort a mill run's cut and clear the alarm
-    /// before that run's monitor saw it; that run's own stop is the one that ends it.
+    /// Refuse a probe stop when no probe task exists and another run is active.
+    /// Resetting GRBL here would abort milling and clear an alarm before milling handles it.
     /// </summary>
     private static string? ProbeStopBlocker() =>
-        ProbeTask() == null
+        GetCurrentProbeTask() == null
             && (AppState.Milling.IsRunInProgress || AppState.ToolChange.IsRunInProgress)
             ? ErrorMachineBusy
             : null;
 
     /// <summary>
-    /// Stops probing by waiting for the run's own teardown, which stops the machine and
-    /// retracts (ProbeController.CleanupAsync), rather than driving the machine beside it.
-    /// Returns a Task rather than async void, because an exception from async void is rethrown
-    /// on the thread pool and ends the process.
+    /// Cancel the probe and wait for ProbeController.CleanupAsync to stop and retract.
+    /// Return a Task so exceptions can be observed by the caller.
     /// </summary>
-    /// <returns>False if the run did not unwind in time, so the machine may still be moving.</returns>
+    /// <returns>False if cleanup timed out and the machine may still be moving.</returns>
     private static async Task<bool> HandleProbeStop()
     {
-        var (probeCts, runTask) = ProbeRun();
+        var (probeCts, runTask) = GetCurrentProbeRun();
         probeCts?.Cancel();
 
         if (runTask == null)
         {
-            // A claim with no task is a run that never started, and nothing else clears it.
+            // Clear a token whose run task never started.
             if (probeCts != null)
             {
                 ClearCurrentProbeRun(probeCts);
@@ -3334,8 +3281,7 @@ public static class CncWebServer
                 await MachineWait.StopAndResetAsync(_machine);
             }
 
-            // The controller can still claim a run this server has no task for, so Stop
-            // releases it here.
+            // Release a controller run even if the server has no task for it.
             try
             {
                 await AppState.Probe.ReleaseAsync();
@@ -3349,8 +3295,7 @@ public static class CncWebServer
             return true;
         }
 
-        // A teardown that overruns has already stopped the machine and is partway through
-        // the retract, so a second reset would cancel it. Report false instead.
+        // Do not reset while timed-out cleanup may still be retracting the tool.
         return await AwaitRunTeardownAsync(runTask, "Probe");
     }
 
@@ -3580,10 +3525,9 @@ public static class CncWebServer
                         Logger.Log($"Connection rejected by proxy: {rejectionMessage}");
                         _machine.Disconnect();
 
-                        // The proxy refuses for two reasons: another client, or the port
-                        // held elsewhere. Only the first can be taken over. Its line names
-                        // the reason; the words come from here, because that line can carry
-                        // the operating system's own text about a port.
+                        // Only another client can be disconnected when the proxy refuses
+                        // the connection. Use the server's reason because the proxy reply
+                        // may contain operating system text.
                         bool anotherClient =
                             rejectionMessage.StartsWith(ProxyConnectionRejectedPrefix);
 
@@ -3696,8 +3640,8 @@ public static class CncWebServer
                 }
                 Logger.Log("WebSocket client disconnected");
 
-                // The last client leaving frees the proxy slot for the terminal, unless a run
-                // is still going.
+                // Disconnect after the last web client leaves so the terminal can use
+                // the proxy, unless a run is still active.
                 bool operationInProgress = AnyOperationRunning();
 
                 if (remainingClients == 0 && _machine != null && _machine.Connected && !operationInProgress)
@@ -3728,8 +3672,7 @@ public static class CncWebServer
 
             var type = ReadString(root, WsFieldType);
 
-            // Commands that only send an instruction live in the table the HTTP endpoints
-            // use, so the two paths cannot drift apart.
+            // Use the same direct-command table as the HTTP endpoints.
             if (type == WsCmdPing)
             {
                 // Receiving it already refreshed this client's activity; nothing else to do.
@@ -3747,9 +3690,8 @@ public static class CncWebServer
                 return;
             }
 
-            // Only jog is left here: it carries a payload of its own and has nothing to
-            // return. Zeroing can be refused, and a refusal needs a reply, so the jog screen
-            // sends that over HTTP.
+            // Jog uses a payload and needs no reply. Zeroing can be refused, so the jog
+            // screen sends it over HTTP to receive the reason.
             if (type == WsCmdJogMode)
             {
                 HandleJogWithMode(
@@ -4400,8 +4342,8 @@ public static class CncWebServer
         List<ClientConnection> clientsToClose;
         lock (_clientsLock)
         {
-            // Set with the clients cleared, in one step: a handshake landing between the two
-            // would clear it and leave the server reconnecting under the new owner.
+            // Set this while clearing clients under the same lock. A handshake between
+            // those actions could reset it and reconnect the server for the new client.
             _forceDisconnected = true;
             _takeoverClientId = requestedBy;
             clientsToClose = _clients.ToList();
@@ -4506,8 +4448,7 @@ public static class CncWebServer
             Logger.Log("Tool change state: {0}", state);
             BroadcastMessage(WsMessageTypeToolChangeState, new { state = state.ToString() });
         };
-        // The controller reports progress faster than the socket should carry. A phase change
-        // goes out at once; the rest wait for the interval.
+        // Send phase changes immediately and limit other socket updates to the interval.
         long lastToolChangeProgressBroadcast = 0;
         string? lastToolChangePhase = null;
         Action<ProgressInfo> onProgressChanged = progress =>
@@ -4658,7 +4599,7 @@ public static class CncWebServer
     private static Task<bool> HandleToolChangeAbortAsync() => HandleMillStopAsync();
 
     /// <returns>
-    /// Why the request was refused, or null once it was carried out. An unrecognised action
+    /// Why the request was refused, or null once it was carried out. An unrecognized action
     /// is refused rather than answered with the unchanged depth.
     /// </returns>
     private static string? HandleDepthAdjustment(DepthAdjustmentRequest req)

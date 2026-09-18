@@ -1,4 +1,4 @@
-# The request guard rests on a header browsers do not send over plain HTTP
+# Browsers omit Sec-Fetch-Site on plain HTTP LAN requests
 
 **Problem:** The per-run token was replaced by a request guard. On the configuration that
 ships — plain HTTP on a LAN address — the guard's `Sec-Fetch-Site` check never sees a header,
@@ -36,7 +36,7 @@ writing a 500 from that outer catch hits a closed response and degrades silently
 200; failures are answered in a `catch` inside the `finally`'s `try`.
 `GET /api/probe/status` used to adopt the autosave as a side effect; that is closed —
 `ReadUsableAutosave` reads without adopting, and only the probe start paths call
-`EnsureProbeDataLoaded` (`three-owners-of-do-i-have-probe-data.md`).
+`EnsureProbeDataLoaded` (`usable-probe-data-computed-in-three-places.md`).
 Still open: about 28 endpoints in `HandleApi` answer a wrong-method request with an empty 200
 rather than 405, and `ApiProbeApply` is the only one that answers correctly.
 `NetworkHelpers.GetLocalIPAddresses` still filters on raw `"127."` and `"169.254."` string
@@ -57,6 +57,4 @@ work while `mill.lan`, `mill.home.arpa` and any AD or search-domain name do not.
 Accepting a multi-label name is what makes DNS rebinding possible. The usability cost is
 known and accepted.
 
-**Rule:** Guard with what the browser supplies for free, then write down exactly what that
-leaves open. Here it is one sentence: a GET changes nothing — no motion, no file written, no
-state loaded, no client slot reserved. Everything that changes state is POST and stays POST.
+**Rule:** Use request data that browsers send over plain HTTP. Keep every GET free of machine motion, file writes, state loads and client reservation; use POST for those changes.

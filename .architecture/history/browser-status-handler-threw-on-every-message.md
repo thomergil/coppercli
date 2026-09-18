@@ -22,7 +22,7 @@ under `node --test` against a stub page and reads back what they wrote. Each tes
 by making the defect it covers and confirming it failed. It runs in CI under a pinned Node
 22, with no `package.json` and nothing to install. `page.test.mjs` asserts that every id the
 code writes to exists on `index.html` and imports every module the page imports; rule
-`an-element-the-code-writes-to-exists`.
+`browser-target-ids-exist`.
 The first version of the browser suite had three holes of its own: its stub page created any
 element the code asked for, so the id in the code and the id in the test always matched and
 `index.html` was never read; `app.js` and `settings.js` were imported by no test, so a fault
@@ -60,9 +60,9 @@ controller to prompt with no subscriber fails at the first prompt instead of han
 `coppercli/CliConstants.cs`, `coppercli.Tests/MachineWaitTests.cs`,
 `coppercli.Tests/WebServerSequenceTests.cs`, `coppercli.Tests/FakeMachineDoorTests.cs`,
 `coppercli.Tests/browser/`, `.architecture/rules/check-layering.sh`,
-`.github/workflows/test.yml`; rules `the-browser-draws-what-it-was-handed`,
-`an-element-the-code-writes-to-exists`, `a-new-distinction-lands-with-its-callers`,
-`a-grep-is-not-the-guard`, `shared-constants-flow-through-api`, `a-test-must-be-able-to-fail`,
+`.github/workflows/test.yml`; rules `browser-uses-core-status-values`,
+`browser-target-ids-exist`, `new-state-cases-update-callers`,
+`behavior-rules-require-behavior-tests`, `publish-shared-constants-through-api`, `tests-detect-plausible-defects`,
 `no-magic-values`; interfaces `controllers → machine` v4, `machine → GRBL` v3,
 `web → browser` v6.
 
@@ -83,4 +83,4 @@ controller to prompt with no subscriber fails at the first prompt instead of han
   `ProbeMenu` and both probe start paths and restored the call; do not read this dead end as
   a reason to remove it again.
 
-**Rule:** Run the browser's code in a check, or the C# checks will pass over a browser defect.
+**Rule:** Run the browser modules in CI. C# tests cannot detect exceptions in browser code.

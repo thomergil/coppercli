@@ -7,14 +7,9 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Covers the adapter rather than the predicate: RequestPolicy reads the Host header, not
-    /// <c>request.Url</c>, which HttpListener builds from the local endpoint instead of from
-    /// what the caller sent. Reading <c>request.Url.Host</c> yields the loopback address for
-    /// "Host: evil.com", so it admits the rebinding case while every predicate test in
-    /// RequestPolicyTests still passes.
-    ///
-    /// A request with no Host header is missing here on purpose: HttpListener rejects it
-    /// before any handler runs, so there is no context to pass to the guard.
+    /// HttpListener builds <c>request.Url</c> from the local endpoint, so RequestPolicy must
+    /// read the Host header; predicate-only tests cannot catch that adapter error. HttpListener
+    /// rejects requests without Host before a handler runs, so this fixture omits them.
     /// </summary>
     public class RequestPolicyListenerTests
     {
@@ -27,17 +22,17 @@ namespace coppercli.Tests
         [InlineData("Host: 127.0.0.1:{0}\r\nOrIgIn: http://evil.com", false)]
         [InlineData("Host: 127.0.0.1:{0}\r\nSec-Fetch-Site: cross-site", false)]
         [InlineData("Host: 127.0.0.1:{0}\r\nOrigin: http://127.0.0.1:{0}", true)]
-        public async Task GuardReadsTheHostHeaderNotTheSynthesisedUrl(string headers, bool expected)
+        public async Task RequestPolicy_UsesHostHeaderInsteadOfListenerUrl(string headers, bool expected)
         {
-            Assert.Equal(expected, await AskGuardAsync(headers));
+            Assert.Equal(expected, await CheckRequestPolicyAsync(headers));
         }
 
         /// <summary>
-        /// Sends a hand-built request to a real HttpListener and returns the guard's verdict
+        /// Sends a hand-built request to a real HttpListener and returns the policy's decision
         /// on the resulting context. The OS picks the port, so a parallel run or a busy CI
         /// machine cannot collide.
         /// </summary>
-        private static async Task<bool> AskGuardAsync(string headers)
+        private static async Task<bool> CheckRequestPolicyAsync(string headers)
         {
             int port = FreePort();
             var listener = new HttpListener();

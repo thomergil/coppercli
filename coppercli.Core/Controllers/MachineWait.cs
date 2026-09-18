@@ -37,7 +37,7 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// GRBL is restoring from the park after a cycle start. A second cycle start here
-        /// would land inside that move.
+        /// would interrupt that move.
         /// </summary>
         private static bool IsDoorResuming(IMachine machine) =>
             IsDoor(machine) && machine.StatusSubState == DoorSubStateResuming;
@@ -147,9 +147,8 @@ namespace coppercli.Core.Controllers
         public static bool IsUnavailable(IMachine machine) => IsUnavailable(GetActivity(machine));
 
         /// <summary>
-        /// Whether a probe cycle is open, read from the machine's own mode. A single Z probe
-        /// runs without a controller, so a predicate derived from one cannot see it and the
-        /// tool descends while every gate reports the machine free.
+        /// Read the machine mode to detect an open probe cycle. A single Z probe has no
+        /// controller, so controller state alone would report the machine as available.
         /// </summary>
         public static bool IsProbeCycleOpen(IMachine machine) =>
             machine.Mode == OperatingMode.Probe;
@@ -212,10 +211,9 @@ namespace coppercli.Core.Controllers
             IsDoor(machine) ? ControllerConstants.ErrorDoorBlocksResume : null;
 
         /// <summary>
-        /// Poll until a condition holds, the deadline passes, or the caller cancels; every
-        /// wait here is this loop with a different predicate. Set
-        /// <paramref name="abortWhenUnavailable"/> to false for waits whose subject is an
-        /// alarmed or held machine, since the default returns false as soon as it sees one.
+        /// Poll until the condition holds, the timeout expires, or the caller cancels.
+        /// Set <paramref name="abortWhenUnavailable"/> to false when waiting for an
+        /// alarmed or held machine to change state.
         /// </summary>
         private static async Task<bool> WaitUntilAsync(
             IMachine machine,
@@ -229,8 +227,7 @@ namespace coppercli.Core.Controllers
 
             while (elapsed.ElapsedMilliseconds < timeoutMs && !ct.IsCancellationRequested)
             {
-                // Checked before the condition, so a screen that reads a key stops waiting on
-                // the same poll the operator pressed it, not at the end of the budget.
+                // Check input first so a key press ends the wait on the same poll.
                 if (onPoll?.Invoke() == true)
                 {
                     return false;
@@ -307,27 +304,23 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Wait for the machine to leave the door hold after CycleStart is sent. Not
-        /// <see cref="WaitForIdleAsync"/>: that gives up as soon as the status reads Door,
-        /// which it still does when the cycle start goes out.
+        /// Wait for the door hold to end after CycleStart. <see cref="WaitForIdleAsync"/>
+        /// would stop immediately because GRBL still reports Door when CycleStart is sent.
         /// </summary>
         private static Task<bool> WaitForDoorReleasedAsync(
             IMachine machine, int timeoutMs, CancellationToken ct = default)
             => WaitUntilAsync(machine, m => !IsDoor(m), timeoutMs, ct, abortWhenUnavailable: false);
 
         /// <summary>
-        /// Wait for the machine to leave <paramref name="from"/>: either out of Door, or into
-        /// another door state. Not <see cref="WaitForDoorReleasedAsync"/>, because closing the
-        /// enclosure moves GRBL from Door:1 to Door:0, which is still Door, so a caller
-        /// watching for Door to clear waits out its whole timeout.
+        /// Wait for a change from <paramref name="from"/>, including a change between door
+        /// states. Closing the enclosure changes Door:1 to Door:0 without ending the hold.
         /// </summary>
         /// <param name="onPoll">
         /// Runs on every poll, for a screen that redraws or reads a key. Returning true gives
         /// up on the wait.
         /// </param>
         /// <remarks>
-        /// Private, because ClearDoorHoldAsync contains the one loop that waits a door state
-        /// out; a screen waiting on its own would write those rules a second time.
+        /// Only ClearDoorHoldAsync decides how to handle each door state.
         /// </remarks>
         private static Task<bool> WaitForDoorStateChangeAsync(
             IMachine machine, DoorState from, int timeoutMs, CancellationToken ct = default,
@@ -339,9 +332,9 @@ namespace coppercli.Core.Controllers
         public static async Task<string?> WaitForStatusChangeAsync(IMachine machine, string currentStatus, int timeoutMs, CancellationToken ct = default)
         {
             var elapsed = Stopwatch.StartNew();
-            long budgetMs = timeoutMs;
+            long timeoutLimitMs = timeoutMs;
 
-            while (elapsed.ElapsedMilliseconds < budgetMs && !ct.IsCancellationRequested)
+            while (elapsed.ElapsedMilliseconds < timeoutLimitMs && !ct.IsCancellationRequested)
             {
                 if (machine.Connected && machine.Status != StatusDisconnected && machine.Status != currentStatus)
                 {
@@ -354,18 +347,16 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Await a GRBL reply that may never arrive, because the command was rejected, and
-        /// give up at the timeout; cancellation surfaces as cancellation rather than as a
-        /// timeout. Pass <paramref name="machine"/> to give up as soon as it stops responding,
-        /// since a machine that parks at the door mid-probe never sends the reply and the
-        /// caller would otherwise wait out the whole timeout with the tool still down.
+        /// Wait for a GRBL reply or throw on timeout. Pass <paramref name="machine"/> to
+        /// stop waiting when a door hold or alarm prevents a probe reply; caller
+        /// cancellation remains an <see cref="OperationCanceledException"/>.
         /// </summary>
         public static async Task<T> AwaitReplyOrTimeoutAsync<T>(
             Task<T> reply, int timeoutMs, string timeoutMessage, CancellationToken ct,
             IMachine? machine = null)
         {
-            // Linked source so the timer is cancelled when the reply lands. Otherwise a
-            // long grid probe accumulates one live timer per point.
+            // Cancel the timer after a reply so a long grid probe does not keep one timer
+            // active per completed point.
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
             Task watchdog = machine == null
@@ -391,10 +382,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Get the machine out of Door, or report why it is still there. This one method
-        /// decides which door states the operator can answer, how many refused releases are
-        /// enough and which states are waited out; callers supply only how to ask, how to
-        /// announce, and a way out - a run its token, a screen an onPoll.
+        /// Ask the operator to release a door hold when GRBL permits it. This method
+        /// handles door states and retry limits; callers provide prompts and cancellation.
         /// </summary>
         /// <param name="ask">
         /// Puts the closed-door question to the operator. True sends the cycle start, which
@@ -433,10 +422,8 @@ namespace coppercli.Core.Controllers
 
                 if (!CanReleaseDoorHold(state))
                 {
-                    // Nothing to answer: the operator closes the door, and the restore takes
-                    // as long as the machine's parking settings specify. The wait ends on the
-                    // next status report that shows a different state; the budget below is
-                    // only there so a door nobody closes does not hold the loop forever.
+                    // Wait for the next door state while the operator closes the door or
+                    // GRBL restores the parked position. The timeout prevents an indefinite wait.
                     announce(message);
 
                     bool gaveUp = false;
@@ -476,10 +463,8 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Release a door hold the operator has confirmed: wait for GRBL's reading of the
-        /// switch to catch up, send the cycle start, then wait for the hold to lift. The
-        /// catch-up allowance is short deliberately - waiting longer for the switch means
-        /// sending the cycle start to a door that has been open all along.
+        /// Wait briefly for GRBL to report the closed switch, send CycleStart, then wait
+        /// for the hold to end. Return Open if the switch stays open during that wait.
         /// </summary>
         /// <returns>
         /// The door state the machine was left in. None means out of Door; Resuming means
@@ -493,8 +478,8 @@ namespace coppercli.Core.Controllers
                 return DoorState.None;
             }
 
-            // One budget covers both waits, so the total matches the timeout asked for.
-            var budget = Stopwatch.StartNew();
+            // Include the switch reading wait in the total timeout.
+            var elapsed = Stopwatch.StartNew();
 
             if (IsDoorOpen(machine))
             {
@@ -507,14 +492,14 @@ namespace coppercli.Core.Controllers
             }
 
             // Door:3 is already restoring from the park, and a second cycle start would
-            // land inside that move.
+            // interrupt that move.
             if (IsDoorWaitingForResume(machine))
             {
                 ct.ThrowIfCancellationRequested();
                 machine.CycleStart();
             }
 
-            int remainingMs = Math.Max(0, timeoutMs - (int)budget.ElapsedMilliseconds);
+            int remainingMs = Math.Max(0, timeoutMs - (int)elapsed.ElapsedMilliseconds);
             await WaitForDoorReleasedAsync(machine, remainingMs, ct).ConfigureAwait(false);
 
             return GetDoorState(machine);
@@ -607,7 +592,7 @@ namespace coppercli.Core.Controllers
         /// <summary>
         /// Writes the work offset for the named axes, such as "X0 Y0 Z0" or "Z0", and
         /// confirms GRBL took it. G10 L20 changes no state, so a refusal is the only
-        /// evidence it did not land.
+        /// evidence that GRBL rejected it.
         /// </summary>
         /// <returns>Why the offset was not written, or null once GRBL took it.</returns>
         public static async Task<string?> ZeroWorkOffsetAsync(IMachine machine, string axes, CancellationToken ct = default)
@@ -756,7 +741,7 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static async Task SafeCompletionAsync(IMachine machine, bool homeAfter = false, CancellationToken ct = default)
         {
-            // Same stop sequence as an abort, so the two cannot drift apart.
+            // Use the abort stop sequence for the same buffer and motion handling.
             await StopAndResetAsync(machine).ConfigureAwait(false);
 
             if (homeAfter && !(await HomeAsync(machine, HomingTimeoutMs, ct).ConfigureAwait(false)).Success)

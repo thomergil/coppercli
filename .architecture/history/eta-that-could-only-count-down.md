@@ -22,6 +22,4 @@ model guess dominates early and the measurement dominates late, giving a gradual
 handover with nothing to tune. The algebra above shows the weighting cancels the measurement
 instead.
 
-**Rule:** For any scheme that blends a prior with a measurement, do the algebra or simulate
-before trusting the intuition. Write the test against the behavior you want — a mid-job
-slowdown must raise the estimate — and confirm it fails against the old code first.
+**Rule:** Derive or simulate the formula that combines the model estimate with measured pace. Test that a mid-job slowdown raises the remaining-time estimate, and confirm the test fails against the old formula.

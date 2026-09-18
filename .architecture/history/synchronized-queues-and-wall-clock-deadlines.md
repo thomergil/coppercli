@@ -21,8 +21,7 @@ a monotonic clock (`Stopwatch`). "Is the peer still talking?" is answered by cou
 (`StatusReportCount`, monotonic via `Interlocked`) rather than timing them. The traffic log
 snapshots its writer and swallows `ObjectDisposedException`, so a diagnostic cannot kill the
 connection. Fixed in `4698964`. `coppercli.Core/Communication/Machine.cs`,
-`coppercli.Core/Controllers/MachineWait.cs`; rules `no-live-collections-across-seams`,
+`coppercli.Core/Controllers/MachineWait.cs`; rules `no-live-collections-across-threads`,
 `monotonic-time-and-event-counts`; interfaces `controllers → machine`, `machine → GRBL`.
 
-**Rule:** Per-operation locking does not make a read-then-mutate sequence safe. A clock step
-must never be able to answer a safety question.
+**Rule:** Hold one lock across a queue check and removal. Use a monotonic clock for deadlines that affect machine decisions.

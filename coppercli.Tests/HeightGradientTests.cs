@@ -31,7 +31,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void EveryChannelStaysWithinRange()
+        public void GradientChannels_RemainWithinRange()
         {
             for (int i = 0; i <= 100; i++)
             {

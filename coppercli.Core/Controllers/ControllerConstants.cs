@@ -1,8 +1,7 @@
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Every sentence a run puts in front of the operator, and the budgets it works to. Both
-    /// UIs read these, so a message is worded once.
+    /// Operator messages, timeouts, and limits for controller runs. Both UIs use these messages.
     ///
     /// Two coordinate systems are in play:
     /// - Machine coordinates (G53): absolute, relative to home. Z=0 at the top, negative down.
@@ -15,8 +14,8 @@ namespace coppercli.Core.Controllers
     public static class ControllerConstants
     {
         /// <summary>
-        /// The words to show for a run that ended in an exception: the exception's own where
-        /// a workflow raised it deliberately, and the generic sentence otherwise.
+        /// Show a workflow's deliberate exception message, or a generic message for
+        /// other exceptions.
         ///
         /// ObjectDisposedException derives from InvalidOperationException and its text names
         /// an internal object, so it is excluded.
@@ -49,8 +48,8 @@ namespace coppercli.Core.Controllers
             "The machine did not take the new tool's Z origin. Stopped.";
 
         /// <summary>
-        /// The depth adjustment is written into the work origin and taken back out when the
-        /// run ends. Left in, every later job cuts by that much too deep or too shallow.
+        /// Remove the depth adjustment from the work origin when the run ends. Otherwise
+        /// later jobs cut at the adjusted depth.
         /// </summary>
         public const string ErrorDepthAdjustmentNotRestored =
             "The {0:F2}mm depth adjustment is still in the work origin - the machine would "
@@ -107,8 +106,8 @@ namespace coppercli.Core.Controllers
         public const string ErrorDoorBlocksResume = "Holding at the door. Close it.";
 
         /// <summary>
-        /// A run is parked on its own enclosure prompt, so the door overlay's own release
-        /// must not send the cycle start - the run's Continue is the answer.
+        /// Do not send CycleStart from the door overlay while a run waits for its
+        /// enclosure prompt; its Continue button handles the answer.
         /// </summary>
         public const string ErrorDoorAnswerThePrompt = "Answer the job's door prompt.";
         public const string ErrorMachineNotSettled = "Machine still moving. Wait, then start again.";
@@ -166,9 +165,8 @@ namespace coppercli.Core.Controllers
         public const string PhaseWaitingForOperator = "Waiting for operator";
 
         /// <summary>
-        /// Withdraws the message <see cref="PhaseWaitingForOperator"/> put on the screens.
-        /// A phase of its own rather than the run's next one, because the run has not yet
-        /// picked the phase it resumes to, and the mill screen draws any phase but its own.
+        /// Clear the <see cref="PhaseWaitingForOperator"/> message before the run selects
+        /// its next phase. The mill screen displays phase messages from other operations.
         /// </summary>
         public const string PhaseDoorCleared = "Door clear";
 
@@ -220,7 +218,7 @@ namespace coppercli.Core.Controllers
         public const string OperatorPauseTitle = "Program Paused";
 
         /// <summary>
-        /// Shown when the program pauses and carries no note saying why. It gives no line
+        /// Shown when the program pauses without a note explaining why. It gives no line
         /// number, because the streamed program is regenerated from the parsed toolpath and
         /// its numbering does not match the file the operator has open.
         /// </summary>

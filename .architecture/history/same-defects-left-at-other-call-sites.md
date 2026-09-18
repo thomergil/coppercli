@@ -1,9 +1,8 @@
-# Each fix reached one of the sites that had the defect
+# The same defects remained at other call sites
 
-**Problem:** Four defects from the previous round's audit were reported fixed — a leaked run
-slot, a stopped run that never said the tool might still be down, a hand-rolled POST that
-dropped a refusal, a modal that stranded its promise — and each fix reached only one of the
-places that had it:
+**Problem:** Four defects from the previous audit were reported fixed, but the changes missed
+other sites with the same defects: a probe run left active, a stop that omitted the
+unconfirmed lift, a POST that lost a refusal, and a modal whose promise never resolved:
 
 - the release-on-failed-setup guard went into the grid probe, not the outline trace or the
   single Z probe;
@@ -20,6 +19,5 @@ the first audit had also named. Found in the audit round after
 
 **Fix:** The second sites were fixed in the following round.
 
-**Rule:** A defect found at one call site is a question about every call site. Before writing
-the fix, grep for the shape of the defect — the missing `catch`, the unused helper — and fix
-every site it matches.
+**Rule:** Search every call site for the same defect before editing. Include sites with the
+same missing `catch` or unused helper in the fix.

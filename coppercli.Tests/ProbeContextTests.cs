@@ -65,9 +65,9 @@ namespace coppercli.Tests
                 grid.GetApplicability("/tmp/board-a.ngc", new Vector3(-15, -20, -5)));
         }
 
-        /// <summary>A Z-only change does not move where the heights land in X/Y.</summary>
+        /// <summary>A Z-only origin change leaves the map's X/Y positions valid.</summary>
         [Fact]
-        public void MapStaysApplicable_WhenOnlyZChanges()
+        public void ZOnlyOriginChange_LeavesMapApplicable()
         {
             var grid = GridFor("/tmp/board-a.ngc", new Vector3(-10, -20, -5));
 

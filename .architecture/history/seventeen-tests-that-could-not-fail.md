@@ -17,7 +17,7 @@ Six `*_EventCanBeSubscribed` tests subscribed a handler, never raised the event 
 the capture was still null, which a controller that raises no events would also satisfy. Two
 `AllPhaseValues_AreValid` theories passed enum literals to `Enum.IsDefined`, which cannot
 fail, because an undefined literal would not compile. `SetupGrid_WhenNotIdle_Throws` asserted
-nothing. `PhaseEnums_DoNotRestateTheRunLifecycle` compared phase names against
+nothing. `PhaseEnums_ExcludeControllerStates` compared phase names against
 `ControllerState` names by equality, so `WaitingForOperator` slipped past
 `WaitingForUserInput` and `Complete` past `Completed`; it caught four of the six members the
 phase sweep removed and missed `WaitingForOperator`.
@@ -27,16 +27,12 @@ flows across `await` with the execution context, so the guard still holds and th
 change stays on the test's own thread; verified by mutation, since removing a
 `GCodeFormat.Inv` still fails the test. The seventeen tests are removed or replaced with
 tests that fire the event and assert on what arrives, and `SetupGrid_WhenNotIdle_Throws` now
-starts the run and asserts the throw. `PhaseEnums_DoNotRestateTheRunLifecycle` matches a set
+starts the run and asserts the throw. `PhaseEnums_ExcludeControllerStates` matches a set
 of lifecycle names plus their known synonyms and covers all three phase enums. Audited in the
 session after `168392e`. `.architecture/rules/check-layering.sh` (two clauses of the new rule
 are mechanized there), `coppercli.Tests/CultureInvariantGCodeTests.cs`,
 `coppercli.Tests/ProbeControllerTests.cs`, `coppercli.Tests/ToolChangeControllerTests.cs`,
-`coppercli.Tests/MachineWaitTests.cs`; rules `a-test-must-be-able-to-fail`,
-`fake-answers-like-the-machine`, `culture-invariant-gcode`.
+`coppercli.Tests/MachineWaitTests.cs`; rules `tests-detect-plausible-defects`,
+`test-doubles-reproduce-grbl-responses`, `culture-invariant-gcode`.
 
-**Rule:** A test earns its place only if some plausible defect makes it fail; where it guards
-a named rule, prove that by mutation before trusting it. A guard test matches the meaning the
-rule is about, not the spelling the rule happened to be written against. Scope a test's
-mutation of process-wide state to the thread. With xUnit, an unresolvable `[Collection]` name
-is ignored without warning, so the attribute is never evidence of isolation.
+**Rule:** Introduce a plausible defect to confirm that each test for a named rule fails. Test the behavior instead of one spelling of the code. Keep process-wide test state local to the thread; xUnit ignores an unresolvable `[Collection]` name.

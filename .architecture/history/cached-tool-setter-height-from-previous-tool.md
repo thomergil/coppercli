@@ -14,8 +14,8 @@ only be applied across a tool swap, which is the moment that invalidates it.
 `coppercli.Core/Controllers/ToolChangeController.cs`; rule
 `no-cached-physical-measurement`; interface `controllers → machine`.
 
-**Rejected:** One of two audits checked only that the branch was reachable and called it
-safe. Reachability was not the question; the geometry was.
+**Rejected:** One of two audits confirmed that the branch was reachable but did not check
+where the rapid would move the longer tool.
 
 **Rule:** Second site for `no-cached-physical-measurement` (first: `_referenceToolLength`,
 `cached-reference-tool-length.md`). The rule covers any moment the physical thing can change,

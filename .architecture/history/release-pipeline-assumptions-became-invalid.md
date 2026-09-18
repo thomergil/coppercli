@@ -1,10 +1,10 @@
-# Release-pipeline assumptions that rotted silently
+# Release pipeline assumptions became invalid
 
 **Problem:** CI saved a 10 KB HTML page as `is-setup.exe` and noticed only when
 `Start-Process` tried to run it. The Intel macOS build stopped running. `Assembly.Location`
 returned an empty string in every published release.
 
-**Cause:** Three build-pipeline assumptions, each reasonable when written. The Inno Setup
+**Cause:** Three build assumptions no longer matched the release environment. The Inno Setup
 download URL `jrsoftware.org/download.php/is.exe` now redirects to an HTML download page. The
 `macos-13` runner was retired; the Intel build had already been added, dropped and re-added
 once before that. `Assembly.Location` returns an empty string in a single-file app, which is

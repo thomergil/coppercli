@@ -26,7 +26,7 @@ async function init() {
         });
     });
 
-    // mill-btn starts the run rather than navigating, so it is wired apart from the loop above.
+    // mill-btn starts a run; the navigation loop above handles screen changes only.
     $('mill-btn').addEventListener('click', startMill);
 
     initHeader();
@@ -48,4 +48,3 @@ async function init() {
 
     await checkAndShowUnsavedProbe();
 }
-

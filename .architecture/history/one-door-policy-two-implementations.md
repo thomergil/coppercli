@@ -20,6 +20,4 @@ the door, and returned as a value and thrown one await later, the retract that f
 abort was queued against a hold that had gone. `AbandoningTheDoorPrompt_QueuesNoRetract` and
 its tool-change twin caught it.
 
-**Rule:** Owning the primitives is not owning the policy; count the places that compose them,
-not only the places that define them. When lifting a loop out, ask what each `throw` was
-doing where it stood, because unwinding one await later is a different program.
+**Rule:** Keep the door retry sequence, including cancellation and Escape, in `MachineWait.ClearDoorHoldAsync`. Review exception handling when moving a loop across awaits.

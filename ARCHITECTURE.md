@@ -16,7 +16,7 @@ coppercli's tool-change logic has no reference implementation.
 
 - **core-comm** (`coppercli.Core/Communication/`) — holds the serial link and the machine's
   live state. `Machine` parses GRBL status reports, queues commands, streams files;
-  `SerialProxy` bridges the same serial port to a TCP listener. References no UI type.
+  `SerialProxy` forwards serial data to a TCP listener. References no UI type.
 - **core-controllers** (`coppercli.Core/Controllers/`) — holds every multi-step machine
   workflow as an explicit FSM: `ProbeController`, `MillingController`,
   `ToolChangeController`, over `ControllerBase`. `MachineWait` holds every status predicate
@@ -41,8 +41,8 @@ coppercli's tool-change logic has no reference implementation.
   `RequestPolicy.cs`) — embedded `HttpListener` serving the browser UI, the `/api/*`
   endpoints, and the `/ws` socket. Presentation and transport; delegates work to
   controllers.
-  *Finding: this is the one part without a single responsibility, and by a wide margin the
-  largest file in the tree — see the GAP on `ui → controllers`.*
+  *Finding: `CncWebServer.cs` combines request routing, workflow setup, and client updates.
+  See the GAP under `ui → controllers`.*
 - **web-client** (`coppercli/WebServer/wwwroot/`) — vanilla ES-module browser UI, embedded
   in the assembly as a resource. No build step, no framework, no external CDN.
 - **tests** (`coppercli.Tests/`) — two suites. xUnit drives Core through `IMachine` fakes,
@@ -63,11 +63,11 @@ contract; do not restate it here. It exists so controllers are testable without 
 - Status predicates (`IsIdle`, `IsAlarm`, `IsHold`, `IsDoor`, `IsUnavailable`) and every
   wait/poll loop live in `MachineWait`. A controller that spells out `machine.Status == "Idle"`
   or writes its own polling loop is a violation.
-- **v2:** reusing a wait means checking its bail-out set against the state the caller is in.
-  `MachineWait.IsUnavailable` is that set — alarm, the three door states, asleep and no link.
+- **v2:** before reusing a wait, check which states make it return early.
+  `MachineWait.IsUnavailable` includes alarm, the three door states, asleep and no link.
   Hold is *not* in it. So `WaitForIdleAsync` cannot wait out a door, and a caller that must
   wait one out gets its own wait (`WaitForDoorReleasedAsync`, and the report-counted
-  catch-up inside `ReleaseDoorHoldAsync`). See rule `no-bail-out-on-the-awaited-state`.
+  catch-up inside `ReleaseDoorHoldAsync`). See rule `waits-do-not-abort-on-awaited-state`.
 - **v3:** the door has three states, not two. `MachineWait.GetDoorState` returns which one
   as a `DoorState`; the three predicates behind it are private, so one function reads the
   partition.
@@ -78,10 +78,10 @@ contract; do not restate it here. It exists so controllers are testable without 
   `IsResponding` as `connected`, and `CanReleaseDoorHold` as `canReleaseDoor`.
   The terminal calls the same functions. The payload sends `activity.ToString()`, so the
   member names are part of the wire contract. GRBL's status word is still sent, for display
-  only. See rule `the-browser-draws-what-it-was-handed`.
+  only. See rule `browser-uses-core-status-values`.
 - **GAP (undecided):** GRBL has one resume, so the cycle start that releases a door hold
   releases a feed hold with it. A run that was paused when the door opened therefore
-  carries on cutting while `ControllerState` still reads `Paused` and the screen still
+  continues cutting while `ControllerState` still reads `Paused` and the screen still
   offers Resume. Two answers are open and neither is derivable from the code: re-assert
   the feed hold immediately after the release (the tool moves for GRBL's reaction time),
   or let the release end the pause, which is what the prompt the operator answered says it
@@ -93,10 +93,10 @@ contract; do not restate it here. It exists so controllers are testable without 
 - `MachineWait.HomeAsync` is the only place `IsHomed` is set **true**. It is set false only
   inside `Machine` itself, on connect, disconnect, and soft reset — the three events after
   which the machine no longer has a valid reference frame. No UI assigns it.
-- **GAP (sharp target):** the `IMachine` interface stops at Core. `AppState.Machine`, `CncWebServer._machine`,
+- **GAP:** the `IMachine` interface stops at Core. `AppState.Machine`, `CncWebServer._machine`,
   `MachineCommands`, and `JogHelpers` are all typed to the concrete `Machine`, because
   `IMachine` was scoped to what controllers need — it lacks `Connect`/`Disconnect`,
-  `SetFile`, `Jog`, `EnableAutoStateClear`, `FeedOverride*`. Net effect: Core is testable,
+  `SetFile`, `Jog`, `EnableAutoStateClear`, `FeedOverride*`. Core is testable,
   **both UIs are not**. Target: `IMachine` describes the transport contract, and the app
   layer holds an `IMachine`.
 - **GAP:** `Machine` raises 17 events with a bare `action?.Invoke(...)` — no dispatcher, so
@@ -125,9 +125,9 @@ so a handler must not block on the UI thread's own input loop.
   back to Idle: it stops an unfinished run first, then resets. Every start and every stop
   calls it, and nothing calls `Reset` directly, because `Reset` refuses a controller that
   still claims a run. See rule
-  `one-way-back-to-idle`.
+  `releaseasync-returns-controller-to-idle`.
 - **v3:** a `*Phase` enum names only the step of work a run is on. Whether the run is
-  paused, waiting on the operator, finishing, finished, cancelled or failed is `ControllerState`,
+  paused, waiting on the operator, finishing, finished, canceled or failed is `ControllerState`,
   read through the `ControllerBase` predicates (`IsPaused`, `IsActive`, `HasFinished`,
   `IsWaitingForOperatorState`). A phase member answering a lifecycle question is a second
   copy written on a separate path — see rule `one-field-per-fact` and
@@ -137,15 +137,15 @@ so a handler must not block on the UI thread's own input loop.
   `protected abstract void ResetRunState()` and calls it at the start of every run as well
   as from `Reset()`. Implementing it is how a new controller states what belongs to a run —
   see rule `per-run-state-cleared-at-run-start`.
-- **v4:** two questions about a run sound alike and are not one fact.
+- **v4:** distinguish whether a run holds the machine from whether it is moving the tool.
   `ControllerBase.IsRunInProgress` answers "is a run holding the machine": it counts
   `WaitingForUserInput` and `Completing`, and it is what refuses a second start and holds the
   serial port. `CncWebServer.MachineIsBeingDriven` answers "is a workflow moving the tool
   now": it refuses a jog or a goto, and it permits both during the pause milling holds in
   for a tool change, because that is when the operator is asked to jog to the surface and
   set Z0. Both derive from `ControllerState`; neither is written in terms of the other.
-  Every run transitions the FSM, an outline trace included — a workflow that sets `Phase`
-  and leaves `State` at `Idle` is invisible to both.
+  Every run, including an outline trace, transitions the FSM. Both checks miss a workflow
+  that sets `Phase` while leaving `State` at `Idle`.
 - **v4:** `ControllerBase.EmitError(Exception)` decides once, for all three UIs, whether an
   exception's text reaches the operator. A workflow's own refusal —
   `InvalidOperationException` or `TimeoutException` — is shown unchanged.
@@ -159,19 +159,18 @@ so a handler must not block on the UI thread's own input loop.
   `web → browser` and `prompt-id-did-not-stop-a-double-tap`.
 - The M0/M1 pause leaves the tool where the hold left it and the spindle running, and the
   prompt says so. A feed hold resumes the buffered motion from wherever the machine is, so
-  retracting and returning would have to land on the same point to the micron or cut the rest
-  of the pass from the wrong place. A tool change can retract only because it stops the
+  retracting and returning would require the same position to avoid shifting the cut.
+  A tool change can retract because it stops the
   stream and restarts it.
-- **GAP (sharp target):** the "configure options from settings, load the grid/file,
+- **GAP:** the "configure options from settings, load the grid/file,
   subscribe, run, unsubscribe" sequence is written out separately in
   `CncWebServer.cs`, in `Menus/ProbeMenu.cs` / `Menus/MillMenu.cs`, and in
   `Macro/MacroRunner.cs`. `ProbeOptions.FromSettings` and `ToolChangeOptions.FromSettings`
-  are single definitions in Core and every caller uses them; it is the surrounding wiring
-  that is duplicated, three times over.
+  are defined once in Core and every caller uses them; each front end repeats the surrounding
+  setup sequence.
   Target: one orchestration entry point per workflow that both UIs call, leaving each UI
-  with presentation only. Honored-with-debt until then — the *workflows* are correctly in
-  Core; the *wiring* is duplicated, and duplicated wiring is how the two UIs
-  drifted apart before (see `stale-work-zero-and-height-map`).
+  with presentation only. The workflows run in Core, but the repeated setup sequence has
+  already produced differences between the two UIs (see `stale-work-zero-and-height-map`).
 
 ### machine → GRBL · v3 · kind: serial wire protocol · contract: `coppercli.Core/Util/GrblProtocol.cs` (law)
 Status strings, real-time bytes, and command words are named there and nowhere else.
@@ -217,7 +216,7 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
      answer for it. Dotted names — `mill.lan`, `mill.home.arpa`, `host.zone.local`, any AD
      or search-domain name — are refused, deliberately and at a known usability cost,
      because accepting a multi-label name is what makes DNS rebinding possible, and an
-     `Origin` check cannot see rebinding: the browser by then genuinely believes it is
+     `Origin` check cannot see rebinding: the browser by then treats the request as
      same-origin;
   3. **`Origin`**, when present, must match the `Host` in host, port, and scheme;
   4. **`Sec-Fetch-Site`** must not be `cross-site` or `same-site`. **This check is inert on
@@ -230,9 +229,8 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   `Sec-Fetch-Site`, so it is indistinguishable from the operator's own navigation and is
   admitted. Safe only while rule `no-side-effect-on-get` holds.
 - Every response carries `X-Frame-Options: DENY`, CSP `frame-ancestors 'none'`, `nosniff`,
-  and `no-referrer` (`ApplySecurityHeaders`). The UI is large on-screen buttons driving a
-  machine; inside a frame every request it makes is genuinely same-origin, so refusing to be
-  framed is the only answer.
+  and `no-referrer` (`ApplySecurityHeaders`). The frame restrictions prevent another page
+  from displaying the UI inside a frame, where its buttons would send same-origin requests.
 - **There is no login, token, password, or PIN, and none may be added** — see rule
   `web-ui-needs-no-typed-credential`, `web-access-token`, and
   `sec-fetch-site-header-absent-over-plain-http`.
@@ -286,14 +284,14 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   header is the browser's own wording, as every screen's labels are.
   A command that can be refused answers `409` with the reason and is sent over HTTP, because
   a reason cannot come back over the WebSocket — the browser's Resume is an HTTP call for
-  that reason and its feed hold is not. See rule `the-browser-draws-what-it-was-handed`.
+  that reason and its feed hold is not. See rule `browser-uses-core-status-values`.
 - **v4 (prompts):** `PendingPrompt` holds the one prompt a run is waiting on. An answer must
   name that prompt's id **and** be one of the `Options` it offered, because answering resumes
   the run on the answering thread and the run can publish its next prompt before the answer
   returns. The id has to reach four places or it protects nothing: the broadcast,
   `DetectToolChange`/`DetectPendingPrompt` in the status, the client's `lastPrompt`, and the
   answer body. The id alone does not stop a double-tap — see rule
-  `a-redrawn-control-settles-before-it-answers`.
+  `delay-input-after-prompt-redraw`.
 - **GAP:** failure signalling is still inconsistent on pause: `/api/mill/pause` returns 400 on
   illegal state while `/api/probe/pause` returns 200 with `{success:false}`. Left as it
   stands; the start path is the one the operator's screen depends on.
@@ -316,19 +314,19 @@ languages without passing through `/api/constants` is a violation, not a shortcu
   not wired up. The `api` path group was two dozen paths stored twice with nothing comparing
   them, and a wrong path answers 404 anyway. Publish a value only when something consumes or
   verifies it.
-- **GAP (sharp target):** this is still a lint pass, not a data channel. `constants.js`
-  hardcodes every value and **nothing in the UI reads a value *from* the endpoint** — a
-  mismatch is only `console.warn`ed. Three groups are published and never compared: `probe`
+- **GAP:** `constants.js` hardcodes every value, and **nothing in the UI reads a value *from*
+  `/api/constants`**; a mismatch only produces a `console.warn`. Three groups are published
+  and never compared: `probe`
   limits, `millGrid`, and `depthAdjustment`, and `index.html` hardcodes the very limits being
   published. `mill.js` reimplements `CncWebServer.MapToGrid` line for line, so the client both
   fetches grid cells and recomputes them. Target: the client *consumes* these values rather
-  than restating and comparing them. The genuine data channel is `/api/config`.
+  than restating and comparing them. `/api/config` already supplies values to the client.
 
 ### app → disk · v1 · kind: file · contract: `coppercli/Persistence.cs` (sole writer)
 Settings, session state, and the probe autosave live under the OS app-data directory.
 `Persistence` is the only code that reads or writes them; writes go through
 `AtomicFile` so a power cut mid-write cannot leave a half-file. An unreadable file is
-quarantined and replaced with defaults rather than crashing the app.
+renamed with an `.unreadable` suffix and replaced with defaults rather than crashing the app.
 - Renaming a `MachineSettings` property requires an entry in the `SettingsMigrations` array
   in the same file. Migrations are idempotent and rewrite the file once.
 
@@ -345,7 +343,7 @@ spelling stays in `WebConstants.cs`; `ComputeProbeState` only names it.
   compares it against the mean of its measured orthogonal neighbors; past
   `ControllerConstants.ProbeHeightDeviationToleranceMm` the run retracts to the safe height,
   pauses for the operator, and re-probes the point on resume. Nothing suspect reaches the map
-  or the autosave, and the point stays queued — see rule `resume-is-not-approval`.
+  or the autosave, and the point stays queued — see rule `remeasure-probe-point-after-operator-resume`.
 - **v3:** `AppState.ReadUsableAutosave` is the only code that reads the autosave, and
   `AppState.CurrentProbeGrid` the only source of "is there probe data": the grid in memory,
   or that autosave when nothing is loaded. It reads without adopting, so a status can call it
@@ -366,14 +364,14 @@ spelling stays in `WebConstants.cs`; `ComputeProbeState` only names it.
 A tag `v*` builds self-contained single-file executables for `win-x64`, `osx-arm64`,
 `osx-x64`, `linux-x64`. Every file the app loads at runtime must be either an
 `EmbeddedResource` or present in the shipped artifact.
-- **GAP (live defect):** only `WebServer/wwwroot/**` is embedded. `machine-profiles.yaml`
+- **GAP:** only `WebServer/wwwroot/**` is embedded. `machine-profiles.yaml`
   and `Resources/*.csv` (the GRBL error, alarm, and setting tables) are
   `CopyToOutputDirectory`, and the Unix tarball step archives only the single executable —
   so the macOS and Linux downloads ship without them, and **both loaders fail with no error
   reported** (`GrblCodeTranslator` returns null, `MachineProfiles` returns empty). The README
   advertises built-in machine profiles on all three platforms. The Windows installer copies
   `publish\*` recursively and is unaffected. Target: embed them, or archive the publish
-  directory, and make a missing data file a loud error per `error-before-use`.
+  directory, and report a missing data file before use, as `error-before-use` requires.
 - **GAP:** `scripts/build-release.sh` + `create-release.sh` implement a second, local
   release path that names assets `-macos-arm64` while CI names them `-osx-arm64`;
   `update-homebrew-formula.sh` understands only the CI names, and `create-release.sh`
@@ -400,7 +398,7 @@ document and `MacroParser` together.
 
 ## Rules
 
-- **web-ui-needs-no-typed-credential** *(error)* — the web UI must stay reachable by typing
+- **web-ui-needs-no-typed-credential** *(error)* — the web UI must remain reachable by typing
   a bare LAN address (`http://192.168.1.5:34001`) into a phone browser, with nothing to
   enter and no secret in the URL. No token, password, PIN, or key the operator must carry
   or type. LAN peers are deliberately trusted; the owner made that call explicitly, and
@@ -412,23 +410,21 @@ document and `MacroParser` together.
   _History: web-access-token,
   sec-fetch-site-header-absent-over-plain-http._
 
-- **one-way-back-to-idle** *(error)* — the controller is the only record of whether a run is
-  going. A task handle is held to await, never to answer that question, and the two cannot
-  disagree because `StartAsync` always ends in a terminal state. `ReleaseAsync` is the only
-  route back to Idle; no caller writes its own `Reset` guard. A stop path that holds a run's
-  task awaits that run's teardown rather than releasing on top of it: a second
+- **releaseasync-returns-controller-to-idle** *(error)* — the controller records whether a run is
+  active. A task handle is used to await cleanup. `StartAsync` always ends in a terminal
+  state, and only `ReleaseAsync` returns the controller to Idle. Callers must not use their
+  own `Reset` checks. A stop path awaits the run task before calling `ReleaseAsync`: a second
   `ReleaseAsync` into a teardown that has overrun sends another feed hold and soft reset,
   which cancels the retract the first one queued (rule
   `closing-the-port-does-not-stop-grbl`).
   _Check: `.architecture/rules/check-layering.sh`; `coppercli.Tests/ControllerBaseTests.cs`
   (mutation: dropping the terminal-state guarantee fails two tests)._
   _History: two-records-of-whether-a-run-is-over,
-  three-owners-of-do-i-have-probe-data._
+  usable-probe-data-computed-in-three-places._
 
-- **one-handler-per-control** *(error)* — a control carries one handler registration.
+- **one-handler-per-control** *(error)* — register one handler per control.
   `onclick` and `addEventListener` are separate slots and both fire, so a control bound
-  through each runs its handler twice on one tap. What a control does as the machine's state
-  changes is decided inside that one handler, not by writing a second slot.
+  through each runs its handler twice on one tap. Handle state changes inside that handler.
   _Check: `.architecture/rules/check-layering.sh` (names the doubled element)._
   _History: two-records-of-whether-a-run-is-over._
 
@@ -437,12 +433,11 @@ document and `MacroParser` together.
   first as soon as either is edited.
   _Check: `.architecture/rules/check-layering.sh`._
 
-- **no-exception-text-on-screen** *(error)* — an exception message names files, offsets and
+- **no-exception-text-on-screen** *(error)* — exception messages can name files, offsets and
   types the operator cannot act on. It goes to the log, and the screen gets a sentence about
   what failed and what to do. Two paths answer a caught exception: `WriteFailure` for the
   browser and `MenuHelpers.ShowFailure` for the terminal, and both log it. `ControllerError`
-  is not an exception - it is text the run produced for the operator, and is shown as it
-  stands.
+  is text the run produced for the operator and is shown unchanged.
   _Check: `.architecture/rules/check-layering.sh`, both languages; mutation-verified._
 
 - **closing-the-port-does-not-stop-grbl** *(error)* — any path that drops the connection
@@ -454,15 +449,15 @@ document and `MacroParser` together.
   (mutation: reordering or removing either half fails)._
   _History: closing-the-port-does-not-stop-the-machine._
 
-- **guard-covers-whole-surface** *(error)* — a check that admits or refuses a request runs
+- **request-policy-checks-all-routes** *(error)* — a check that admits or refuses a request runs
   once, before any routing branch, and covers static files as well as `/api/*` and `/ws`.
-  A guard on the API alone produces a page that loads and then does nothing, with no error
+  Checking only the API produces a page that loads and then does nothing, with no error
   reported.
   _Check: reader judgment of `HandleRequest`._  _History: web-access-token._
 
 - **no-side-effect-on-get** *(error)* — a GET changes nothing: no machine motion, no file
-  written, no state loaded, no client slot reserved. A
-  cross-site GET carries no `Origin` and, on plain http, no `Sec-Fetch-Site`, so
+  written, no state loaded, no client slot reserved. A cross-site GET has no `Origin`
+  and, on plain HTTP, no `Sec-Fetch-Site`, so
   `RequestPolicy` cannot tell an `<img>` on someone else's page from the operator's own
   navigation and admits it; the only thing making that safe is that GETs do nothing.
   Everything that changes state is POST and stays POST. Reserving the single client slot
@@ -476,17 +471,16 @@ document and `MacroParser` together.
   _Check: reader judgment of `HandleApi`; `coppercli.Tests/RequestPolicyTests.cs`;
   `coppercli.Tests/WebServerSequenceTests.cs`._
   _History: sec-fetch-site-header-absent-over-plain-http,
-  three-owners-of-do-i-have-probe-data._
+  usable-probe-data-computed-in-three-places._
 
 - **machine-state-single-writer** *(error)* — a fact about the machine is defined by
   `Machine` (or derived from the controller that defines it) and assigned in exactly one
   place; no UI keeps its own mirror. `IsHomed` is set true only in `MachineWait.HomeAsync`
   and false only inside `Machine`; `AppState.IsProbing` is derived, not stored; work-zero
-  invalidation hangs off the
-  connection-state event, not off a menu. **Scope:** this governs facts the *machine* owns.
-  A fact the *operator* asserted about the *workpiece* — `IsWorkZeroSet`, whether a height
-  map still applies — is session state and deliberately stays in `AppState`; do not "fix"
-  it into `Machine`. _Check: reader judgment; grep for assignments._
+  invalidation happens on the connection-state event, not a menu action. **Scope:** this
+  governs machine state. Operator assertions about the workpiece, such as `IsWorkZeroSet`
+  and whether a height map still applies, are session state and stay in `AppState`.
+  _Check: reader judgment; grep for assignments._
   _History: stale-work-zero-and-height-map, work-zero-deliberately-stays-in-appstate._
 
 - **per-run-state-cleared-at-run-start** *(error)* — controllers are session-lifetime
@@ -504,7 +498,7 @@ document and `MacroParser` together.
 - **one-field-per-fact** *(error)* — a boolean saying "X is outstanding" and a separate field
   saying "how much X" are one fact and must be one field, 0 meaning none. Held apart, they
   drift: a later run with adjustment 0 passed the restore's tolerance check and cleared
-  `_depthAdjustmentApplied` while the earlier shift stayed baked into G54. A duplicate need
+  `_depthAdjustmentApplied` while the earlier shift remained in G54. A duplicate need
   not be a field: an enum member that answers a question another type defines is one
   (`MillingPhase.Paused` beside `ControllerState.Paused`), and so is a running aggregate
   kept beside the collection it summarizes. `ProbeGrid.MinHeight`/`MaxHeight` were widened
@@ -529,7 +523,7 @@ document and `MacroParser` together.
   `MachineWait.GetDoorState` names the cases and every screen reads it. The remainder case
   is defined as the remainder (`IsDoorOpen`), so the three predicates always cover `Door`,
   and a substate GRBL adds falls into the case that prompts the operator.
-  This applies to the constants a rule is expressed in and the operations that carry it out,
+  This also applies to constants and operations that implement a rule,
   or the duplicates move down a level where nothing reports them. One clearance height existed
   as three constants of the same value, and the move to it was written five times: the rule
   that a machine holding at the door must not be sent one was in two of them and missing from
@@ -537,17 +531,17 @@ document and `MacroParser` together.
   move. For each literal and each move, check whether it could legitimately differ from the
   others, and name it where it could not.
   _Check: `coppercli.Tests/DepthAdjustmentTests.cs`; `coppercli.Tests/ProbeControllerTests.cs`
-  (`PhaseEnums_DoNotRestateTheRunLifecycle`); `coppercli.Tests/WebServerSequenceTests.cs`;
+  (`PhaseEnums_ExcludeControllerStates`); `coppercli.Tests/WebServerSequenceTests.cs`;
   `coppercli.Tests/MillingControllerTests.cs` (`StopAtDoor_QueuesNoRetract`)._
   _History: pause-flag-duplicated-controller-state,
   phase-enums-restated-the-run-lifecycle,
-  three-owners-of-do-i-have-probe-data,
+  usable-probe-data-computed-in-three-places,
   door-state-checked-in-ten-places,
   one-clearance-height-under-three-names._
 
-- **a-new-distinction-lands-with-its-callers** *(error)* — splitting one question into more
-  cases moves every place that branched on the old question, in the same change.
-  `MachineWait.IsDoorResuming` sat in Core for a round with no caller outside it while three
+- **new-state-cases-update-callers** *(error)* — update every caller that branches on a
+  state when that state gains a case.
+  `MachineWait.IsDoorResuming` was added in Core without a caller outside it while three
   UIs still branched the door two ways: it compiled, the suite stayed green, and the defect
   it was written to fix was still on every screen. A predicate, enum member or field with no
   reader outside the file that defines it is either unadopted or dead, and both are findings.
@@ -558,23 +552,22 @@ document and `MacroParser` together.
   _History: door-state-checked-in-ten-places,
   two-resume-windows-for-one-door._
 
-- **one-owner-for-the-door-policy** *(error)* — which door states the operator can answer,
-  how many refused releases are enough, and which states are waited out instead is
-  `MachineWait.ClearDoorHoldAsync`, and nothing writes that loop again. Callers pass in how
-  to ask and how to announce, so a run prompts and emits progress while a terminal screen
-  draws an overlay. Defining `GetDoorState`, `CanReleaseDoorHold`, `GetDoorMessage` and
-  `ReleaseDoorHoldAsync` is not defining the policy that composes them: the keyboard flush,
-  the Escape poll and the withdrawn message belong to the loop, not to its parts. The
+- **door-policy-defined-in-machinewait** *(error)* — `MachineWait.ClearDoorHoldAsync` defines
+  which door states the operator can answer, how many refused releases stop the attempt, and
+  which states require waiting. Callers supply prompts and progress messages; a terminal
+  screen also draws an overlay. The method defines the keyboard flush, Escape poll, and
+  removal of the door message alongside its calls to `GetDoorState`,
+  `CanReleaseDoorHold`, `GetDoorMessage`, and `ReleaseDoorHoldAsync`. The
   browser's endpoint validates and releases once, because the page redraws every broadcast
   interval and the operator clicks again.
   _Check: `coppercli.Tests/DoorClearTests.cs` and `coppercli.Tests/ControllerBaseTests.cs`;
   both are mutation-verified._
   Every caller supplies a way out: a run its token, a screen an `onPoll`. The waits return at
-  once on a cancelled token, so a loop with no way out spins instead of blocking.
+  once on a canceled token, so a loop with no way out spins instead of blocking.
   _History: one-door-policy-two-implementations,
-  door-retry-loop-spun-on-a-cancelled-token._
+  door-retry-loop-spun-on-a-canceled-token._
 
-- **a-loop-proves-its-own-end** *(error)* — a loop that re-derives its own work list needs a
+- **startup-questions-asked-once** *(error)* — a loop that re-derives its own work list needs a
   termination rule that does not depend on the work changing the state the list is derived
   from. `SessionRestore.AskPendingSteps` asks the next pending startup question after each
   answer, and three of the four questions are derived from state their answer leaves
@@ -584,72 +577,71 @@ document and `MacroParser` together.
   set of topics already asked lives in that method, not in the caller, so a front end cannot
   leave it out.
   _Check: `coppercli.Tests/SessionRestoreTests.cs`
-  (`TheStartupSequence_RunsOutWhateverTheAnswer`, a theory over both answers;
+  (`RestoreQuestions_EndAfterEachTopicForEitherAnswer`, a theory over both answers;
   mutation-verified against both the filter and the caller)._
   _History: startup-prompt-loop-never-terminated._
 
-- **a-run-owns-the-file-it-is-streaming** *(error)* — nothing replaces the loaded G-code
-  while a run is in progress. A run streams from `Machine.File` and tracks where it is by
-  line number, so a new file resets that to the start and the job carries on from the top of
+- **loaded-gcode-unchanged-during-run** *(error)* — do not replace the loaded G-code while a
+  run is in progress. A run streams from `Machine.File` and tracks where it is by
+  line number, so a new file resets that to the start and the job continues from the top of
   the program. `Machine.SetFile` refuses only while `Mode` is `SendFile`, which a job paused
   at a tool change is not: the guard is `AppState.LoadGCodeIntoMachine`, the one way G-code
   reaches the machine, because that layer can see the controllers. Setting Z0 at a tool
   change reached it through re-applying the height map, so `HandleWorkZeroChange` leaves the
   map and the file alone during a run, and zeroing X or Y is refused outright.
   _Check: `coppercli.Tests/WebServerSequenceTests.cs`
-  (`ARunInProgress_KeepsTheFileItIsStreaming`, `ZeroingDuringARun_KeepsTheMapTheRunIsCutting`);
+  (`MillRun_RejectsLoadedFileReplacement`, `ZeroDuringRun_PreservesAppliedMapAndLoadedFile`);
   both are mutation-verified._
   _History: two-resume-windows-for-one-door._
 
-- **a-discard-puts-the-original-back-first** *(error)* — dropping a height map reloads the
-  original G-code before AppState forgets the map, and refuses when it cannot. Applying a map
-  rewrites `Machine.File`; forgetting the map first and then failing to reload leaves the
-  corrections in the G-code with nothing saying so, and the next apply doubles them.
+- **reload-original-gcode-before-discarding-map** *(error)* — reload the original G-code
+  before `AppState` discards a height map. If the reload fails, retain the map and report the
+  error. Applying a map rewrites `Machine.File`; clearing the map first and then failing to
+  reload leaves the corrections in the G-code without a record of them, so the next apply
+  doubles them.
   `AppState.DiscardProbeData` does the reload through `RemoveMapFromLoadedGCode` and returns
   `ErrorMapStuckInGCode` when the source file is gone or will not load.
   _Check: `coppercli.Tests/WebServerSequenceTests.cs`
   (`ZeroingXYWhenTheMapCannotComeOut_SaysSo`), mutation-verified._
   _History: two-resume-windows-for-one-door._
 
-- **never-auto-clear-a-safety-gate** *(error)* — software never clears a state that exists
-  to require human confirmation. The enclosure door blocks a job and only the operator
-  resumes it. Homing is deliberately impossible to skip: without it, `G53` retracts have
-  no reference to retract to. _Check: reader judgment; `coppercli.Tests/SafetyCheckTests.cs`._
-  _History: software-clearing-safety-gates,
-  wait-helper-bailed-on-the-door-state-it-awaited,
+- **manual-door-release-and-required-homing** *(error)* — only the operator releases an
+  enclosure door hold. Require homing before a job because `G53` retracts need a known
+  machine origin. _Check: reader judgment; `coppercli.Tests/SafetyCheckTests.cs`._
+  _History: automatic-door-release-and-unverified-homing,
+  wait-helper-aborted-on-door-state,
   two-resume-windows-for-one-door._
 
 - **no-cached-physical-measurement** *(error)* — never cache a measurement of a physical
   thing past any event where a human can change it without the software seeing. The
   tool-setter reference length is measured every time, never persisted. The event is not
   only the end of a session: the
-  setter's trigger height was cached to rapid toward, but it is probed once with the old tool
-  and once with the new, so the rapid always aimed one tool at another tool's height. Ask what
-  the number describes and whether it still describes the thing about to move — not whether
-  the line is reachable. _Check: reader judgment._
+  setter's trigger height was cached for a rapid move, but it is measured once with the old
+  tool and once with the new. Before reusing a measurement, check whether the tool or setter
+  could have changed since it was taken. _Check: reader judgment._
   _History: cached-reference-tool-length,
   cached-tool-setter-height-from-previous-tool._
 
 - **derived-artifact-records-its-context** *(error)* — an artifact computed from a setup
-  carries that setup with it and is re-validated against it before use. A height map stores
+  stores that setup and is checked against it before use. A height map stores
   its `ProbeContext` (source file, work origin); a map with no recorded context is `Unknown`
   and is checked, never assumed usable. The check runs in one place,
   `AppState.ReadUsableAutosave`, so nothing can reach the file without it, and a map that
-  names a source file must carry a readable origin: a non-finite origin compares false
+  names a source file must store a finite origin: a non-finite origin compares false
   against every tolerance and would leave the map `Unknown`, which nothing refuses.
   _Check: `coppercli.Tests/ProbeContextTests.cs`; `coppercli.Tests/ProbeGridLoadTests.cs`._
   _History: probe-data-inferred-from-a-file-on-disk,
-  three-owners-of-do-i-have-probe-data._
+  usable-probe-data-computed-in-three-places._
 
-- **a-loader-enforces-the-constructors-invariants** *(error)* — a file read back into an
-  object that controls machine motion gets the same checks the constructor makes.
-  `ProbeGrid.Load` refuses what `RequireUsableShape` refuses — extents that are not finite or
-  not ordered, fewer than two nodes on an axis — plus point indices outside the grid and
-  heights that are not numbers, because a loaded map sets the commanded Z of every cutting
-  move. A field the applicability check depends on is required, not optional: see
+- **validate-loaded-grid** *(error)* — validate a loaded grid before it controls machine
+  motion, using the same checks as its constructor.
+  `ProbeGrid.Load` calls `ValidateLoadedGridGeometry` to reject non-finite or unordered
+  extents and fewer than two nodes per axis. It also rejects point indices outside the
+  grid and heights that are not numbers; loaded heights set the Z of cutting moves.
+  Fields used by the applicability check are required: see
   `derived-artifact-records-its-context` for the origin case.
   _Check: `coppercli.Tests/ProbeGridLoadTests.cs`._
-  _History: three-owners-of-do-i-have-probe-data._
+  _History: usable-probe-data-computed-in-three-places._
 
 - **read-g54-explicitly** *(error)* — before any `G10 L2 P1`, query G54 itself
   (`RefreshWorkOffsetsAsync`); never use the combined `WorkOffset`, and never derive it from
@@ -666,15 +658,15 @@ document and `MacroParser` together.
   - The outstanding amount lives on the milling controller and is deliberately temporary.
     It survives between runs in a session, not a restart or a disconnect; the operator is
     told to set Z zero again, which is the remedy.
-  - The adjustment shifts the work origin rather than being baked into the streamed Z the
+  - The adjustment shifts the work origin rather than changing each streamed Z the
     way the height map is. The origin shift is the approach; do not replace it.
 
 - **monotonic-time-and-event-counts** *(error)* — timeouts are measured on a clock that only
   moves forward: `Stopwatch` for an interval inside one method, `Environment.TickCount64` for
-  a timestamp a second thread reads. Never `DateTime.Now`. A clock must only answer a question about time. "Is the peer still
-  reporting?" is answered by counting events (`StatusReportCount`), not by timing them, and
-  "is this probe reading usable?" is answered from the measurement — the height against its
-  measured neighbors, `ProbeGrid.GetNeighborDeviation` — not from how long the probe took.
+  a timestamp a second thread reads. Never use `DateTime.Now` for a timeout. Count
+  `StatusReportCount` events to detect whether GRBL is reporting. Compare a probe height
+  with measured neighbors through `ProbeGrid.GetNeighborDeviation` to decide whether to
+  accept it; elapsed probe time does not answer that question.
   Before timing a code path, check what else is inside the interval: `RetractZAsync` and
   `MoveToPointAsync` deliberately return without awaiting so GRBL can buffer them, so a
   stopwatch around `G38.2` spanned the previous retract, the traverse, and the descent as
@@ -699,13 +691,13 @@ document and `MacroParser` together.
 - **workflows-live-in-controllers** *(error)* — every multi-step machine operation is an
   FSM in `coppercli.Core/Controllers/`. `CncWebServer.cs` and the TUI menus may configure,
   subscribe, start, and render — never decide the sequence of machine moves. Single-shot
-  commands from a UI go through `coppercli/Helpers/MachineCommands.cs`, the app-layer funnel;
+  commands from a UI go through `coppercli/Helpers/MachineCommands.cs`;
   no menu and no HTTP handler calls `SendLine` directly. Honored today: zero `SendLine` calls
   outside Core and `MachineCommands`.
   _Check: `.architecture/rules/check-layering.sh`._
 
-- **machine-readiness-is-the-controllers** *(error)* — the controller answers whether the
-  machine's own state allows a job, and no UI does. `MillingController` asks the operator about
+- **controllers-check-machine-readiness** *(error)* — controllers check whether the machine's
+  state permits a job to start. `MillingController` asks the operator about
   the enclosure, releases the hold, and settles the machine; a gate in front of it refuses a
   machine the controller would have recovered. The UIs keep `CheckMillCanStart`, which
   answers the different question of whether the *job* is fit to run — connection, file, height
@@ -716,8 +708,8 @@ document and `MacroParser` together.
   (`ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead`) is the guard — it drives
   the real HTTP API against a real `Machine` and fails on the gate however it is written;
   `.architecture/rules/check-layering.sh` catches the two known spellings, and
-  `a-grep-is-not-the-guard` says why that alone is not enough._
-  _History: readiness-gate-refused-what-the-controller-could-release,
+  `behavior-rules-require-behavior-tests` says why that alone is not enough._
+  _History: readiness-check-refused-closed-door-hold,
   door-state-checked-in-ten-places._
 
 - **controllers-never-render** *(error)* — controllers emit events and return values; they
@@ -729,7 +721,7 @@ document and `MacroParser` together.
   Shared constants used by Core live in `coppercli.Core/Util/Constants.cs`.
   _Check: `.architecture/rules/check-layering.sh`._
 
-- **shared-constants-flow-through-api** *(error)* — a value both the server and the browser
+- **publish-shared-constants-through-api** *(error)* — a value both the server and the browser
   need is served by `GetSharedConstants()` and verified by `validateConstants()`. Never
   write the same literal into both `CliConstants.cs`/`Constants.cs`/`GrblProtocol.cs` and
   `constants.js`. A value only one side needs is not published here: publishing it creates a
@@ -765,8 +757,8 @@ document and `MacroParser` together.
   rely on backwards compatibility; migrate and use the new name everywhere.
   _Check: reader judgment of the diff._
 
-- **resume-is-not-approval** *(error)* — a return value that decides whether to commit a
-  suspect measurement must say *why* the run is continuing, which a boolean cannot. "Keep
+- **remeasure-probe-point-after-operator-resume** *(error)* — distinguish an accepted probe
+  reading from a point the operator must measure again. "Keep
   going" does not distinguish "the reading was within tolerance" from "the operator
   intervened and resumed". `RetractAndCheckHeightAsync` returned
   `!ct.IsCancellationRequested`, which the caller read as "record it", so a height taken
@@ -778,7 +770,7 @@ document and `MacroParser` together.
   _History: stopwatch-timed-more-than-the-probe,
   two-resume-windows-for-one-door._
 
-- **no-bail-out-on-the-awaited-state** *(error)* — a wait helper must not treat the state the
+- **waits-do-not-abort-on-awaited-state** *(error)* — a wait helper must not treat the state the
   caller is waiting to leave as a bail-out condition. Such a wait can never succeed, and it
   returns a plain `false` that the caller's retry turns into an apparent hang.
   `EnsureDoorClosedAsync` called `WaitForIdleAsync`, which counts Door as `IsUnavailable` and
@@ -788,14 +780,14 @@ document and `MacroParser` together.
   `ReleaseDoorHoldAsync`. Read the set from `MachineWait.IsUnavailable`, and check it against
   the state you are starting from before reusing a wait.
   _Check: `coppercli.Tests/MachineWaitTests.cs`._
-  _History: wait-helper-bailed-on-the-door-state-it-awaited._
+  _History: wait-helper-aborted-on-door-state._
 
-- **a-test-must-be-able-to-fail** *(error)* — a test is only worth keeping if some plausible
+- **tests-detect-plausible-defects** *(error)* — a test is only worth keeping if some plausible
   defect makes it fail. Subscribing to an event without raising it, or passing an enum
   literal to `Enum.IsDefined`, asserts nothing; seventeen such tests were removed or replaced.
-  Where a test guards a named rule, verify it by mutation. A guard test checks the *behavior*
+  Where a test checks a named rule, verify it by mutation. The test checks the *behavior*
   the rule is about, not the spelling it was written against —
-  `PhaseEnums_DoNotRestateTheRunLifecycle` compared names by equality and let
+  `PhaseEnums_ExcludeControllerStates` compared names by equality and let
   `WaitingForOperator` past `WaitingForUserInput`, missing both members that had actually
   caused a defect. And no test mutates process-wide state: xUnit runs classes in parallel and
   ignores an unresolvable `[Collection]` name without warning, so
@@ -812,7 +804,7 @@ document and `MacroParser` together.
   test-project-stopped-compiling-and-no-ci-ran-it,
   door-state-checked-in-ten-places._
 
-- **an-element-the-code-writes-to-exists** *(error)* — every id the browser looks up is on
+- **browser-target-ids-exist** *(error)* — every id the browser looks up is on
   `index.html`, because `getElementById` returns null otherwise. A write guarded with
   `if (el)` then does nothing and reports nothing; an unguarded one throws and stops every
   later line in the same handler. Six such writes existed at once. `check-layering.sh` reads
@@ -823,9 +815,9 @@ document and `MacroParser` together.
   `index.html` and throws on one the page does not have._
   _History: browser-status-handler-threw-on-every-message._
 
-- **the-browser-draws-what-it-was-handed** *(error)* — a question about the machine is
-  answered once, in Core, and sent as a value. `status` carries GRBL's raw word for display
-  only. A UI that derives an answer from it holds a second definition, and the two then
+- **browser-uses-core-status-values** *(error)* — Core computes machine status values and
+  sends them to the browser. The `status` field contains GRBL's raw word for display only.
+  A UI that derives an answer from it defines the same answer again, and the two can
   disagree: the door had three states in Core and two in the browser.
   _Check: `.architecture/rules/check-layering.sh` greps for the comparisons a browser would
   write. `WebServerSequenceTests.TheStatus_ReportsWhichControlsApply` and
@@ -837,13 +829,13 @@ document and `MacroParser` together.
   _History: browser-status-handler-threw-on-every-message,
   two-resume-windows-for-one-door._
 
-- **a-grep-is-not-the-guard** *(error)* — a rule about behavior is guarded by a test that
-  exercises the behavior; a grep in `check-layering.sh` catches one spelling of it and no
-  more. Prove a new check by bypassing it before trusting it: the readiness gate
+- **behavior-rules-require-behavior-tests** *(error)* — test a behavior requirement by
+  exercising the behavior; a grep in `check-layering.sh` catches only specified syntax.
+  Verify a new check by bypassing it: the readiness check
   came back past both of its greps as `if (MachineWait.IsUnavailable(machine)) return ...`,
-  and what refuses that is
+  and the test that catches it is
   `WebServerSequenceTests.ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead`,
-  driving the real API against a real `Machine` over a loopback `FakeGrbl`. A grep over a
+  which drives the real API against a real `Machine` over a loopback `FakeGrbl`. A grep over a
   path that does not exist also finds nothing and reports success, so the script asserts
   every path it checks is present before it checks anything
   (`check-runs-at-the-repository-root`).
@@ -855,38 +847,35 @@ document and `MacroParser` together.
   (a retract that GRBL rejected, a probe that did not report contact, a status that never
   arrived), the job stops rather than continuing. A rejected safety retract must never be
   swallowed, and a run whose final lift was not confirmed must never report itself finished.
-  `ControllerBase.LiftAfterStopAsync` is where every controller decides that, so the three
-  cannot answer it differently. A stop at the door never counts as confirmed: the soft reset
+  All three controllers use `ControllerBase.LiftAfterStopAsync` for that decision.
+  A stop at the door never counts as confirmed: the soft reset
   clears the hold, so the tool's position is unknown.
   _Check: `coppercli.Tests/SafetyCheckTests.cs`
   (`AMillWhoseFinalRetractIsNotConfirmed_NeverReportsItFinished`) and
   `coppercli.Tests/ProbeControllerTests.cs`
   (`ATraceWhoseSafetyRetractIsNotConfirmed_NeverReportsItFinished`)._
 
-- **an-undecided-choice-is-recorded-not-shipped** *(error)* — where two answers are both
-  defensible and neither follows from the code, the change records the fork as a
-  **GAP (undecided)** on the interface it belongs to, naming both answers and what each
-  costs, and leaves the behavior as it stands. The owner picks. GRBL has one resume, so the
-  cycle start that releases a door hold releases a feed hold with it and a run paused at the
-  door carries on cutting while the screen reads Paused; re-asserting the hold after the
-  release and ending the pause instead were both attempted and neither settled, so
-  `controllers → machine` carries the question. What the operator is promised is the owner's
-  call, and the contract holds the question until they make it.
+- **record-unresolved-design-decisions** *(error)* — record an unresolved choice as a
+  **GAP (undecided)** on the relevant interface. State each option and its cost, and keep
+  current behavior until the owner decides. GRBL has one resume, so releasing a door hold
+  also releases a feed hold: a run paused at the door continues cutting while the screen
+  reads Paused. Reasserting the hold after release and ending the pause were both tried
+  without a decision. The `controllers → machine` interface records both options.
   _Check: reader judgment; a GAP (undecided) names both answers and their cost._
   _History: door-state-checked-in-ten-places._
 
-- **fake-answers-like-the-machine** *(error)* — a test double reproduces the machine's
+- **test-doubles-reproduce-grbl-responses** *(error)* — a test double reproduces the machine's
   observable answer to each command under test. `FakeMachine` reporting `Idle` after every
   pause line hid that GRBL answers M0/M1 with `Hold:0` while M6 never reaches it, so a gate
-  that could not fire on hardware passed 338 green tests. One status
+  that could not fire on hardware passed 338 tests. One status
   hardcoded across a family of commands erases the distinction the code is deciding on, and
-  the suite then agrees with the code because both read the same invention. The direction of
-  the difference decides what it hides: a double more permissive than the machine hides the
-  caller that needed refusing. `FakeMachine.SimulateMoveAsync` claimed `Run` for every move
+  the suite then agrees with the code because both use the same incorrect response. A double
+  more permissive than the machine hides commands the machine would refuse.
+  `FakeMachine.SimulateMoveAsync` reported `Run` for every move
   and so drove the tool through an open enclosure, and both doubles resumed `Door:0` straight
   to `Idle` where GRBL returns to the state the door interrupted — `Run` for a streaming job
-  — which made a feed hold re-asserted after the release look like it worked. Ask what the
-  machine refuses, not only what it answers.
+  — which made a feed hold reasserted after the release appear effective. Check both the
+  machine's response and the commands it refuses.
   `coppercli.Tests/Fakes/DoorModel.cs` is GRBL's door rules for all three doubles, so a
   substate they must answer differently is written once.
   _Check: reader judgment of `coppercli.Tests/Fakes/`;
@@ -896,16 +885,16 @@ document and `MacroParser` together.
   door-state-checked-in-ten-places,
   two-resume-windows-for-one-door._
 
-- **a-redrawn-control-settles-before-it-answers** *(error)* — a control that answers a
-  question, and is redrawn with the next question in the same place, refuses input for
-  `PROMPT_SETTLE_MS` after each redraw. An id is not enough on its own. The answer resumes
+- **delay-input-after-prompt-redraw** *(error)* — a control redrawn with a new question in
+  the same place refuses input for `PROMPT_SETTLE_MS`. An id alone does not prevent a second
+  tap from answering the new question. The answer resumes
   the run on the answering thread, and the run publishes its next question before the answer
-  returns, so the second tap carries the **new** question's own valid id and the server has no
+  returns, so the second tap includes the **new** question's valid id and the server has no
   grounds to refuse it. The two guards cover different cases: the id (`PendingPrompt`, which
   also requires the answer to be one of the question's `Options`) refuses a stale answer or
   one from a second device; the settle refuses the second tap of a double-tap, and so is set
-  longer than `DOUBLE_TAP_DELAY_MS`. Ask what the control will be showing when the second
-  event arrives, not whether the first was addressed correctly.
+  longer than `DOUBLE_TAP_DELAY_MS`. Check which prompt the control displays when a second
+  input event arrives.
   _Check: `coppercli.Tests/PendingPromptTests.cs`;
   `coppercli.Tests/ControllerBaseTests.cs` (`AnsweringAPrompt_PublishesTheNextBeforeItReturns`);
   reader judgment of any handler that both answers and redraws._
@@ -923,27 +912,25 @@ document and `MacroParser` together.
 
 ## Intent
 
-The shape the system is being built toward. **Not law** — the conforming pass measures the
-gap, never reports a planned item as drift.
+Planned changes. This section records intended work and does not set current contracts.
 
 - **shared workflow orchestration** *(part, planned)* — one entry point per workflow that
   both the TUI and the web server call, so the mill/probe/tool-change start sequences leave
-  `CncWebServer` entirely. Named by the owner as "the single highest-leverage remaining
-  item", deferred as needing its own careful cycle. **Delta:** absent; the wiring sequence is
-  written out on both sides. This is the GAP on the `ui → controllers` interface.
-- **`CncWebServer` split** *(part, planned)* — the ~3.7k-line static class separated into
-  request routing, workflow orchestration, and broadcast/lifecycle. **Delta:** one file,
-  one static class.
+  `CncWebServer` entirely. The owner prioritized this change and deferred it for a separate
+  pass. **Current state:** both UIs repeat the setup sequence described under `ui → controllers`.
+- **`CncWebServer` split** *(part, planned)* — separate the ~3.7k-line static class into
+  request routing, workflow setup, and client updates. It is currently one file and one
+  static class.
 
-_Beyond these there is no roadmap: zero `TODO`/`FIXME` markers in the tree, no design
-doc, no diagrams, no reachable issue backlog. Direction is set per-session by the owner and
-lives only in the prompt log, which is why this memory exists._
+_No other planned changes are recorded here. The tree has no `TODO` or `FIXME` markers,
+design document, diagram, or reachable issue backlog. The owner records further decisions
+in the prompt log._
 
 ## Known gaps in the record
 
 Each is something a human must supply.
 
-- **The prompt log is not committed.** `prompts/` is gitignored, so the blunt record of
+- **The prompt log is not committed.** `prompts/` is gitignored, so the record of
   *why* — the reversals, the rejected designs, the owner's steering — does not survive a
   fresh clone. `.architecture/history/` now carries what could be recovered from it.
 - **`CLAUDE.md` still lags the tree, though less than it did.** Fixed 2026-09: the

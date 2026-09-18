@@ -12,25 +12,22 @@ using static coppercli.Core.Util.GCodeFormat;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Drives a grid probe: create or load the grid, move to each point, probe, record.
+    /// Load or create a probe grid, measure each point, and record the heights.
     /// </summary>
     /// <remarks>
-    /// <para><b>Probe data lifecycle.</b> What the screens offer follows how much of the
-    /// current grid is measured - the grid in memory, or the autosave when nothing is loaded
-    /// and it was measured for this file and origin (<c>AppState.ReadUsableAutosave</c>).
-    /// <c>ProbeGrid.State</c>, and <c>ProbeGrid.StateOf(grid)</c> where there may be no grid,
-    /// give that answer: none, ready, partial or complete. Nothing else computes it; the web
-    /// server only names the wire spelling.</para>
+    /// <para><b>Probe data.</b> Screens use the grid in memory, or a matching autosave when
+    /// no grid is loaded (<c>AppState.ReadUsableAutosave</c>). <c>ProbeGrid.State</c> and
+    /// <c>ProbeGrid.StateOf(grid)</c> return none, ready, partial, or complete; the web
+    /// server maps those states to wire values.</para>
     ///
-    /// <para>Progress counts points taken off the queue, and a skipped probe takes one off
-    /// too, so a map with a skipped point reaches progress = total without being complete. Ask
-    /// whether every node is measured, never whether the count matches.</para>
+    /// <para>Progress counts attempted points, including skipped probes. Check whether
+    /// every node has a height to determine completeness.</para>
     ///
-    /// <para>The first probed point writes the autosave and every point after it updates it
-    /// (<c>Persistence.SaveProbeProgress</c>). Whether a usable autosave exists is what decides
-    /// Save/Discard against Clear: <c>Persistence.SaveProbeToFile(path)</c> writes the map to
-    /// the operator's file, adopts it if it existed only in the autosave, then deletes the
-    /// autosave, while <c>Persistence.ClearProbeAutoSave()</c> deletes it on its own.</para>
+    /// <para><c>Persistence.SaveProbeProgress</c> creates the autosave after the first
+    /// point and updates it after each later point. A usable autosave determines whether
+    /// screens offer Save/Discard or Clear. <c>Persistence.SaveProbeToFile(path)</c>
+    /// writes the map to the chosen file, loads it from the autosave if needed, then
+    /// deletes the autosave; <c>Persistence.ClearProbeAutoSave()</c> only deletes it.</para>
     /// </remarks>
     public class ProbeController : ControllerBase, IProbeController
     {
@@ -151,9 +148,8 @@ namespace coppercli.Core.Controllers
 
                 if (!retracted)
                 {
-                    // The next move is an XY rapid; without a confirmed retract it would
-                    // drag the probe across the board. Name the door or the alarm when that
-                    // is why the machine did not move.
+                    // An XY rapid with the probe still down would drag it across the board.
+                    // Report a door hold or alarm when either prevented the retract.
                     throw new InvalidOperationException(
                         MachineWait.NeedsAttention(_machine)
                             ? ControllerConstants.ErrorMachineNotResponding
@@ -345,8 +341,8 @@ namespace coppercli.Core.Controllers
                 return;
             }
 
-            // A trace moves the tool, so it takes the controller state like any other run
-            // and every gate that asks whether the machine is busy sees it.
+            // A trace moves the tool. Mark the controller active so other commands
+            // recognize that the machine is busy.
             TransitionTo(ControllerState.Initializing);
             Phase = ProbePhase.TracingOutline;
 
@@ -511,8 +507,8 @@ namespace coppercli.Core.Controllers
                 IsFatal: false));
 
             // The operator can press Pause from a UI thread at any time, and Paused has no
-            // transition to itself. Tested and set under one lock so a pause landing between
-            // the two cannot fail the run.
+            // transition to itself. Test and set under one lock so a concurrent pause
+            // cannot fail the run.
             TryTransitionTo(ControllerState.Paused);
 
             await WaitWhilePausedAsync(ct);
@@ -522,7 +518,7 @@ namespace coppercli.Core.Controllers
             return ct.IsCancellationRequested ? HeightOutcome.Cancelled : HeightOutcome.Remeasure;
         }
 
-        /// <summary>What the run does with a probed height.</summary>
+        /// <summary>Result of checking a probed height.</summary>
         private enum HeightOutcome
         {
             /// <summary>Within tolerance of its neighbors. Record it.</summary>

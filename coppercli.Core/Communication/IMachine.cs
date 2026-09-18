@@ -17,7 +17,7 @@ namespace coppercli.Core.Communication
 
         /// <summary>
         /// The number GRBL appends to a state, such as the "1" in "Door:1"; empty when the
-        /// state carries none. It is the only thing that separates an open door from a
+        /// state has no substate. It is the only thing that separates an open door from a
         /// closed one - see GrblProtocol.DoorSubState*.
         /// </summary>
         string StatusSubState { get; }

@@ -164,7 +164,7 @@ namespace coppercli.Tests
         /// stops the run first and reaches Idle from any state.
         /// </summary>
         [Fact]
-        public async Task ReleasingAControllerThatStillClaimsARun_StillReachesIdle()
+        public async Task ReleaseFromRunningState_ReachesIdle()
         {
             var controller = new TestController();
             controller.TestTransitionTo(ControllerState.Initializing);
@@ -1002,7 +1002,7 @@ namespace coppercli.Tests
         /// paused. Every controller inherits this, not only the mill.
         /// </summary>
         [Fact]
-        public async Task ResumingAtTheDoor_IsRefusedAndTheRunStaysPaused()
+        public async Task ResumeDuringDoorHold_IsRefusedAndRunRemainsPaused()
         {
             var controller = new TestController { RunBlocker = new TaskCompletionSource<bool>() };
             var run = controller.StartAsync();

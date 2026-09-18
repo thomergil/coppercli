@@ -35,9 +35,8 @@ namespace coppercli
         }
 
         /// <summary>
-        /// The parsed autosave, or null if there is none or it cannot be read. A new object
-        /// each time, because callers adopt it as the live grid and probe into it, so a shared
-        /// instance would hand back points measured since the file was written.
+        /// The parsed autosave, or null if it is absent or unreadable. Return a new object
+        /// each time so measurements added by a caller do not appear in later reads.
         /// </summary>
         public static ProbeGrid? ReadProbeAutoSave()
         {

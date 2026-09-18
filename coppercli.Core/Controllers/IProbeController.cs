@@ -55,9 +55,8 @@ namespace coppercli.Core.Controllers
     public class ProbeOptions
     {
         /// <summary>
-        /// Every call site builds its options here, so a single-point probe, a grid probe and
-        /// an outline trace carry the same values and cannot drift. The controller reads only
-        /// the fields it needs.
+        /// Build options for single-point probes, grid probes, and outline traces from
+        /// the same settings. Each operation reads only the fields it needs.
         /// </summary>
         public static ProbeOptions FromSettings(Settings.MachineSettings settings,
             bool traceOutline = false)
@@ -89,7 +88,7 @@ namespace coppercli.Core.Controllers
         /// <summary>How far to retract after a probe, in millimeters.</summary>
         public double MinimumHeight { get; set; } = 1.0;
 
-        /// <summary>False skips a failed point and carries on.</summary>
+        /// <summary>False skips a failed point and continues probing.</summary>
         public bool AbortOnFail { get; set; } = true;
 
         /// <summary>Weights X distance when sorting the probe order into a serpentine.</summary>

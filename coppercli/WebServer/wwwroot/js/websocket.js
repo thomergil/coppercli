@@ -146,8 +146,7 @@ export function sendCommand(type, data = {}) {
 async function handleConnectionError(data) {
     const error = data?.error;
 
-    // Keyed on the otherClientConnected value rather than the message text, which could be
-    // reworded without anyone noticing that the take-over stopped being offered.
+    // Use otherClientConnected to offer take-over independently of error wording.
     if (data?.otherClientConnected === true) {
         if (await showConfirm(TEXT_FORCE_DISCONNECT_CONFIRM, TITLE_FORCE_DISCONNECT)) {
             // This drops the serial port, so a refusal is shown rather than reloaded past.

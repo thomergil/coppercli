@@ -22,7 +22,7 @@ static files, the API and the socket alike, and refuses with 403 and a plain-lan
 message. `coppercli.Tests/RequestPolicyTests.cs` locks the regression; its first case is named
 "the regression: a phone typing the bare address". `coppercli/WebServer/CncWebServer.cs`,
 `coppercli/WebServer/wwwroot/js/auth.js`, `coppercli/WebServer/WebConstants.cs`; rules
-`web-ui-needs-no-typed-credential`, `guard-covers-whole-surface`; interface
+`web-ui-needs-no-typed-credential`, `request-policy-checks-all-routes`; interface
 `web → browser (HTTP/WS)`. The raw GRBL bridge on port 34000 has never had authentication and
 still does not; that is a deliberate decision recorded on the `proxy → TCP clients` interface.
 
@@ -37,8 +37,4 @@ makes a local server reachable from any page the operator visits; and the creden
 attached by a single `fetch` wrapper installed at module scope, so no new call site could
 forget it. Neither changes the verdict that the credential itself was the mistake.
 
-**Rule:** Do not reintroduce a token, password, PIN or any other secret the operator must
-carry in the URL or type by hand. Guard with `Origin` and `Host`, which the browser supplies
-for free, and say so out loud when a guard rejects a request. Any guard added to `/api/*` or
-`/ws` must also cover static files, or the failure mode is a page that loads and then does
-nothing.
+**Rule:** Keep the web UI reachable through a typed LAN address without a token, password or PIN. Check `Host` and `Origin` before routing any request, including static files. Explain a refusal in the response.

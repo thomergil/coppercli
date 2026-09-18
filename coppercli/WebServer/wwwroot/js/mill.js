@@ -138,9 +138,9 @@ async function showPremillModal(fileInfo, warnings) {
         // One modal and one pair of buttons, so a second call overwrites the first's resolve.
         // The first is answered false here, or its promise never settles.
         if (premillResolve) {
-            const stranded = premillResolve;
+            const previousResolve = premillResolve;
             premillResolve = null;
-            stranded(false);
+            previousResolve(false);
         }
 
         premillResolve = resolve;
@@ -166,9 +166,7 @@ function formatDepthText(depth) {
     return `${sign}${depth.toFixed(2)}`;
 }
 
-// Server may refuse a resume (e.g. a tool change is active) or fail to confirm a stop in
-// time - either way the button must reflect what the server actually did, not what the
-// operator asked for, so this awaits the response instead of assuming success.
+// Wait for the server response before updating the pause button; resume can be refused.
 async function togglePause() {
     const btn = $('mill-pause-btn');
     const wasPaused = btn.dataset.paused === 'true';
@@ -189,8 +187,7 @@ async function stopMill() {
     try {
         const result = await postJson(API_MILL_STOP);
         if (!result.ok) {
-            // The server could not confirm the machine stopped - leave the mill screen
-            // up and the milling state alone rather than telling the operator it did.
+            // Keep the mill screen visible when the server cannot confirm a stop.
             showError(result.error || ERROR_STOP_NOT_SENT);
             return;
         }
@@ -200,22 +197,17 @@ async function stopMill() {
         return;
     }
 
-    // The server confirmed the run is torn down, so the next status will unlock the screen
-    // and re-enable the back button. Leave now rather than waiting for it.
+    // The server confirmed cleanup; leave before the next status unlocks the screen.
     endMillRun();
     showScreen(SCREEN_DASHBOARD, true);
 }
 
 
-// The prompt this client is showing, or null. The id distinguishes an already-answered prompt
-// from a new one in a status snapshot, and is sent with the answer so a tap meant for this prompt
-// cannot answer the next one (see PendingPrompt.cs).
+// Track the displayed prompt by id to distinguish a new prompt from an answered one.
+// Send the id with the answer; PendingPrompt checks it.
 let shownPrompt = null;
 
-// The one place that hides the overlay and forgets the prompt. Two paths end a prompt: it is
-// answered (handleToolChangeComplete), or the run ends (endMillRun, from the stop request and
-// from the status that reports the run over), which can cancel a prompt parked in
-// WaitingForUserInput without answering it.
+// Clear the displayed prompt when it is answered or the run ends.
 function hideToolChangeOverlay() {
     shownPrompt = null;
     const overlay = $('toolchange-overlay');
@@ -225,11 +217,9 @@ function hideToolChangeOverlay() {
 }
 
 /**
- * Draws whatever prompt the run is waiting on, from the status. Called from screens.js on
- * every status message, and the only route for a client that reloaded or reconnected
- * mid-prompt, because the toolchange:input broadcast is one-shot; the status decides whether
- * a prompt is still outstanding, and the run's phase does not, since between prompts the
- * tool-change controller sits in WaitingForToolChange with nothing to answer.
+ * Draw the current prompt from status so a reloaded client can recover a missed
+ * toolchange:input broadcast. Use the prompt id because WaitingForToolChange can
+ * also have no prompt pending.
  */
 export function updateToolChangeDisplay(toolChange) {
     const overlay = $('toolchange-overlay');
@@ -244,9 +234,7 @@ export function updateToolChangeDisplay(toolChange) {
 
     shownPrompt = prompt;
 
-    // Nothing outstanding. A run that ended without its prompt being answered - stopped, or
-    // aborted from another browser - broadcasts nothing, so without this the overlay would
-    // stand for ever with a button that answers a run that is gone.
+    // Hide an unanswered prompt when a stop or remote abort ends the run.
     if (!prompt) {
         overlay.classList.add(CLASS_HIDDEN);
         return;

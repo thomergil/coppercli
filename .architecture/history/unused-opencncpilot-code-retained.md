@@ -1,4 +1,4 @@
-# Dead OpenCNCPilot subsystems carried for six months
+# Unused OpenCNCPilot code remained for six months
 
 **Problem:** Three inherited subsystems that nothing called stayed in the tree for six
 months, including an unguarded queue read in the serial worker's hot loop.
@@ -20,5 +20,5 @@ Still open: `MachineSettings.FirmwareType` defaults to `"Grbl"`, `GrblCodeTransl
 it, and the uCNC error/alarm/setting CSVs still ship in `coppercli.Core/Resources/`, but no
 UI or CLI path sets it. Decide it or delete it.
 
-**Rule:** When forking, delete aggressively. `CLAUDE.md` names `~/src/OpenCNCPilot/` as the
-reference implementation to consult, which is where code you might one day want belongs.
+**Rule:** Remove inherited code that has no callers. Consult the OpenCNCPilot tree named in
+`CLAUDE.md` if that code is needed later.

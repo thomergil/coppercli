@@ -89,8 +89,7 @@ import {
 } from './constants.js';
 
 /**
- * Fill a `{0}`-style template. The text lives in constants.js; this puts the values in, so
- * no module writes a sentence at the point of use.
+ * Fill a `{0}`-style template with values. Operator text is defined in constants.js.
  */
 export function format(template, ...values) {
     return values.reduce((text, value, i) => text.split(`{${i}}`).join(String(value)), template);
@@ -228,7 +227,7 @@ export function showInfo(message) {
     showToast(message, 'info', TOAST_INFO_DURATION_MS);
 }
 
-/** The question currently on screen, so a second one does not strand it. */
+/** Resolve the current question before displaying another one. */
 let pendingConfirm = null;
 
 /**
@@ -237,12 +236,12 @@ let pendingConfirm = null;
  */
 export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
     return new Promise((resolve) => {
-        // One modal and one pair of buttons, so a second question overwrites the first's
-        // handlers. The first is answered false here, or its promise never settles.
+        // A second question replaces the modal's handlers. Resolve the first as false
+        // so its promise completes.
         if (pendingConfirm) {
-            const stranded = pendingConfirm;
+            const previousResolve = pendingConfirm;
             pendingConfirm = null;
-            stranded(false);
+            previousResolve(false);
         }
         pendingConfirm = resolve;
 
@@ -399,8 +398,7 @@ export class FileBrowser {
 }
 
 /**
- * Compares the constants duplicated here against the server's own. A mismatch is logged
- * and nothing else.
+ * Log mismatches between client constants and the server's published values.
  */
 export async function validateConstants() {
     try {
@@ -422,8 +420,7 @@ export async function validateConstants() {
             check(PROBE_STATE_COMPLETE, server.probeStates.complete, 'PROBE_STATE_COMPLETE');
         }
 
-        // The socket's own address, and the ping interval that has to stay inside the
-        // server's idle timeout.
+        // Check the socket path and a ping interval shorter than the server idle timeout.
         if (server.socket) {
             check(WS_PATH, server.socket.path, 'WS_PATH');
             check(WS_QUERY_PARAM_CLIENT_ID, server.socket.clientIdParam, 'WS_QUERY_PARAM_CLIENT_ID');

@@ -38,7 +38,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task AnOffsetTheMachineWillNotReadBack_IsReportedAsUnknown()
+        public async Task WorkOffsetReadbackFailure_ReportsUnknown()
         {
             using var machine = new MockMachine { WorkOffsetQuerySucceeds = false };
 
@@ -76,7 +76,7 @@ namespace coppercli.Tests
         };
 
         [Fact]
-        public void EveryOutcome_HasARowAndNoRowOutlivesItsOutcome()
+        public void ExpectedOutcomeTable_MatchesOutcomeEnum()
         {
             Assert.Equal(
                 Enum.GetValues<WorkZeroOutcome>().ToHashSet(),
@@ -84,7 +84,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void EveryOutcome_HasAValueForLeftTheGCodeWrong()
+        public void LeftTheGCodeWrong_MatchesExpectedValues()
         {
             foreach (var outcome in Enum.GetValues<WorkZeroOutcome>())
             {
@@ -100,7 +100,7 @@ namespace coppercli.Tests
         [Theory]
         [InlineData(GrblProtocol.StatusAlarm)]
         [InlineData(GrblProtocol.StatusSleep)]
-        public async Task AMachineThatWillNotTakeTheOffset_IsNotSentOne(string status)
+        public async Task AlarmOrSleep_PreventsWorkOffsetWrite(string status)
         {
             using var machine = new MockMachine { Status = status };
 
@@ -183,7 +183,7 @@ namespace coppercli.Tests
         /// cycle start, which is how a tool change re-zeroes Z.
         /// </summary>
         [Fact]
-        public async Task AMachineHoldingAtTheDoor_StillTakesTheOffset()
+        public async Task ClosedDoorHold_AllowsWorkOffsetWrite()
         {
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
 

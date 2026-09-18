@@ -11,19 +11,18 @@ mode active".
 block and letting the rest fall through to the motion handler, on the assumption that GRBL
 would still see the line. GRBL sees only what the parser re-emits: `AppState` streams
 `GCodeFile.GetGCode()`, the regenerated toolpath, not the operator's original file. An
-unrecognized code left its parameters behind. Second order: after an unmodelled block the
-parser's modelled position was stale, so the file's own `G0 Z5` recovery move looked like a
+unrecognized code left its parameters behind. Second order: after an unmodeled block the
+parser's modeled position was stale, so the file's own `G0 Z5` recovery move looked like a
 no-op and was deleted as a zero-length move, leaving the next cut at retract depth. Inherited
 from OpenCNCPilot's parse loop.
 
 **Fix:** A block the parser cannot model is preserved verbatim (`PassThrough`) or refused
-outright, and an unmodelled block invalidates the modelled position. Fixed in `4698964`. The
+outright, and an unmodeled block invalidates the modeled position. Fixed in `4698964`. The
 same commit fixed loading a replacement height map without first reloading the original
 G-code, which stacked probe corrections additively so the second mill cut deeper than asked.
 `coppercli.Core/GCode/GCodeParser.cs`, `coppercli.Core/GCode/GCodeCommands/PassThrough.cs`,
 `coppercli.Core/GCode/GCodeFile.cs`, `coppercli/AppState.cs`; rule
 `fail-safe-on-uncertainty`; interface `machine → GRBL`.
 
-**Rule:** In a G-code rewriter, axis words belong to their command; never consume a block
-partially. "The parser only ignored it" is no defense when the regenerated toolpath is what
-cuts.
+**Rule:** Preserve or refuse a G-code block as a whole. Dropping a command while retaining
+its axis words changes the motion in the regenerated toolpath.

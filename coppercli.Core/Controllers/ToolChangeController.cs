@@ -12,9 +12,8 @@ using static coppercli.Core.Util.GCodeFormat;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// The tool change an M6 sets off. Phase is what both front ends read to decide what to
-    /// show - after a page reload the browser gets it from /api/status - and
-    /// <see cref="ToolChangePhase"/> carries the two flows and what each phase means.
+    /// Handle tool changes requested by M6. Both interfaces read <see cref="ToolChangePhase"/>
+    /// to display progress; the browser restores it from /api/status after a reload.
     /// </summary>
     public class ToolChangeController : ControllerBase, IToolChangeController
     {
@@ -283,8 +282,8 @@ namespace coppercli.Core.Controllers
             _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{newWcoZ:F3}"));
             await Task.Delay(CommandDelayMs, ct);
 
-            // Read back before believing it. A rejected write leaves the new tool carrying
-            // the old tool's length compensation, with the run reporting success.
+            // Read the offset back; a rejected write would leave the old tool's
+            // length compensation active while the run reports success.
             if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct)
                 || Math.Abs(_machine.G54Offset.Z - newWcoZ) > WorkOffsetToleranceMm)
             {
@@ -394,10 +393,8 @@ namespace coppercli.Core.Controllers
             double slowFeed = config?.SlowFeed ?? ToolSetterProbeFeed;
             double retract = config?.Retract ?? ToolSetterRetract;
 
-            // No rapid pre-approach: the only height to aim one at is the trigger height of
-            // the previous probe, taken with the previous tool, so a tool longer than the
-            // clearance margin would be driven into the setter at rapid speed. The seek probe
-            // starts from wherever Z is, which is what it is for.
+            // Do not rapid toward the previous tool's trigger height. A longer new tool
+            // could strike the setter; start the seek probe from the current Z instead.
             var (seekSuccess, seekZ) = await ExecuteProbeAsync(-probeDepth, fastFeed, ct);
             if (!seekSuccess)
             {

@@ -51,8 +51,8 @@ namespace coppercli.Helpers
     }
 
     /// <param name="Blocker">
-    /// Why this item cannot be chosen, or null when it can. One definition settles both
-    /// whether the item is selectable and the words shown beside it.
+    /// The reason this item is disabled, or null when it is selectable.
+    /// Both IsEnabled and the displayed text use this callback.
     /// </param>
     public record MenuItem<T>(string Label, char Mnemonic, T Option, int Data = 0, Func<string?>? Blocker = null)
     {
@@ -188,7 +188,7 @@ namespace coppercli.Helpers
                 return new MillStartCheck(MillBlocker.NoFile, warnings);
             }
 
-            // Collected before the early returns below, so every outcome carries them.
+            // Collect warnings before early returns so every result includes them.
             var currentFile = AppState.CurrentFile;
             if (currentFile?.Warnings.Count > 0)
             {
@@ -205,8 +205,8 @@ namespace coppercli.Helpers
                 }
             }
 
-            // A complete map in the autosave still has to be applied, or the cuts carry no
-            // height correction.
+            // A complete autosaved map still needs to be applied before milling uses its
+            // height corrections.
             if (probeGrid != null && !AppState.AreProbePointsApplied)
             {
                 if (!probeGrid.HasCompleteData)
@@ -499,7 +499,7 @@ namespace coppercli.Helpers
                 char pressedKey = char.ToUpper(key.KeyChar);
 
                 // Leading keys are matched first, so "0. Back" answers to '0' even when another
-                // item carries '0' as its mnemonic.
+                // item also uses '0' as its mnemonic.
                 if (leadingKeys.TryGetValue(pressedKey, out int leadingIdx))
                 {
                     if (enabledStates == null || enabledStates[leadingIdx])
@@ -669,8 +669,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// ControllerError carries the run's own wording, written for the operator, so it goes
-        /// to the screen as it stands.
+        /// Show the controller's operator message without replacing its wording.
         /// </summary>
         public static void ShowRunError(ControllerError fromTheRun)
         {

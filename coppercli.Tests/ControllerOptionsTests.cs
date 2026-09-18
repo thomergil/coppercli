@@ -38,7 +38,7 @@ namespace coppercli.Tests
         /// A zero tolerance accepts every reading.
         /// </summary>
         [Fact]
-        public void ProbeOptions_FromSettings_CarriesTheDefaultHeightTolerance()
+        public void ProbeOptions_FromSettings_UsesDefaultHeightTolerance()
         {
             var o = ProbeOptions.FromSettings(new MachineSettings());
 

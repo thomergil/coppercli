@@ -301,8 +301,7 @@ namespace coppercli.Core.Controllers
                     },
                     ct: ct).ConfigureAwait(false);
 
-                // Tested against the one outcome that may carry on. A case added to the
-                // enum then stops the run instead of continuing at the door.
+                // Continue only for Cleared. New enum values stop the run by default.
                 if (outcome != DoorClearOutcome.Cleared)
                 {
                     throw outcome == DoorClearOutcome.WillNotRelease
@@ -324,15 +323,13 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Nothing is sent while the machine holds at the door, because GRBL keeps the move in
-        /// its planner and runs it when the hold is released; a caller that was moving stops
-        /// first and reads the door flag from <see cref="MachineWait.StopAndResetAsync"/>.
-        /// The retract runs on its own budget token, since the run's is already cancelled by
-        /// the time a stop reaches here.
+        /// Do not send a retract while the machine holds at the door: GRBL would execute it
+        /// when the hold is released. Use a separate timeout because the run's token has
+        /// already been cancelled.
         /// </summary>
         /// <param name="lift">Sends the move and returns true once the tool is there.</param>
-        /// <param name="budgetMs">How long to wait for it.</param>
-        protected async Task<bool> RetractToSafeZAsync(Func<CancellationToken, Task<bool>> lift, int budgetMs)
+        /// <param name="timeoutMs">How long to wait for it.</param>
+        protected async Task<bool> RetractToSafeZAsync(Func<CancellationToken, Task<bool>> lift, int timeoutMs)
         {
             if (MachineWait.IsDoor(Machine))
             {
@@ -340,39 +337,37 @@ namespace coppercli.Core.Controllers
                 return false;
             }
 
-            using var budget = new CancellationTokenSource(budgetMs);
+            using var timeoutCts = new CancellationTokenSource(timeoutMs);
 
             try
             {
-                return await lift(budget.Token).ConfigureAwait(false);
+                return await lift(timeoutCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
-                // The budget ran out mid-wait, so the position is not confirmed.
+                // A timeout leaves the retract position unconfirmed.
                 return false;
             }
         }
 
         /// <summary>Retract to a machine Z, used where there is no work height to use.</summary>
         /// <inheritdoc cref="RetractToSafeZAsync(Func{CancellationToken, Task{bool}}, int)"/>
-        protected Task<bool> RetractToSafeZAsync(double clearanceMachineZ, int budgetMs) =>
+        protected Task<bool> RetractToSafeZAsync(double clearanceMachineZ, int timeoutMs) =>
             RetractToSafeZAsync(
                 ct => MachineWait.SafetyRetractZAsync(
                     Machine, clearanceMachineZ, Util.Constants.ZHeightWaitTimeoutMs, ct),
-                budgetMs);
+                timeoutMs);
 
         /// <summary>
-        /// Lift the tool after a stop, and report when the lift was not confirmed; all three
-        /// controllers decide it here so the three cannot diverge. A stop at the door
-        /// never counts as confirmed, because the soft reset clears the hold and the tool's
-        /// position is then unknown.
+        /// Lift the tool after a stop and report an unconfirmed lift. A stop at the door
+        /// leaves the tool's position unknown after the soft reset clears the hold.
         /// </summary>
         /// <param name="wasHoldingAtDoor">What <see cref="MachineWait.StopAndResetAsync"/> returned.</param>
         /// <inheritdoc cref="RetractToSafeZAsync(Func{CancellationToken, Task{bool}}, int)"/>
         protected async Task LiftAfterStopAsync(
-            bool wasHoldingAtDoor, Func<CancellationToken, Task<bool>> lift, int budgetMs)
+            bool wasHoldingAtDoor, Func<CancellationToken, Task<bool>> lift, int timeoutMs)
         {
-            if (wasHoldingAtDoor || !await RetractToSafeZAsync(lift, budgetMs).ConfigureAwait(false))
+            if (wasHoldingAtDoor || !await RetractToSafeZAsync(lift, timeoutMs).ConfigureAwait(false))
             {
                 EmitError(new ControllerError(
                     ControllerConstants.ErrorStopRetractFailed, null, IsFatal: false));
@@ -380,12 +375,12 @@ namespace coppercli.Core.Controllers
         }
 
         /// <inheritdoc cref="LiftAfterStopAsync(bool, Func{CancellationToken, Task{bool}}, int)"/>
-        protected Task LiftAfterStopAsync(bool wasHoldingAtDoor, double clearanceMachineZ, int budgetMs) =>
+        protected Task LiftAfterStopAsync(bool wasHoldingAtDoor, double clearanceMachineZ, int timeoutMs) =>
             LiftAfterStopAsync(
                 wasHoldingAtDoor,
                 ct => MachineWait.SafetyRetractZAsync(
                     Machine, clearanceMachineZ, Util.Constants.ZHeightWaitTimeoutMs, ct),
-                budgetMs);
+                timeoutMs);
 
         /// <summary>Every run ends through here.</summary>
         /// <param name="betweenStopAndLift">
@@ -394,7 +389,7 @@ namespace coppercli.Core.Controllers
         /// </param>
         /// <inheritdoc cref="LiftAfterStopAsync(bool, Func{CancellationToken, Task{bool}}, int)"/>
         protected async Task StopAndLiftAsync(
-            Func<CancellationToken, Task<bool>> lift, int budgetMs, Func<Task>? betweenStopAndLift = null)
+            Func<CancellationToken, Task<bool>> lift, int timeoutMs, Func<Task>? betweenStopAndLift = null)
         {
             bool wasHoldingAtDoor = await MachineWait.StopAndResetAsync(Machine).ConfigureAwait(false);
 
@@ -403,7 +398,7 @@ namespace coppercli.Core.Controllers
                 await betweenStopAndLift().ConfigureAwait(false);
             }
 
-            await LiftAfterStopAsync(wasHoldingAtDoor, lift, budgetMs).ConfigureAwait(false);
+            await LiftAfterStopAsync(wasHoldingAtDoor, lift, timeoutMs).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -412,11 +407,11 @@ namespace coppercli.Core.Controllers
         /// </summary>
         /// <inheritdoc cref="StopAndLiftAsync(Func{CancellationToken, Task{bool}}, int, Func{Task})"/>
         protected Task StopAndLiftAsync(
-            double clearanceMachineZ, int budgetMs, Func<Task>? betweenStopAndLift = null) =>
+            double clearanceMachineZ, int timeoutMs, Func<Task>? betweenStopAndLift = null) =>
             StopAndLiftAsync(
                 ct => MachineWait.SafetyRetractZAsync(
                     Machine, clearanceMachineZ, Util.Constants.ZHeightWaitTimeoutMs, ct),
-                budgetMs,
+                timeoutMs,
                 betweenStopAndLift);
 
         /// <summary>Called by StartAsync once the state allows a run.</summary>

@@ -7,24 +7,20 @@ using Xunit;
 
 namespace coppercli.Tests
 {
-    // Requests are served concurrently, so two probe starts can arrive together. Both then
-    // subscribe their handlers to one controller, and the cleanup of the request that did not
-    // start the run releases the run that did, which leaves the stop endpoint unable to find
-    // it.
-    //
-    // In the web collection because the slot is process-wide: run beside a test that starts a
-    // real probe, both would claim the same slot.
+    // Concurrent requests can reach the same probe controller, so only one may store its token;
+    // otherwise both subscribe handlers, and cleanup from one can release the other's run.
+    // This class shares the web collection because the current probe token is process-wide.
     [Collection(WebServerCollection.Name)]
     public class CurrentProbeRunTests
     {
-        /// <summary>Enough rounds to hit a window a few instructions wide.</summary>
+        /// <summary>Repeat enough times to exercise concurrent token assignments.</summary>
         private const int Rounds = 2000;
 
-        /// <summary>More threads than a machine has cores, so they interleave.</summary>
+        /// <summary>Use more threads than cores to increase interleaving.</summary>
         private const int Racers = 8;
 
         [Fact]
-        public void RacingProbeStarts_GiveTheMachineToExactlyOne()
+        public void ConcurrentProbeStarts_SetExactlyOneCurrentToken()
         {
             try
             {
@@ -40,7 +36,7 @@ namespace coppercli.Tests
                         var cts = new CancellationTokenSource();
                         gate.SignalAndWait();
 
-                        if (CncWebServer.TryClaimProbeRun(cts))
+                        if (CncWebServer.TrySetCurrentProbeRun(cts))
                         {
                             Interlocked.Increment(ref winners);
                         }
@@ -63,12 +59,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The other half of the slot: a run that outlives the next one's start must release
-        /// nothing. The stop endpoint finds the machine by this slot, so a late release would
-        /// free the machine while the new run is still using it.
+        /// Cleanup from a completed run must not clear the token of a newer run. The stop
+        /// endpoint uses that token to find the run it must stop.
         /// </summary>
         [Fact]
-        public void ALateReleaseFromAFinishedRun_LeavesTheNewRunOwningTheMachine()
+        public void CompletedRunCleanup_DoesNotClearNewerProbeRun()
         {
             CncWebServer.ClearCurrentProbeRunForTest();
 
@@ -78,20 +73,20 @@ namespace coppercli.Tests
                 using var second = new CancellationTokenSource();
                 using var third = new CancellationTokenSource();
 
-                Assert.True(CncWebServer.TryClaimProbeRun(first));
+                Assert.True(CncWebServer.TrySetCurrentProbeRun(first));
 
-                // first's run ends and the next one takes the machine.
+                // The first run ends before the second stores its token.
                 Assert.True(CncWebServer.ClearCurrentProbeRun(first));
-                Assert.True(CncWebServer.TryClaimProbeRun(second));
+                Assert.True(CncWebServer.TrySetCurrentProbeRun(second));
 
-                // first's finally, arriving late.
+                // The first run's cleanup arrives after the second starts.
                 Assert.False(
                     CncWebServer.ClearCurrentProbeRun(first),
-                    "a finished run released a slot a newer run owns");
+                    "cleanup cleared the token of a newer probe run");
 
                 Assert.False(
-                    CncWebServer.TryClaimProbeRun(third),
-                    "the machine was handed away from the run that owns it");
+                    CncWebServer.TrySetCurrentProbeRun(third),
+                    "a third probe run started while the second was active");
             }
             finally
             {

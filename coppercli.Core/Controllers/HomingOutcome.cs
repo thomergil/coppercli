@@ -4,8 +4,8 @@ using coppercli.Core.Communication;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Whether homing completed and, when it did not, the reason GRBL gave. "Homing failed" on
-    /// its own leaves the operator guessing, so `Reason` carries the cause to the screen.
+    /// Record whether homing completed and the reason GRBL gave if it failed. Show
+    /// <c>Reason</c> to the operator when available.
     /// </summary>
     public readonly record struct HomingOutcome(bool Success, string? Reason)
     {

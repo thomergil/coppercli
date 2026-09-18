@@ -12,7 +12,7 @@ were assigned by different lines, so the two could disagree. `ProbeGrid` kept `M
 `MaxHeight` as running extremes widened by each `RecordMeasurement`, which can only widen.
 
 **Fix:** A phase names only the step of work; whether the run is paused, waiting on a person,
-finishing, cancelled or failed is read from `ControllerState` through the `ControllerBase`
+finishing, canceled or failed is read from `ControllerState` through the `ControllerBase`
 predicates. `MillingPhase.Initializing` was renamed `ConfiguringMachine`: a name collision
 with the lifecycle rather than a duplicate of it, but it read as one. The extremes are derived
 from the points on read. Also deleted in the sweep, each a fact stored where nothing needed
@@ -33,7 +33,4 @@ state. Swept in the session after `168392e`, prompted by
 `one-field-per-fact`, `per-run-state-cleared-at-run-start`, `machine-state-single-writer`;
 interface `ui → controllers` v2 → v3.
 
-**Rule:** An enum member that answers a question another type already owns is a duplicate
-even though it is not a field, and a running aggregate beside the collection it summarizes is
-a duplicate that cannot narrow. Derive both. Ask of any summary: can the underlying data
-change in a direction this value is unable to follow?
+**Rule:** Keep run lifecycle states in `ControllerState`. Derive minimum and maximum height from measured points so a re-probed point can change either extreme.

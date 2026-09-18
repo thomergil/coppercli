@@ -1,6 +1,6 @@
 # Two front ends, each implementing the same workflow
 
-**Problem:** Every workflow written once per front end drifted, and the drift was the defect:
+**Problem:** Separate terminal and browser workflow implementations produced these differences:
 
 - The terminal's session restore skipped the height-map question whenever the operator
   declined to trust the stored work zero; the browser's had no such gate.
@@ -25,15 +25,12 @@ disconnect, the pre-mill validation, the probe-contact guard, the machine-connec
 file-summary JSON and the M6 line predicate were each written twice, on the reasoning that
 the two interfaces were presentation layers over shared controllers.
 
-**Fix:** The whole workflow lives in the controller layer — the motion, the question
-sequence, the ordering, the validation and the consequences of each answer. A predicate that
-gates two layers has exactly one definition. The web is gated at its own preflight instead of
-by a controller option. Swept in `4698964`. Still open: the controller-wiring ritual is
-written out on both sides, recorded as a GAP on the `ui → controllers` interface.
+**Fix:** Controllers define motion, question order, validation, and the effects of each answer.
+Checks used by both interfaces have one implementation. Browser-specific preflight stays in
+the web layer. Fixed in `4698964`. Both interfaces still repeat controller setup, recorded
+as a GAP on the `ui → controllers` interface.
 `coppercli/WebServer/CncWebServer.cs`, `coppercli/Menus/MillMenu.cs`,
 `coppercli/Menus/ProbeMenu.cs`, `coppercli/SessionRestore.cs`, `coppercli/AppState.cs`; rules
 `workflows-live-in-controllers`, `machine-state-single-writer`.
 
-**Rule:** If a front end can express a policy, the two front ends will eventually express
-different ones. A controller option that exists "for the web UI" belongs in the web
-preflight.
+**Rule:** Put workflow decisions shared by the terminal and browser in controllers. Keep browser-specific preflight checks in the web layer.

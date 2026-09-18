@@ -26,7 +26,7 @@ sequence and its delays have one definition.
 `ProbeController.CleanupAsync` stops the machine, then raises Z to the probe safe height, and
 every way a run ends reaches it: the cancel path in `RunAsync` leaves by exception rather
 than returning, and `TraceOutlineAsync` calls it from both catch blocks. The lift runs on its
-own token, because the run's is already cancelled and a stop must not appear to hang; that
+own token, because the run's is already canceled and a stop must not appear to hang; that
 token expiring can throw `OperationCanceledException` rather than return false, so both count
 as unconfirmed and the operator is told. Order matters: a lift queued before the soft reset
 is wiped by it, so `StoppingARun_RetractsToSafeHeight` asserts M5 precedes the retract rather
@@ -41,4 +41,5 @@ than merely containing it, and reversing the two fails the test.
 teardown path, so the stop was never sent. Then writing the bytes as the first statement of
 `Disconnect()`, with the worker still feeding lines to a machine that had just been reset.
 
-**Rule:** Dropping the connection does not end the job.
+**Rule:** Send feed hold and soft reset before closing the serial port. GRBL continues
+executing buffered commands after the port closes.

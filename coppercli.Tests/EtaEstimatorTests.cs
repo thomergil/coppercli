@@ -105,7 +105,7 @@ namespace coppercli.Tests
         /// samples.
         /// </summary>
         [Fact]
-        public void AtTheModelledPace_TheEstimateCountsDownSmoothly()
+        public void AtModeledPace_EstimateDecreasesSmoothly()
         {
             const int totalLines = 1000;
             var eta = new EtaEstimator(TimeSpan.FromSeconds(600), totalLines);
@@ -135,7 +135,7 @@ namespace coppercli.Tests
         /// waiting, not by that time scaled across every line still to come.
         /// </summary>
         [Fact]
-        public void DwellingOnOneLine_DriftsUpByTheTimeSpentWaiting()
+        public void RepeatedUpdatesOnSameLine_IncreaseEtaWithElapsedTime()
         {
             var eta = new EtaEstimator(TimeSpan.FromMinutes(10), totalLines: 1000);
 
@@ -148,7 +148,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void WithoutModel_TheFirstMeasurementSeedsIt()
+        public void WithoutModel_FirstMeasurementStartsEstimate()
         {
             var eta = new EtaEstimator(TimeSpan.Zero, totalLines: 1000);
 

@@ -54,7 +54,7 @@ namespace coppercli.Tests
             // Browsers omit Origin on a cross-site GET, so Sec-Fetch-Site is the only header
             // separating an img or script tag from a same-origin navigation. Browsers send it
             // only to a potentially-trustworthy URL, so this refusal covers localhost and TLS
-            // while the plain-http LAN case rests on no GET changing anything (see
+            // while the plain-http LAN case depends on GET requests changing nothing (see
             // RequestPolicy's summary).
             Assert.False(RequestPolicy.IsAllowed("192.168.1.5:34001", null, site));
         }
@@ -104,7 +104,7 @@ namespace coppercli.Tests
         [InlineData("192.168.1.5:34001/evil.com")]      // a path appended to the authority
         [InlineData("192.168.1.5:34001?x=1")]
         [InlineData("192.168.1.5:34001#x")]
-        public void HostCarryingAnythingBeyondAnAuthority_IsRefused(string host)
+        public void HostHeaderWithExtraContent_IsRefused(string host)
         {
             Assert.False(RequestPolicy.IsAllowed(host, null, null));
         }

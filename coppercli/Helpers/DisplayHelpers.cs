@@ -405,7 +405,7 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
-        /// For an alert the operator has to acknowledge before the screen carries on.
+        /// Shows an alert until the operator acknowledges it.
         /// </summary>
         public static void ShowOverlayAndWait(string message, string? subtext = null, string? messageColor = null)
         {

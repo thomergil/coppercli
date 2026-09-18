@@ -18,18 +18,15 @@ find . -name "*conflicted*" -delete      # then delete
 
 ## Code Style
 
-**ONE PLACE FOR EVERY FACT.** This outranks every other rule here. Every fact — a piece of
-state, a rule, a constant, a predicate — is defined in exactly one place, and everything
-else *derives* from that definition. Never store a second copy, and never compute the same
-answer from a second definition. The three UIs render one source of state; none of them
-keeps its own copy.
+**Define each fact once.** This rule takes priority over the others here. Keep one
+definition of each state value, rule, constant, and
+predicate. Derive other values from it. Do not store a second copy or calculate the same
+answer independently. All UIs read the same state.
 
-Two checks find the violations:
-- Which single place defines this? If two places define it, one of them is wrong.
-- Can the two ever hold different values? If they can, they eventually will, with no error
-  reported, and the machine acts on the stale one.
+Check where each fact is defined. If two values can disagree, remove one definition so
+the machine cannot act on stale state.
 
-What this forbids, and the forms it takes here:
+Examples:
 - A flag beside the state it describes. `IsPaused`, `IsActive` and `HasFinished` are
   derived from `State`; `AppState.IsProbing` is derived from the controller.
 - A boolean saying "X is outstanding" next to a field saying "how much X". That is one
@@ -43,7 +40,7 @@ What this forbids, and the forms it takes here:
 Reading a value into a local for a consistent snapshot is not a second copy: it is one read
 reused within that scope. Two independent definitions are the violation.
 
-**Search before you write.** Before you add a constant, a helper, or any block of logic, search for what already exists - it almost certainly does.
+**Search before you write.** Before adding a constant, helper, or block of logic, search for an existing implementation.
 - Constants: `Constants.cs`, `CliConstants.cs`, `GrblProtocol.cs`, `WebConstants.cs`, `constants.js`.
 - Helpers: the `Helpers/` directory, which holds status checks, wait functions, machine commands, display utilities and menu helpers.
 - A loop that waits, polls or retries, and any status or state check: `MachineWait.cs`.
@@ -53,18 +50,20 @@ When you are about to write 5 or more lines of logic, stop and search. If no hel
 
 **Extend, don't duplicate.** If an existing function almost does what you need, add a parameter (like an `onPoll` callback) rather than copying the logic and editing the copy.
 
-**No duplicated code.** If you write similar code twice, extract it immediately. Three similar lines are worse than one abstraction. This applies to logic, constants, patterns, error handling and validation.
+**No duplicated code.** If you write similar code twice, extract it immediately. Apply
+this to logic, constants, patterns, error handling, and validation.
 
 ```csharp
 // Extract repeated checks into helpers
 if (!RequireConnection()) return;
 ```
 
-**Small APIs.** Interfaces stay minimal and focused. Dependencies flow one direction. Workflows live in controllers, presentation in the UIs. Use records for immutable DTOs. Events are synchronous. No god objects.
+**Small APIs.** Keep interfaces focused and dependencies in one direction. Put workflows in controllers and presentation in the UIs. Use records for immutable DTOs. Events are synchronous. Do not put unrelated responsibilities in one class.
 
-**Refactor proactively.** When you find code that violates these principles, fix it rather than working around it.
+**Refactor when needed.** Fix violations of these rules when you find them instead of
+adding another workaround.
 
-**Keep it simple.** If code gets complex (multiple flags, nested conditions, complex state tracking), stop and rethink. Keep files small. Never ask whether to simplify something; simplify it.
+**Keep it simple.** Simplify code that needs multiple flags, nested conditions, or complex state tracking. Keep files small. Do not ask whether to simplify it.
 
 **Follow established patterns.** Study existing code before adding new code. Match naming conventions, file organization and architectural patterns. Consistency matters more than personal preference.
 
@@ -312,14 +311,14 @@ For continuous redraws (MillMenu/MacroRunner), use the lower-level helpers:
 - **`CalculateOverlayBoxWidth(contentLines[], maxWidth)`** - Respects min/max constraints.
 - **`CompositeOverlay(background, overlay, start, width)`** - Composites overlay onto background.
 
-### Machine State: Single Source of Truth
+### Machine state
 
 Machine state properties (e.g., `IsHomed`) belong in the `Machine` class, not in `AppState`. This ensures:
 - One place sets the state (in Core)
 - All code paths (CLI, Web UI, controllers) use the same state
 - Controllers in Core can access the state directly
 
-**Pattern: Homing as example**
+**Homing example**
 
 `MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed`, and it sets the flag
 only once it has evidence the machine homed. Read it in
@@ -340,7 +339,7 @@ AppState.IsHomed = true;
 // MillMenu.cs
 AppState.IsHomed = true;
 
-// GOOD - single source of truth
+// GOOD - one definition of the homed state
 // All callers use MachineWait.HomeAsync() or MachineCommands.HomeAndWait()
 // Readers access machine.IsHomed
 RequireHoming = !machine.IsHomed;
@@ -389,7 +388,7 @@ dotnet run --project coppercli/coppercli.csproj
 dotnet build coppercli/coppercli.csproj -warnaserror  # treat warnings as errors
 ```
 
-CI runs `sh .architecture/rules/check-layering.sh` as a merge gate, alongside both test
+CI runs `sh .architecture/rules/check-layering.sh` before merging, alongside both test
 suites. Run it before you hand work over; it exits non-zero and names the rule it caught.
 
 ## Releases

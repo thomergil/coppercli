@@ -339,7 +339,7 @@ namespace coppercli.Tests
         // spindle.
 
         [Fact]
-        public async Task MachineThatWillNotSettle_FailsTheRunWithAReason()
+        public async Task MovingMachineAtSettleTimeout_FailsRunWithReason()
         {
             // Nothing checks for a moving machine before settling, because such a check also
             // blocks a door hold the controller can release. The settling phase is what
@@ -432,7 +432,7 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task TheSettleTimeout_RestartsAfterTheDoorIsHandled()
+        public async Task DoorRelease_RestartsSettleTimeout()
         {
             // The time the operator spends at the enclosure must not count against the settle
             // timeout, or a slow answer fails a machine that is already stopped.
@@ -587,8 +587,8 @@ namespace coppercli.Tests
         private const int ShortSettleMs = 1_500;
 
         /// <summary>
-        /// The settling phase needs PostIdleSettleMs of unbroken idle, so a shorter budget
-        /// than this fails however the machine behaves.
+        /// Allow at least PostIdleSettleMs of uninterrupted idle; a shorter timeout
+        /// would fail even when the machine settles.
         /// </summary>
         private const int SettleWaitMs = PostIdleSettleMs + 3_000;
 

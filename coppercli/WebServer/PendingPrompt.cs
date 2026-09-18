@@ -16,12 +16,10 @@ internal enum PromptAnswerResult
 }
 
 /// <summary>
-/// The one prompt a run is waiting on, and the rule for answering it. An answer names the
-/// prompt it answers, because answering resumes the run on this thread and the run can
-/// publish its next prompt before the answer returns.
+/// Store the current run prompt and validate answers against its id. Answering resumes
+/// the run on the same thread, which may publish the next prompt before the call returns.
 ///
-/// The tool-change controller's prompts and the milling controller's M0/M1 prompt share this
-/// slot. The run sends one line at a time, so they cannot both be pending.
+/// Tool-change and M0/M1 prompts use the same field; only one can be pending.
 /// </summary>
 internal static class PendingPrompt
 {
@@ -34,8 +32,7 @@ internal static class PendingPrompt
     public static void Set(UserInputRequest request) => Volatile.Write(ref _request, request);
 
     /// <summary>
-    /// Clear the slot as a run ends, if <paramref name="published"/> is still in it. By then
-    /// another run may have published its own.
+    /// Clear <paramref name="published"/> only if it is still the current prompt.
     /// </summary>
     public static void ClearIfCurrent(UserInputRequest? published)
     {
@@ -46,9 +43,9 @@ internal static class PendingPrompt
     }
 
     /// <summary>
-    /// Hand <paramref name="response"/> to the run, if <paramref name="promptId"/> names the
-    /// prompt now waiting and the response is one of its options. The slot is cleared before
-    /// the run resumes, because resuming publishes the next prompt into it.
+    /// Send <paramref name="response"/> when <paramref name="promptId"/> matches the
+    /// current prompt and the response is one of its options. Clear the field before
+    /// resuming the run, which may publish its next prompt immediately.
     /// </summary>
     public static PromptAnswerResult Answer(string? promptId, string? response)
     {

@@ -20,7 +20,7 @@ done
 # MachineWait.cs is read by iterating the methods it declares, so an empty one means an
 # empty loop and no violation.
 if [ "$(grep -cE '(public|internal) static' coppercli.Core/Controllers/MachineWait.cs 2>/dev/null)" -lt 10 ]; then
-    echo "VIOLATION [check-runs-at-the-repository-root] coppercli.Core/Controllers/MachineWait.cs declares almost nothing; a-new-distinction-lands-with-its-callers would check nothing"
+    echo "VIOLATION [check-runs-at-the-repository-root] coppercli.Core/Controllers/MachineWait.cs declares almost nothing; new-state-cases-update-callers would check nothing"
     exit 1
 fi
 
@@ -144,17 +144,17 @@ if [ -f "$html" ] && [ -d "$jsdir" ]; then
     fi
 fi
 
-# --- rule: the-browser-draws-what-it-was-handed ---------------------------
+# --- rule: browser-uses-core-status-values ---------------------------
 # Core decides each machine question and sends the answer as a value, so a browser deriving one
 # from the raw status word holds a second definition that can disagree. WebServerSequenceTests
 # and coppercli.Tests/browser/ cover the behavior.
 if grep -rnE "STATUS_(RUN|HOLD|IDLE|ALARM|DOOR|ALARM_PREFIX)|\.status *[=!]==? *['\"](Run|Hold|Idle|Alarm|Door)|\.status(\.[A-Za-z]+)? *\.(startsWith|includes) *\( *['\"](Run|Hold|Idle|Alarm|Door)|machineActivity *[=!]==? *['\"]|case +['\"](Run|Hold|Idle|Alarm|Door)['\"]" \
         --include="*.js" coppercli/WebServer/wwwroot/js/ 2>/dev/null \
         | grep -v constants.js | grep -q .; then
-    fail the-browser-draws-what-it-was-handed "the browser decides a machine question from the raw status word; decide it in Core and ship the answer"
+    fail browser-uses-core-status-values "the browser decides a machine question from the raw status word; decide it in Core and ship the answer"
 fi
 
-# --- rule: an-element-the-code-writes-to-exists ----------------------------
+# --- rule: browser-target-ids-exist ----------------------------
 # getElementById returns null for an id the page does not have, so a guarded write does nothing
 # and an unguarded one throws. Nothing else catches it: there is no compile step, and the C#
 # tests do not load the page.
@@ -166,7 +166,7 @@ for id in $(grep -rhoE "getElementById\(['\"][a-zA-Z0-9_-]+['\"]\)|\\\$\(['\"][a
     grep -q "id=\"$id\"" "$html" || absent="$absent $id"
 done
 if [ -n "$absent" ]; then
-    fail an-element-the-code-writes-to-exists "the browser writes to ids the page does not have, so the writes do nothing:$absent"
+    fail browser-target-ids-exist "the browser writes to ids the page does not have, so the writes do nothing:$absent"
 fi
 
 # --- rule: ui-text-is-a-constant ------------------------------------------
@@ -203,7 +203,7 @@ if grep -rnE "$screen_call\((|[^)]*[^A-Za-z0-9_.])$caught_variable|$screen_call\
     fail no-exception-text-on-screen "an exception message is shown to the operator; use MenuHelpers.ShowFailure or WriteFailure"
 fi
 
-# --- rule: one-way-back-to-idle -------------------------------------------
+# --- rule: releaseasync-returns-controller-to-idle -------------------------------------------
 # ReleaseAsync is the only way back to Idle, and Reset refuses a controller that still claims a
 # run. Every .Reset() is matched with the non-controller receivers excluded by name; matching
 # only receivers spelled "controller" missed a field, a local and a call through a method.
@@ -211,7 +211,7 @@ if grep -rn "\.Reset()" --include="*.cs" coppercli/ coppercli.Core/ 2>/dev/null 
         | grep -v "/obj/\|/bin/" | grep -v "ControllerBase\.cs" \
         | grep -vE "(GCodeParser|Stopwatch|[Ss]w|[Tt]imer|[Ee]vent|ManualResetEvent[A-Za-z]*)\.Reset\(\)" \
         | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)' | grep -q .; then
-    fail one-way-back-to-idle "a controller is Reset directly; call ReleaseAsync, which stops an unfinished run first"
+    fail releaseasync-returns-controller-to-idle "a controller is Reset directly; call ReleaseAsync, which stops an unfinished run first"
 fi
 
 # --- rule: web-ui-needs-no-typed-credential -------------------------------
@@ -222,35 +222,34 @@ if grep -rniE "accesstoken|\?token=|QueryParamToken|BearerPrefix|coppercli_token
 fi
 
 # --- rule: workflows-live-in-controllers ----------------------------------
-# No UI issues machine commands directly; they funnel through Helpers/MachineCommands.cs.
+# UIs call Helpers/MachineCommands.cs to issue machine commands.
 if grep -rn "SendLine" --include="*.cs" coppercli/Menus/ coppercli/WebServer/ 2>/dev/null | grep -q .; then
     fail workflows-live-in-controllers "a menu or HTTP handler calls SendLine directly instead of MachineCommands"
 fi
 
-# --- rule: machine-readiness-is-the-controllers ---------------------------
-# The controller decides whether the machine's state allows a job: it prompts about the
-# enclosure, releases the hold and settles the machine. A gate in front of it refuses a machine
-# the controller would have recovered, with a message the operator cannot act on.
+# --- rule: controllers-check-machine-readiness ---------------------------
+# The controller checks whether the machine can start a job, prompts about the enclosure,
+# releases the hold, and waits for the machine to settle. A prior UI check could refuse a
+# state the controller can handle.
 #
-# EnsureMachineReady is that gate helper, and an idle-wait is the same gate written by hand. The
-# idle-wait grep covers coppercli/Menus/ and coppercli/WebServer/ only, because MacroRunner waits
-# for idle to sequence its own steps.
+# EnsureMachineReady and a UI idle wait both perform that prior check. Search only menus
+# and the web server because MacroRunner waits for idle between its steps.
 if grep -rn "EnsureMachineReady" --include="*.cs" coppercli/ 2>/dev/null \
         | grep -v "/obj/\|/bin/" \
         | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)' | grep -q .; then
-    fail machine-readiness-is-the-controllers "a UI runs the machine-readiness gate; MillingController owns that question"
+    fail controllers-check-machine-readiness "a UI runs the machine-readiness gate; MillingController owns that question"
 fi
 
-# The gate spelled some other way is caught by
+# The same check written another way is covered by
 # WebServerSequenceTests.ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead.
 if grep -rnE "(WaitForIdle|WaitForStableIdle)" --include="*.cs" \
         coppercli/Menus/ coppercli/WebServer/ 2>/dev/null \
         | grep -v "/obj/\|/bin/" \
         | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)' | grep -q .; then
-    fail machine-readiness-is-the-controllers "a menu or handler waits for idle before starting a job; the controller settles the machine"
+    fail controllers-check-machine-readiness "a menu or handler waits for idle before starting a job; the controller settles the machine"
 fi
 
-# --- rule: a-new-distinction-lands-with-its-callers ------------------------
+# --- rule: new-state-cases-update-callers ------------------------
 # A question split into more cases is finished only when every place that branched on the old
 # question reads the new one; until then the build passes and the screens still show the defect.
 # Any return type but a generic one is matched, because a grep naming only bool would miss a
@@ -266,7 +265,7 @@ for answer in $(grep -oE '(public|internal) static (async )?[A-Za-z]+(<[^>]*>)?\
             | grep -v "/obj/\|/bin/" \
             | sed 's|//.*$||' | grep "\.$answer *(" \
             | grep -v "^coppercli.Core/Controllers/MachineWait\.cs:" | grep -q .; then
-        fail a-new-distinction-lands-with-its-callers "MachineWait.$answer has no caller outside MachineWait; it is unadopted or dead"
+        fail new-state-cases-update-callers "MachineWait.$answer has no caller outside MachineWait; it is unadopted or dead"
     fi
 done
 
@@ -288,7 +287,7 @@ if grep -rnE '\$"[^"]*[XYZIJKFSR]\{[^}]*:([Ff][0-9]|0\.0)' --include="*.cs" \
     fail culture-invariant-gcode "a G-code line formats a coordinate without GCodeFormat.Inv; the decimal separator follows the ambient culture"
 fi
 
-# --- rule: a-test-must-be-able-to-fail ------------------------------------
+# --- rule: tests-detect-plausible-defects ------------------------------------
 # A test that mutates process-wide state decides whether other classes pass. xUnit runs
 # classes in parallel, and it ignores a [Collection] name with no [CollectionDefinition]
 # without warning, so the attribute is never evidence of isolation.
@@ -296,7 +295,7 @@ if [ -d coppercli.Tests ]; then
     if grep -rn "DefaultThreadCurrentCulture\|DefaultThreadCurrentUICulture" \
             --include="*.cs" coppercli.Tests/ 2>/dev/null \
             | grep -v "/obj/\|/bin/" | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)' | grep -q .; then
-        fail a-test-must-be-able-to-fail "a test sets a process-wide culture; scope it to the thread (CultureInfo.CurrentCulture)"
+        fail tests-detect-plausible-defects "a test sets a process-wide culture; scope it to the thread (CultureInfo.CurrentCulture)"
     fi
 
     # Matched whatever is inside the brackets, because this repo names its collection
@@ -308,7 +307,7 @@ if [ -d coppercli.Tests ]; then
     if [ -n "$used" ]; then
         undefined=$(echo "$used" | grep -vxF "$defined" 2>/dev/null)
         if [ -n "$undefined" ]; then
-            fail a-test-must-be-able-to-fail "[Collection] names with no [CollectionDefinition] are silently ignored: $(echo "$undefined" | tr '\n' ' ')"
+            fail tests-detect-plausible-defects "[Collection] names with no [CollectionDefinition] are silently ignored: $(echo "$undefined" | tr '\n' ' ')"
         fi
     fi
 fi

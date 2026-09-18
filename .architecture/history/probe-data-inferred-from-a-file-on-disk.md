@@ -7,7 +7,7 @@ months:
   leftover data stayed on disk undecided and was later announced as current.
 - Answering "no" to keeping a finished map did not discard it.
 - Loading a different board's file offered the previous board's map, defaulting to yes.
-- A map already baked into the toolpath was never re-checked, so moving the work origin
+- A map already applied to the toolpath was never re-checked, so moving the work origin
   afterwards left every cutting move carrying corrections measured somewhere else.
 - A skipped probe point left a hole while the grid reported 100% complete, so the map was
   applied and either crashed or used a wrong height.

@@ -11,16 +11,15 @@ frame the controller had forgotten.
 **Cause:** Each UI owned the flags that describe machine reality. The TUI connection menu
 cleared the stored work zero on disconnect. `AppState.IsProbing` was a boolean each screen
 set for itself. `IsHomed` was assigned wherever homing happened to be initiated. Every path
-that did not go through the owning screen left the flag stale, and a stale flag here is a
-gate that opens when it should be shut.
+that did not go through the owning screen left the flag stale, which could allow a job
+to start with an invalid work origin.
 
 **Fix:** A fact about the machine belongs to `Machine`, or is derived from the controller
 that owns it, and is assigned in exactly one place. `IsHomed` is set only inside
 `MachineWait.HomeAsync`. `IsProbing` is not stored; it is `_probeController?.IsActive`.
-Work-zero invalidation hangs off the connection-state event in `AppState`, not off any menu,
+Work-zero invalidation runs on the connection-state event in `AppState`, not a menu action,
 so every disconnect path behaves identically. Fixed in `4698964`. `coppercli/AppState.cs`,
 `coppercli.Core/Controllers/MachineWait.cs`, `coppercli.Core/Communication/Machine.cs`; rule
 `machine-state-single-writer`; interface `controllers → machine (IMachine)`.
 
-**Rule:** When new machine state appears, ask who owns it and whether everyone else can
-derive it, not which screens must remember to update it.
+**Rule:** Define machine state in `Machine` and derive UI values from it. Keep operator assertions about the workpiece in `AppState`, where they can be cleared when the session changes.

@@ -335,9 +335,9 @@ namespace coppercli
                 : "the work origin has moved since it was measured";
 
         /// <summary>
-        /// The one place the loaded height map changes. Swapping the map clears the applied
-        /// flag, so it is refused during a run: the file being streamed would still hold the
-        /// corrections, and the next apply would double them.
+        /// Changes the loaded height map and clears its applied flag. Refuse the change
+        /// during a run because the streamed file would retain its corrections and the
+        /// next application would double them.
         /// </summary>
         /// <param name="grid">The new map, or null to have none.</param>
         /// <returns>Why the map was left alone, or null once it was replaced.</returns>

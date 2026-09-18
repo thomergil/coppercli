@@ -8,11 +8,10 @@ namespace coppercli.WebServer;
 /// <summary>
 /// Decides whether a request may reach the machine.
 ///
-/// There is no login. The web UI is meant to be opened by typing this machine's address
-/// on the local network, from a phone while standing at the mill, so it asks the operator
-/// for no password. Every device on the network is trusted. A browser pointed at another
-/// site is not, and neither is a name that merely resolves here. Three headers separate
-/// those cases, none of which a page can set:
+/// The web UI has no login. Operators open it by typing the machine's local address on a
+/// phone, and every device on that network is trusted. Requests from other sites and
+/// requests addressed through public domain names are refused. Three request headers
+/// help distinguish them; browser pages cannot set these headers:
 ///
 ///   Host           - the address the request was sent to. A name the wider internet can
 ///                    resolve means the browser reached us through a domain the caller
@@ -35,15 +34,13 @@ namespace coppercli.WebServer;
 /// value here the caller cannot write, and without it "trusted on this network" would
 /// mean "trusted from anywhere that can reach the port".
 ///
-/// One case is left open deliberately: a cross-site GET carries no Origin and no
-/// Sec-Fetch-Site, so it cannot be told apart from the operator's own navigation and is
-/// allowed. That holds only while no GET changes anything worth protecting, a rule the
-/// rest of the server has to keep - see the Origin branch below.
+/// A cross-site GET without Origin or Sec-Fetch-Site cannot be distinguished from
+/// navigation and is allowed. Keep GET handlers free of machine and file changes.
 /// </summary>
 internal static class RequestPolicy
 {
-    /// <summary>A Host header carries an authority and nothing else. These would smuggle a
-    /// path, query, or userinfo into the value compared against Origin.</summary>
+    /// <summary>Host must contain only an authority; these characters could add a path,
+    /// query, fragment, or user info to the value compared with Origin.</summary>
     private static readonly char[] NonAuthorityChars = { '/', '?', '#', '@' };
 
     public static bool IsAllowed(HttpListenerRequest request)
@@ -77,13 +74,9 @@ internal static class RequestPolicy
 
         if (string.IsNullOrEmpty(originHeader))
         {
-            // Three callers arrive here and cannot be told apart: a non-browser client, the
-            // operator's own navigation, and a cross-site GET - an <img> or <script> on
-            // another site pointed at this port. Browsers send no Origin on any of them.
-            //
-            // So this branch is safe only while no GET changes anything worth protecting.
-            // Every endpoint in HandleApi that moves the machine, starts a job, or writes a
-            // file is behind POST today, and any endpoint added later has to be too.
+            // A non-browser client, the operator's navigation, and a cross-site GET can
+            // all omit Origin. Keep GET handlers read-only; routes that move the machine,
+            // start a job, or write a file must use POST.
             return true;
         }
 
@@ -94,11 +87,9 @@ internal static class RequestPolicy
     }
 
     /// <summary>
-    /// True if the Host names this server directly: an address literal, or a single-label
-    /// name, which public DNS cannot delegate, so only this network answers for it. That
-    /// covers the mDNS "name.local" form, whose single label is what mDNS answers for,
-    /// while a deeper "host.zone.local" is ordinary unicast DNS that whoever runs the zone
-    /// can point here - the rebinding case this check exists to stop.
+    /// Accept an address literal, a single-label name, or mDNS "name.local" because
+    /// public DNS cannot delegate those names. Refuse deeper names such as
+    /// "host.zone.local", which unicast DNS can redirect here.
     /// </summary>
     private static bool IsLocalAddress(Uri host)
     {

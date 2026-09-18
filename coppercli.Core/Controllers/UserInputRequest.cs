@@ -27,7 +27,7 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// True for the enclosure prompt, set where the prompt is raised so that no screen has
-        /// to recognise it by its text. Answering Continue releases the door hold and restarts
+        /// to recognize it by its text. Answering Continue releases the door hold and restarts
         /// the spindle, so a screen must not draw a run's heading ("TOOL CHANGE") over it.
         /// </summary>
         public bool IsDoorPrompt { get; init; }

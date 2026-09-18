@@ -29,9 +29,4 @@ door, because its own soft reset clears that state and the caller cannot read it
 `coppercli.Core/Controllers/UserInputRequest.cs`, `coppercli/Helpers/MenuHelpers.cs`; rule
 `one-field-per-fact`.
 
-**Rule:** An answer with one owner can still be built from facts that have several. For each
-literal and each move in changed code, ask whether it could legitimately differ from the
-others, and name it where it could not. An operation that destroys state a later step needs
-returns that state rather than leaving the caller to read it first. Where one rule has
-several call sites with different budgets or targets, the rule takes them as parameters
-instead of being copied per caller.
+**Rule:** Use `SafeClearanceZ` for clearance height and `ControllerBase.RetractToSafeZAsync` for the move. Return door state before a soft reset clears it. Pass differing timeouts and targets as parameters.

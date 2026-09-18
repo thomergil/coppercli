@@ -297,21 +297,21 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Marks the modelled position unknown after a block that could not be modelled, so
+        /// Marks the modeled position unknown after a block that could not be modeled, so
         /// every axis word of the next move is emitted rather than elided as "already
         /// there". Without this, a file that retracts with G53 and then says "G0 Z5" to come
         /// back has that recovery move deleted as zero-length, and the cut that follows runs
         /// at the retract depth.
         /// </summary>
-        private static void InvalidatePositionAfterUnmodelledMove()
+        private static void InvalidatePositionAfterUnmodeledMove()
         {
             State.PositionValid = new bool[] { false, false, false };
             _startUntrusted = true;
         }
 
         /// <summary>
-        /// Set by <see cref="InvalidatePositionAfterUnmodelledMove"/> and cleared onto the
-        /// next motion, which then carries an untrusted Start.
+        /// Set by <see cref="InvalidatePositionAfterUnmodeledMove"/> and cleared onto the
+        /// next motion, whose Start position is then marked untrusted.
         /// </summary>
         private static bool _startUntrusted;
 
@@ -349,7 +349,7 @@ namespace coppercli.Core.GCode
 
                 double g = w.Parameter;
 
-                // Homing from a file is refused: the destination cannot be modelled, and
+                // Homing from a file is refused: the destination cannot be modeled, and
                 // passing it through would rapid the machine to its G28/G30 position across
                 // whatever is clamped to the bed. Checked across the whole block, so
                 // "G53 G28 Z0" cannot slip through as a preserved line.
@@ -374,14 +374,14 @@ namespace coppercli.Core.GCode
 
             if (refuseBlock)
             {
-                InvalidatePositionAfterUnmodelledMove();
+                InvalidatePositionAfterUnmodeledMove();
                 return;
             }
 
             if (preserveBlock)
             {
                 Commands.Add(new PassThrough() { Line = line.Trim(), LineNumber = lineNumber });
-                InvalidatePositionAfterUnmodelledMove();
+                InvalidatePositionAfterUnmodeledMove();
                 return;
             }
 

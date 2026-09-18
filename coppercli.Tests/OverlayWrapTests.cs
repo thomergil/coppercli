@@ -28,7 +28,7 @@ namespace coppercli.Tests
         private const char AnsiEscape = (char)27;
 
         [Fact]
-        public void ALongPrompt_KeepsEveryWordInsideTheBox()
+        public void LongPrompt_PreservesWordsInOverlay()
         {
             string drawn = DrawBox(LongMessage, KeyHint);
 

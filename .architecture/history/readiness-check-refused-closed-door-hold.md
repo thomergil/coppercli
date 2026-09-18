@@ -1,4 +1,4 @@
-# A readiness gate refused what the controller could release
+# A readiness check refused a closed-door hold
 
 **Problem:** Mill refused to start after the enclosure had been opened and closed, reporting
 "Machine did not settle. Wait for it to stop moving, clear any alarm, then try again." None
@@ -34,7 +34,7 @@ unattended. `coppercli.Core/Controllers/MachineWait.cs`,
 `coppercli/WebServer/CncWebServer.cs`, `coppercli/Helpers/MenuHelpers.cs`,
 `coppercli.Core/Util/GrblProtocol.cs`, `coppercli/CliConstants.cs`,
 `coppercli/WebServer/wwwroot/js/screens.js`, `coppercli.Core/Controllers/DoorState.cs`; rule
-`machine-readiness-is-the-controllers`; interface `controllers → machine` v2 → v3.
+`controllers-check-machine-readiness`; interface `controllers → machine` v2 → v3.
 
 **Rule:** When a new handler supersedes an older check, delete the older one: left in front,
 it refuses first and the handler behind it is never reached. A refusal must name a state the

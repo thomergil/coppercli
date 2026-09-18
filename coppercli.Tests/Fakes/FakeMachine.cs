@@ -339,7 +339,7 @@ namespace coppercli.Tests.Fakes
 
         /// <summary>
         /// Set true for a machine that accepts the line and then alarms instead of moving. A
-        /// caller waiting for the tool to arrive sees the alarm instead of waiting out its budget.
+        /// caller waiting for the tool to arrive sees the alarm before its timeout.
         /// </summary>
         public bool AlarmOnMove { get; set; }
 

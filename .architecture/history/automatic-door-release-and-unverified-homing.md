@@ -1,6 +1,6 @@
-# Software clearing the gates that exist to require a human
+# Automatic door release and unverified homing
 
-**Problem:** Two automations meant to smooth the path to starting a job. The
+**Problem:** Two automatic checks changed the machine state while starting a job. The
 machine-readiness check cleared a GRBL `Door` state by sending Cycle Start, which restarts
 the spindle and resumes motion because the software decided the enclosure was clear. And a
 job ran every `G53` safety retract against machine coordinates that were never established.
@@ -12,14 +12,14 @@ poll. `CLAUDE.md` already named homing as the worked example of a single source 
 there were two implementations of it. `IsHomed` was also never cleared on disconnect or soft
 reset, so a power cycle or a replug left milling skipping homing.
 
-**Fix:** Neither gate is cleared by software; the door is the operator's decision. Homing is
+**Fix:** The software does not release a door hold without the operator. Homing is
 not optional and there is deliberately no skip, because without it `G53` retracts have no
 reference to retract to. Detecting that a command took requires evidence the machine changed:
 watch for a status change, count monotonic status reports to tell "GRBL went quiet" from
 "GRBL is answering and still Idle", and surface GRBL's own stated reason so `$22=0` says so.
 Fixed in `4698964`. `coppercli.Core/Controllers/MachineWait.cs`,
 `coppercli.Core/Controllers/HomingOutcome.cs`,
-`coppercli.Core/Controllers/MillingController.cs`; rules `never-auto-clear-a-safety-gate`,
+`coppercli.Core/Controllers/MillingController.cs`; rules `manual-door-release-and-required-homing`,
 `machine-state-single-writer`; interfaces `controllers → machine`, `machine → GRBL`.
 
 **Rule:** Never auto-clear a state that exists to require human confirmation. The absence of

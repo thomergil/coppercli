@@ -3,27 +3,22 @@ using System;
 namespace coppercli.Core.Controllers
 {
     /// <summary>
-    /// Time remaining in a job, measured from the pace the machine is actually keeping. The
-    /// toolpath model's own estimate serves only as the warmup guess, before enough lines have
-    /// run to measure anything.
+    /// Estimate remaining job time from completed lines. Use the toolpath estimate until
+    /// enough lines have completed to measure the machine's actual rate.
     ///
-    /// The figure must be free to rise as well as fall. Weighting the model guess by
-    /// (1 - fraction-complete) makes the remaining time proportional to (1-f)(1 + f(k-1)) for a
-    /// machine running k times slower than the model, whose slope starts at (k-2): below k=2
-    /// the figure can only fall, so a job running 50% late counts calmly to zero and keeps
-    /// cutting.
+    /// The estimate must be able to increase. If the model estimate is weighted by
+    /// (1 - fraction complete), remaining time is proportional to (1-f)(1 + f(k-1)) for a
+    /// machine running k times slower than the model. Its initial slope is (k-2), so
+    /// the estimate cannot increase when k is less than 2.
     ///
-    /// So the pace, in seconds per line, is an exponential moving average projected across the
-    /// lines still to run. Two details matter:
+    /// Project an exponential moving average of seconds per line over the remaining lines:
     ///
-    ///   - the average is smoothed over a share of the job rather than a number of samples,
-    ///     so how quickly it reacts does not change when the caller's redraw rate does;
-    ///   - time already spent on the line in progress is added as its own term rather than
-    ///     folded into the pace, so one long cut is not extrapolated across every remaining
-    ///     line, while a genuine stall still pushes the estimate up.
+    ///   - Smooth over a fraction of the job so the caller's redraw rate does not affect
+    ///     how quickly the estimate changes.
+    ///   - Add time spent on the current line separately, so one long cut is not projected
+    ///     over every remaining line, while a stall can still increase the estimate.
     ///
-    /// The elapsed time passed to <see cref="Update"/> must cover milling only, not the setup
-    /// before it.
+    /// The elapsed time passed to <see cref="Update"/> must include milling time only.
     /// </summary>
     public sealed class EtaEstimator
     {

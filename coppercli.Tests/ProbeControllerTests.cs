@@ -238,12 +238,11 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// ControllerState names the run lifecycle: paused, waiting on the operator,
-        /// finishing, finished, cancelled, failed. A phase enum that names one of those too
-        /// lets the two be set separately and disagree.
+        /// ControllerState records whether a run is paused, waiting for input, finishing,
+        /// finished, cancelled, or failed. Phase enums must not duplicate those values.
         /// </summary>
         [Fact]
-        public void PhaseEnums_DoNotRestateTheRunLifecycle()
+        public void PhaseEnums_ExcludeControllerStates()
         {
             // The lifecycle names, plus the spellings that mean the same on their own.
             // WaitingForZeroZ and WaitingForToolChange name what is being waited for, so
@@ -262,7 +261,7 @@ namespace coppercli.Tests
                     Assert.False(
                         lifecycleNames.Contains(phaseName),
                         $"{enumType.Name}.{phaseName} answers a lifecycle question. " +
-                        "ControllerState owns that; derive it from the ControllerBase predicates.");
+                        "Use ControllerState and derive it from the ControllerBase predicates.");
                 }
             }
         }
@@ -510,7 +509,7 @@ namespace coppercli.Tests
             var controller = CreateController(machine);
             controller.LoadGrid(new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20)));
 
-            // Takes the retract and then alarms, so the wait ends without its full budget.
+            // Alarm after the retract so the wait ends before its timeout.
             machine.IgnoreMoves = true;
             machine.LineSent += line =>
             {
@@ -620,7 +619,7 @@ namespace coppercli.Tests
         /// <summary>
         /// A resume means the operator cleared the debris, not that the height outside
         /// tolerance was good. That height must not reach the map, the autosave or
-        /// PointCompleted, and its point must stay queued - rule `resume-is-not-approval`.
+        /// PointCompleted, and its point must stay queued - rule `remeasure-probe-point-after-operator-resume`.
         /// </summary>
         [Fact]
         public async Task ARejectedHeight_IsNotRecordedOnResume()
@@ -794,11 +793,11 @@ namespace coppercli.Tests
 
         /// <summary>
         /// A door park aborts GRBL's probe cycle, so the point it interrupted is measured
-        /// again on resume - rule `resume-is-not-approval` on the door's path. A point
+        /// again on resume - rule `remeasure-probe-point-after-operator-resume` on the door's path. A point
         /// already recorded keeps its height, because recording took it off the queue.
         /// </summary>
         [Fact]
-        public async Task DoorDuringAProbe_KeepsThePointsAlreadyMeasured()
+        public async Task DoorDuringProbe_PreservesMeasuredPoints()
         {
             using var machine = CreateMockMachine();
             machine.MachinePosition = new Vector3(-50, -50, Constants.SafeClearanceZ);

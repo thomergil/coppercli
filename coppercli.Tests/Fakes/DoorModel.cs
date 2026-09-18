@@ -57,8 +57,8 @@ namespace coppercli.Tests.Fakes
             !state.StartsWith(GrblProtocol.StatusDoor, StringComparison.Ordinal);
 
         /// <summary>
-        /// Whether a soft reset from this state lands in Alarm: GRBL alarms on a reset out of a
-        /// hold, a door hold or a move, and only a reset of an idle machine lands in Idle.
+        /// Whether a soft reset from this state enters Alarm: GRBL alarms on a reset during a
+        /// hold, a door hold, or a move. Resetting an idle machine leaves it in Idle.
         /// StopAndResetAsync sends $X to clear that alarm.
         /// </summary>
         public static bool ResetAlarms(string state) =>
