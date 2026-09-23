@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.5.0-pre
+## v0.5.0
 
 **Everywhere**
 
