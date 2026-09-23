@@ -93,21 +93,32 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// GRBL locks G-code out in Alarm and Sleep, so the write is dropped. Recording the
-        /// origin anyway would leave an X or Y zero deleting the height map for a datum the
-        /// machine never had.
+        /// GRBL refuses G-code while alarmed, so the origin was not written. Recording it
+        /// anyway would leave an X or Y zero deleting the height map for a datum the machine
+        /// never had.
         /// </summary>
-        [Theory]
-        [InlineData(GrblProtocol.StatusAlarm)]
-        [InlineData(GrblProtocol.StatusSleep)]
-        public async Task AlarmOrSleep_PreventsWorkOffsetWrite(string status)
+        [Fact]
+        public async Task AnAlarmedMachine_ReportsTheOriginNotWritten()
         {
-            using var machine = new MockMachine { Status = status };
+            using var machine = new MockMachine { Status = GrblProtocol.StatusAlarm };
 
             string? refused = await MachineWait.ZeroWorkOffsetAsync(machine, "X0 Y0 Z0", CancellationToken.None);
 
             Assert.Equal(ControllerConstants.ErrorWorkZeroNotWritten, refused);
-            Assert.DoesNotContain(machine.SentCommands, line => line.Contains(GrblProtocol.CmdZeroWorkOffset));
+        }
+
+        /// <summary>
+        /// A sleeping GRBL answers nothing, and no answer cannot say whether the line ran, so
+        /// the operator is told the origin is unconfirmed rather than that it was not written.
+        /// </summary>
+        [Fact]
+        public async Task AnUnansweredWrite_ReportsTheOriginUnconfirmed()
+        {
+            using var machine = new MockMachine { Status = GrblProtocol.StatusSleep };
+
+            string? refused = await MachineWait.ZeroWorkOffsetAsync(machine, "X0 Y0 Z0", CancellationToken.None);
+
+            Assert.Equal(ControllerConstants.ErrorWorkZeroUnconfirmed, refused);
         }
 
         /// <summary>
@@ -142,14 +153,10 @@ namespace coppercli.Tests
         [Fact]
         public async Task AnOffsetGrblLocksOut_IsReportedAsNotWritten()
         {
-            using var machine = new MockMachine();
-            machine.LineSent += line =>
+            using var machine = new MockMachine
             {
-                if (line.Contains(GrblProtocol.CmdZeroWorkOffset))
-                {
-                    machine.SimulateRejection(
-                        GrblRejection.LockedOut, line, "G-code locked out during alarm or jog state");
-                }
+                AnswerTo = line => GrblReply.Refused(new GrblRejection(
+                    GrblRejection.LockedOut, line, "G-code locked out during alarm or jog state"))
             };
 
             Assert.Equal(
@@ -164,13 +171,10 @@ namespace coppercli.Tests
         public async Task AnOffsetRefusedForAnotherReason_ReportsWhatGrblSaid()
         {
             const string because = "unsupported statement";
-            using var machine = new MockMachine();
-            machine.LineSent += line =>
+            using var machine = new MockMachine
             {
-                if (line.Contains(GrblProtocol.CmdZeroWorkOffset))
-                {
-                    machine.SimulateRejection(GrblRejection.HomingNotEnabled, line, because);
-                }
+                AnswerTo = line => GrblReply.Refused(
+                    new GrblRejection(GrblRejection.HomingNotEnabled, line, because))
             };
 
             Assert.Equal(

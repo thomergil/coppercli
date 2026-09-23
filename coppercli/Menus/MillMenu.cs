@@ -133,7 +133,8 @@ namespace coppercli.Menus
             var cts = new CancellationTokenSource();
             Task? millTask = null;
 
-            Logger.Clear();
+            // The log is not cleared at the start of a run: the log of a run that just
+            // failed must survive the operator retrying it. Each run is marked instead.
             Logger.Log("=== MonitorMilling started (controller-based) ===");
             Logger.Log("Log file: {0}", Logger.LogFilePath);
             Logger.Log("File.Count={0}, FilePosition={1}", machine.File.Count, machine.FilePosition);
@@ -195,7 +196,7 @@ namespace coppercli.Menus
                 while (true)
                 {
                     string depthStr = AppState.DepthAdjustment == 0 ? "0" : $"{AppState.DepthAdjustment:+0.00;-0.00}";
-                    string safetyMsg = $"{SafetyChecklistMessage}  Depth: {depthStr}mm";
+                    string safetyMsg = $"{ProbeRemovedQuestion}  Depth: {depthStr}mm";
                     DrawMillProgress(false, visitedCells, TimeSpan.Zero, EtaUnknown, safetyMsg, SafetyDepthSubMessage);
 
                     if (Console.KeyAvailable)
@@ -229,8 +230,10 @@ namespace coppercli.Menus
 
                 SleepPrevention.Start();
 
+                // The safety checklist above is the enclosure answer: the operator pressed Y
+                // to ProbeRemovedQuestion to reach this line.
                 controller.Options = MillingOptions.Create(currentFile?.FileName,
-                    AppState.DepthAdjustment, AppState.Machine.IsHomed);
+                    AppState.DepthAdjustment, AppState.Machine.IsHomed, enclosureConfirmed: true);
 
                 Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
                     controller.Options.RequireHoming, controller.Options.DepthAdjustment);

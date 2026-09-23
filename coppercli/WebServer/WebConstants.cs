@@ -16,9 +16,15 @@ public static class WebConstants
     /// </summary>
     public const int WebSocketBroadcastIntervalMs = 300;
 
+    /// <summary>How often the server tries to connect to the machine while it is not connected.</summary>
     public const int ReconnectIntervalMs = 2000;
-    public const int ReconnectMaxAttempts = 0;  // 0 = infinite
-    public const int ProxyRejectionCheckDelayMs = 100;
+
+    /// <summary>
+    /// How long a terminal that asked for the machine has to attach to the proxy before the
+    /// server takes the machine back. The terminal waits CliConstants.TakeoverDelayMs
+    /// after asking, then connects.
+    /// </summary>
+    public const int TerminalTakeoverWindowMs = 10000;
 
     public const int RequestPollTimeoutMs = 5000;
 
@@ -34,11 +40,8 @@ public static class WebConstants
     /// the pending slot is freed for another client.</summary>
     public const int PendingClientTimeoutMs = 10000;
 
-    public const int ForceDisconnectCloseTimeoutMs = 1000;
-
-    /// <summary>How long the machine stays connected with no browser attached, so the
-    /// operator can come back after a phone screen goes dark.</summary>
-    public const int IdleDisconnectTimeoutMs = 5 * 60 * 1000;
+    /// <summary>How long a WebSocket close may take before the socket is aborted.</summary>
+    public const int WebSocketCloseTimeoutMs = 1000;
 
     /// <summary>
     /// Largest JSON request body accepted. Each is a handful of fields, and the whole body is
@@ -111,9 +114,6 @@ public static class WebConstants
     public const string ApiStatus = "/api/status";
     public const string ApiConfig = "/api/config";
     public const string ApiConstants = "/api/constants";
-    public const string ApiPorts = "/api/ports";
-    public const string ApiConnect = "/api/connect";
-    public const string ApiDisconnect = "/api/disconnect";
     public const string ApiHome = "/api/home";
     public const string ApiUnlock = "/api/unlock";
     public const string ApiReset = "/api/reset";
@@ -164,8 +164,10 @@ public static class WebConstants
     public const string ApiProbeDiscard = "/api/probe/discard";
     public const string ApiSettings = "/api/settings";
     public const string ApiProfiles = "/api/profiles";
-    public const string ApiForceDisconnect = "/api/force-disconnect";
-    public const string ApiTrustWorkZero = "/api/trust-work-zero";
+    public const string ApiBrowserTakeover = "/api/browser-takeover";
+
+    /// <summary>A terminal asking for the machine; the browser's takeover is ApiBrowserTakeover.</summary>
+    public const string ApiTerminalTakeover = "/api/terminal-takeover";
 
     /// <summary>Questions and answers for restoring a session. The terminal startup
     /// uses the same source.</summary>
@@ -284,29 +286,33 @@ public static class WebConstants
     public const string ErrorNotAnOption = "That is not one of the options offered.";
 
     public const string ErrorPromptAlreadyAnswered =
-        "That question has already been answered. Answer the one on screen now.";
+        CliConstants.ErrorQuestionAlreadyAnswered + " Answer the one on screen now.";
 
     public const string ErrorMachineBusy = "The machine is busy with a job. Stop it first.";
+
+    /// <summary>The field of a JSON answer that carries the reason a request was refused.</summary>
+    public const string JsonFieldError = "error";
+
+    /// <summary>Refuses a terminal's takeover; see CncWebServer.AnyOperationRunning.</summary>
+    public const string ErrorTakeoverWhileBusy =
+        "The server is running a job, homing, or probing. Try again when it has finished.";
 
     public const string ErrorPathNotOnThisComputer = "That path is not on this computer.";
 
     public const string ErrorUnknownMachineProfile = "Unknown machine profile.";
 
-    /// <summary>A leading prefix Windows reads as a host name rather than a directory.</summary>
-    public const string WindowsUncPrefix = @"\\";
+    /// <summary>The characters Windows accepts as a path separator.</summary>
+    public const string PathSeparators = "\\/";
 
-    /// <inheritdoc cref="WindowsUncPrefix"/>
-    public const string UnixUncPrefix = "//";
+    /// <summary>After a leading separator, marks a Windows device path such as "\??\UNC\host\share".</summary>
+    public const char DevicePathMarker = '?';
+
     public const string ErrorMillingAlreadyRunning = "A job is already running. Stop it first.";
     public const string ErrorNoProbeGrid = "No probe grid. Run Setup first.";
     public const string ErrorBodyTooLarge = "Too much data in one request. Nothing was sent to the machine.";
 
     /// <summary>Formatted with <see cref="UploadMaxMegabytes"/>.</summary>
     public const string ErrorUploadTooLarge = "File too large to upload. The limit is {0} MB.";
-
-    public const string ErrorAlreadyConnected = "Already connected. Close the existing connection first.";
-    public const string ErrorPortInUse = "Serial port is in use by another connection. Close the existing connection first.";
-    public const string ErrorNoStoredWorkZero = "No stored work zero to trust";
 
     public const string ErrorInvalidFileType = "Invalid file type: {0}";
 

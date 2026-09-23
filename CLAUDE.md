@@ -242,7 +242,9 @@ Migrations run automatically on `LoadSettings()`, rewrite the file once, and are
 - **`coppercli.Core/Controllers/ControllerBase.cs`** - The state machine every workflow runs on: the transition table; `IsActive`/`IsPaused`/`HasFinished`, derived from `State`; `TransitionTo` (throws on an illegal move); `TryTransitionTo` (for a move another thread may already have made); `WaitWhilePausedAsync`; `EnsureDoorClosedAsync` (the one place a workflow asks the operator about the enclosure); `RetractToSafeZAsync` (the retract every run ends on, and the one place that knows not to queue that move at the door); `LiftAfterStopAsync` (that retract, plus the one decision about whether to tell the operator the lift was not confirmed - a stop at the door never is)
 - **`coppercli.Core/Util/HeightGradient.cs`** - The color a probed height is drawn in. Both the terminal and the browser take their colors from here; neither computes a gradient
 - **`coppercli/WebServer/PendingPrompt.cs`** - The one prompt a run is waiting on, and the rule for answering it. An answer names the prompt it answers and must be one of the options offered; a run publishes its next prompt into this same slot from inside the call that answers the last
-- **`MachineCommands.cs`** - Sync wrappers for MachineWait, G-code patterns (`MoveToSafeHeight`, `HomeAndWait`, `ReleaseDoorHold`)
+- **`coppercli/WebServer/MachineHold.cs`** - Who has the serial port in server mode. The server keeps the machine connected while it runs, and a browser leaving never disconnects it. The one exception is a terminal's takeover (`ApiTerminalTakeover`, refused while the machine is in use): the server disconnects, the proxy claims the port through `TryClaimSerialPort` before it admits the terminal, and returns it after its safety stop. The server reconnects then, or after `TerminalTakeoverWindowMs` if no terminal claims the port; a browser takeover (`Reclaim`) ends that window at once. Nothing else in server mode opens the port.
+- **`MachineCommands.cs`** - Sync wrappers for MachineWait, G-code patterns (`MoveToSafeHeight`, `HomeAndWait`, `Unlock`)
+- **`coppercli/SessionRestore.cs`** - The questions carried over from an earlier session, asked by both UIs at startup and after a G-code load. Give a new question a condition its own answer, yes or no, makes false; nothing records what was asked
 - **`MenuHelpers.cs`** - Menus, prompts, confirmations, validation (`GetMachineBlocker` for the machine, `GetProbeDisabledReason` and `CheckMillCanStart` for the job), and `WaitForDoorClear` (the terminal's overlay wrapped around `MachineWait.ClearDoorHoldAsync`, for a screen with no run behind it)
 - **`DisplayHelpers.cs`** - ANSI codes (`AnsiError`, `AnsiSuccess`, etc.), `WriteLineTruncated`, overlay box helpers
 - **`InputHelpers.cs`** - Key checking (`IsKey`, `IsEnterKey`, `IsEscapeKey`, `IsExitKey`), `ReadKeyPolling`
@@ -320,8 +322,8 @@ Machine state properties (e.g., `IsHomed`) belong in the `Machine` class, not in
 
 **Homing example**
 
-`MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed`, and it sets the flag
-only once it has evidence the machine homed. Read it in
+`MachineWait.HomeAsync` is the only code that sets `Machine.IsHomed` to true, and only on
+GRBL's `ok` for the `$H`. `Machine` clears it on connect, disconnect and any reset. Read it in
 `coppercli.Core/Controllers/MachineWait.cs` rather than from an example here: a copy of the
 body in this file is a second definition and drifts as soon as the real one changes.
 

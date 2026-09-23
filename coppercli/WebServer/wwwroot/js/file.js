@@ -1,6 +1,7 @@
 import { state } from './state.js';
 import { $, showError, showInfo, FileBrowser, format, whileBusy } from './helpers.js';
 import { showScreen } from './screens.js';
+import { askPendingQuestions } from './session-restore.js';
 import {
     API_FILES,
     API_FILE_LOAD,
@@ -82,9 +83,7 @@ export async function loadFile() {
         const data = await response.json();
 
         if (data.success) {
-            showInfo(format(TEXT_FILE_LOADED, data.name, data.lines));
-            reportDroppedMap(data);
-            showScreen(SCREEN_DASHBOARD);
+            showLoaded(TEXT_FILE_LOADED, data);
         } else {
             showError(data.error || TEXT_FILE_LOAD_FAILED);
         }
@@ -96,12 +95,16 @@ export async function loadFile() {
     }
 }
 
-// Loading a file can drop the loaded height map. The terminal reports that, and without
-// this the browser operator would see it vanish from the probe panel with no reason given.
-function reportDroppedMap(data) {
+// A load can drop the height map; like the terminal, say why rather than let it vanish from
+// the probe panel. askPendingQuestions offers a saved map the load made pending; it is not
+// awaited, so the load button is not held busy while the operator decides.
+function showLoaded(loadedText, data) {
+    showInfo(format(loadedText, data.name, data.lines));
     if (data.droppedMap) {
         showError(format(TEXT_HEIGHT_MAP_DROPPED, data.droppedMap));
     }
+    showScreen(SCREEN_DASHBOARD);
+    askPendingQuestions();
 }
 
 async function uploadFile(file) {
@@ -118,9 +121,7 @@ async function uploadFile(file) {
         const data = await response.json();
 
         if (data.success) {
-            showInfo(format(TEXT_FILE_UPLOADED, data.name, data.lines));
-            reportDroppedMap(data);
-            showScreen(SCREEN_DASHBOARD);
+            showLoaded(TEXT_FILE_UPLOADED, data);
         } else {
             showError(data.error || TEXT_UPLOAD_FAILED);
         }

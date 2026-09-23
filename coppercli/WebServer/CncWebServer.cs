@@ -68,22 +68,9 @@ public static class CncWebServer
     [MemberNotNullWhen(true, nameof(_machine))]
     private static bool MachineConnected => _machine != null && _machine.Connected;
 
-    private static string _serialPort = "";
-    private static int _baudRate = Constants.DefaultBaudRate;
-    private static bool _isReconnecting = false;
-    /// <summary>
-    /// Whether a browser takeover prevents the server from reconnecting. Read and write under
-    /// <see cref="_clientsLock"/> so a concurrent handshake cannot clear it after takeover.
-    /// </summary>
-    private static bool _forceDisconnected;
 
-    /// <summary>
-    /// The browser that asked for the takeover, under <see cref="_clientsLock"/>. Only its
-    /// own handshake lifts the suppression: the browser the takeover closed reconnects too,
-    /// and lifting on any handshake let that one win the machine back.
-    /// </summary>
-    private static string? _takeoverClientId;
-    private static readonly object _reconnectLock = new();
+    // Created by Run; null while no server is running.
+    private static MachineHold? _hold;
 
     // HandleMillStart assigns a new instance before scheduling the run; the run clears
     // this field only if it still holds that instance.
@@ -115,17 +102,26 @@ public static class CncWebServer
     private static CancellationTokenSource? _probeCts;
     private static Task? _probeTask;
 
-    private static CancellationTokenSource? _idleDisconnectCts;
-
     private static string? _webClientAddress;
 
-    /// <summary>Set by ServerMenu.RunServer to SerialProxy.ForceDisconnectClient, and null
-    /// when nothing is proxying.</summary>
-    public static Func<bool>? ForceDisconnectProxyClient { get; set; }
+    // The proxy sharing the serial port, or null when there is none.
+    private static SerialProxy? _proxy;
 
-    /// <summary>Set by ServerMenu.RunServer to SerialProxy.HasClient, and null when nothing
-    /// is proxying.</summary>
-    public static Func<bool>? HasProxyClient { get; set; }
+    /// <summary>
+    /// Whether the server should have the machine; false while a terminal has it or a
+    /// takeover waits for one. See <see cref="MachineHold.IsHeld"/>.
+    /// </summary>
+    internal static bool HoldsMachine => _hold?.IsHeld ?? true;
+
+    /// <summary>
+    /// For <see cref="SerialProxy.TryClaimSerialPort"/>. Refused while no server is running:
+    /// before Run the server is about to open the port itself, and after it the proxy is
+    /// about to stop.
+    /// </summary>
+    public static bool TryClaimSerialPort() => _hold?.TryClaimSerialPort() ?? false;
+
+    /// <summary>For <see cref="SerialProxy.ReleaseSerialPort"/>.</summary>
+    public static void ReleaseSerialPort() => _hold?.ReleaseSerialPort();
 
     /// <summary>True while a browser holds the one WebSocket this server allows.</summary>
     public static bool HasWebClient
@@ -150,16 +146,14 @@ public static class CncWebServer
         }
     }
 
-    /// <summary>Blocks until Ctrl+C, or until <see cref="Stop"/> cancels it.</summary>
-    /// <param name="serialPort">Serial port name, for display.</param>
-    /// <param name="baudRate">Baud rate, for display.</param>
-    /// <param name="startedSignal">Set once the server is ready; null outside server mode.</param>
-    public static void Run(int port, string serialPort, int baudRate, ManualResetEvent? startedSignal = null)
+    /// <summary>Blocks until <see cref="Stop"/> cancels it or the listener fails.</summary>
+    /// <param name="startedSignal">Set once the server is ready.</param>
+    /// <param name="proxy">The proxy sharing the serial port, or null when there is none.</param>
+    public static void Run(int port, ManualResetEvent startedSignal, SerialProxy? proxy = null)
     {
         Logger.Log("CncWebServer.Run: starting on port {0}", port);
-        _serialPort = serialPort;
-        _baudRate = baudRate;
         _machine = AppState.Machine;
+        _proxy = proxy;
         _cts = new CancellationTokenSource();
 
         _listener = new HttpListener();
@@ -180,43 +174,13 @@ public static class CncWebServer
             _listener.Start();
         }
 
-        // startedSignal is set only in server mode, which prints its own connection details.
-        if (startedSignal == null)
-        {
-            var localIps = NetworkHelpers.GetLocalIPAddresses();
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine($"[{ColorSuccess}]Web server started[/]");
-            AnsiConsole.MarkupLine($"[{ColorDim}]Serial: {_serialPort} @ {_baudRate}[/]");
-            AnsiConsole.WriteLine();
-
-            if (localIps.Count > 0)
-            {
-                AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
-                foreach (var ip in localIps)
-                {
-                    AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://{ip}:{port}[/]");
-                }
-            }
-            else
-            {
-                AnsiConsole.MarkupLine($"[{ColorInfo}]Open in browser:[/]");
-                AnsiConsole.MarkupLine($"  [{ColorSuccess}]http://localhost:{port}[/]");
-            }
-
-            AnsiConsole.WriteLine();
-            AnsiConsole.MarkupLine($"[{ColorDim}]Press Ctrl+C to stop[/]");
-        }
-
-        // In server mode MonitorServer handles exit and calls Stop, so Ctrl+C is taken only
-        // when running standalone.
-        if (startedSignal == null)
-        {
-            Console.CancelKeyPress += (_, e) =>
-            {
-                e.Cancel = true;
-                _cts.Cancel();
-            };
-        }
+        var machine = _machine;
+        var hold = new MachineHold(
+            () => machine.Connected,
+            () => ConnectMachine(machine),
+            machine.Disconnect);
+        _hold = hold;
+        _ = hold.KeepConnectedAsync(_cts.Token);
 
         // Started before the ready signal, so a client that connects at once has a loop to
         // broadcast to.
@@ -224,7 +188,7 @@ public static class CncWebServer
         _ = BroadcastStatusLoop(_cts.Token);
 
         Logger.Log("CncWebServer.Run: signaling ready");
-        startedSignal?.Set();
+        startedSignal.Set();
 
         Logger.Log("CncWebServer.Run: entering main request loop");
         try
@@ -281,6 +245,10 @@ public static class CncWebServer
             AnsiConsole.MarkupLine($"[{ColorDim}]Stopping web server...[/]");
             Logger.Log("CncWebServer: shutdown starting");
 
+            // Run also ends without Stop when the listener fails, so cancel here as well. First,
+            // so the hold does not reconnect while the runs below unwind.
+            _cts.Cancel();
+
             var shutdownCts = new CancellationTokenSource();
             _ = Task.Run(async () =>
             {
@@ -324,21 +292,16 @@ public static class CncWebServer
                     }
                 }
 
-                Logger.Log("CncWebServer: checking machine connection");
-                if (_machine?.Connected == true)
-                {
-                    Logger.Log("CncWebServer: stopping machine and disconnecting");
-                    _machine.Disconnect();
-                    Logger.Log("CncWebServer: machine disconnected");
-                }
+                Logger.Log("CncWebServer: stopping the hold and disconnecting");
+                hold.Stop();
+                _hold = null;
+                _proxy = null;
 
                 Logger.Log("CncWebServer: stopping listener");
                 _listener.Stop();
                 Logger.Log("CncWebServer: listener stopped");
 
                 // Cleared for a clean restart in the same process.
-                Logger.Log("CncWebServer: cancelling idle timer");
-                CancelIdleDisconnectTimer();
                 Logger.Log("CncWebServer: clearing clients");
                 lock (_clientsLock)
                 {
@@ -358,63 +321,6 @@ public static class CncWebServer
     public static void Stop()
     {
         _cts?.Cancel();
-    }
-
-    /// <summary>Disconnects the machine if no browser reconnects within the timeout, which
-    /// frees the serial port for a terminal client.</summary>
-    private static void StartIdleDisconnectTimer()
-    {
-        int clientCount;
-        lock (_clientsLock)
-        {
-            clientCount = _clients.Count;
-        }
-
-        if (clientCount > 0 || !MachineConnected)
-        {
-            return;
-        }
-
-        _idleDisconnectCts?.Cancel();
-        _idleDisconnectCts?.Dispose();
-        _idleDisconnectCts = new CancellationTokenSource();
-
-        var token = _idleDisconnectCts.Token;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                Logger.Log($"No clients connected, starting {IdleDisconnectTimeoutMs / 1000}s idle disconnect timer");
-                await Task.Delay(IdleDisconnectTimeoutMs, token);
-
-                // A client may have connected during the delay.
-                int currentClients;
-                lock (_clientsLock)
-                {
-                    currentClients = _clients.Count;
-                }
-
-                if (currentClients == 0 && MachineConnected && !AnyOperationRunning())
-                {
-                    Logger.Log("Idle disconnect timer expired, disconnecting Machine");
-                    _machine.Disconnect();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                Logger.Log("Idle disconnect timer cancelled (client reconnected)");
-            }
-        });
-    }
-
-    private static void CancelIdleDisconnectTimer()
-    {
-        if (_idleDisconnectCts != null)
-        {
-            _idleDisconnectCts.Cancel();
-            _idleDisconnectCts.Dispose();
-            _idleDisconnectCts = null;
-        }
     }
 
     private static async Task HandleRequest(HttpListenerContext context)
@@ -815,33 +721,6 @@ public static class CncWebServer
                 }
                 break;
 
-            case ApiPorts:
-                if (await RequireMethod(response, method, MethodGet))
-                {
-                    var ports = Menus.ConnectionMenu.GetAvailablePorts();
-                    await WriteJson(response, new { ports });
-                }
-                break;
-
-            case ApiConnect:
-                if (await RequireMethod(response, method, MethodPost))
-                {
-                    var connectReq = await ReadBody<ConnectRequest>(request, response);
-                    if (connectReq != null)
-                    {
-                        await HandleConnect(response, connectReq);
-                    }
-                }
-                break;
-
-            case ApiDisconnect:
-                if (await RequireMethod(response, method, MethodPost))
-                {
-                    HandleDisconnect();
-                    await WriteJson(response, new { success = true });
-                }
-                break;
-
             case ApiZero:
                 if (await RequireMethod(response, method, MethodPost))
                 {
@@ -1208,10 +1087,17 @@ public static class CncWebServer
                 }
                 break;
 
-            case ApiForceDisconnect:
+            case ApiBrowserTakeover:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    await HandleForceDisconnect(context);
+                    await HandleBrowserTakeover(context);
+                }
+                break;
+
+            case ApiTerminalTakeover:
+                if (await RequireMethod(response, method, MethodPost))
+                {
+                    await HandleTerminalTakeover(context);
                 }
                 break;
 
@@ -1254,8 +1140,7 @@ public static class CncWebServer
                         {
                             topic = step.Topic.ToString(),
                             question = step.Question,
-                            detail = step.Detail,
-                            defaultYes = step.DefaultYes
+                            detail = step.Detail
                         })
                     });
                 }
@@ -1267,28 +1152,25 @@ public static class CncWebServer
                         break;
                     }
 
-                    if (answer.topic == null
-                        || !Enum.TryParse<SessionRestoreTopic>(answer.topic, out var topic))
+                    // A missing answer is refused, not read as no, which deletes an unsaved or
+                    // unfinished map. The topic must match a name exactly: Enum.TryParse also
+                    // takes numbers and comma lists.
+                    if (answer.topic == null || answer.detail == null || answer.yes == null
+                        || !Enum.TryParse<SessionRestoreTopic>(answer.topic, out var topic)
+                        || topic.ToString() != answer.topic)
                     {
                         response.StatusCode = HttpStatusBadRequest;
                         await WriteJson(response, new { error = ErrorInvalidRequest });
                         break;
                     }
 
-                    string? failed = SessionRestore.Answer(topic, answer.yes ?? false);
+                    string? failed = SessionRestore.Answer(topic, answer.detail, answer.yes.Value);
                     if (failed != null)
                     {
                         response.StatusCode = HttpStatusConflict;
                     }
 
                     await WriteJson(response, new { success = failed == null, error = failed });
-                }
-                break;
-
-            case ApiTrustWorkZero:
-                if (await RequireMethod(response, method, MethodPost))
-                {
-                    await HandleTrustWorkZero(response);
                 }
                 break;
 
@@ -1307,9 +1189,40 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Whether anything is using the machine, so it is not disconnected under a run. AppState
-    /// covers the runs, so a run parked at a prompt counts; homing is added here because
-    /// the server's own machine handle reports it.
+    /// Machine.Connect reports a failure through its NonFatalException event and returns, so
+    /// this throws an exception carrying that message, for <see cref="MachineHold"/> to retry. Once connected, it turns automatic
+    /// state clearing back on unless <see cref="AnyOperationRunning"/> is true.
+    /// </summary>
+    internal static void ConnectMachine(Machine machine)
+    {
+        string? failure = null;
+        void OnError(string message) => failure = message;
+
+        machine.NonFatalException += OnError;
+        try
+        {
+            machine.Connect();
+        }
+        finally
+        {
+            machine.NonFatalException -= OnError;
+        }
+
+        if (!machine.Connected)
+        {
+            throw new IOException(failure ?? "Machine.Connect returned without connecting");
+        }
+
+        if (!AnyOperationRunning())
+        {
+            machine.EnableAutoStateClear = true;
+        }
+    }
+
+    /// <summary>
+    /// Whether anything is using the machine. AppState covers the runs, so a run parked at a
+    /// prompt counts; homing and an open probe cycle are added here because only the server's
+    /// machine handle reports them.
     /// </summary>
     private static bool AnyOperationRunning() =>
         AppState.IsRunInProgress
@@ -1417,9 +1330,7 @@ public static class CncWebServer
             tracingOutline = AppState.IsTracingOutline,
             toolChange = toolChange,
             depthAdjustment = AppState.DepthAdjustment,
-            buttons = GetButtonStates(probeGrid),
-            hasStoredWorkZero = AppState.Session.HasStoredWorkZero,
-            isWorkZeroSet = AppState.IsWorkZeroSet
+            buttons = GetButtonStates(probeGrid)
         };
     }
 
@@ -1635,6 +1546,9 @@ public static class CncWebServer
         {
             // What a saved height map is called on disk.
             probeGridExtension = CliConstants.ProbeGridExtension,
+
+            // Asked before every mill run, by the terminal and the browser.
+            probeRemovedQuestion = CliConstants.ProbeRemovedQuestion,
 
             // The warning before an X or Y zero, so both front ends use the same wording.
             zeroWarning = new
@@ -1885,40 +1799,6 @@ public static class CncWebServer
         return Math.Max(0, Math.Min(gridSize - 1, index));
     }
 
-    private static async Task HandleConnect(HttpListenerResponse response, ConnectRequest req)
-    {
-        if (_machine == null)
-        {
-            response.StatusCode = HttpStatusBadRequest;
-            await WriteJson(response, new { error = ErrorInvalidRequest });
-            return;
-        }
-
-        var port = req.port ?? _serialPort;
-        var baud = req.baud ?? _baudRate;
-
-        try
-        {
-            AppState.Settings.SerialPortName = port;
-            AppState.Settings.SerialPortBaud = baud;
-
-            _machine.Connect();
-            await WriteJson(response, new { success = true });
-        }
-        catch (Exception ex)
-        {
-            await WriteFailure(response, "Connect", ex);
-        }
-    }
-
-    private static void HandleDisconnect()
-    {
-        if (_machine?.Connected == true)
-        {
-            _machine.Disconnect();
-        }
-    }
-
     /// <summary>
     /// The browser sends a mode index and a direction; the distances and feeds come from this
     /// server's own JogModes. A browser that sent the numbers could put values of its choosing
@@ -2076,7 +1956,7 @@ public static class CncWebServer
                 }
                 finally
                 {
-                    // This probe started no idle timer or sleep prevention. Clear only
+                    // This probe started no sleep prevention. Clear only
                     // its current-run entry.
                     ClearCurrentProbeRun(probeCts);
                 }
@@ -2093,14 +1973,15 @@ public static class CncWebServer
     }
 
     /// <summary>
-    /// Whether this path names something on this computer. A leading "\\" or "//" is
-    /// refused, because Windows reads either as a host name. On Unix that also refuses
-    /// "//tmp", which is the same directory as "/tmp".
+    /// Refuses a path starting with two separators ("\\" or "/", in any mix) or a separator
+    /// and "?", which Windows reads as a host or device path. On Unix this also refuses
+    /// "//tmp", the same directory as "/tmp".
     /// </summary>
     internal static bool IsLocalPath(string path) =>
         !string.IsNullOrEmpty(path)
-        && !path.StartsWith(WindowsUncPrefix, StringComparison.Ordinal)
-        && !path.StartsWith(UnixUncPrefix, StringComparison.Ordinal);
+        && !(path.Length > 1
+            && PathSeparators.Contains(path[0])
+            && (PathSeparators.Contains(path[1]) || path[1] == DevicePathMarker));
 
     /// <summary>
     /// The absolute local path a request asked for, or null with the reason it was refused.
@@ -2638,9 +2519,12 @@ public static class CncWebServer
         controller.ErrorOccurred += onError;
 
         // The web UI has no per-start depth confirmation, as the terminal does; the check
-        // above is what protects a start from a browser.
+        // above is what protects a start from a browser. Its pre-mill modal does ask the
+        // enclosure question, but it asks it in the browser and this endpoint never receives
+        // the answer, so a door hold goes to the operator as a prompt here rather than being
+        // released on an answer the server is only assuming.
         controller.Options = MillingOptions.Create(AppState.CurrentFile?.FileName,
-            AppState.DepthAdjustment, _machine!.IsHomed);
+            AppState.DepthAdjustment, _machine!.IsHomed, enclosureConfirmed: false);
 
         Logger.Log("Starting milling controller: RequireHoming={0}, DepthAdjustment={1:F3}",
             controller.Options.RequireHoming, controller.Options.DepthAdjustment);
@@ -2691,7 +2575,6 @@ public static class CncWebServer
                     }
 
                     Logger.Log("Milling controller finished");
-                    StartIdleDisconnectTimer();
                 }
                 else
                 {
@@ -3031,8 +2914,6 @@ public static class CncWebServer
         {
             _machine.EnableAutoStateClear = true;
         }
-
-        StartIdleDisconnectTimer();
     }
 
     /// <summary>
@@ -3332,6 +3213,7 @@ public static class CncWebServer
             points = GetProbePointsArray(grid),
             colors = GetProbeColorsArray(grid),
             phase = controller.Phase.ToString(),
+            suggestedFileName = Persistence.SuggestedProbeFileName(),
             state
         };
     }
@@ -3438,11 +3320,13 @@ public static class CncWebServer
             }
         }
 
-        bool proxyHasClient = HasProxyClient?.Invoke() ?? false;
-        if (proxyHasClient)
+        // A terminal has the machine, or a takeover is waiting for one. Not the proxy still
+        // closing the port after a browser took the machine back, or the page that did so
+        // would be offered it again when it reloads.
+        if ((_hold?.IsYieldedToTerminal ?? false) || (_proxy?.HasClient ?? false))
         {
             hasOtherClient = true;
-            Logger.Log("WebSocket: TUI client detected via proxy");
+            Logger.Log("WebSocket: a terminal has the machine");
         }
 
         try
@@ -3460,13 +3344,6 @@ public static class CncWebServer
 
             lock (_clientsLock)
             {
-                // Only the browser that asked for the takeover lifts it. See _takeoverClientId.
-                if (clientId != null && clientId == _takeoverClientId)
-                {
-                    _forceDisconnected = false;
-                    _takeoverClientId = null;
-                }
-
                 if (clientId != null)
                 {
                     int stale = _clients.RemoveAll(
@@ -3495,70 +3372,6 @@ public static class CncWebServer
                 // Left open, so the browser can show the take-over modal and reload after it.
             }
 
-            CancelIdleDisconnectTimer();
-
-            Logger.Log($"WebSocket: _machine={(_machine == null ? "null" : "set")}, Connected={_machine?.Connected}, hasOtherClient={hasOtherClient}");
-            if (_machine != null && !_machine.Connected && !hasOtherClient)
-            {
-                string? rejectionMessage = null;
-
-                // The proxy sends its refusal as a line, as it does for the terminal's connect.
-                void OnLineReceived(string line)
-                {
-                    if (line.StartsWith(ProxyConnectionRejectedPrefix) || line.StartsWith(ProxySerialPortInUsePrefix))
-                    {
-                        rejectionMessage = line;
-                    }
-                }
-
-                _machine.LineReceived += OnLineReceived;
-                try
-                {
-                    Logger.Log("Connecting Machine to proxy for web client");
-                    _machine.Connect();
-
-                    // The proxy sends its refusal immediately after the TCP connect.
-                    await Task.Delay(ProxyRejectionCheckDelayMs);
-
-                    if (rejectionMessage != null)
-                    {
-                        Logger.Log($"Connection rejected by proxy: {rejectionMessage}");
-                        _machine.Disconnect();
-
-                        // Only another client can be disconnected when the proxy refuses
-                        // the connection. Use the server's reason because the proxy reply
-                        // may contain operating system text.
-                        bool anotherClient =
-                            rejectionMessage.StartsWith(ProxyConnectionRejectedPrefix);
-
-                        BroadcastMessage(WsMessageTypeConnectionError, new
-                        {
-                            error = (anotherClient
-                                ? Constants.ProxyConnectionRejected
-                                : Constants.ProxySerialPortInUse).Trim(),
-                            otherClientConnected = anotherClient
-                        });
-                    }
-                    else
-                    {
-                        _machine.EnableAutoStateClear = true;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log("Failed to connect Machine: {0}", ex);
-                    BroadcastMessage(WsMessageTypeConnectionError, new
-                    {
-                        error = ErrorMachineNotConnected,
-                        otherClientConnected = false
-                    });
-                }
-                finally
-                {
-                    _machine.LineReceived -= OnLineReceived;
-                }
-            }
-
             var buffer = new byte[WebSocketBufferSize];
             // A message larger than the buffer arrives in several frames, so it is
             // gathered here until the last one before anything tries to read it.
@@ -3577,6 +3390,9 @@ public static class CncWebServer
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    // Answered, because a client that completes the close handshake waits for
+                    // the reply.
+                    await CloseClientAsync(client, null);
                     break;
                 }
 
@@ -3628,31 +3444,15 @@ public static class CncWebServer
         {
             if (client != null)
             {
-                int remainingClients;
                 lock (_clientsLock)
                 {
                     _clients.Remove(client);
-                    remainingClients = _clients.Count;
-                    if (remainingClients == 0)
+                    if (_clients.Count == 0)
                     {
                         _webClientAddress = null;
                     }
                 }
                 Logger.Log("WebSocket client disconnected");
-
-                // Disconnect after the last web client leaves so the terminal can use
-                // the proxy, unless a run is still active.
-                bool operationInProgress = AnyOperationRunning();
-
-                if (remainingClients == 0 && _machine != null && _machine.Connected && !operationInProgress)
-                {
-                    Logger.Log("Last web client disconnected, disconnecting Machine to free proxy slot");
-                    _machine.Disconnect();
-                }
-                else if (remainingClients == 0 && operationInProgress)
-                {
-                    Logger.Log("Last web client disconnected, but operation in progress - keeping Machine connected");
-                }
             }
             else
             {
@@ -3746,6 +3546,44 @@ public static class CncWebServer
     }
 
     /// <summary>
+    /// Closes the socket, or answers the client's own close, taking the one send slot a
+    /// close needs. A client that does not answer within <see cref="WebSocketCloseTimeoutMs"/>,
+    /// or a socket that cannot be closed, is aborted.
+    /// </summary>
+    private static async Task CloseClientAsync(ClientConnection client, string? reason)
+    {
+        using var timeout = new CancellationTokenSource(WebSocketCloseTimeoutMs);
+        try
+        {
+            await client.SendLock.WaitAsync(timeout.Token);
+            try
+            {
+                if (client.Socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                {
+                    await client.Socket.CloseAsync(
+                        WebSocketCloseStatus.NormalClosure, reason, timeout.Token);
+                }
+            }
+            finally
+            {
+                client.SendLock.Release();
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("Closing a WebSocket failed, aborting it: {0}", ex.Message);
+            try
+            {
+                client.Socket.Abort();
+            }
+            catch (Exception abortEx)
+            {
+                Logger.Log("Aborting a WebSocket failed: {0}", abortEx.Message);
+            }
+        }
+    }
+
+    /// <summary>
     /// Send one frame to one client. A WebSocket accepts one send at a time, so each
     /// client's sends queue behind its own lock. <paramref name="dropIfBusy"/> drops a
     /// message that will be superseded shortly rather than queueing it.
@@ -3805,21 +3643,11 @@ public static class CncWebServer
 
     private static async Task BroadcastStatusLoop(CancellationToken ct)
     {
-        bool wasConnected = _machine?.Connected ?? false;
-
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await Task.Delay(WebConstants.WebSocketBroadcastIntervalMs, ct);
-
-                bool isConnected = _machine?.Connected ?? false;
-                if (wasConnected && !isConnected)
-                {
-                    Logger.Log("BroadcastStatusLoop: machine disconnected, starting reconnect attempts");
-                    _ = TryReconnectLoop(ct);
-                }
-                wasConnected = isConnected;
 
                 List<ClientConnection> staleClients;
                 lock (_clientsLock)
@@ -3834,16 +3662,7 @@ public static class CncWebServer
                 foreach (var stale in staleClients)
                 {
                     Logger.Log("Closing stale WebSocket client (silent for {0}ms)", WebSocketTimeoutMs);
-                    try
-                    {
-                        await stale.Socket.CloseAsync(
-                            WebSocketCloseStatus.NormalClosure, WsCloseReasonTimeout, ct)
-                            .WaitAsync(TimeSpan.FromMilliseconds(ForceDisconnectCloseTimeoutMs), ct);
-                    }
-                    catch
-                    {
-                        // Already closed
-                    }
+                    await CloseClientAsync(stale, WsCloseReasonTimeout);
                 }
 
                 // Dropped rather than queued for a client that has stopped reading: the
@@ -3859,68 +3678,6 @@ public static class CncWebServer
                 // The browser takes its screen lock from this stream, so keep it running
                 // and skip a snapshot that failed to build.
                 Logger.Log("Status broadcast failed: {0}", ex);
-            }
-        }
-    }
-
-    private static async Task TryReconnectLoop(CancellationToken ct)
-    {
-        if (ForceDisconnected())
-        {
-            Logger.Log("TryReconnectLoop: skipping, force-disconnected by TUI");
-            return;
-        }
-
-        lock (_reconnectLock)
-        {
-            if (_isReconnecting)
-            {
-                return;
-            }
-            _isReconnecting = true;
-        }
-
-        int attempts = 0;
-        try
-        {
-            // A delay before the first attempt, so a terminal client can take the port first.
-            await Task.Delay(ReconnectIntervalMs, ct);
-
-            while (!ct.IsCancellationRequested && _machine != null && !_machine.Connected
-                   && !ForceDisconnected())
-            {
-                attempts++;
-                Logger.Log($"TryReconnectLoop: attempt {attempts}");
-
-                try
-                {
-                    _machine.Connect();
-
-                    if (_machine.Connected)
-                    {
-                        Logger.Log($"TryReconnectLoop: reconnected after {attempts} attempts");
-                        return;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Logger.Log($"TryReconnectLoop: attempt {attempts} failed: {ex.Message}");
-                }
-
-                await Task.Delay(ReconnectIntervalMs, ct);
-
-                if (ReconnectMaxAttempts > 0 && attempts >= ReconnectMaxAttempts)
-                {
-                    Logger.Log($"TryReconnectLoop: gave up after {attempts} attempts");
-                    break;
-                }
-            }
-        }
-        finally
-        {
-            lock (_reconnectLock)
-            {
-                _isReconnecting = false;
             }
         }
     }
@@ -4141,12 +3898,6 @@ public static class CncWebServer
         return parsed;
     }
 
-    private record ConnectRequest
-    {
-        public string? port { get; init; }
-        public int? baud { get; init; }
-    }
-
     private record ZeroRequest
     {
         public string[]? axes { get; init; }
@@ -4166,6 +3917,9 @@ public static class CncWebServer
     private record ProbeSaveRequest
     {
         public string? path { get; init; }
+
+        /// <summary>The operator agreed to replace the file at <see cref="path"/>.</summary>
+        public bool overwrite { get; init; }
     }
 
     private record ProbeLoadRequest
@@ -4186,9 +3940,11 @@ public static class CncWebServer
         public double? toolSetterY { get; init; }
     }
 
+    /// <summary>An answer names the question it answers by its topic and the detail shown.</summary>
     private record SessionRestoreAnswerRequest
     {
         public string? topic { get; init; }
+        public string? detail { get; init; }
         public bool? yes { get; init; }
     }
 
@@ -4231,6 +3987,20 @@ public static class CncWebServer
             {
                 response.StatusCode = HttpStatusBadRequest;
                 await WriteJson(response, new { error = refusedPath });
+                return;
+            }
+
+            // Refused so the operator is asked first, as the terminal does: the error text is the
+            // question, and the browser sends the save again with overwrite set once the
+            // operator agrees.
+            if (File.Exists(path) && !req.overwrite)
+            {
+                response.StatusCode = HttpStatusConflict;
+                await WriteJson(response, new
+                {
+                    error = string.Format(ProbeFormatOverwrite, Path.GetFileName(path)),
+                    fileExists = true
+                });
                 return;
             }
 
@@ -4320,78 +4090,64 @@ public static class CncWebServer
     private static object GetProbeFiles(string dirPath) =>
         GetFilesWithFilter(dirPath, ext => ProbeGridExtensions.Contains(ext));
 
-    /// <summary>Whether something else took the machine over, so the server must not
-    /// reconnect.</summary>
-    private static bool ForceDisconnected()
-    {
-        lock (_clientsLock)
-        {
-            return _forceDisconnected;
-        }
-    }
-
     /// <summary>
-    /// Closes every WebSocket, releases the serial port, and returns how many clients were
-    /// closed. Called when a browser takes the machine over from another client.
+    /// Closes every WebSocket, so the pages behind them offer the takeover again when they
+    /// reconnect. Returns how many were closed.
     /// </summary>
-    /// <param name="requestedBy">
-    /// The browser asking for the machine. Only its own reconnect lifts the suppression.
-    /// </param>
-    public static int ForceDisconnectAllClients(string? requestedBy = null)
+    private static async Task<int> CloseAllClientsAsync()
     {
         List<ClientConnection> clientsToClose;
         lock (_clientsLock)
         {
-            // Set this while clearing clients under the same lock. A handshake between
-            // those actions could reset it and reconnect the server for the new client.
-            _forceDisconnected = true;
-            _takeoverClientId = requestedBy;
             clientsToClose = _clients.ToList();
             _pendingClients.Clear();
             _clients.Clear();
             _webClientAddress = null;
         }
 
-        Logger.Log($"ForceDisconnectAllClients: closing {clientsToClose.Count} client(s), suppressing auto-reconnect");
-
-        foreach (var client in clientsToClose)
-        {
-            try
-            {
-                if (client.Socket.State == WebSocketState.Open)
-                {
-                    client.Socket.CloseAsync(
-                        WebSocketCloseStatus.NormalClosure,
-                        WsCloseReasonForceDisconnect,
-                        CancellationToken.None).Wait(ForceDisconnectCloseTimeoutMs);
-                }
-            }
-            catch
-            {
-                // Already closed
-            }
-        }
-
-        if (_machine != null && _machine.Connected)
-        {
-            Logger.Log("ForceDisconnectAllClients: disconnecting Machine to release serial port");
-            _machine.Disconnect();
-        }
-
-        if (ForceDisconnectProxyClient?.Invoke() == true)
-        {
-            Logger.Log("ForceDisconnectAllClients: kicked TUI client from proxy");
-        }
-
+        await Task.WhenAll(clientsToClose.Select(
+            client => CloseClientAsync(client, WsCloseReasonForceDisconnect)));
         return clientsToClose.Count;
     }
 
-    private static async Task HandleForceDisconnect(HttpListenerContext context)
+    /// <summary>
+    /// A browser takes the machine over: every other page and any terminal on the proxy is
+    /// disconnected. The machine stays connected, or reconnects if the server had let go of it
+    /// for a terminal.
+    /// </summary>
+    private static async Task HandleBrowserTakeover(HttpListenerContext context)
     {
-        int disconnected = ForceDisconnectAllClients(
-            context.Request.Cookies[ClientIdCookieName]?.Value);
+        // Reclaimed first, so no terminal can claim the port between the two.
+        _hold?.Reclaim();
+        int closed = await CloseAllClientsAsync();
+        if (_proxy?.ForceDisconnectClient() == true)
+        {
+            Logger.Log("Browser takeover: disconnected the terminal on the proxy");
+        }
+        Logger.Log("Browser takeover: closed {0} page(s)", closed);
 
-        await WriteJson(context.Response, new { success = true, disconnected });
+        await WriteJson(context.Response, new { success = true, disconnected = closed });
+    }
+
+    /// <summary>
+    /// A terminal on another computer takes the machine over: the server disconnects so the
+    /// proxy can open the serial port. Refused while <see cref="AnyOperationRunning"/>,
+    /// because the disconnect would stop it partway.
+    /// </summary>
+    private static async Task HandleTerminalTakeover(HttpListenerContext context)
+    {
+        if (_hold == null || !_hold.TryYieldToTerminal(AnyOperationRunning))
+        {
+            Logger.Log("Terminal takeover refused: the machine is in use");
+            context.Response.StatusCode = HttpStatusConflict;
+            await WriteJson(context.Response, new { error = ErrorTakeoverWhileBusy });
+            return;
+        }
+
+        int closed = await CloseAllClientsAsync();
+        Logger.Log("Terminal takeover: closed {0} page(s)", closed);
+
+        await WriteJson(context.Response, new { success = true, disconnected = closed });
     }
 
     /// <summary>
@@ -4720,21 +4476,6 @@ public static class CncWebServer
 
         Persistence.SaveSettings();
 
-        await WriteJson(response, new { success = true });
-    }
-
-    /// <summary>The web answer to the terminal's "Trust work zero from previous session?"
-    /// prompt.</summary>
-    private static async Task HandleTrustWorkZero(HttpListenerResponse response)
-    {
-        if (!AppState.Session.HasStoredWorkZero)
-        {
-            await WriteJson(response, new { success = false, error = ErrorNoStoredWorkZero });
-            return;
-        }
-
-        AppState.SetWorkZeroTrusted(true);
-        Logger.Log("HandleTrustWorkZero: work zero trusted via the web API");
         await WriteJson(response, new { success = true });
     }
 

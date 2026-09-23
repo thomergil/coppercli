@@ -242,7 +242,7 @@ fi
 
 # The same check written another way is covered by
 # WebServerSequenceTests.ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead.
-if grep -rnE "(WaitForIdle|WaitForStableIdle)" --include="*.cs" \
+if grep -rnE "WaitForIdle" --include="*.cs" \
         coppercli/Menus/ coppercli/WebServer/ 2>/dev/null \
         | grep -v "/obj/\|/bin/" \
         | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)' | grep -q .; then

@@ -4,6 +4,22 @@
 
 **Everywhere**
 
+- At startup and after each G-code load, coppercli asks "Apply the height map you saved for
+  this file?" about the map you last saved or loaded for that file. Saving deletes the
+  autosave, so until now a restart lost track of the map and the job milled without height
+  correction unless you reloaded it from the Probe menu. The map must be complete, measured
+  for that file, and fit the current work origin. A map saved before this version is offered
+  after you load it once from the Probe menu.
+- A finished mill deletes the height map measured for that file, both the autosave and the
+  saved `.pgrid`, because the map describes a board that is now milled. Before, the next
+  startup offered to apply it. The map stays in memory until you clear it, so you can run
+  the same job again in that session.
+- The browser now asks the terminal's startup questions, from the same code: reload the last
+  file, keep the work origin, keep an unsaved or unfinished height map, apply a saved one.
+  Before, it asked only two, in its own windows, which could return on every page load and
+  be answered differently in each tab. A question now disappears once answered; "no" to the
+  work origin stops it until you zero all three axes again. A startup question never covers
+  one already on screen, such as whether to abort milling.
 - A tool change asks about the enclosure once instead of twice. Closing the door before you
   press Continue releases the hold on that answer; a door still open when you answer is put
   to you again once you close it. The pause at an `M0` works the same way.
@@ -289,6 +305,22 @@
 
 **The web interface**
 
+- Server mode connects to the machine at startup and stays connected while it runs. Before,
+  it disconnected whenever the last browser dropped its connection, such as a phone locking
+  its screen, and five minutes after a job ended with no browser open. Each disconnect made
+  coppercli forget homing and work zero. A terminal on another computer can still take the
+  machine over, except while a job runs, and the server connects again once that terminal
+  leaves. Before, a takeover could stop a running job, and the server stayed disconnected
+  until a browser opened the page.
+- Server mode opens the serial port you pick in its menu, and saves it as the connection
+  menu does. Before, it opened the port saved last.
+- A second terminal that connects to the proxy while one is attached is told another client
+  is connected. Before, its connection waited unanswered until the first terminal left.
+- The pre-mill dialog asks "Probing equipment removed?" as a tick box, and Start is disabled
+  until the box is ticked. Before, the question was a second dialog after Start.
+- A finished probe opens the save screen, as the terminal does, and both suggest the same
+  name: the G-code file's, with `.pgrid`. Saving over an existing map asks first, as the
+  terminal does. Before, the browser suggested a date and replaced a file without asking.
 - Starting a probe no longer reports that one is already running. The start button ran its
   handler twice on one tap, and the second call was refused by the run the first had started.
 - Tracing the outline holds the probe screen. Stop is the only control that does anything
@@ -319,9 +351,9 @@
   the surface to set Z0.
 - The connection survives a busy job. Several threads wrote to the same socket at once, and
   homing blocked the socket that carries the Stop button.
-- The machine is not disconnected while a job waits on the operator. A job parked at a tool
-  change or a program stop counted as finished, so the last browser closing its tab could
-  close the serial port with the tool in the work. An outline trace counted the same way.
+- A job waiting on the operator at a tool change or a program stop counts as running, as an
+  outline trace does, so a terminal cannot take the machine over under it. It counted as
+  finished.
 - Loading another G-code file is refused while a job is running.
 - Request bodies and uploads are bounded, a wrong HTTP method is answered rather than
   ignored, and malformed input no longer drops the connection.

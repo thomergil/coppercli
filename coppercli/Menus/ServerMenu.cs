@@ -1,4 +1,5 @@
 using coppercli.Core.Communication;
+using coppercli.Core.Settings;
 using coppercli.Helpers;
 using coppercli.WebServer;
 using Spectre.Console;
@@ -9,8 +10,9 @@ using static coppercli.WebServer.WebConstants;
 namespace coppercli.Menus
 {
     /// <summary>
-    /// Starts the serial proxy and the web server on one serial port, so `Machine` must
-    /// disconnect before either can open it.
+    /// Starts the serial proxy and the web server on one serial port. The web server holds
+    /// the port for as long as it runs; the proxy opens it only while a terminal has taken
+    /// the machine over.
     /// </summary>
     internal static class ServerMenu
     {
@@ -128,12 +130,8 @@ namespace coppercli.Menus
             var proxy = new SerialProxy();
             SubscribeProxyEvents(proxy, messages);
 
-            // The proxy must not open the serial port while `Machine` or a web client holds it.
-            proxy.IsSerialPortInUse = () => AppState.Machine.Connected || CncWebServer.HasWebClient;
-
-            CncWebServer.ForceDisconnectProxyClient = () => proxy.ForceDisconnectClient();
-
-            CncWebServer.HasProxyClient = () => proxy.HasClient;
+            proxy.TryClaimSerialPort = CncWebServer.TryClaimSerialPort;
+            proxy.ReleaseSerialPort = CncWebServer.ReleaseSerialPort;
 
             try
             {
@@ -155,58 +153,97 @@ namespace coppercli.Menus
                 Environment.Exit(1);
             }
 
-            Logger.Log("ServerMenu.RunServer: starting web server thread");
-            Exception? webServerError = null;
-            var webServerStarted = new ManualResetEvent(false);
+            // The web server connects `Machine` from these, so it opens the port chosen here
+            // rather than the one saved last. Saved, as the connection menu saves the
+            // connection it opens.
+            var settings = AppState.Settings;
+            settings.ConnectionType = ConnectionType.Serial;
+            settings.SerialPortName = serialPort;
+            settings.SerialPortBaud = baudRate;
+            Persistence.SaveSettings();
 
-            var webServerThread = new Thread(() =>
-            {
-                try
-                {
-                    CncWebServer.Run(webPort, serialPort, baudRate, webServerStarted);
-                }
-                catch (Exception ex)
-                {
-                    webServerError = ex;
-                    webServerStarted.Set();
-                }
-            })
-            {
-                Name = "WebServer",
-                IsBackground = true
-            };
-            webServerThread.Start();
+            // This console is the monitor screen: machine errors go to its message list rather
+            // than being printed over it.
+            AppState.SuppressErrors = true;
+            bool webServerStoppedItself = false;
+            Action<string> onMachineError = msg => AddMessage(messages, msg, isError: true);
+            AppState.Machine.NonFatalException += onMachineError;
 
-            Logger.Log("ServerMenu.RunServer: waiting for web server to signal ready");
-            webServerStarted.WaitOne(WebServerStartTimeoutMs);
-            Logger.Log("ServerMenu.RunServer: web server signaled (error={0})", webServerError != null);
-            if (webServerError != null)
+            try
             {
+                Logger.Log("ServerMenu.RunServer: starting web server thread");
+                Exception? webServerError = null;
+                var webServerStarted = new ManualResetEvent(false);
+
+                var webServerThread = new Thread(() =>
+                {
+                    try
+                    {
+                        CncWebServer.Run(webPort, webServerStarted, proxy);
+                    }
+                    catch (Exception ex)
+                    {
+                        webServerError = ex;
+                        webServerStarted.Set();
+                    }
+                })
+                {
+                    Name = "WebServer",
+                    IsBackground = true
+                };
+                webServerThread.Start();
+
+                Logger.Log("ServerMenu.RunServer: waiting for web server to signal ready");
+                webServerStarted.WaitOne(WebServerStartTimeoutMs);
+                Logger.Log("ServerMenu.RunServer: web server signaled (error={0})", webServerError != null);
+                if (webServerError != null)
+                {
+                    proxy.Stop();
+
+                    if (exitToMenu)
+                    {
+                        MenuHelpers.ShowFailureAndWait(
+                            CliConstants.FailedStartingTheWebServer, webServerError);
+                        return;
+                    }
+
+                    MenuHelpers.ShowFailure(CliConstants.FailedStartingTheWebServer, webServerError);
+                    Environment.Exit(1);
+                }
+
+                var exitRequested = false;
+                Console.CancelKeyPress += (_, e) =>
+                {
+                    e.Cancel = true;
+                    exitRequested = true;
+                };
+
+                // A web server that stopped on its own has let go of the machine and refuses
+                // every terminal, so server mode ends with it.
+                MonitorServer(proxy, proxyPort, webPort, messages,
+                    () => exitRequested || !webServerThread.IsAlive);
+                webServerStoppedItself = !exitRequested;
+
+                CncWebServer.Stop();
+                webServerThread.Join(ShutdownTimeoutMs);
                 proxy.Stop();
-
-                if (exitToMenu)
-                {
-                    MenuHelpers.ShowFailureAndWait(
-                        CliConstants.FailedStartingTheWebServer, webServerError);
-                    return;
-                }
-
-                MenuHelpers.ShowFailure(CliConstants.FailedStartingTheWebServer, webServerError);
-                Environment.Exit(1);
+            }
+            finally
+            {
+                AppState.Machine.NonFatalException -= onMachineError;
+                AppState.SuppressErrors = false;
             }
 
-            var exitRequested = false;
-            Console.CancelKeyPress += (_, e) =>
+            if (webServerStoppedItself)
             {
-                e.Cancel = true;
-                exitRequested = true;
-            };
-
-            MonitorServer(proxy, proxyPort, webPort, messages, () => exitRequested);
-
-            CncWebServer.Stop();
-            webServerThread.Join(2000);
-            proxy.Stop();
+                Logger.Log("ServerMenu.RunServer: the web server stopped by itself");
+                if (!exitToMenu)
+                {
+                    MenuHelpers.ShowError(CliConstants.WebServerStoppedItself);
+                    Environment.Exit(1);
+                }
+                MenuHelpers.ShowError(CliConstants.WebServerStoppedItself);
+            }
 
             if (!exitToMenu)
             {
@@ -232,28 +269,37 @@ namespace coppercli.Menus
             proxy.Info += msg =>
             {
                 Logger.Log($"Proxy: {msg}");
-                lock (messages)
-                {
-                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {msg}");
-                    while (messages.Count > MaxMessages)
-                    {
-                        messages.RemoveAt(0);
-                    }
-                }
+                AddMessage(messages, msg, isError: false);
             };
 
             proxy.Error += msg =>
             {
                 Logger.Log($"Proxy error: {msg}");
-                lock (messages)
-                {
-                    messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {AnsiError}{msg}{AnsiReset}");
-                    while (messages.Count > MaxMessages)
-                    {
-                        messages.RemoveAt(0);
-                    }
-                }
+                AddMessage(messages, msg, isError: true);
             };
+        }
+
+        /// <summary>
+        /// Adds a line to the monitor's message list. A line the same as the last one is
+        /// dropped, so a machine that fails to connect every few seconds does not push out
+        /// everything else.
+        /// </summary>
+        private static void AddMessage(List<string> messages, string text, bool isError)
+        {
+            string body = isError ? $"{AnsiError}{text}{AnsiReset}" : text;
+            lock (messages)
+            {
+                if (messages.Count > 0 && messages[^1].EndsWith(body))
+                {
+                    return;
+                }
+
+                messages.Add($"{AnsiDim}{DateTime.Now:HH:mm:ss}{AnsiReset} {body}");
+                while (messages.Count > MaxMessages)
+                {
+                    messages.RemoveAt(0);
+                }
+            }
         }
 
         private static void MonitorServer(SerialProxy proxy, int proxyPort, int webPort, List<string> messages, Func<bool> shouldExit)
@@ -314,7 +360,7 @@ namespace coppercli.Menus
             }
             WriteLineTruncated("", winWidth);
 
-            // One client at a time: the proxy and the web server share the one serial port.
+            // The proxy has at most one terminal, and only while the server has lent it the port.
             if (proxy.HasClient)
             {
                 var clientAddr = proxy.ClientAddress ?? "";

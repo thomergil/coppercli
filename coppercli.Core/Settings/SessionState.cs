@@ -19,6 +19,10 @@ namespace coppercli.Core.Settings
 
         public string ProbeSourceGCodeFile { get; set; } = "";
 
+        // The map file last saved or loaded. Saving deletes the autosave, so after a restart
+        // this is the only link from a saved map to its G-code.
+        public string LastProbeFile { get; set; } = "";
+
         public bool HasStoredWorkZero { get; set; } = false;
     }
 }

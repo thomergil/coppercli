@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using coppercli.Core.Communication;
 using coppercli.Core.Util;
 
 namespace coppercli.Tests.Fakes
@@ -17,7 +18,15 @@ namespace coppercli.Tests.Fakes
     /// </summary>
     public sealed class FakeGrbl : IDisposable
     {
-        private const string WelcomeBanner = "grbl v1.1f ['$' for help]";
+        /// <summary>What GRBL 1.1f prints each time it starts.</summary>
+        private const string WelcomeBanner = "Grbl 1.1f ['$' for help]";
+
+        /// <summary>The alarm GRBL reports when a reset ends a homing cycle.</summary>
+        private const int AlarmHomingReset = 6;
+
+        /// <summary>What GRBL prints after a reset that left it alarmed.</summary>
+        private const string AlarmLockMessage = "[MSG:'$H'|'$X' to unlock]";
+
         private const byte StatusQuery = (byte)'?';
         private const byte CycleStart = (byte)GrblProtocol.CycleStart;
         private const byte FeedHold = (byte)GrblProtocol.FeedHold;
@@ -41,6 +50,17 @@ namespace coppercli.Tests.Fakes
         private string _state = GrblProtocol.StatusIdle;
         private string _subState = string.Empty;
 
+        // When GRBL answers again, and why it stopped: a homing cycle, or a restart.
+        private long _answeringAgainAtMs;
+        private bool _homing;
+        private bool _restarting;
+        private bool _restartAlarmed;
+
+        // Lines that arrived during a homing cycle. GRBL still takes the bytes and answers
+        // them once the cycle ends. Lines that arrive during a restart are dropped instead:
+        // GRBL clears its receive buffer as it starts.
+        private readonly List<string> _deferred = new();
+
         public FakeGrbl()
         {
             _door = new DoorModel(SetState, () => GrblProtocol.StatusIdle);
@@ -57,6 +77,36 @@ namespace coppercli.Tests.Fakes
 
         /// <summary>Every probe reports contact here; this fake never reports a miss.</summary>
         public double ProbeContactZ { get; set; } = -1.0;
+
+        /// <summary>
+        /// How long the homing cycle runs; zero finishes it before the $H is answered, for a
+        /// test that does not care about the wait. GRBL drives the cycle from a loop that
+        /// services no status query, so it answers nothing until the cycle ends.
+        /// </summary>
+        public int HomingMs { get; set; }
+
+        /// <summary>
+        /// How long a restart takes: GRBL answers nothing and drops every line until it prints
+        /// its banner at the end. Zero restarts at once.
+        /// </summary>
+        public int RebootMs { get; set; }
+
+        /// <summary>
+        /// GRBL restarting on its own - a reset button, a brown-out - with nothing sent by
+        /// coppercli. It comes back alarmed, as a board that requires homing does.
+        /// </summary>
+        public void SimulateRestart() => Restart(alarmed: true);
+
+        /// <summary>
+        /// A homing cycle failing as GRBL 1.1 reports it: the alarm, then the ok its $H
+        /// handler still returns after the abort, then a restart.
+        /// </summary>
+        public void SimulateHomingFailure(int alarmCode)
+        {
+            Send($"{GrblProtocol.ResponseAlarmPrefix}:{alarmCode}");
+            Send(GrblProtocol.ResponseOk);
+            Restart(alarmed: true);
+        }
 
         /// <summary>Every line sent, in order, without its terminator.</summary>
         public IReadOnlyList<string> Received
@@ -168,8 +218,20 @@ namespace coppercli.Tests.Fakes
                     return;
                 }
 
+                // Whatever silenced GRBL ends on its own, and the only clock this fake has
+                // is the bytes arriving on it. The real Machine polls '?' throughout, so one
+                // lands every poll interval whether or not it is answered.
+                AnswerAgainIfDue();
+
                 // Real-time bytes arrive anywhere in the stream, including mid-line.
-                if (b == StatusQuery) { SendStatus(); continue; }
+                if (b == StatusQuery)
+                {
+                    if (!IsSilent)
+                    {
+                        SendStatus();
+                    }
+                    continue;
+                }
 
                 if (b == FeedHold)
                 {
@@ -184,12 +246,17 @@ namespace coppercli.Tests.Fakes
                 if (b == SoftReset)
                 {
                     Record(SoftResetMark);
-                    SetState(
-                        DoorModel.ResetAlarms(_state)
-                            ? GrblProtocol.StatusAlarm
-                            : GrblProtocol.StatusIdle,
-                        DoorModel.ResetAlarms(_state) ? "1" : string.Empty);
-                    Send(WelcomeBanner);
+
+                    // GRBL's homing loop watches for the reset byte and fails the cycle with
+                    // an alarm, which is the one way a stop can leave a machine that was
+                    // idle a moment earlier refusing every G-code line that follows.
+                    if (_homing)
+                    {
+                        Send($"{GrblProtocol.ResponseAlarmPrefix}:{AlarmHomingReset}");
+                    }
+
+                    line.Clear();
+                    Restart(_homing || DoorModel.ResetAlarms(_state));
                     continue;
                 }
 
@@ -230,6 +297,15 @@ namespace coppercli.Tests.Fakes
         {
             Record(line);
 
+            if (IsSilent)
+            {
+                if (!_restarting)
+                {
+                    lock (_lock) { _deferred.Add(line); }
+                }
+                return;
+            }
+
             if (DoorModel.ClearsAlarm(line, _state))
             {
                 SetState(GrblProtocol.StatusIdle, string.Empty);
@@ -246,6 +322,15 @@ namespace coppercli.Tests.Fakes
                 return;
             }
 
+            // GRBL locks G-code out in alarm and takes only its own $ commands until the
+            // alarm is cleared. A fake that moved anyway would report a safety retract as
+            // having run on a machine that refused it.
+            if (DoorModel.LockedOut(line, _state))
+            {
+                Send($"{GrblProtocol.ResponseErrorPrefix}{GrblRejection.LockedOut}");
+                return;
+            }
+
             if (line.StartsWith(GrblProtocol.CmdViewParameters, StringComparison.Ordinal))
             {
                 Send("[G54:0.000,0.000,0.000]");
@@ -258,8 +343,19 @@ namespace coppercli.Tests.Fakes
 
             if (line.StartsWith(GrblProtocol.CmdHome, StringComparison.Ordinal))
             {
-                _x = _y = _z = 0;
-                Send(GrblProtocol.ResponseOk);
+                // The status poll runs on its own schedule, so a '?' issued just before the
+                // $H is answered just after it. That report says nothing about whether GRBL
+                // accepted the command, and a caller that judged the $H by it gets it wrong.
+                SendStatus();
+
+                if (HomingMs <= 0)
+                {
+                    FinishHoming();
+                    return;
+                }
+
+                _homing = true;
+                GoSilent(HomingMs);
                 return;
             }
 
@@ -312,6 +408,87 @@ namespace coppercli.Tests.Fakes
             return double.TryParse(word, NumberStyles.Float, CultureInfo.InvariantCulture, out double v)
                 ? v
                 : null;
+        }
+
+        /// <summary>True while GRBL is busy in a routine that answers no status query.</summary>
+        private bool IsSilent => Environment.TickCount64 < _answeringAgainAtMs;
+
+        private void GoSilent(int forMs) =>
+            _answeringAgainAtMs = Environment.TickCount64 + forMs;
+
+        /// <summary>
+        /// Ends a homing cycle or a restart once its time is up: a restart prints the banner,
+        /// a cycle answers its $H, and lines held during the cycle are answered in order.
+        /// </summary>
+        private void AnswerAgainIfDue()
+        {
+            if (IsSilent)
+            {
+                return;
+            }
+
+            if (_restarting)
+            {
+                _restarting = false;
+                Send(WelcomeBanner);
+                if (_restartAlarmed)
+                {
+                    Send(AlarmLockMessage);
+                }
+            }
+
+            if (_homing)
+            {
+                FinishHoming();
+            }
+
+            string[] waiting;
+            lock (_lock)
+            {
+                if (_deferred.Count == 0)
+                {
+                    return;
+                }
+
+                waiting = _deferred.ToArray();
+                _deferred.Clear();
+            }
+
+            foreach (string line in waiting)
+            {
+                Handle(line);
+            }
+        }
+
+        /// <summary>
+        /// GRBL starting again: it drops every line it held, runs nothing it had planned, and
+        /// prints its banner when it is back.
+        /// </summary>
+        private void Restart(bool alarmed)
+        {
+            _homing = false;
+            lock (_lock)
+            {
+                _deferred.Clear();
+                _queued.Clear();
+            }
+
+            SetState(alarmed ? GrblProtocol.StatusAlarm : GrblProtocol.StatusIdle, string.Empty);
+
+            _restartAlarmed = alarmed;
+            _restarting = true;
+            GoSilent(RebootMs);
+            AnswerAgainIfDue();
+        }
+
+        /// <summary>The machine is at the origin, the cycle's ok arrives, and '?' is answered
+        /// again.</summary>
+        private void FinishHoming()
+        {
+            _homing = false;
+            _x = _y = _z = 0;
+            SetState(GrblProtocol.StatusIdle, string.Empty);
+            Send(GrblProtocol.ResponseOk);
         }
 
         private void SendStatus()

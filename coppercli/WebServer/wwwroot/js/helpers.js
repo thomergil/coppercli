@@ -80,6 +80,7 @@ import {
     TEXT_PROBE_STATE_READY,
     TEXT_PROBE_STATE_PARTIAL,
     TEXT_PROBE_STATE_COMPLETE,
+    TEXT_PROBE_REMOVED_QUESTION,
     ZEROED_MAP_REAPPLIED,
     ZEROED_MAP_NOT_REAPPLIED,
     ZEROED_MAP_NOT_DISCARDED,
@@ -227,21 +228,39 @@ export function showInfo(message) {
     showToast(message, 'info', TOAST_INFO_DURATION_MS);
 }
 
+/**
+ * Disables `buttons` for `settleMs`, so a tap meant for the last question cannot answer the
+ * one drawn in its place. Returns the timer, or null for no wait; clear it before settling the
+ * next question, or it enables that question's buttons early.
+ */
+export function settleButtons(buttons, settleMs) {
+    buttons.forEach(btn => { btn.disabled = settleMs > 0; });
+    if (settleMs <= 0) {
+        return null;
+    }
+    return setTimeout(() => buttons.forEach(btn => { btn.disabled = false; }), settleMs);
+}
+
 /** Resolve the current question before displaying another one. */
 let pendingConfirm = null;
 
+let confirmSettleTimer = null;
+
+export function isConfirmOpen() {
+    return pendingConfirm !== null;
+}
+
 /**
- * Asks the operator, in place of the browser's own confirm(). `options.danger` adds the
- * warning icon and the red text.
+ * The browser's confirm(), resolving true, false, or null if another question replaced this one
+ * first. `options.danger` adds the warning icon and red text; `options.settleMs` goes to
+ * settleButtons.
  */
 export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
     return new Promise((resolve) => {
-        // A second question replaces the modal's handlers. Resolve the first as false
-        // so its promise completes.
         if (pendingConfirm) {
             const previousResolve = pendingConfirm;
             pendingConfirm = null;
-            previousResolve(false);
+            previousResolve(null);
         }
         pendingConfirm = resolve;
 
@@ -260,10 +279,16 @@ export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
             messageEl.classList.remove(CLASS_CONFIRM_DANGER);
         }
 
+        clearTimeout(confirmSettleTimer);
+        confirmSettleTimer = settleButtons([yesBtn, noBtn], options.settleMs ?? 0);
+
         const cleanup = () => {
+            clearTimeout(confirmSettleTimer);
+            confirmSettleTimer = null;
             pendingConfirm = null;
             modal.classList.add(CLASS_HIDDEN);
             messageEl.classList.remove(CLASS_CONFIRM_DANGER);
+            yesBtn.disabled = noBtn.disabled = false;
             yesBtn.onclick = null;
             noBtn.onclick = null;
         };
@@ -451,6 +476,11 @@ export async function validateConstants() {
 
         if (server.probeGridExtension) {
             check(PROBE_FILE_EXTENSION, server.probeGridExtension, 'PROBE_FILE_EXTENSION');
+        }
+
+        if (server.probeRemovedQuestion) {
+            check(TEXT_PROBE_REMOVED_QUESTION, server.probeRemovedQuestion,
+                'TEXT_PROBE_REMOVED_QUESTION');
         }
 
         if (server.zeroWarning) {

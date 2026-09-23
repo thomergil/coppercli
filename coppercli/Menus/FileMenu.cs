@@ -542,15 +542,18 @@ namespace coppercli.Menus
                 if (whyDropped != null)
                 {
                     AnsiConsole.MarkupLine(
-                        $"[{ColorWarning}]Discarded the height map - {Markup.Escape(whyDropped)}. " +
-                        $"Probe again before milling.[/]");
+                        $"[{ColorWarning}]{string.Format(HeightMapDiscardedOnLoad, Markup.Escape(whyDropped))}[/]");
                 }
 
-                // `CurrentProbeGrid` covers the loaded map and the matching autosave behind
-                // it; `ProbePoints` alone would never offer the autosave here.
-                if (ProbeGrid.StateOf(AppState.CurrentProbeGrid) == ProbeDataState.Complete)
+                // The session questions settle any saved map or unadopted autosave, so the
+                // apply question below covers only an adopted map.
+                SessionRestore.AskPendingSteps(
+                    step => MenuHelpers.AskSessionStep(step, offerQuit: false),
+                    MenuHelpers.ShowError);
+
+                if (AppState.HasCompleteMapNotApplied)
                 {
-                    if (MenuHelpers.Confirm("Apply the existing height map to this file?", true))
+                    if (MenuHelpers.Confirm(ExistingHeightMapQuestion, true))
                     {
                         string? notApplied = AppState.ApplyProbeData();
                         if (notApplied == null)

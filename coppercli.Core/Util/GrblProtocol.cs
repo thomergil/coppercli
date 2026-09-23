@@ -10,13 +10,12 @@ namespace coppercli.Core.Util
         public const string ResponseErrorPrefix = "error:";
         public const string ResponseProbePrefix = "[PRB:";
         public const string ResponseAlarmPrefix = "ALARM";
-        public const string ResponseGrblPrefix = "grbl";
+        public const string ResponseGrblPrefix = "grbl";   // GRBL prints "Grbl"; matched ignoring case
         public const string ResponseTloPrefix = "[TLO:";
         public const string ResponseG54Prefix = "[G54:";   // $# reports the G54 offset itself
 
         public const string FieldOverride = "Ov";
         public const string FieldWorkCoordOffset = "WCO";
-        public const string FieldBuffer = "Bf";
         public const string FieldPins = "Pn";
         public const string FieldFeed = "F";
         public const string FieldFeedSpindle = "FS";
@@ -69,6 +68,12 @@ namespace coppercli.Core.Util
 
         public const string CmdHome = "$H";
         public const string CmdUnlock = "$X";
+
+        /// <summary>
+        /// What marks a GRBL system command rather than a line of G-code. GRBL takes these
+        /// while it is alarmed and locks G-code out, which is how $X can clear the alarm.
+        /// </summary>
+        public const string SystemCommandPrefix = "$";
         public const string CmdViewGCodeState = "$G";
         public const string CmdViewParameters = "$#";
 

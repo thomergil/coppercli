@@ -725,6 +725,22 @@ namespace coppercli.Helpers
         }
 
         /// <summary>
+        /// Puts one session question to the operator, its detail dimmed above it. With
+        /// <paramref name="offerQuit"/>, null means the operator quit.
+        /// </summary>
+        internal static bool? AskSessionStep(SessionRestoreStep step, bool offerQuit)
+        {
+            if (!string.IsNullOrEmpty(step.Detail))
+            {
+                AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(step.Detail)}[/]");
+            }
+
+            return offerQuit
+                ? ConfirmOrQuit(step.Question, step.DefaultYes)
+                : Confirm(step.Question, step.DefaultYes);
+        }
+
+        /// <summary>
         /// Escape returns the default, and the first keypress answers, with no Enter needed.
         /// </summary>
         public static bool Confirm(string message, bool defaultYes = false) =>

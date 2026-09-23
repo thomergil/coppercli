@@ -10,6 +10,7 @@ using coppercli.Core.Controllers;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
 using Xunit;
+using static coppercli.Core.Controllers.ControllerConstants;
 
 namespace coppercli.Tests
 {
@@ -20,6 +21,12 @@ namespace coppercli.Tests
     {
         /// <summary>Long enough that reaching it means the run never started at all.</summary>
         private const int HangDetectMs = 10000;
+
+        /// <summary>
+        /// How long a homing test waits for GRBL's answer. Long enough for a double that
+        /// answers to get there, short enough that one which never does ends the test.
+        /// </summary>
+        private const int HomingAnswerWaitMs = 1000;
 
         /// <summary>
         /// If the failed retract is returned rather than thrown, the run unwinds as a normal
@@ -96,17 +103,16 @@ namespace coppercli.Tests
 
         /// <summary>
         /// Closing the port does not stop GRBL, so a machine reporting anything but Idle is
-        /// stopped first. Machine.Status holds the bare state word with any substate kept
-        /// separately; "Jog" and "Home" are written out because the codebase has no
-        /// constants for them.
+        /// stopped first. Machine.Status holds the state without its substate, which is kept
+        /// separately.
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.StatusRun)]
         [InlineData(GrblProtocol.StatusHold)]
         [InlineData(GrblProtocol.StatusDoor)]
         [InlineData(GrblProtocol.StatusAlarm)]
-        [InlineData("Jog")]
-        [InlineData("Home")]
+        [InlineData(GrblProtocol.StatusJog)]
+        [InlineData(GrblProtocol.StatusHome)]
         public void NeedsStopBeforeDisconnect_IsTrueWhenTheMachineIsNotIdle(string status)
         {
             Assert.True(Machine.NeedsStopBeforeDisconnect(connected: true, status, bytesSent: 0));
@@ -120,19 +126,29 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// A stop waits out the whole teardown - feed hold, reset, unlock, idle, then the
-        /// retract - so its timeout has to cover the sum. A shorter timeout reports a stop
-        /// that worked as one that may have left the machine moving.
+        /// A stop waits out the whole teardown, so its timeout must cover the sum. Too short,
+        /// and the operator is told the stop is done while the retract is still outstanding
+        /// and the tool still down. The sum follows MachineWait.StopAndResetAsync and
+        /// ControllerBase.StopAndLiftAsync step by step; change it when they change.
         /// </summary>
         [Fact]
-        public void ControllerCancelTimeout_CoversStopSequenceAndRetract()
+        public void ControllerCancelTimeout_CoversTheStopSequenceTheStopRuns()
         {
-            int teardown = (Constants.CommandDelayMs * 2)
-                + Constants.ResetWaitMs
-                + Constants.IdleWaitTimeoutMs
-                + Constants.CancelRetractTimeoutMs;
+            // MachineWait.StopAndResetAsync
+            int stopAndReset = Constants.CommandDelayMs
+                + Constants.ResetAnnounceTimeoutMs + Constants.CommandAnswerTimeoutMs   // the unlock
+                + Constants.CommandAnswerTimeoutMs                                       // the spindle stop
+                + Constants.IdleWaitTimeoutMs;
 
-            Assert.True(Constants.ControllerCancelTimeoutMs >= teardown);
+            // What the controller undoes between the stop and the lift. MillingController
+            // restores the depth adjustment: it reads the offsets back and writes them.
+            int betweenStopAndLift = (Constants.WorkOffsetQueryTimeoutMs * 2) + Constants.CommandDelayMs;
+
+            int teardown = stopAndReset + betweenStopAndLift + Constants.CancelRetractTimeoutMs;
+
+            Assert.True(Constants.ControllerCancelTimeoutMs >= teardown,
+                $"a stop can take {teardown}ms and is abandoned after "
+                + $"{Constants.ControllerCancelTimeoutMs}ms, with the retract still outstanding");
         }
 
         /// <summary>
@@ -213,46 +229,92 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// GRBL keeps answering and keeps reporting Idle: the $H was rejected (homing
-        /// disabled, or an error reply). Accepting that as homed would leave every later
-        /// G53 safety move referenced to an origin that was never established.
+        /// GRBL answers $H once the cycle is over, so a $H it never answers is the one case a
+        /// caller must not read as success - whether the command was dropped, the link died,
+        /// or the cycle is still running. Every later G53 safety move is referenced to the
+        /// origin homing establishes, so certifying one that never happened aims them all at
+        /// an origin the machine does not have.
         /// </summary>
         [Fact]
-        public async Task Home_IsRefused_WhenGrblKeepsAnsweringAndStaysIdle()
+        public async Task Home_IsRefused_WhenTheMachineNeverAnswersTheCommand()
         {
-            var machine = new MockMachine { Status = "Idle", StatusReportCount = 1 };
+            var machine = new MockMachine { Status = "Idle", AnswerTo = _ => GrblReply.NoAnswer };
 
-            // HomeAsync separates a refused $H from a cycle under way by whether
-            // StatusReportCount keeps advancing; this pump keeps it advancing.
-            using var reporting = new CancellationTokenSource();
-            var pump = Task.Run(async () =>
-            {
-                while (!reporting.IsCancellationRequested)
-                {
-                    machine.StatusReportCount++;
-                    await Task.Delay(20);
-                }
-            });
-
-            var outcome = await MachineWait.HomeAsync(machine, 500);
-            reporting.Cancel();
-            await pump;
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs);
 
             Assert.False(outcome.Success);
             Assert.False(machine.IsHomed);
+            Assert.False(machine.IsHoming, "the cycle was left marked as still running");
         }
 
+        /// <summary>
+        /// The ok for $H says the cycle finished. It arrives while the last status report is
+        /// still older than the command, so the state word has to catch up before it is read.
+        /// </summary>
         [Fact]
-        public async Task Home_IsRefused_WhenTheCycleNeverCompletes()
+        public async Task Home_IsAccepted_WhenTheMachineAnswersTheCommand()
         {
-            // No pump here, so StatusReportCount never advances: GRBL went quiet mid-cycle
-            // and never came back.
-            var machine = new MockMachine { Status = "Idle", StatusReportCount = 7 };
+            var machine = new MockMachine { Status = "Idle" };
 
-            var outcome = await MachineWait.HomeAsync(machine, 400);
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs);
+
+            Assert.True(outcome.Success, outcome.Reason ?? "no reason given");
+            Assert.True(machine.IsHomed);
+        }
+
+        /// <summary>
+        /// A stop the operator asked for is not a homing failure. Every sibling step of a run
+        /// reports cancellation by throwing, and ControllerBase reads the exception to end
+        /// the run Cancelled rather than Failed with an error on the screen.
+        /// </summary>
+        [Fact]
+        public async Task Home_ReportsCancellation_AsCancellation()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusIdle, AnswerTo = _ => GrblReply.NoAnswer };
+            using var cts = new CancellationTokenSource();
+            cts.CancelAfter(Constants.StatusPollIntervalMs);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => MachineWait.HomeAsync(machine, Constants.HomingTimeoutMs, cts.Token));
+        }
+
+        /// <summary>
+        /// A cleanup path runs on a token that is already cancelled. Sending the $H anyway
+        /// starts a cycle the caller then reports as refused - the shape of the incident this
+        /// work came from, one layer up.
+        /// </summary>
+        [Fact]
+        public async Task Home_OnAnAlreadyCancelledToken_StartsNoCycle()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusIdle, AnswerTo = _ => GrblReply.NoAnswer };
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => MachineWait.HomeAsync(machine, Constants.HomingTimeoutMs, cts.Token));
+
+            Assert.DoesNotContain(GrblProtocol.CmdHome, machine.SentCommands);
+        }
+
+        /// <summary>
+        /// GRBL answers nothing for a cycle it abandons, so a machine that alarmed part-way
+        /// is not homed and does not claim to be. Which alarm fired is GRBL's to say and it
+        /// has already said it, so this does not name one on its behalf.
+        /// </summary>
+        [Fact]
+        public async Task Home_IsNotHomed_WhenTheCycleWasAbandoned()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusIdle,
+                AnswerTo = _ => GrblReply.Abandoned
+            };
+
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs);
 
             Assert.False(outcome.Success);
             Assert.False(machine.IsHomed);
+            Assert.Equal(ErrorHomingInterrupted, outcome.Reason);
         }
 
         [Fact]
@@ -360,23 +422,14 @@ namespace coppercli.Tests
         [Fact]
         public async Task Home_ExplainsThatTheMachineHasHomingDisabled()
         {
-            var machine = new MockMachine { Status = "Idle", StatusReportCount = 1 };
-
-            using var reporting = new CancellationTokenSource();
-            var pump = Task.Run(async () =>
+            var machine = new MockMachine
             {
-                machine.SimulateRejection(GrblRejection.HomingNotEnabled, "$H");
+                Status = "Idle",
+                AnswerTo = line => GrblReply.Refused(
+                    new GrblRejection(GrblRejection.HomingNotEnabled, line, string.Empty))
+            };
 
-                while (!reporting.IsCancellationRequested)
-                {
-                    machine.StatusReportCount++;
-                    await Task.Delay(20);
-                }
-            });
-
-            var outcome = await MachineWait.HomeAsync(machine, 500);
-            reporting.Cancel();
-            await pump;
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs);
 
             Assert.False(outcome.Success);
             Assert.NotNull(outcome.Reason);

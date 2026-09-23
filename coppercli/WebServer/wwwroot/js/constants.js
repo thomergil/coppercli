@@ -66,9 +66,6 @@ export const SCREEN_SUFFIX = '-screen';
 // JS-only: CSS class names.
 export const CLASS_HIDDEN = 'hidden';
 
-// The door overlay when there is nothing to answer: a banner across the page rather than a
-// layer over it.
-export const CLASS_DOOR_MESSAGE = 'door-overlay-message';
 export const CLASS_ACTIVE = 'active';
 export const CLASS_CONNECTED = 'connected';
 export const CLASS_ALARM = 'alarm';
@@ -110,7 +107,6 @@ export const TEXT_STOP = 'STOP';
 export const CLASS_BTN_DANGER = 'btn-danger';
 export const CLASS_BTN_SUCCESS = 'btn-success';
 export const CLASS_BTN_WARNING = 'btn-warning';
-export const TEXT_UPLOAD = 'Upload';
 export const TEXT_UPLOADING = 'Uploading...';
 export const TEXT_PROBE_APPLIED = 'applied';
 export const TEXT_PROBE_NOT_APPLIED = 'not applied';
@@ -140,7 +136,6 @@ export const TEXT_LOAD_PROBE_DATA = 'Load Probe Data';
 export const TEXT_DISCARD = 'Discard';
 export const TEXT_CLEAR = 'Clear';
 export const TEXT_ENTER_FILENAME = 'Enter a filename';
-export const TEXT_WORK_ZERO_TRUSTED = 'Work origin kept';
 export const TEXT_ZEROED_Z = 'Z zeroed';
 export const TEXT_ZEROED_ALL = 'All axes zeroed';
 // The axes line and what became of the height map, on one line.
@@ -161,8 +156,7 @@ export const HEIGHT_MAP_TEXT_BY_OUTCOME = {
     [ZEROED_MAP_DISCARDED]: 'height map discarded',
     [ZEROED_FILE_LEFT_ALONE]: 'height map kept for this run'
 };
-export const TEXT_WORK_ZERO_NOT_TRUSTED =
-    'The work origin was not kept. Set it again before probing or milling.';
+export const TEXT_SESSION_ANSWER_FAILED = 'That answer could not be carried out';
 export const TEXT_PROBE_RECOVERED = 'Recovered {0}/{1} probe points';
 export const TEXT_GRID_SUMMARY = 'Grid: {0}x{1} = {2} points';
 export const TEXT_GRID_COMPLETE = '{0} (complete)';
@@ -204,8 +198,7 @@ export const TEXT_SETTINGS_SAVE_FAILED = 'Could not save the settings';
 export const TEXT_NO_FILE_LOADED = 'Load a G-code file first';
 export const TEXT_ABORT_MILLING_CONFIRM = 'Abort milling?';
 export const TEXT_ABORT_MILLING_TITLE = 'Abort';
-export const TEXT_PROBE_REMOVED_CONFIRM = 'Probing equipment removed?';
-export const TEXT_START_MILLING_TITLE = 'Start Milling';
+export const TEXT_PROBE_REMOVED_QUESTION = 'Probing equipment removed?';
 export const TEXT_TOOL_CHANGE_FAILED = 'The tool change did not finish';
 export const ERROR_LOST_CONTACT = 'Lost contact with the machine. Check it.';
 export const TEXT_NOT_LOADED = '[not loaded]';
@@ -348,7 +341,6 @@ export const CMD_RESUME = 'resume';
 
 // Duplicated from WebConstants.cs (Api*). A path that does not match exactly reaches no
 // handler.
-export const API_STATUS = '/api/status';
 export const API_CONFIG = '/api/config';
 export const API_CONSTANTS = '/api/constants';
 export const API_ZERO = '/api/zero';
@@ -384,9 +376,9 @@ export const API_PROBE_FILES = '/api/probe/files';
 export const API_PROBE_DISCARD = '/api/probe/discard';
 export const API_SETTINGS = '/api/settings';
 export const API_PROFILES = '/api/profiles';
-export const API_TRUST_WORK_ZERO = '/api/trust-work-zero';
+export const API_SESSION_RESTORE = '/api/session/restore';
 export const API_PROBE_RECOVER_AUTOSAVE = '/api/probe/recover-autosave';
-export const API_FORCE_DISCONNECT = '/api/force-disconnect';
+export const API_BROWSER_TAKEOVER = '/api/browser-takeover';
 
 // Fetched at run time through /api/config and held in state.js: jogModes (names and
 // distances), probeDefaults (margin and grid size), millGrid (the mill picture's largest

@@ -67,7 +67,20 @@ namespace coppercli
         // Created on first use, because Machine is assigned during startup.
         private static MillingController? _millingController;
         public static MillingController Milling =>
-            _millingController ??= new MillingController(Machine);
+            _millingController ??= CreateMillingController();
+
+        private static MillingController CreateMillingController()
+        {
+            var controller = new MillingController(Machine);
+            controller.StateChanged += state =>
+            {
+                if (state == ControllerState.Completed)
+                {
+                    DeleteStoredMapsForLoadedFile();
+                }
+            };
+            return controller;
+        }
 
         private static ToolChangeController? _toolChangeController;
         public static ToolChangeController ToolChange =>
@@ -98,6 +111,11 @@ namespace coppercli
         // Only ApplyProbeData sets this true, and only ResetProbeApplicationState sets it
         // back to false.
         public static bool AreProbePointsApplied { get; private set; } = false;
+
+        /// <summary>A complete map is adopted but not yet applied to the G-code.</summary>
+        public static bool HasCompleteMapNotApplied =>
+            ProbePoints is { HasCompleteData: true } && !AreProbePointsApplied;
+
         /// <summary>
         /// Whether the work origin is known, written only through the three setters below.
         /// </summary>
@@ -244,7 +262,15 @@ namespace coppercli
         /// first would double the corrections.
         /// </summary>
         /// <returns>The grid, or null with the reason it was refused.</returns>
-        public static (ProbeGrid? Grid, string? Refused) LoadProbeGridFromFile(string path)
+        public static (ProbeGrid? Grid, string? Refused) LoadProbeGridFromFile(string path) =>
+            AdoptProbeGridFromFile(ProbeGrid.Load(path), path);
+
+        /// <summary>
+        /// Adopts a grid already read from <paramref name="path"/>, so a caller adopts the grid
+        /// it checked instead of reading the file again.
+        /// </summary>
+        /// <returns>The grid, or null with the reason it was refused.</returns>
+        public static (ProbeGrid? Grid, string? Refused) AdoptProbeGridFromFile(ProbeGrid grid, string path)
         {
             if (AreProbePointsApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
                 File.Exists(Session.LastLoadedGCodeFile))
@@ -258,7 +284,6 @@ namespace coppercli
                 Logger.Log("LoadProbeGridFromFile: reloaded original G-code before loading new probe grid");
             }
 
-            var grid = ProbeGrid.Load(path);
             string? notAdopted = AdoptProbeGrid(grid);
             if (notAdopted != null)
             {
@@ -268,6 +293,7 @@ namespace coppercli
             // A grid from a file is already saved, so anything in the autosave belongs to an
             // earlier one and would otherwise be offered as unsaved work.
             Persistence.ClearProbeAutoSave();
+            Persistence.RememberProbeFile(path);
             return (grid, null);
         }
 
@@ -405,7 +431,7 @@ namespace coppercli
 
             // Applying is an operator action, so it may adopt the autosave; a status read may
             // not. Assigning ProbePoints directly here skipped ResetProbeApplicationState.
-            if (ProbePoints == null && ReadUsableAutosave() is ProbeGrid autosave)
+            if (ReadAutosaveNotYetAdopted() is ProbeGrid autosave)
             {
                 string? notAdopted = AdoptProbeGrid(autosave);
                 if (notAdopted != null)
@@ -489,19 +515,74 @@ namespace coppercli
         /// board, or before the origin moved, comes back null. Reads the file and adopts
         /// nothing, so a status can ask without changing what the operator has.
         /// </summary>
-        public static ProbeGrid? ReadUsableAutosave()
+        public static ProbeGrid? ReadUsableAutosave() =>
+            UsableForThisJob(Persistence.ReadProbeAutoSave());
+
+        /// <summary>
+        /// The usable autosave while no map is adopted: the one the session questions offer to
+        /// keep until it is adopted.
+        /// </summary>
+        public static ProbeGrid? ReadAutosaveNotYetAdopted() =>
+            ProbePoints == null ? ReadUsableAutosave() : null;
+
+        /// <summary>
+        /// A height map describes the board in the machine, and a finished mill leaves that
+        /// board done, so the autosave and the saved map measured for the milled file are
+        /// deleted. The map in memory stays, so the same job can run again this session.
+        /// </summary>
+        internal static void DeleteStoredMapsForLoadedFile()
         {
-            var candidate = Persistence.ReadProbeAutoSave();
+            if (IsMeasuredForLoadedFile(Persistence.ReadProbeAutoSave()))
+            {
+                Persistence.ClearProbeAutoSave();
+            }
+
+            if (IsMeasuredForLoadedFile(Persistence.ReadProbeGrid(Session.LastProbeFile)))
+            {
+                Persistence.DeleteRememberedProbeFile();
+            }
+        }
+
+        /// <summary>
+        /// Measured for the loaded file, from any origin. Unknown when the map recorded no
+        /// file, so a map that may belong to another board is left alone.
+        /// </summary>
+        private static bool IsMeasuredForLoadedFile(ProbeGrid? grid) =>
+            DescribeApplicability(grid) is ProbeApplicability.Applicable or ProbeApplicability.OriginMoved;
+
+        /// <summary>
+        /// The height map file last saved or loaded, read without adopting it. Null unless a
+        /// G-code file is loaded, no map is adopted, and the map is complete, records its
+        /// G-code file, and is usable for the loaded one.
+        /// </summary>
+        public static ProbeGrid? ReadSavedProbeGridForLoadedFile()
+        {
+            if (CurrentFile == null || ProbePoints != null)
+            {
+                return null;
+            }
+
+            var saved = Persistence.ReadProbeGrid(Session.LastProbeFile);
+            return saved is { HasCompleteData: true, Context.IsKnown: true }
+                ? UsableForThisJob(saved)
+                : null;
+        }
+
+        /// <summary>
+        /// The one check that a map read from disk fits the loaded job, for both the autosave
+        /// and the saved map file. See rule <c>derived-artifact-records-its-context</c>.
+        /// </summary>
+        private static ProbeGrid? UsableForThisJob(ProbeGrid? candidate)
+        {
             if (candidate == null)
             {
                 return null;
             }
 
             var applicability = DescribeApplicability(candidate);
-
             if (!applicability.IsUsable())
             {
-                Logger.Log("ReadUsableAutosave: not applicable ({0})", applicability);
+                Logger.Log("UsableForThisJob: not applicable ({0})", applicability);
                 return null;
             }
 
@@ -572,7 +653,7 @@ namespace coppercli
 
             // The same check the status applies: a map measured for another board must not
             // be recovered as this job's data.
-            if (!DescribeApplicability(candidate).IsUsable())
+            if (UsableForThisJob(candidate) == null)
             {
                 return (null, CliConstants.ProbeAutosaveNotApplicable);
             }

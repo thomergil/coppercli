@@ -18,14 +18,22 @@ namespace coppercli
 
         public const int AutoDetectTimeoutMs = 2000;
 
-        public const int ForceDisconnectDelayMs = 500;
+        public const int TakeoverDelayMs = 500;
 
-        public const int ForceDisconnectApiTimeoutMs = 5000;
+        public const int TakeoverApiTimeoutMs = 5000;
+
+        public const string ServerHasTheMachine = "The coppercli server has the machine.";
+        public const string TakeOverFromServerQuestion = "Take the machine over from the server?";
+        public const string ServerNotReached = "Could not reach the coppercli server to take the machine over.";
+        public const string WebServerStoppedItself = "The web server stopped unexpectedly, so server mode has ended.";
 
         /// <summary>Shorter than the normal status poll, so jogging keeps up with the keyboard.</summary>
         public const int JogPollIntervalMs = 50;
 
         public const int ConfirmationDisplayMs = 1000;
+
+        /// <summary>How long "Settings saved" stays up before the settings screen redraws.</summary>
+        public const int SettingsSavedDisplayMs = 500;
 
         /// <summary>
         /// Ordered by likelihood. 115200 is the GRBL v0.9+ default, 250000 appears in high-speed
@@ -163,7 +171,7 @@ namespace coppercli
         public const string OverlayHoldMessage = "HOLD - Press R to resume";
 
         /// <summary>Asked before a run starts.</summary>
-        public const string SafetyChecklistMessage = "Probing equipment removed?";
+        public const string ProbeRemovedQuestion = "Probing equipment removed?";
 
         public const string SafetyDepthSubMessage = "↑/↓=Depth  Y=Start  Esc=Cancel";
 
@@ -406,6 +414,46 @@ namespace coppercli
         public const string ErrorAutosaveNotDeleted = "Could not delete the saved height map.";
 
         public const string HeightMapApplied = "Height map applied.";
+
+        public const string ExistingHeightMapQuestion = "Apply the existing height map to this file?";
+
+        // Session questions, shown by both front ends; SessionRestore decides which are asked.
+        public const string ReloadFileQuestion = "Reload the file you had open?";
+
+        public const string StoredWorkZeroQuestion = "Is the work origin still where you left it?";
+
+        public const string StoredWorkZeroDetail =
+            "The machine has kept its work offset. Say no if the workpiece has moved or been replaced.";
+
+        public const string UnfinishedHeightMapQuestion = "Keep the unfinished height map?";
+
+        public const string UnsavedHeightMapQuestion = "Keep the height map you have not saved?";
+
+        public const string SavedHeightMapQuestion = "Apply the height map you saved for this file?";
+
+        /// <summary>{0} is the map file's name; {1} describes what the map holds.</summary>
+        public const string SavedHeightMapDetail = "{0}: {1}";
+
+        /// <summary>{0} is the number of points.</summary>
+        public const string StoredMapPoints = "{0} points";
+
+        /// <summary>{0} is the points measured; {1} the points in the grid.</summary>
+        public const string StoredMapPointsMeasured = "{0} of {1} points measured";
+
+        /// <summary>{0} is the size, from StoredMapPoints or StoredMapPointsMeasured; {1} the G-code file's name.</summary>
+        public const string StoredMapMeasuredFor = "{0}, measured for {1}";
+
+        /// <summary>{0} is the size, from StoredMapPoints or StoredMapPointsMeasured.</summary>
+        public const string StoredMapFileNotRecorded =
+            "{0}, from an earlier session (the file it was measured for was not recorded)";
+
+        public const string StoredMapUndescribed = "stored height map";
+
+        public const string ErrorQuestionAlreadyAnswered = "That question has changed or has already been answered.";
+
+        public const string ErrorSavedHeightMapNotRead = "The saved height map could not be read.";
+
+        public const string HeightMapDiscardedOnLoad = "Discarded the height map - {0}. Probe again before milling.";
 
         /// <summary>
         /// The map is in the loaded G-code and the file it was applied to is gone, so the

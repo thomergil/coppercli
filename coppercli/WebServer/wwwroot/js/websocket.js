@@ -23,7 +23,7 @@ import {
     TEXT_FORCE_DISCONNECT_CONFIRM,
     TEXT_FORCE_DISCONNECT_FAILED,
     TITLE_FORCE_DISCONNECT,
-    API_FORCE_DISCONNECT,
+    API_BROWSER_TAKEOVER,
     WS_CLOSE_REASON_FORCE_DISCONNECT,
     FORCE_DISCONNECT_RELOAD_DELAY_MS,
     WS_PATH,
@@ -32,7 +32,7 @@ import {
     TEXT_CONNECTION_ERROR
 } from './constants.js';
 import { handleMillControllerEvent, handleToolChangeControllerEvent } from './mill.js';
-import { checkAndShowTrustZero } from './trust-zero.js';
+import { askPendingQuestions } from './session-restore.js';
 
 let pingInterval = null;
 
@@ -58,8 +58,9 @@ export function connectWebSocket() {
         state.reconnectAttempts = 0;
         showConnectionStatus(true);
 
+        // After a server restart every question is pending again.
         if (isReconnect) {
-            checkAndShowTrustZero();
+            askPendingQuestions();
         }
 
         // Without a keep-alive the server drops a socket that goes quiet during a long run.
@@ -149,8 +150,8 @@ async function handleConnectionError(data) {
     // Use otherClientConnected to offer take-over independently of error wording.
     if (data?.otherClientConnected === true) {
         if (await showConfirm(TEXT_FORCE_DISCONNECT_CONFIRM, TITLE_FORCE_DISCONNECT)) {
-            // This drops the serial port, so a refusal is shown rather than reloaded past.
-            const taken = await postJson(API_FORCE_DISCONNECT);
+            // A refused takeover is shown rather than reloaded past.
+            const taken = await postJson(API_BROWSER_TAKEOVER);
             if (!taken.ok) {
                 showError(taken.error || TEXT_FORCE_DISCONNECT_FAILED);
                 return;

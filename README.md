@@ -104,6 +104,12 @@ Server mode runs a TCP proxy and a web server at the same time:
 - **Port 34000**: raw GRBL over TCP, for TUI clients in Network mode
 - **Port 34001**: HTTP/WebSocket, for browser control
 
+The server connects to the machine when it starts and stays connected while it runs, so
+closing the browser or locking the phone does not lose homing or work zero. A TUI client
+on port 34000 takes the machine over by answering yes to "Take the machine over from the
+server?", which the server refuses while a job is running. The server connects again once
+that client leaves.
+
 Open the **web UI** by typing the address printed at startup, such as
 `http://192.168.1.5:34001`, into any browser on the same network. There is no password.
 

@@ -76,7 +76,7 @@ namespace coppercli.Tests
 
             Port = FreeTcpPort();
             var started = new ManualResetEvent(false);
-            _serverThread = new Thread(() => CncWebServer.Run(Port, "fake", Constants.DefaultBaudRate, started))
+            _serverThread = new Thread(() => CncWebServer.Run(Port, started))
             {
                 IsBackground = true,
                 Name = "CncWebServer(test)"
@@ -144,7 +144,8 @@ namespace coppercli.Tests
             Assert.Fail($"Timed out after {timeoutMs}ms waiting for: {what}");
         }
 
-        private static int FreeTcpPort()
+        /// <summary>A loopback port nothing is listening on.</summary>
+        internal static int FreeTcpPort()
         {
             var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
             listener.Start();

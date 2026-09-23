@@ -296,6 +296,12 @@ namespace coppercli.Core.Controllers
                     },
                     announce: message =>
                     {
+                        // Announced means the enclosure has moved off the state the operator
+                        // answered for - it is open, or still restoring. Their agreement
+                        // described the machine as it was then, so it does not carry across
+                        // to the hold that follows: ask before releasing that one.
+                        agreementCovers = false;
+
                         EmitProgress(new ProgressInfo(PhaseWaitingForOperator, 0, message));
                         announced = true;
                     },
@@ -428,6 +434,14 @@ namespace coppercli.Core.Controllers
         /// </summary>
         protected abstract void ResetRunState();
 
+        /// <summary>
+        /// The run StartAsync is executing: how to stop it, and when it has finished. Null
+        /// between runs.
+        /// </summary>
+        private sealed record RunInProgress(CancellationTokenSource Stop, TaskCompletionSource Ended);
+
+        private RunInProgress? _run;
+
         public async Task StartAsync(CancellationToken ct = default)
         {
             if (State != ControllerState.Idle)
@@ -440,6 +454,25 @@ namespace coppercli.Core.Controllers
             // reset the controller after the last one.
             ResetRunState();
 
+            var run = new RunInProgress(
+                CancellationTokenSource.CreateLinkedTokenSource(ct),
+                new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            Volatile.Write(ref _run, run);
+
+            try
+            {
+                await RunToTheEndAsync(run.Stop.Token);
+            }
+            finally
+            {
+                Volatile.Write(ref _run, null);
+                run.Ended.TrySetResult();
+                run.Stop.Dispose();
+            }
+        }
+
+        private async Task RunToTheEndAsync(CancellationToken ct)
+        {
             try
             {
                 TransitionTo(ControllerState.Initializing);
@@ -567,6 +600,24 @@ namespace coppercli.Core.Controllers
         {
             if (State == ControllerState.Idle)
             {
+                return;
+            }
+
+            // A run in progress is stopped the way the front ends stop it: cancel it and let
+            // it tear itself down. Cleaning up here as well would reset the machine a second
+            // time under that teardown, and the run would go on reading a machine this reset.
+            if (Volatile.Read(ref _run) is RunInProgress run)
+            {
+                try
+                {
+                    run.Stop.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // It finished between the read and the cancel.
+                }
+
+                await run.Ended.Task;
                 return;
             }
 

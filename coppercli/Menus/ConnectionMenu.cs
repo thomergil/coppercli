@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Text.Json;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
@@ -229,14 +230,15 @@ namespace coppercli.Menus
                         AnsiConsole.MarkupLine($"[{ColorDim}]Close the other TUI client first, then try again.[/]");
                         break;
                     case ConnectionResult.SerialPortBusy:
-                        AnsiConsole.MarkupLine($"[{ColorWarning}]Serial port is busy (a web client may be connected).[/]");
-                        if (!MenuHelpers.Confirm("Force disconnect the web client?"))
+                        AnsiConsole.MarkupLine($"[{ColorWarning}]{ServerHasTheMachine}[/]");
+                        if (!MenuHelpers.Confirm(TakeOverFromServerQuestion))
                         {
                             Environment.Exit(0);
                         }
-                        if (TryForceDisconnectRemote(settings))
+                        string? notTakenOver = TryTakeOverFromServer(settings);
+                        if (notTakenOver == null)
                         {
-                            Thread.Sleep(ForceDisconnectDelayMs);
+                            Thread.Sleep(TakeoverDelayMs);
                             (result, message) = TryConnectWithStatus("Reconnecting...");
                             if (result == ConnectionResult.Success && message != null)
                             {
@@ -250,7 +252,7 @@ namespace coppercli.Menus
                         }
                         else
                         {
-                            AnsiConsole.MarkupLine($"[{ColorError}]Could not contact web server to force disconnect.[/]");
+                            MenuHelpers.ShowError(notTakenOver);
                             Environment.Exit(1);
                         }
                         break;
@@ -535,7 +537,9 @@ namespace coppercli.Menus
                 {
                     connectionRejected = true;
                 }
-                else if (line.StartsWith(ProxySerialPortInUsePrefix) || line.StartsWith(ProxySerialPortBusyPrefix))
+                // Only this one means the server has the machine. A proxy that could not open the
+                // port says so with ProxySerialPortBusyPrefix, and that is a failed connect.
+                else if (line.StartsWith(ProxySerialPortInUsePrefix))
                 {
                     serialPortBusy = true;
                 }
@@ -610,29 +614,41 @@ namespace coppercli.Menus
             return (ConnectionResult.PortNotOpened, null);
         }
 
-        private static bool TryForceDisconnectRemote(MachineSettings settings)
+        /// <returns>Why the server did not let go of the machine, or null once it did.</returns>
+        private static string? TryTakeOverFromServer(MachineSettings settings)
         {
             if (settings.ConnectionType != ConnectionType.Ethernet || string.IsNullOrEmpty(settings.EthernetIP))
             {
-                return false;
+                return ServerNotReached;
             }
 
             // The server publishes the web port one above the proxy port.
             int webPort = settings.EthernetPort + 1;
-            var url = $"http://{settings.EthernetIP}:{webPort}{WebConstants.ApiForceDisconnect}";
+            var url = $"http://{settings.EthernetIP}:{webPort}{WebConstants.ApiTerminalTakeover}";
 
             try
             {
                 using var client = new HttpClient();
-                client.Timeout = TimeSpan.FromMilliseconds(ForceDisconnectApiTimeoutMs);
+                client.Timeout = TimeSpan.FromMilliseconds(TakeoverApiTimeoutMs);
                 var response = client.PostAsync(url, null).Result;
-                Logger.Log($"TryForceDisconnectRemote: {url} returned {response.StatusCode}");
-                return response.IsSuccessStatusCode;
+                Logger.Log($"TryTakeOverFromServer: {url} returned {response.StatusCode}");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return null;
+                }
+
+                // The server's own reason, so the wording is defined once, in WebConstants;
+                // ServerNotReached covers a reply without one.
+                using var body = JsonDocument.Parse(response.Content.ReadAsStringAsync().Result);
+                return body.RootElement.TryGetProperty(WebConstants.JsonFieldError, out var error)
+                    ? error.GetString() ?? ServerNotReached
+                    : ServerNotReached;
             }
             catch (Exception ex)
             {
-                Logger.Log($"TryForceDisconnectRemote failed: {ex.Message}");
-                return false;
+                Logger.Log($"TryTakeOverFromServer failed: {ex.Message}");
+                return ServerNotReached;
             }
         }
 

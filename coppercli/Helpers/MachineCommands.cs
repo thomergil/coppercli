@@ -16,14 +16,6 @@ namespace coppercli.Helpers
             machine.SendLine(Inv($"{CmdRapidMove} Z{height:F3}"));
         }
 
-        /// <summary>
-        /// Returns as soon as the command is queued; prefer HomeAndWait, which waits for the
-        /// machine to finish and sets IsHomed.
-        /// </summary>
-        public static void Home(Machine machine)
-        {
-            machine.SendLine(CmdHome);
-        }
 
         /// <summary>
         /// MachineWait.HomeAsync is the only code that sets Machine.IsHomed, so every sync
@@ -123,11 +115,6 @@ namespace coppercli.Helpers
             machine.SendLine(CmdAbsolute);
         }
 
-        public static DoorState ReleaseDoorHold(Machine machine)
-        {
-            return MachineWait.ReleaseDoorHoldAsync(machine, ControllerConstants.DoorResumeTimeoutMs)
-                .GetAwaiter().GetResult();
-        }
 
     }
 }

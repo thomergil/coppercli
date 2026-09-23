@@ -61,6 +61,9 @@ class El {
     querySelectorAll() { return []; }
     setAttribute(name, value) { this[name] = value; }
     removeAttribute(name) { delete this[name]; }
+    // A real input moves keyboard focus; nothing here reads it back, so there is nothing to
+    // model beyond accepting the call the save screen makes on its filename field.
+    focus() { }
 }
 
 const elements = new Map();
@@ -133,4 +136,57 @@ export function installDom() {
     globalThis.window = { addEventListener: () => { }, location: { href: '' } };
 
     return { el: byId, jogButtons, modeButtons };
+}
+
+const UNTIL_POLL_MS = 10;
+const UNTIL_TIMEOUT_MS = 2000;
+
+/**
+ * Polls condition until it holds, for a test that waits on a module's own async work rather
+ * than on an awaitable it returns. Throws, rather than returning false, so a test that forgets
+ * to check the result still fails instead of passing on a state it never reached.
+ */
+export async function until(condition, what) {
+    const started = Date.now();
+    while (!condition()) {
+        if (Date.now() - started >= UNTIL_TIMEOUT_MS) {
+            throw new Error(`timed out waiting for ${what}`);
+        }
+        await new Promise(resolve => setTimeout(resolve, UNTIL_POLL_MS));
+    }
+}
+
+// The buttons block every status payload carries; each test overrides only the fields it
+// needs. Present by default so updateStatus takes every branch it can: the stub checks an id
+// only when the code that writes it runs.
+export const BUTTONS = {
+    jog: { enabled: true },
+    probe: { enabled: true },
+    mill: { enabled: true },
+    // Disabled by default: with no door hold there is nothing to release.
+    doorRelease: { enabled: false }
+};
+
+/** The default /api/status payload, for a test that only cares about a few fields. */
+export function payload(overrides) {
+    return {
+        connected: true,
+        status: 'Idle',
+        machineActivity: 'Idle',
+        needsAttention: false,
+        canPause: false,
+        canResume: false,
+        machineUnavailable: false,
+        canReleaseDoor: false,
+        doorMessage: null,
+        buttons: BUTTONS,
+        workPos: { x: 0, y: 0, z: 0 },
+        machinePos: { x: 0, y: 0, z: 0 },
+        feedOverride: 100,
+        probePin: false,
+        depthAdjustment: 0,
+        file: { currentLine: 0, totalLines: 0 },
+        probe: { state: 'none', total: 0, progress: 0 },
+        ...overrides
+    };
 }

@@ -78,9 +78,10 @@ namespace coppercli.Tests
 
                 TransitionTo(ControllerState.Running);
 
+                // Honours the stop as a real run does: every wait in one takes its token.
                 if (RunBlocker != null)
                 {
-                    await RunBlocker.Task;
+                    await RunBlocker.Task.WaitAsync(ct);
                 }
 
                 if (ReturnWithoutFinishing)

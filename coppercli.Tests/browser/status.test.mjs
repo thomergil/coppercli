@@ -8,43 +8,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { installDom, load } from './dom-stub.mjs';
-
-const BUTTONS = {
-    jog: { enabled: true },
-    probe: { enabled: true },
-    mill: { enabled: true },
-    // Disabled by default: with no door hold there is nothing to release.
-    doorRelease: { enabled: false }
-};
+import { installDom, load, payload, BUTTONS } from './dom-stub.mjs';
 
 // For a door hold with no run behind it, where the operator presses the release.
 const BUTTONS_DOOR_RELEASABLE = { ...BUTTONS, doorRelease: { enabled: true } };
-
-function payload(overrides) {
-    return {
-        connected: true,
-        status: 'Idle',
-        machineActivity: 'Idle',
-        needsAttention: false,
-        canPause: false,
-        canResume: false,
-        machineUnavailable: false,
-        canReleaseDoor: false,
-        doorMessage: null,
-        buttons: BUTTONS,
-        // Present by default so updateStatus takes every branch; the stub checks an id only
-        // when the code that writes it runs.
-        workPos: { x: 0, y: 0, z: 0 },
-        machinePos: { x: 0, y: 0, z: 0 },
-        feedOverride: 100,
-        probePin: false,
-        depthAdjustment: 0,
-        file: { currentLine: 0, totalLines: 0 },
-        probe: { state: 'none', total: 0, progress: 0 },
-        ...overrides
-    };
-}
 
 // Node loads each module once per file, and mill.js keeps the prompt on screen in module
 // state. endMillRun clears it, so the order of the tests does not matter.

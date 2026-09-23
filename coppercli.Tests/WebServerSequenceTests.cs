@@ -132,11 +132,13 @@ namespace coppercli.Tests
             File.Delete(await GivenAGridIsReadyAndTheBoardStays());
         }
 
-        private static ProbeGrid CompleteMapForThisJob()
+        /// <param name="measuredFor">The G-code file the map records; the loaded one when null.</param>
+        private static ProbeGrid CompleteMapForThisJob(string? measuredFor = null)
         {
             var complete = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20))
             {
-                Context = new ProbeContext(AppState.Session.LastLoadedGCodeFile!, AppState.Machine.G54Offset)
+                Context = new ProbeContext(
+                    measuredFor ?? AppState.Session.LastLoadedGCodeFile!, AppState.Machine.G54Offset)
             };
 
             for (int x = 0; x < complete.SizeX; x++)
@@ -375,6 +377,98 @@ namespace coppercli.Tests
         }
 
         /// <summary>
+        /// The browser primes the save screen's filename field from this, as the terminal's own
+        /// prompt does (ProbeMenu.PromptSaveProbeData). Without it the operator retypes the
+        /// board's name by hand every time a map finishes.
+        /// </summary>
+        [Fact]
+        public async Task ProbeStatus_SuggestsTheGCodeFilesNameForTheMap()
+        {
+            string board = await GivenAGridIsReadyAndTheBoardStays();
+            try
+            {
+                var status = await GetJson(WebConstants.ApiProbeStatus);
+
+                Assert.Equal(
+                    Path.GetFileNameWithoutExtension(board) + CliConstants.ProbeGridExtension,
+                    status.GetProperty("suggestedFileName").GetString());
+            }
+            finally
+            {
+                File.Delete(board);
+            }
+        }
+
+        /// <summary>Turns a .NET date format such as "yyyy-MM" into the regex that matches its
+        /// output, so a test does not hold a second copy of the format's digit widths.</summary>
+        private static string DateFormatToRegex(string format) =>
+            Regex.Replace(format, "[a-zA-Z]+", m => $@"\d{{{m.Value.Length}}}");
+
+        /// <summary>
+        /// With no G-code file loaded there is no name to build the suggestion from, so it
+        /// falls back to the date and time, as the terminal's own prompt does.
+        /// </summary>
+        [Fact]
+        public async Task SuggestedProbeFileName_FallsBackToTheDateWithNoFileLoaded()
+        {
+            await GivenAGridIsReady();
+            var previousFile = AppState.CurrentFile;
+            AppState.CurrentFile = null;
+            try
+            {
+                var status = await GetJson(WebConstants.ApiProbeStatus);
+                string suggested = status.GetProperty("suggestedFileName").GetString()!;
+
+                string pattern = "^" + DateFormatToRegex(CliConstants.ProbeDateFormat)
+                    + Regex.Escape(CliConstants.ProbeGridExtension) + "$";
+                Assert.Matches(pattern, suggested);
+            }
+            finally
+            {
+                AppState.CurrentFile = previousFile;
+            }
+        }
+
+        /// <summary>
+        /// A save onto an existing file is refused unless overwrite is set, and the error names
+        /// the file, as the terminal's save prompt does; the same request with overwrite set
+        /// replaces the file.
+        /// </summary>
+        [Fact]
+        public async Task SavingOverAnExistingFile_IsRefusedUnlessOverwriteIsSet()
+        {
+            await GivenAGridIsReady();
+            GivenACompleteAutosaveForThisJob();
+            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                "the map could not be applied");
+
+            string path = Path.Combine(
+                Path.GetTempPath(), "coppercli-save-" + Guid.NewGuid().ToString("N") + CliConstants.ProbeGridExtension);
+            try
+            {
+                var (firstCode, firstBody) = await Post(WebConstants.ApiProbeSave, new { path });
+                Assert.Equal(HttpStatusCode.OK, firstCode);
+                Assert.True(Flag(firstBody, "success"), $"the first save failed: {firstBody}");
+                Assert.True(File.Exists(path), "the first save did not write the file");
+
+                var (secondCode, secondBody) = await Post(WebConstants.ApiProbeSave, new { path });
+                Assert.Equal(HttpStatusCode.Conflict, secondCode);
+                Assert.True(secondBody.GetProperty("fileExists").GetBoolean());
+                Assert.Equal(
+                    string.Format(CliConstants.ProbeFormatOverwrite, Path.GetFileName(path)),
+                    secondBody.GetProperty("error").GetString());
+
+                var (thirdCode, thirdBody) = await Post(WebConstants.ApiProbeSave, new { path, overwrite = true });
+                Assert.Equal(HttpStatusCode.OK, thirdCode);
+                Assert.True(Flag(thirdBody, "success"), $"the overwrite save failed: {thirdBody}");
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+
+        /// <summary>
         /// The mill is blocked while a complete map is unapplied, so /api/probe/apply has to
         /// apply the map /api/probe/status reported from the autosave. Otherwise the block
         /// has no way out.
@@ -565,6 +659,25 @@ namespace coppercli.Tests
         }
 
         private static string SingleQuoted(string text) => $"'{text}'";
+
+        /// <summary>
+        /// The pre-mill question is published through /api/constants so the terminal and the
+        /// browser ask the operator the same thing. A second copy in constants.js could be
+        /// edited without the first, and the operator would then read a different question on
+        /// each screen.
+        /// </summary>
+        [Fact]
+        public async Task ThePreMillQuestion_ReachesTheBrowserWordForWord()
+        {
+            var published = (await GetJson(WebConstants.ApiConstants))
+                .GetProperty("probeRemovedQuestion").GetString();
+
+            string constants = File.ReadAllText(Path.Combine(
+                WebServerFixture.RepositoryRoot, "coppercli", "WebServer", "wwwroot", "js", "constants.js"));
+
+            Assert.Equal(CliConstants.ProbeRemovedQuestion, published);
+            Assert.Contains(SingleQuoted(CliConstants.ProbeRemovedQuestion), constants);
+        }
 
         /// <summary>
         /// An outcome added to WorkZeroOutcome but not to constants.js leaves the browser
@@ -847,6 +960,10 @@ namespace coppercli.Tests
         /// Opening the enclosure and closing it again leaves GRBL in Door, waiting for a
         /// cycle start. Nothing the operator can do at the machine clears that state, so the
         /// start has to reach the milling controller, which prompts and sends the cycle start.
+        ///
+        /// A start from a browser carries no enclosure answer - the pre-mill modal's is taken
+        /// in the browser and never reaches this endpoint - so the hold is put to the
+        /// operator here, as it was before `MillingOptions.EnclosureConfirmed` existed.
         /// </summary>
         [Fact]
         public async Task ADoorHoldDoesNotBlockTheMill_TheControllerPromptsInstead()
@@ -886,12 +1003,96 @@ namespace coppercli.Tests
         }
 
         /// <summary>
+        /// A height map describes the board in the machine. Left on disk after the mill, it is
+        /// offered at the next startup for a board that is already milled.
+        /// </summary>
+        [Fact]
+        public async Task AFinishedMill_DeletesTheStoredMapsForItsFile()
+        {
+            string board = await GivenAGridIsReadyAndTheBoardStays();
+            string mapFile = Path.Combine(Path.GetTempPath(), "coppercli-map-" + Guid.NewGuid().ToString("N") + ".pgrid");
+            string previousMap = AppState.Session.LastProbeFile;
+
+            try
+            {
+                GivenACompleteAutosaveForThisJob();
+                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                    "the map could not be applied");
+                Assert.True(Persistence.SaveProbeToFile(mapFile));
+                // Saving deleted the autosave; a probe interrupted after the save writes a new one.
+                CompleteMapForThisJob().Save(Persistence.GetProbeAutoSavePath());
+
+                Assert.True(Flag((await Post(WebConstants.ApiMillStart)).Body, "success"),
+                    "the mill did not start");
+                // The deletion runs from the Completed transition, just after the state is set.
+                WebServerFixture.WaitUntil(
+                    () => AppState.Milling.State == ControllerState.Completed && !File.Exists(mapFile),
+                    "the mill to finish and delete the saved map");
+
+                Assert.False(File.Exists(Persistence.GetProbeAutoSavePath()), "the autosave outlived the mill");
+                Assert.Equal("", AppState.Session.LastProbeFile);
+            }
+            finally
+            {
+                await Post(WebConstants.ApiMillStop);
+                WebServerFixture.WaitUntil(() => !AppState.Milling.IsRunInProgress, "the run to end");
+                AppState.Session.LastProbeFile = previousMap;
+                Persistence.SaveSession();
+                File.Delete(mapFile);
+                File.Delete(board);
+            }
+        }
+
+        /// <summary>
+        /// A map measured for another G-code file describes another board, or another side of
+        /// this one, so a finished mill of this file must leave it and the path to it alone.
+        /// </summary>
+        [Fact]
+        public async Task AFinishedMill_KeepsAMapSavedForAnotherFile()
+        {
+            string board = await GivenAGridIsReadyAndTheBoardStays();
+            string otherMap = Path.Combine(Path.GetTempPath(), "coppercli-map-" + Guid.NewGuid().ToString("N") + ".pgrid");
+            string previousMap = AppState.Session.LastProbeFile;
+
+            try
+            {
+                GivenACompleteAutosaveForThisJob();
+                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                    "the map could not be applied");
+                CompleteMapForThisJob(board + ".other").Save(otherMap);
+                AppState.Session.LastProbeFile = otherMap;
+
+                Assert.True(Flag((await Post(WebConstants.ApiMillStart)).Body, "success"),
+                    "the mill did not start");
+                WebServerFixture.WaitUntil(
+                    () => AppState.Milling.State == ControllerState.Completed, "the mill to finish");
+                WebServerFixture.WaitUntil(() => !AppState.Milling.IsRunInProgress, "the run to end");
+
+                Assert.True(File.Exists(otherMap), "a finished mill deleted another file's map");
+                Assert.Equal(otherMap, AppState.Session.LastProbeFile);
+            }
+            finally
+            {
+                await Post(WebConstants.ApiMillStop);
+                WebServerFixture.WaitUntil(() => !AppState.Milling.IsRunInProgress, "the run to end");
+                AppState.Session.LastProbeFile = previousMap;
+                Persistence.SaveSession();
+                File.Delete(otherMap);
+                File.Delete(board);
+            }
+        }
+
+        /// <summary>
         /// A UNC path names another host, and listing it sends the request thread to that
         /// host's file server.
         /// </summary>
         [Theory]
         [InlineData(@"\\attacker.example\share")]
         [InlineData("//attacker.example/share")]
+        [InlineData(@"\/attacker.example/share")]
+        [InlineData(@"/\attacker.example\share")]
+        [InlineData(@"\??\UNC\attacker.example\share")]
+        [InlineData(@"/??/UNC/attacker.example/share")]
         public void APathOnAnotherHost_IsRefused(string path)
         {
             Assert.False(CncWebServer.IsLocalPath(path),
@@ -936,6 +1137,25 @@ namespace coppercli.Tests
         {
             Assert.Null(CncWebServer.ResolveRequestPath("", "/tmp", out string? refused));
             Assert.Equal(WebConstants.ErrorNoPathSpecified, refused);
+        }
+
+        /// <summary>
+        /// A terminal takeover during a mill run would disconnect the machine under the job,
+        /// so it is refused and the run keeps the machine.
+        /// </summary>
+        [Fact]
+        public async Task ATerminalTakeover_IsRefusedWhileAMillRunHasTheMachine()
+        {
+            await WhileAMillRunHoldsAtTheDoor(async () =>
+            {
+                var (code, body) = await Post(WebConstants.ApiTerminalTakeover);
+
+                Assert.Equal(HttpStatusCode.Conflict, code);
+                Assert.Equal(WebConstants.ErrorTakeoverWhileBusy,
+                    body.GetProperty(WebConstants.JsonFieldError).GetString());
+                Assert.True(AppState.Machine.Connected, "a refused takeover disconnected the run's machine");
+                Assert.True(CncWebServer.HoldsMachine, "a refused takeover left the machine yielded");
+            });
         }
 
         /// <summary>
@@ -1040,6 +1260,49 @@ namespace coppercli.Tests
             Assert.Equal(
                 WebConstants.ErrorUnknownMachineProfile, body.GetProperty("error").GetString());
             Assert.Equal(before, AppState.Settings.MachineProfile);
+        }
+
+        /// <summary>
+        /// A session answer missing a field is refused, since read as "no" it would delete an
+        /// unsaved map. So is a topic that is not an exact member name: Enum.TryParse also
+        /// takes numbers and comma lists.
+        /// </summary>
+        [Fact]
+        public async Task AnIncompleteSessionAnswer_IsRefused()
+        {
+            string topic = nameof(SessionRestoreTopic.UnsavedHeightMap);
+            object[] bodies =
+            {
+                new { topic, detail = "a map" },
+                new { topic, yes = false },
+                new { detail = "a map", yes = false },
+                new { topic = "3", detail = "a map", yes = false },
+                new { topic = topic + "," + nameof(SessionRestoreTopic.ReloadFile), detail = "a map", yes = false }
+            };
+
+            foreach (var body in bodies)
+            {
+                var (code, _) = await Post(WebConstants.ApiSessionRestore, body);
+                Assert.Equal(HttpStatusCode.BadRequest, code);
+            }
+        }
+
+        /// <summary>
+        /// An answer to a question not pending as shown is refused with the reason, so the
+        /// browser can tell the operator it did nothing.
+        /// </summary>
+        [Fact]
+        public async Task AnAnswerToAQuestionNotPending_IsRefusedWithTheReason()
+        {
+            var (code, body) = await Post(WebConstants.ApiSessionRestore, new
+            {
+                topic = nameof(SessionRestoreTopic.ReloadFile),
+                detail = "a file nobody was asked about",
+                yes = false
+            });
+
+            Assert.Equal(HttpStatusCode.Conflict, code);
+            Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered, body.GetProperty("error").GetString());
         }
 
         /// <summary>

@@ -23,6 +23,8 @@ namespace coppercli.Tests.Fakes
 
         public FakeMachine()
         {
+            AnswerTo = line => DoorModel.Answer(line, Status);
+
             _door = new DoorModel(
                 (state, subState) => SetStatus(
                     string.IsNullOrEmpty(subState) ? state : $"{state}:{subState}"),
@@ -119,8 +121,11 @@ namespace coppercli.Tests.Fakes
             set { lock (_stateLock) _isHoming = value; }
         }
 
-        private long _statusReportCount;
-        public long StatusReportCount => Interlocked.Read(ref _statusReportCount);
+        /// <summary>GRBL answering the status poll, so a wait for a fresh reading ends the
+        /// way it does on the machine.</summary>
+        public StatusPoll Poll { get; } = new StatusPoll();
+
+        public long StatusReportCount => Poll.Count;
 
         public Vector3 G54Offset { get; private set; } = new Vector3();
 
@@ -139,7 +144,6 @@ namespace coppercli.Tests.Fakes
         public event Action<string>? StatusReceived;
         public event Action<Vector3, bool>? ProbeFinished;
         public event Action<string>? NonFatalException;
-        public event Action<GrblRejection>? CommandRejected;
         public event Action<string>? Info;
         public event Action? ConnectionStateChanged;
         public event Action? StatusChanged;
@@ -166,13 +170,54 @@ namespace coppercli.Tests.Fakes
             }
         }
 
-        public void SendLine(string line)
+        public void SendLine(string line) => Receive(line);
+
+        /// <summary>
+        /// What GRBL answers the lines it is sent: by default, <see cref="DoorModel.Answer"/>
+        /// for this double's state. A test about the answer sets its own.
+        /// </summary>
+        public Func<string, GrblReply> AnswerTo { get; set; }
+
+        /// <summary>
+        /// Takes a line as GRBL would: records it, and acts on it only if GRBL would run it.
+        /// Both ways of sending come through here; only <see cref="SendAsync"/> waits.
+        /// </summary>
+        private (GrblReply Reply, Task Work) Receive(string line)
         {
             lock (_stateLock)
             {
                 _sentCommands.Add(line);
             }
-            _ = ProcessCommandAsync(line);
+
+            GrblReply reply = AnswerTo(line);
+            return (reply, reply.Ran ? ProcessCommandAsync(line) : Task.CompletedTask);
+        }
+
+        /// <inheritdoc/>
+        public async Task<GrblReply> SendAsync(string line, int timeoutMs, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var (reply, work) = Receive(line);
+
+            try
+            {
+                if (reply.Answer == GrblAnswer.NoAnswer)
+                {
+                    // The line was taken and nothing comes back, so the caller waits out its
+                    // own timeout, as it would on a machine that took it and went quiet.
+                    await Task.Delay(timeoutMs, ct).ConfigureAwait(false);
+                    return reply;
+                }
+
+                // GRBL answers once it has acted on the line, which for $H is the whole cycle.
+                await work.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), ct).ConfigureAwait(false);
+                return reply;
+            }
+            catch (TimeoutException)
+            {
+                return GrblReply.NoAnswer;
+            }
         }
 
         public bool FileStart()
@@ -220,8 +265,12 @@ namespace coppercli.Tests.Fakes
             }
         }
 
+        public int CycleStartCount { get; private set; }
+
         public void CycleStart()
         {
+            CycleStartCount++;
+
             if (IsHolding && !Status.StartsWith(GrblProtocol.StatusDoor))
             {
                 SetStatus(GrblProtocol.StatusRun);
@@ -305,10 +354,25 @@ namespace coppercli.Tests.Fakes
         private async Task HomeAsync()
         {
             SetStatus("Home");
-            await Task.Delay(HomingDurationMs);
 
+            // GRBL drives the homing cycle from a loop that services no status query, so it
+            // answers nothing until the cycle ends. A double that kept answering would let a
+            // caller read the state word right through the cycle and never has to tell a
+            // machine that is homing from one that refused the $H.
+            Poll.Answering = false;
+
+            try
+            {
+                await Task.Delay(HomingDurationMs);
+            }
+            finally
+            {
+                Poll.Answering = true;
+            }
+
+            // IsHomed is not set here. MachineWait.HomeAsync sets it, from GRBL's answer;
+            // a double that set it too would let a homing test pass without that code.
             MachinePosition = new Vector3(0, 0, 0);
-            _isHomed = true;
             SetStatus("Idle");
         }
 
@@ -525,7 +589,6 @@ namespace coppercli.Tests.Fakes
             int colon = status.IndexOf(':');
             Status = colon < 0 ? status : status.Substring(0, colon);
             StatusSubState = colon < 0 ? string.Empty : status.Substring(colon + 1);
-            Interlocked.Increment(ref _statusReportCount);
             StatusChanged?.Invoke();
             StatusReceived?.Invoke($"<{status}|MPos:{MachinePosition.X:F3},{MachinePosition.Y:F3},{MachinePosition.Z:F3}>");
         }
@@ -593,6 +656,15 @@ namespace coppercli.Tests.Fakes
         public void SimulateDoorReleased()
         {
             SetStatus(GrblProtocol.StatusIdle);
+        }
+
+        /// <summary>
+        /// Reports a status the machine is no longer in, as a report sent just before a
+        /// command reads once the command has changed things.
+        /// </summary>
+        public void SimulateStaleStatus(string status)
+        {
+            SetStatus(status);
         }
 
         public void SimulateAlarm(int code = 1)

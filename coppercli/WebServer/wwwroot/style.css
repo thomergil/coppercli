@@ -1063,6 +1063,21 @@ header {
     margin: 4px 0;
 }
 
+.premill-checklist {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin: 16px 0;
+    color: var(--warning-color);
+    font-weight: 600;
+}
+
+.premill-checklist input {
+    width: 24px;
+    height: 24px;
+}
+
 .toolchange-overlay,
 .door-overlay {
     position: absolute;
@@ -1082,21 +1097,6 @@ header {
 .door-overlay {
     position: fixed;
     z-index: 200;
-}
-
-/* Nothing to answer, so it does not cover the page: the operator still has to reach Stop
-   and the rest of the screen while the machine waits at the enclosure. */
-.door-overlay.door-overlay-message {
-    bottom: auto;
-    background: none;
-    pointer-events: none;
-}
-
-.door-overlay.door-overlay-message .toolchange-content {
-    background: rgba(26, 26, 46, 0.97);
-    border-bottom: 2px solid var(--warning-color);
-    width: 100%;
-    text-align: center;
 }
 
 .toolchange-overlay.hidden,

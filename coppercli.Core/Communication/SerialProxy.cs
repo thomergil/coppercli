@@ -26,15 +26,21 @@ namespace coppercli.Core.Communication
 
         public event Action<string>? Info;
         public event Action<string>? Error;
-        public event Action? ClientConnected;
-        public event Action? ClientDisconnected;
 
         /// <summary>
-        /// Set by the host to report whether something else holds the serial port, such as
-        /// the web server's Machine connection. A true reply rejects the new client instead
-        /// of opening the port a second time.
+        /// Set by the host that shares the serial port. Asked before a client is admitted; a
+        /// false answer refuses the client. Unset, every client may have the port.
         /// </summary>
-        public Func<bool>? IsSerialPortInUse { get; set; }
+        public Func<bool>? TryClaimSerialPort { get; set; }
+
+        /// <summary>
+        /// Set with <see cref="TryClaimSerialPort"/>. Called once the machine is stopped and the
+        /// port closed behind an admitted client, however its session ended.
+        /// </summary>
+        public Action? ReleaseSerialPort { get; set; }
+
+        /// <summary>Opens the serial port for a session. A test replaces it to stand in for the hardware.</summary>
+        internal Func<string, int, ISerialLink> OpenSerialLink { get; set; } = OpenSerialPort;
 
         public bool IsRunning { get; private set; }
 
@@ -47,33 +53,6 @@ namespace coppercli.Core.Communication
         public int TcpPort { get; private set; }
         public string SerialPortName { get; private set; } = string.Empty;
         public int BaudRate { get; private set; }
-
-        /// <summary>
-        /// The listener is bound, and the serial port is open whenever a client is attached.
-        /// Checked after a suspend and resume, which can leave either one closed.
-        /// </summary>
-        public bool IsHealthy
-        {
-            get
-            {
-                if (!IsRunning)
-                {
-                    return false;
-                }
-
-                if (HasClient && (_serialPort == null || !_serialPort.IsOpen))
-                {
-                    return false;
-                }
-
-                if (_listener == null || !_listener.Server.IsBound)
-                {
-                    return false;
-                }
-
-                return true;
-            }
-        }
 
         public long BytesFromClient { get; private set; }
         public long BytesToClient { get; private set; }
@@ -102,11 +81,12 @@ namespace coppercli.Core.Communication
             }
         }
 
-        private SerialPort? _serialPort;
+        private ISerialLink? _serialPort;
         private TcpListener? _listener;
         private TcpClient? _client;
         private NetworkStream? _networkStream;
         private Thread? _acceptThread;
+        private Thread? _sessionThread;
         private Thread? _serialToTcpThread;
         private Thread? _tcpToSerialThread;
         private CancellationTokenSource? _cts;
@@ -141,21 +121,8 @@ namespace coppercli.Core.Communication
 
             try
             {
-                var openTask = Task.Run(() =>
+                using (OpenSerialLink(serialPort, baudRate))
                 {
-                    using var testPort = new SerialPort(serialPort, baudRate);
-                    testPort.Open();
-                    testPort.Close();
-                });
-
-                if (!openTask.Wait(SerialOpenTimeoutMs))
-                {
-                    throw new TimeoutException($"Timeout opening serial port {serialPort} (may be held by another process)");
-                }
-
-                if (openTask.IsFaulted && openTask.Exception != null)
-                {
-                    throw openTask.Exception.InnerException ?? openTask.Exception;
                 }
 
                 RaiseInfo($"Validated serial port {serialPort} @ {baudRate}");
@@ -205,19 +172,13 @@ namespace coppercli.Core.Communication
             }
 
             _acceptThread?.Join(ThreadJoinTimeoutMs);
+            _sessionThread?.Join(ThreadJoinTimeoutMs);
             _serialToTcpThread?.Join(ThreadJoinTimeoutMs);
             _tcpToSerialThread?.Join(ThreadJoinTimeoutMs);
 
-            try
-            {
-                _serialPort?.Close();
-                _serialPort?.Dispose();
-            }
-            catch
-            {
-            }
+            // A no-op when the session has already stopped the machine and closed the port.
+            StopMachineAndClosePort();
 
-            _serialPort = null;
             _listener = null;
             _cts?.Dispose();
             _cts = null;
@@ -259,32 +220,75 @@ namespace coppercli.Core.Communication
                 CloseClientUnlocked();
             }
 
-            // The client that was driving the machine is gone, so stop the machine here.
-            SendSafetyStop();
             return true;
         }
 
         /// <summary>
-        /// Feed hold then soft reset, written straight to the port. Sent when the client
-        /// driving the machine disconnects, because GRBL keeps working through its planner
-        /// buffer.
+        /// Feed hold then soft reset, written straight to the port, then the port is closed.
+        /// Sent whenever a client's session ends, because GRBL keeps working through its
+        /// planner buffer. The port is taken from the field first, so of two callers only one
+        /// sends the stop and closes it.
         /// </summary>
-        private void SendSafetyStop()
+        private void StopMachineAndClosePort()
         {
+            var port = Interlocked.Exchange(ref _serialPort, null);
+            if (port == null)
+            {
+                return;
+            }
+
             try
             {
-                if (_serialPort == null)
-                {
-                    return;
-                }
-
-                Machine.WriteStopSequence(_serialPort.BaseStream);
+                Machine.WriteStopSequence(port.BaseStream);
                 RaiseInfo("Feed hold + soft reset sent (safety stop)");
             }
             catch
             {
-                // The port may already be unusable, and nothing else can stop the machine.
+                // The port may already be unusable; the close below still runs.
             }
+
+            try
+            {
+                port.Close();
+                port.Dispose();
+                RaiseInfo("Closed serial port");
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>
+        /// Opens the port on a task with a deadline, because SerialPort.Open can hang outright
+        /// on a stuck port.
+        /// </summary>
+        private static ISerialLink OpenSerialPort(string name, int baudRate)
+        {
+            var port = new SerialPortLink(name, baudRate)
+            {
+                ReadTimeout = Constants.SerialReadTimeoutMs,
+                WriteTimeout = Constants.SerialWriteTimeoutMs
+            };
+
+            var open = Task.Run(port.Open);
+            try
+            {
+                if (!open.Wait(SerialOpenTimeoutMs))
+                {
+                    // Disposed once the open returns: disposing now would close nothing and
+                    // leave open the handle that the open then gets.
+                    open.ContinueWith(_ => port.Dispose());
+                    throw new TimeoutException(
+                        $"Timeout opening serial port {name} (it may be held by another process)");
+                }
+            }
+            catch (AggregateException ex)
+            {
+                port.Dispose();
+                throw ex.InnerException ?? ex;
+            }
+
+            return port;
         }
 
         /// <summary>
@@ -359,96 +363,57 @@ namespace coppercli.Core.Communication
 
                     lock (_clientLock)
                     {
-                        if (_client != null)
+                        // A session keeps the slot until it has stopped the machine and
+                        // released the port, which is after its client is gone.
+                        if (_client != null || _sessionThread?.IsAlive == true)
                         {
                             RaiseInfo($"Rejected connection from {newClientAddress} (client already connected)");
                             SendMessageAndClose(newClient, Constants.ProxyConnectionRejected);
                             continue;
                         }
-
-                        _client = newClient;
-                        _networkStream = _client.GetStream();
-                        ClientAddress = newClientAddress;
-                        _clientConnectedAtMs = Environment.TickCount64;
-                        BytesFromClient = 0;
-                        BytesToClient = 0;
-                        _lastClientActivityMs = Environment.TickCount64;
-                        _silentIntervals = 0;
                     }
 
-                    RaiseInfo($"Client connected: {ClientAddress}");
-
-                    if (IsSerialPortInUse?.Invoke() == true)
+                    // Claimed before the client goes into _client, so HasClient is never true
+                    // for a client the host refused.
+                    if (TryClaimSerialPort?.Invoke() == false)
                     {
-                        RaiseInfo("Rejected: serial port in use by web client");
-                        SendMessage(newClient, Constants.ProxySerialPortInUse);
-                        lock (_clientLock) { CloseClientUnlocked(); }
+                        RaiseInfo($"Rejected connection from {newClientAddress} (the server has the machine)");
+                        SendMessageAndClose(newClient, Constants.ProxySerialPortInUse);
                         continue;
                     }
 
                     try
                     {
-                        _serialPort = new SerialPort(SerialPortName, BaudRate)
+                        lock (_clientLock)
                         {
-                            ReadTimeout = Constants.SerialReadTimeoutMs,
-                            WriteTimeout = Constants.SerialWriteTimeoutMs
+                            _client = newClient;
+                            _networkStream = _client.GetStream();
+                            ClientAddress = newClientAddress;
+                            _clientConnectedAtMs = Environment.TickCount64;
+                            BytesFromClient = 0;
+                            BytesToClient = 0;
+                            _lastClientActivityMs = Environment.TickCount64;
+                            _silentIntervals = 0;
+                        }
+
+                        RaiseInfo($"Client connected: {newClientAddress}");
+
+                        // On its own thread, so this loop goes on answering: a second client is
+                        // told the proxy is taken instead of waiting unanswered.
+                        _sessionThread = new Thread(RunSession)
+                        {
+                            Name = "ProxySession",
+                            IsBackground = true
                         };
-
-                        // Opened on a task with a deadline: SerialPort.Open can hang
-                        // outright on a stuck port.
-                        var openTask = Task.Run(() => _serialPort.Open());
-                        if (!openTask.Wait(SerialOpenTimeoutMs))
-                        {
-                            _serialPort.Dispose();
-                            _serialPort = null;
-                            throw new TimeoutException($"Timeout opening {SerialPortName}");
-                        }
-                        if (openTask.IsFaulted && openTask.Exception != null)
-                        {
-                            throw openTask.Exception.InnerException ?? openTask.Exception;
-                        }
-
-                        RaiseInfo($"Opened serial port {SerialPortName}");
-                    }
-                    catch (Exception ex)
-                    {
-                        var errorMsg = $"Cannot access {SerialPortName}: {ex.Message}\r\n";
-                        RaiseError(errorMsg.TrimEnd());
-                        SendMessage(newClient, errorMsg);
-                        lock (_clientLock) { CloseClientUnlocked(); }
-                        continue;
-                    }
-
-                    ClientConnected?.Invoke();
-
-                    _serialToTcpThread = new Thread(SerialToTcpLoop)
-                    {
-                        Name = "ProxySerialToTcp",
-                        IsBackground = true
-                    };
-                    _tcpToSerialThread = new Thread(TcpToSerialLoop)
-                    {
-                        Name = "ProxyTcpToSerial",
-                        IsBackground = true
-                    };
-
-                    _serialToTcpThread.Start();
-                    _tcpToSerialThread.Start();
-
-                    // Both loops return when the client disconnects.
-                    _serialToTcpThread.Join();
-                    _tcpToSerialThread.Join();
-
-                    try
-                    {
-                        _serialPort?.Close();
-                        _serialPort?.Dispose();
-                        RaiseInfo("Closed serial port");
+                        _sessionThread.Start();
                     }
                     catch
                     {
+                        // Admitted but no session started, so nothing else gives the port back.
+                        CloseClient();
+                        ReleaseSerialPort?.Invoke();
+                        throw;
                     }
-                    _serialPort = null;
                 }
                 catch (SocketException) when (_cts?.IsCancellationRequested == true)
                 {
@@ -461,6 +426,64 @@ namespace coppercli.Core.Communication
                         RaiseError($"Accept error: {ex.Message}");
                     }
                 }
+            }
+        }
+
+        /// <summary>
+        /// The admitted client's session, until the machine is stopped and the port closed
+        /// behind it, however the session ends.
+        /// </summary>
+        private void RunSession()
+        {
+            try
+            {
+                try
+                {
+                    _serialPort = OpenSerialLink(SerialPortName, BaudRate);
+                    RaiseInfo($"Opened serial port {SerialPortName}");
+                }
+                catch (Exception ex)
+                {
+                    // The exception's own text goes to the log only; the screen and the client
+                    // get a sentence that says what to check.
+                    Controllers.ControllerLog.Log("SerialProxy: opening {0} failed - {1}", SerialPortName, ex);
+                    var errorMsg = string.Format(Constants.ProxyCannotOpenSerialPort, SerialPortName);
+                    RaiseError(errorMsg.TrimEnd());
+                    lock (_clientLock)
+                    {
+                        if (_client != null)
+                        {
+                            SendMessage(_client, errorMsg);
+                        }
+                    }
+                    return;
+                }
+
+                _serialToTcpThread = new Thread(SerialToTcpLoop)
+                {
+                    Name = "ProxySerialToTcp",
+                    IsBackground = true
+                };
+                _tcpToSerialThread = new Thread(TcpToSerialLoop)
+                {
+                    Name = "ProxyTcpToSerial",
+                    IsBackground = true
+                };
+
+                _serialToTcpThread.Start();
+                _tcpToSerialThread.Start();
+
+                // Both loops return when the client disconnects, however it left.
+                _serialToTcpThread.Join();
+                _tcpToSerialThread.Join();
+            }
+            finally
+            {
+                // The loops have stopped writing and the port is still open, so the stop goes
+                // out before the close.
+                StopMachineAndClosePort();
+                CloseClient();
+                ReleaseSerialPort?.Invoke();
             }
         }
 
@@ -632,8 +655,7 @@ namespace coppercli.Core.Communication
         }
 
         /// <summary>
-        /// Stops the machine before dropping the client, because GRBL keeps working through
-        /// whatever it has already buffered.
+        /// Drops the client. RunSession stops the machine once both loops have returned.
         /// </summary>
         private void HandleClientDisconnect()
         {
@@ -649,10 +671,7 @@ namespace coppercli.Core.Communication
                 CloseClientUnlocked();
             }
 
-            SendSafetyStop();
-
             RaiseInfo($"Client disconnected: {address}");
-            ClientDisconnected?.Invoke();
         }
 
         /// <summary>Sends a message and leaves the connection open.</summary>

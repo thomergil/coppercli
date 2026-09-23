@@ -37,6 +37,14 @@ namespace coppercli.Core.Controllers
             "Homing is disabled on the machine ($22). Enable it, then mill.";
 
         public const string ErrorHomingFailedBecause = "Homing did not complete. {0}";
+
+        /// <summary>
+        /// Shown when GRBL alarmed or reset before answering $H. It names no alarm, because
+        /// Machine has already reported GRBL's alarm line.
+        /// </summary>
+        public const string ErrorHomingInterrupted =
+            "The machine stopped during homing. Check it, then start again.";
+
         public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted. Stopped.";
 
         public const string ErrorProbePointSkipped = "No contact at point {0} of {1}. Left unmeasured.";
@@ -62,6 +70,14 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public const string ErrorWorkZeroNotWritten =
             "The machine did not take the work origin. Check it is connected and not alarmed, then try again.";
+
+        /// <summary>
+        /// GRBL never confirmed the work origin, so it may have been written, or be written
+        /// later. Recording it either way could be wrong, so the operator checks it.
+        /// </summary>
+        public const string ErrorWorkZeroUnconfirmed =
+            "The machine did not confirm the work origin. Check it, then set it again.";
+
         /// <summary>
         /// How many times the operator is asked to clear the machine before giving up. Read
         /// by every screen that clears a door: a run, the jog screen and the connect flow.
@@ -85,14 +101,6 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public const string DoorResumingMessage = "Resuming...";
 
-
-        /// <summary>
-        /// The door was opened and closed while the machine was homing. GRBL holds until
-        /// it is resumed, and only the operator may do that.
-        /// </summary>
-        public const string ErrorDoorClosedDuringHoming = "Door opened during homing. Start again.";
-
-        public const string ErrorMachineDoorOpen = "Door open. Close it, then start again.";
         /// <summary>
         /// A controller raised a prompt with no subscriber on UserInputRequired. The run
         /// would otherwise wait for an answer that cannot arrive, and only a restart clears it.
@@ -242,8 +250,9 @@ namespace coppercli.Core.Controllers
         /// <summary>
         /// How many status reports GRBL's reading of the door switch may lag behind the
         /// operator's answer: the substate arrives on the status poll, so the report received
-        /// when they answer predates them closing the door. This is not a wait for the door
-        /// itself - see <see cref="MachineWait.ReleaseDoorHoldAsync"/>.
+        /// when they answer predates them closing the door. Counted rather than timed,
+        /// because the poll interval is a setting. This is not a wait for the door itself -
+        /// see <see cref="MachineWait.ReleaseDoorHoldAsync"/>.
         /// </summary>
         public const int DoorReadingCatchUpReports = 3;
 

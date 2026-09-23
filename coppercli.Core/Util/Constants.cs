@@ -115,8 +115,24 @@ namespace coppercli.Core.Util
 
         public const int OneSecondMs = 1000;
 
-        /// <summary>How long GRBL needs to reinitialize after a soft reset.</summary>
+        /// <summary>
+        /// How long the port stays open after the reset byte when coppercli disconnects, so
+        /// the reset reaches GRBL before the link closes.
+        /// </summary>
         public const int ResetWaitMs = 500;
+
+        /// <summary>
+        /// Longest Machine holds lines after a soft reset waiting for GRBL's banner. The
+        /// banner normally ends the wait; this covers one that never arrives.
+        /// </summary>
+        public const int ResetAnnounceTimeoutMs = 2000;
+
+        /// <summary>
+        /// How long GRBL has to answer a line that moves nothing, with nothing queued ahead
+        /// of it: it answers as soon as it reads the line. Behind queued motion, a line GRBL
+        /// runs only once the planner is empty - a G10 among them - is answered later.
+        /// </summary>
+        public const int CommandAnswerTimeoutMs = 1000;
 
         /// <summary>Positions within this distance, in mm, are treated as equal.</summary>
         public const double PositionToleranceMm = 0.1;
@@ -168,7 +184,7 @@ namespace coppercli.Core.Util
         /// the tool is lifted clear and confirmed. Too short and a stop that is working
         /// reports that the machine may still be moving.
         /// </summary>
-        public const int ControllerCancelTimeoutMs = 12000;
+        public const int ControllerCancelTimeoutMs = 18000;
 
         /// <summary>Widest the mill view may be, in cells.</summary>
         public const int MillGridMaxWidth = 50;
@@ -204,10 +220,14 @@ namespace coppercli.Core.Util
 
         public const string ProxySerialPortBusyPrefix = "Cannot access";
 
+        /// <summary>Formatted with the port name. Starts with the prefix a client matches.</summary>
+        public const string ProxyCannotOpenSerialPort = ProxySerialPortBusyPrefix
+            + " {0}: the port could not be opened. Is the machine on and the cable connected?\r\n";
+
         public const string ProxySerialPortInUsePrefix = "Serial port in use:";
 
         public const string ProxySerialPortInUse = ProxySerialPortInUsePrefix
-            + " a web client is connected. Force disconnect to continue.\r\n";
+            + " the coppercli server has the machine. Take it over to continue.\r\n";
 
         public const string ProxyForceDisconnectPrefix = "Force disconnect:";
 

@@ -120,7 +120,7 @@ namespace coppercli.Menus
                     case SettingAction.Save:
                         saveSettings();
                         AnsiConsole.MarkupLine($"[{ColorSuccess}]Settings saved[/]");
-                        Thread.Sleep(ResetWaitMs);
+                        Thread.Sleep(SettingsSavedDisplayMs);
                         break;
                     case SettingAction.Back:
                         return;

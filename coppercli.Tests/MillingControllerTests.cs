@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Controllers;
@@ -44,7 +43,9 @@ namespace coppercli.Tests
         private const int ToolChangeWaitTimeoutMs = 20_000;
         private const int CompletionWaitTimeoutMs = 30_000;
         private const int StateTransitionWaitTimeoutMs = 5_000;
-        private const int TestPollIntervalMs = 10;
+
+        // How far past SettleWaitMs a test waits, to be sure the settle timeout has run out.
+        private const int SettleMarginMs = 100;
 
         private const int ToolChangeLineIndex = 2;
         private const int SingleRunToolNumber = 4;
@@ -113,16 +114,6 @@ namespace coppercli.Tests
             }
         }
 
-        /// <summary>Returns when the condition holds or the deadline passes; never throws.</summary>
-        private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs)
-        {
-            var stopwatch = Stopwatch.StartNew();
-            while (!condition() && stopwatch.ElapsedMilliseconds < timeoutMs)
-            {
-                await Task.Delay(TestPollIntervalMs);
-            }
-        }
-
         /// <summary>
         /// Models a refused tool change: the token is cancelled and Resume() is never called.
         /// Returns with the controller Reset() to Idle, so the caller can start a second run.
@@ -138,7 +129,7 @@ namespace coppercli.Tests
 
                 // MillingController transitions to Paused before firing the event, so this
                 // returns at once. It guards the cancel below if that order ever changes.
-                await WaitUntilAsync(() => controller.State == ControllerState.Paused, StateTransitionWaitTimeoutMs);
+                await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Paused, "the controller to reach Paused", StateTransitionWaitTimeoutMs);
             }
             finally
             {
@@ -323,13 +314,11 @@ namespace coppercli.Tests
 
             public async Task<UserInputRequest> NextAsync(int timeoutMs)
             {
-                await WaitUntilAsync(() => !_requests.IsEmpty, timeoutMs);
+                await AsyncWait.WaitUntilAsync(() => !_requests.IsEmpty, UserInputTimeoutMessage, timeoutMs);
 
-                if (!_requests.TryDequeue(out var request))
-                {
-                    throw new TimeoutException(UserInputTimeoutMessage);
-                }
-                return request;
+                // One reader, so the request the wait saw is still there.
+                Assert.True(_requests.TryDequeue(out var request), UserInputTimeoutMessage);
+                return request!;
             }
         }
 
@@ -378,11 +367,11 @@ namespace coppercli.Tests
             };
 
             var run = controller.StartAsync();
-            await WaitUntilAsync(() => controller.State == ControllerState.Running,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Running, "the controller to reach Running",
                 CompletionWaitTimeoutMs);
 
             controller.Pause();
-            await WaitUntilAsync(() => controller.State == ControllerState.Paused,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Paused, "the controller to reach Paused",
                 StateTransitionWaitTimeoutMs);
 
             machine.SimulateDoorClosedAndHolding();
@@ -416,7 +405,7 @@ namespace coppercli.Tests
             var prompts = new PromptRecorder(controller);
             var run = controller.StartAsync();
 
-            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Initializing, "the controller to reach Initializing",
                 StateTransitionWaitTimeoutMs);
             machine.SimulateDoorClosedAndHolding();
 
@@ -424,8 +413,7 @@ namespace coppercli.Tests
             Assert.Equal(DoorHoldingPrompt, request.Message);
             request.OnResponse(OptionContinue);
 
-            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
-            Assert.False(MachineWait.IsDoor(machine));
+            await AsyncWait.WaitUntilAsync(() => !MachineWait.IsDoor(machine), "the door hold to clear", StateTransitionWaitTimeoutMs);
 
             await controller.StopAsync();
             await AwaitRunOutcomeAsync(run);
@@ -449,17 +437,17 @@ namespace coppercli.Tests
 
             var run = controller.StartAsync();
 
-            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Initializing, "the controller to reach Initializing",
                 StateTransitionWaitTimeoutMs);
             machine.SimulateDoorClosedAndHolding();
 
             var request = await prompts.NextAsync(SettleWaitMs);
 
             // Answer only after the whole settle timeout would have run out.
-            await Task.Delay(SettleWaitMs + TestPollIntervalMs * 10);
+            await Task.Delay(SettleWaitMs + SettleMarginMs);
             request.OnResponse(OptionContinue);
 
-            await WaitUntilAsync(() => controller.State == ControllerState.Running,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Running, "the controller to reach Running",
                 CompletionWaitTimeoutMs);
 
             Assert.Equal(ControllerState.Running, controller.State);
@@ -501,8 +489,7 @@ namespace coppercli.Tests
 
                 request.OnResponse(OptionContinue);
 
-                await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
-                Assert.False(MachineWait.IsDoor(machine));
+                await AsyncWait.WaitUntilAsync(() => !MachineWait.IsDoor(machine), "the door hold to clear", StateTransitionWaitTimeoutMs);
             }
             finally
             {
@@ -538,7 +525,7 @@ namespace coppercli.Tests
                 machine.SimulateDoorClosedAndHolding();
                 pause.OnResponse(OptionContinue);
 
-                await WaitUntilAsync(() => controller.HasFinished, CompletionWaitTimeoutMs);
+                await AsyncWait.WaitUntilAsync(() => controller.HasFinished, "the run to finish", CompletionWaitTimeoutMs);
                 Assert.Equal(ControllerState.Completed, controller.State);
                 Assert.DoesNotContain(prompts.All, p => p.IsDoorPrompt);
             }
@@ -565,7 +552,7 @@ namespace coppercli.Tests
             var prompts = new PromptRecorder(controller);
             var run = controller.StartAsync();
 
-            await WaitUntilAsync(() => controller.State == ControllerState.Initializing,
+            await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Initializing, "the controller to reach Initializing",
                 StateTransitionWaitTimeoutMs);
             machine.SimulateDoorClosedAndHolding();
 
@@ -647,8 +634,7 @@ namespace coppercli.Tests
 
             request.OnResponse(OptionContinue);
 
-            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
-            Assert.False(MachineWait.IsDoor(machine));
+            await AsyncWait.WaitUntilAsync(() => !MachineWait.IsDoor(machine), "the door hold to clear", StateTransitionWaitTimeoutMs);
 
             await controller.StopAsync();
             try { await run; } catch (OperationCanceledException) { }
@@ -682,11 +668,108 @@ namespace coppercli.Tests
             Assert.Equal(DoorHoldingPrompt, asked.Message);
             asked.OnResponse(OptionContinue);
 
-            await WaitUntilAsync(() => !MachineWait.IsDoor(machine), StateTransitionWaitTimeoutMs);
-            Assert.False(MachineWait.IsDoor(machine));
+            await AsyncWait.WaitUntilAsync(() => !MachineWait.IsDoor(machine), "the door hold to clear", StateTransitionWaitTimeoutMs);
 
             await controller.StopAsync();
             try { await run; } catch (OperationCanceledException) { }
+        }
+
+        /// <summary>
+        /// The operator has just said the enclosure is clear to start this job, so a hold an
+        /// earlier run left closed and parked is released on that answer, not asked about a
+        /// second time before anything has moved.
+        /// </summary>
+        [Fact]
+        public async Task JobStartAtClosedDoor_WithTheEnclosureAnswer_ReleasesWithoutAsking()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+            machine.SimulateDoorClosedAndHolding();
+
+            var controller = new MillingController(machine)
+            {
+                Options = MillingOptions.Create(
+                    filePath: null, depthAdjustment: 0, machineIsHomed: true, enclosureConfirmed: true)
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            await AsyncWait.WaitUntilAsync(() => !MachineWait.IsDoor(machine), "the door hold to clear", StateTransitionWaitTimeoutMs);
+            Assert.Empty(prompts.All);
+
+            await controller.StopAsync();
+            try { await run; } catch (OperationCanceledException) { }
+        }
+
+        /// <summary>
+        /// The answer covered the enclosure as it was then. Once the door is seen open, a
+        /// hand may be inside, so the hold that follows is put to the operator.
+        /// </summary>
+        [Fact]
+        public async Task ADoorOpenedAfterTheEnclosureAnswer_IsAskedAbout()
+        {
+            using var machine = CreateFastFakeMachine(FileWithoutToolChange);
+            machine.SimulateDoorOpen();
+
+            var controller = new MillingController(machine)
+            {
+                Options = MillingOptions.Create(
+                    filePath: null, depthAdjustment: 0, machineIsHomed: true, enclosureConfirmed: true)
+            };
+
+            var doorAnnounced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            controller.ProgressChanged += progress =>
+            {
+                if (progress.Message == DoorOpenPrompt)
+                {
+                    doorAnnounced.TrySetResult();
+                }
+            };
+
+            var prompts = new PromptRecorder(controller);
+            var run = controller.StartAsync();
+
+            await doorAnnounced.Task.WaitAsync(TimeSpan.FromMilliseconds(StateTransitionWaitTimeoutMs));
+            machine.SimulateDoorClosedAndHolding();
+
+            var asked = await prompts.NextAsync(StateTransitionWaitTimeoutMs);
+            Assert.Equal(DoorHoldingPrompt, asked.Message);
+
+            asked.OnResponse(OptionAbort);
+            try { await run; } catch (OperationCanceledException) { }
+        }
+
+        /// <summary>
+        /// Resume releases the feed hold this controller placed. The status it would check is
+        /// a report that can predate the hold, so the cycle start goes out regardless.
+        /// </summary>
+        [Fact]
+        public async Task ResumeAfterAPause_SendsTheCycleStart_WhateverTheStatusReads()
+        {
+            using var machine = CreateFastFakeMachine(ALongCut);
+
+            var controller = new MillingController(machine)
+            {
+                Options = new MillingOptions { RequireHoming = false }
+            };
+
+            var run = controller.StartAsync();
+            try
+            {
+                await AsyncWait.WaitUntilAsync(() => controller.State == ControllerState.Running, "the controller to reach Running", CompletionWaitTimeoutMs);
+                controller.Pause();
+                machine.SimulateStaleStatus(GrblProtocol.StatusRun);
+
+                int before = machine.CycleStartCount;
+                controller.Resume();
+
+                Assert.Equal(before + 1, machine.CycleStartCount);
+            }
+            finally
+            {
+                await controller.StopAsync();
+                try { await run; } catch (OperationCanceledException) { }
+            }
         }
 
         /// <summary>
@@ -706,7 +789,7 @@ namespace coppercli.Tests
 
             using var cts = new CancellationTokenSource();
             var run = controller.StartAsync(cts.Token);
-            await WaitUntilAsync(() => controller.IsRunInProgress, StateTransitionWaitTimeoutMs);
+            await AsyncWait.WaitUntilAsync(() => controller.IsRunInProgress, "the run to take the machine", StateTransitionWaitTimeoutMs);
             machine.ClearSentCommands();
 
             // Cancelling is how Stop reaches the run; cleanup runs as it unwinds.

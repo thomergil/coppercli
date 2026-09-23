@@ -98,7 +98,7 @@ namespace coppercli.Core.Controllers
             // up front, rather than finding out at the point of streaming.
             _machine.EnsureManualMode();
 
-            await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
+            await EnsureDoorClosedAsync(ct, Options.EnclosureConfirmed).ConfigureAwait(false);
 
             await SettleAsync(ct);
 
@@ -264,10 +264,12 @@ namespace coppercli.Core.Controllers
                 return false;
             }
 
-            if (MachineWait.IsHold(_machine))
-            {
-                _machine.CycleStart();
-            }
+            // Both callers reach here holding a machine this controller itself held - Resume
+            // after its own feed hold, and the continue path after an M0/M1. Re-reading
+            // Status to confirm that would define the same fact a second time, from a
+            // reading that can still predate the hold; a cycle start to a machine that is
+            // not holding does nothing.
+            _machine.CycleStart();
 
             if (_machine.Mode == OperatingMode.Manual)
             {

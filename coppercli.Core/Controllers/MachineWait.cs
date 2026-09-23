@@ -256,22 +256,6 @@ namespace coppercli.Core.Controllers
         public static Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
             => WaitUntilAsync(machine, m => m.Status == StatusIdle, timeoutMs, ct);
 
-        /// <summary>
-        /// A single Idle report is not enough: GRBL reports Idle while buffered motion is
-        /// still about to start.
-        /// </summary>
-        private static Task<bool> WaitForStableIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
-        {
-            int requiredCount = IdleSettleMs / StatusPollIntervalMs;
-            int stableCount = 0;
-
-            return WaitUntilAsync(machine, m =>
-            {
-                stableCount = m.Status == StatusIdle ? stableCount + 1 : 0;
-                return stableCount >= requiredCount;
-            }, timeoutMs, ct);
-        }
-
         /// <summary>Machine Z, for a G53 move.</summary>
         private static Task<bool> WaitForMachineZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
             => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.MachinePosition.Z, ct);
@@ -506,8 +490,9 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Give GRBL's reading of the door switch a few status reports to catch up. Counted
-        /// in reports, not milliseconds, because the poll interval is a setting.
+        /// Give GRBL's reading of the door switch time to catch up with the operator's
+        /// answer: the substate arrives on the status poll, so the report received when they
+        /// answer predates them closing the door.
         /// </summary>
         private static Task<bool> WaitForDoorReadingToCatchUpAsync(
             IMachine machine, int timeoutMs, CancellationToken ct)
@@ -554,25 +539,29 @@ namespace coppercli.Core.Controllers
             bool wasHoldingAtDoor = IsDoor(machine);
 
             // FeedHold and SoftReset are real-time bytes, delivered in any mode, and the
-            // reset is what stops the spindle. The explicit M5 goes after them: sent while a
-            // file is streaming it would be discarded.
+            // reset is what stops the spindle. The lines below go after them: sent while a
+            // file is streaming they would be discarded.
             machine.FeedHold();
             await Task.Delay(CommandDelayMs).ConfigureAwait(false);
 
             machine.SoftReset();
-            await Task.Delay(ResetWaitMs).ConfigureAwait(false);
 
-            if (IsAlarm(machine))
-            {
-                machine.SendLine(CmdUnlock);
-                await Task.Delay(CommandDelayMs).ConfigureAwait(false);
-            }
+            // A reset that interrupts a cycle leaves GRBL alarmed (one during homing always
+            // does), and GRBL then refuses every G-code line until $X clears the lock. $X does
+            // nothing on a machine that is not alarmed, so it is sent every time. The line is
+            // held until GRBL is back from the reset, so its timeout covers that wait too.
+            await machine.SendAsync(CmdUnlock, ResetAnnounceTimeoutMs + CommandAnswerTimeoutMs)
+                .ConfigureAwait(false);
 
-            // Sent again now that the reset is back in Manual mode and any alarm is cleared,
-            // so this one is not discarded.
-            machine.SendLine(CmdSpindleOff);
+            // If GRBL refuses this, the retract that follows fails its height check and the
+            // run reports the lift as unconfirmed.
+            await machine.SendAsync(CmdSpindleOff, CommandAnswerTimeoutMs).ConfigureAwait(false);
 
-            await WaitForIdleAsync(machine, IdleWaitTimeoutMs, CancellationToken.None);
+            // Status reads Alarm until the first status report after the unlock, and the
+            // retract and the next job's start check both read it, so wait for Idle. The wait
+            // starts in Alarm, so it must not stop on Alarm.
+            await WaitUntilAsync(machine, IsIdle, IdleWaitTimeoutMs, CancellationToken.None,
+                abortWhenUnavailable: false).ConfigureAwait(false);
 
             return wasHoldingAtDoor;
         }
@@ -591,54 +580,38 @@ namespace coppercli.Core.Controllers
 
         /// <summary>
         /// Writes the work offset for the named axes, such as "X0 Y0 Z0" or "Z0", and
-        /// confirms GRBL took it. G10 L20 changes no state, so a refusal is the only
-        /// evidence that GRBL rejected it.
+        /// confirms GRBL accepted it.
         /// </summary>
-        /// <returns>Why the offset was not written, or null once GRBL took it.</returns>
+        /// <returns>Why the offset was not written, or null once GRBL accepted it.</returns>
         public static async Task<string?> ZeroWorkOffsetAsync(IMachine machine, string axes, CancellationToken ct = default)
         {
-            // GRBL locks G-code out in Alarm and returns nothing at all when asleep or
-            // disconnected, so the line would be dropped. A door hold is different: GRBL
-            // keeps the line in its planner and runs it on the cycle start.
-            var activity = GetActivity(machine);
-            if (IsUnavailable(activity) && !IsDoorActivity(activity))
+            // G10 L20 changes nothing a status report shows, so GRBL's answer is the only
+            // evidence it ran.
+            var reply = await machine.SendAsync(
+                Inv($"{CmdZeroWorkOffset} {axes}"), CommandAnswerTimeoutMs, ct).ConfigureAwait(false);
+
+            switch (reply.Answer)
             {
-                return ControllerConstants.ErrorWorkZeroNotWritten;
+                case GrblAnswer.Ok:
+                    break;
+
+                // A refusal other than the alarm lock-out has a reason worth showing in
+                // GRBL's own words.
+                case GrblAnswer.Refused when reply.Rejection?.Code != GrblRejection.LockedOut:
+                    return reply.Rejection?.Description;
+
+                case GrblAnswer.Refused:
+                case GrblAnswer.NotSent:
+                    return ControllerConstants.ErrorWorkZeroNotWritten;
+
+                // Abandoned or no answer: GRBL may have written it, or may yet.
+                default:
+                    return ControllerConstants.ErrorWorkZeroUnconfirmed;
             }
 
-            GrblRejection? refusal = null;
-
-            void OnRejected(GrblRejection rejection)
-            {
-                if (rejection.Command.Contains(CmdZeroWorkOffset, StringComparison.OrdinalIgnoreCase))
-                {
-                    refusal = rejection;
-                }
-            }
-
-            machine.CommandRejected += OnRejected;
-
-            try
-            {
-                machine.SendLine(Inv($"{CmdZeroWorkOffset} {axes}"));
-                await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
-                await WaitForIdleAsync(machine, IdleSettleMs, ct).ConfigureAwait(false);
-            }
-            finally
-            {
-                machine.CommandRejected -= OnRejected;
-            }
-
-            if (refusal != null)
-            {
-                return refusal.Value.Code == GrblRejection.LockedOut
-                    ? ControllerConstants.ErrorWorkZeroNotWritten
-                    : refusal.Value.Description;
-            }
-
-            // At the door the write is still in GRBL's planner, so there is nothing to
-            // re-read and the $# would queue behind it.
-            if (IsDoorActivity(activity))
+            // GRBL answers $# only when idle or alarmed, so at a door hold the re-read would
+            // be refused. The origin it has just confirmed is the one to expect.
+            if (IsDoor(machine))
             {
                 return null;
             }
@@ -652,86 +625,37 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// The only code that sets `machine.IsHomed`, and it sets it only once the machine has
-        /// homed. `machine.IsHoming` stays true for the duration.
+        /// The only code that sets <see cref="IMachine.IsHomed"/> true, and it sets it on
+        /// GRBL's own answer that the cycle finished. <see cref="IMachine.IsHoming"/> stays
+        /// true for the duration.
         /// </summary>
+        /// <exception cref="OperationCanceledException">The caller cancelled.</exception>
         public static async Task<HomingOutcome> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
         {
-            // Record a refusal while waiting. Without it the only evidence of a rejected
-            // $H is that the machine stayed Idle, which looks the same as not started yet.
-            GrblRejection? refusal = null;
-
-            void OnRejected(GrblRejection rejection)
-            {
-                if (rejection.Command.Contains(CmdHome, StringComparison.OrdinalIgnoreCase))
-                {
-                    refusal = rejection;
-                }
-            }
-
-            machine.CommandRejected += OnRejected;
             machine.IsHoming = true;
 
             try
             {
-                long reportsBefore = machine.StatusReportCount;
-                machine.SendLine(CmdHome);
+                // GRBL answers $H only when the cycle is over: ok if the machine homed, an
+                // error if it refused the command, nothing if it alarmed part-way.
+                var reply = await machine.SendAsync(CmdHome, timeoutMs, ct).ConfigureAwait(false);
 
-                // Do not set IsHomed for a machine that never moved: a rejected or dropped
-                // $H leaves the status at Idle, so the idle wait below would pass at once.
-                // Every later G53 move depends on this flag.
-                string? started = await WaitForStatusChangeAsync(machine, StatusIdle, MotionStartTimeoutMs, ct);
-
-                if (started == null)
+                if (reply.Ran)
                 {
-                    // Still reporting and still Idle means the $H was not accepted; gone
-                    // quiet means homing is under way, since some builds stop reporting during
-                    // the cycle. Counted in reports, so a slow clock cannot decide.
-                    bool stillReporting = machine.StatusReportCount > reportsBefore;
-
-                    if (stillReporting)
-                    {
-                        return HomingOutcome.Refused(refusal);
-                    }
+                    machine.IsHomed = true;
+                    return HomingOutcome.Homed;
                 }
 
-                // Idle only counts once GRBL is reporting again. While it is quiet
-                // mid-cycle the last status still reads Idle, which would pass for a
-                // machine part-way through homing.
-                long quietAt = machine.StatusReportCount;
-                var reporting = Stopwatch.StartNew();
-
-                while (machine.StatusReportCount == quietAt
-                       && reporting.ElapsedMilliseconds < timeoutMs
-                       && !ct.IsCancellationRequested)
+                return reply.Answer switch
                 {
-                    await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-                }
-
-                // Sustained idle, not a single sample: homing ends with a pull-off move.
-                bool success = await WaitForStableIdleAsync(machine, timeoutMs, ct);
-
-                if (!success || !IsIdle(machine))
-                {
-                    // The door is the likeliest interruption and the only one the operator
-                    // can act on, so report it rather than a generic refusal.
-                    if (IsDoor(machine))
-                    {
-                        return HomingOutcome.Interrupted(IsDoorOpen(machine)
-                            ? ErrorMachineDoorOpen
-                            : ErrorDoorClosedDuringHoming);
-                    }
-
-                    return HomingOutcome.Refused(refusal);
-                }
-
-                machine.IsHomed = true;
-                return HomingOutcome.Homed;
+                    GrblAnswer.Refused or GrblAnswer.NotSent => HomingOutcome.Refused(reply.Rejection),
+                    GrblAnswer.Abandoned => HomingOutcome.Interrupted(ErrorHomingInterrupted),
+                    _ => HomingOutcome.Interrupted(ControllerConstants.ErrorMachineNotResponding)
+                };
             }
             finally
             {
                 machine.IsHoming = false;
-                machine.CommandRejected -= OnRejected;
             }
         }
 

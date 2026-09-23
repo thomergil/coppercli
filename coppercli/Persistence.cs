@@ -38,10 +38,13 @@ namespace coppercli
         /// The parsed autosave, or null if it is absent or unreadable. Return a new object
         /// each time so measurements added by a caller do not appear in later reads.
         /// </summary>
-        public static ProbeGrid? ReadProbeAutoSave()
+        public static ProbeGrid? ReadProbeAutoSave() => ReadProbeGrid(GetProbeAutoSavePath());
+
+        /// <summary>The map in a file, or null if there is no readable map there. To report why a
+        /// load failed, call ProbeGrid.Load.</summary>
+        public static ProbeGrid? ReadProbeGrid(string path)
         {
-            var path = GetProbeAutoSavePath();
-            if (!File.Exists(path))
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
             {
                 return null;
             }
@@ -52,7 +55,7 @@ namespace coppercli
             }
             catch (Exception ex)
             {
-                Logger.Log("ReadProbeAutoSave: failed to load {0} - {1}", path, ex.Message);
+                Logger.Log("ReadProbeGrid: failed to load {0} - {1}", path, ex.Message);
                 return null;
             }
         }
@@ -253,8 +256,36 @@ namespace coppercli
         /// while it is still on disk.</returns>
         public static bool ClearProbeAutoSave()
         {
-            var path = GetProbeAutoSavePath();
+            if (!TryDeleteFile(GetProbeAutoSavePath()))
+            {
+                return false;
+            }
 
+            AppState.Session.ProbeSourceGCodeFile = null;
+            SaveSession();
+            return true;
+        }
+
+        /// <summary>
+        /// Deletes the map file last saved or loaded and forgets its path, so no later session
+        /// offers it.
+        /// </summary>
+        /// <returns>False if the file is still there.</returns>
+        public static bool DeleteRememberedProbeFile()
+        {
+            if (!TryDeleteFile(AppState.Session.LastProbeFile))
+            {
+                return false;
+            }
+
+            AppState.Session.LastProbeFile = "";
+            SaveSession();
+            return true;
+        }
+
+        /// <returns>False if the file is still there.</returns>
+        private static bool TryDeleteFile(string path)
+        {
             try
             {
                 if (File.Exists(path))
@@ -264,13 +295,35 @@ namespace coppercli
             }
             catch (Exception ex)
             {
-                Logger.Log("ClearProbeAutoSave: could not delete {0} - {1}", path, ex.Message);
+                Logger.Log("TryDeleteFile: could not delete {0} - {1}", path, ex.Message);
                 return false;
             }
 
-            AppState.Session.ProbeSourceGCodeFile = null;
-            SaveSession();
             return true;
+        }
+
+        /// <summary>
+        /// Records the map file last saved or loaded, so loading its G-code offers it again.
+        /// See <c>SessionRestore</c>.
+        /// </summary>
+        public static void RememberProbeFile(string path)
+        {
+            AppState.Session.LastProbeFile = Path.GetFullPath(path);
+            SaveSession();
+        }
+
+        /// <summary>
+        /// The file name the terminal and the browser offer when saving a map: the loaded
+        /// G-code file's name, or the date and time when no file is loaded, with the map
+        /// extension.
+        /// </summary>
+        public static string SuggestedProbeFileName()
+        {
+            string? gcodeName = AppState.CurrentFile?.FileName;
+            string stem = string.IsNullOrEmpty(gcodeName)
+                ? DateTime.Now.ToString(ProbeDateFormat)
+                : Path.GetFileNameWithoutExtension(gcodeName);
+            return stem + ProbeGridExtension;
         }
 
         /// <summary>
@@ -299,6 +352,7 @@ namespace coppercli
                 }
 
                 grid.Save(newPath);
+                RememberProbeFile(newPath);
 
                 // The autosave goes only once the grid is held in memory. Deleting it while
                 // the map lived only in that file dropped the map from the job, and the Mill

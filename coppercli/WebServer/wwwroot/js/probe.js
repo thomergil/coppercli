@@ -2,7 +2,6 @@ import { state } from './state.js';
 import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson, format } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
-    API_STATUS,
     API_PROBE_SETUP,
     API_PROBE_TRACE,
     API_PROBE_START,
@@ -255,6 +254,16 @@ export async function showProbeComplete() {
     }
 }
 
+/**
+ * Call when a probe run has just ended: shows the map and, when it is complete, opens the
+ * save screen, as the terminal does. Not for a page that only reconnects onto a map.
+ */
+export async function showProbeCompleteAndOfferSave() {
+    if (await fetchAndDisplayProbeData()) {
+        await saveProbeData();
+    }
+}
+
 export function dismissProbeComplete() {
     resetProbeUI();
     showScreen(SCREEN_DASHBOARD);
@@ -331,6 +340,7 @@ function updateProbeGridDisplay(points, colors) {
     });
 }
 
+/** Resolves true when a complete map is now on screen. */
 export async function fetchAndDisplayProbeData() {
     try {
         const response = await fetch(API_PROBE_STATUS);
@@ -358,21 +368,31 @@ export async function fetchAndDisplayProbeData() {
             if (data.sourceGCodeMissing) {
                 showError(TEXT_SOURCE_GCODE_MISSING);
             }
+
+            return isComplete;
         }
     } catch (err) {
         console.error('Failed to fetch probe data:', err);
     }
+    return false;
 }
 
 
 export function saveProbeData() {
-    showProbeFileBrowser('save');
+    return showProbeFileBrowser('save');
 }
 
-function generateDefaultProbeName() {
-    const now = new Date();
-    const pad = n => n.toString().padStart(2, '0');
-    return `probe-${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}-${pad(now.getHours())}-${pad(now.getMinutes())}${PROBE_FILE_EXTENSION}`;
+// The server supplies the name, so the terminal and the browser offer the same one. Empty if
+// the server cannot be reached; the operator types a name.
+async function suggestedProbeFileName() {
+    try {
+        const response = await fetch(API_PROBE_STATUS);
+        const data = await response.json();
+        return data.suggestedFileName || '';
+    } catch (err) {
+        console.error('Reading the suggested map name failed', err);
+        return '';
+    }
 }
 
 function normalizeProbeFilename(filename) {
@@ -383,7 +403,16 @@ function normalizeProbeFilename(filename) {
 }
 
 async function saveProbeDataToPath(path) {
-    const { ok, error } = await postJson(API_PROBE_SAVE, { path });
+    let { ok, error, data } = await postJson(API_PROBE_SAVE, { path });
+
+    // The server asks before replacing a file; its error is the question.
+    if (!ok && data.fileExists) {
+        if (!await showConfirm(error)) {
+            return false;
+        }
+        ({ ok, error } = await postJson(API_PROBE_SAVE, { path, overwrite: true }));
+    }
+
     if (!ok) {
         showError(error || TEXT_PROBE_SAVE_FAILED);
         return false;
@@ -481,7 +510,7 @@ export async function showProbeFileBrowser(mode = 'load') {
         saveRow.classList.remove(CLASS_HIDDEN);
         actionBtn.textContent = TEXT_SAVE;
         actionBtn.disabled = false; // A name can be typed, so nothing has to be selected
-        saveInput.value = generateDefaultProbeName();
+        saveInput.value = await suggestedProbeFileName();
         saveInput.focus();
     } else {
         titleEl.textContent = TEXT_LOAD_PROBE_DATA;
@@ -771,108 +800,3 @@ export async function refreshProbeState() {
 }
 
 
-export function showProbeSaveModal() {
-    const modal = $('probe-save-modal');
-    modal.classList.remove(CLASS_HIDDEN);
-}
-
-export function hideProbeSaveModal() {
-    const modal = $('probe-save-modal');
-    modal.classList.add(CLASS_HIDDEN);
-}
-
-function handleProbeSaveConfirm() {
-    hideProbeSaveModal();
-    showProbeFileBrowser('save');
-}
-
-async function handleProbeSaveDiscard() {
-    if (!await discardOnServer()) {
-        return;
-    }
-
-    showInfo(TEXT_PROBE_DATA_CLEARED);
-    hideProbeSaveModal();
-    clearProbeGridUI();
-}
-
-export function initProbeSaveModal() {
-    const confirmBtn = $('probe-save-confirm-btn');
-    const discardBtn = $('probe-save-discard-btn');
-
-    if (confirmBtn) {
-        confirmBtn.addEventListener('click', handleProbeSaveConfirm);
-    }
-    if (discardBtn) {
-        discardBtn.addEventListener('click', handleProbeSaveDiscard);
-    }
-}
-
-export async function checkAndShowUnsavedProbe() {
-    try {
-        const statusResponse = await fetch(API_STATUS);
-        const status = await statusResponse.json();
-        if (status.milling) {
-            return false;
-        }
-
-        const response = await fetch(API_PROBE_STATUS);
-        const data = await response.json();
-
-        // Don't show recovery/save modals while the machine is on the board.
-        if (status.probing || status.tracingOutline) {
-            return false;
-        }
-
-        if (data.state === PROBE_STATE_PARTIAL) {
-            showProbeRecoveryModal();
-            return true;
-        }
-
-        if (data.state === PROBE_STATE_COMPLETE && data.hasUnsavedData) {
-            showProbeSaveModal();
-            return true;
-        }
-    } catch (err) {
-        console.error('Check unsaved probe failed:', err);
-    }
-    return false;
-}
-
-
-function showProbeRecoveryModal() {
-    const modal = $('probe-recovery-modal');
-    modal.classList.remove(CLASS_HIDDEN);
-}
-
-function hideProbeRecoveryModal() {
-    const modal = $('probe-recovery-modal');
-    modal.classList.add(CLASS_HIDDEN);
-}
-
-async function handleProbeRecoveryContinue() {
-    hideProbeRecoveryModal();
-    showScreen(SCREEN_PROBE, true);
-    await fetchAndDisplayProbeData();
-}
-
-async function handleProbeRecoveryDiscard() {
-    if (!await discardOnServer()) {
-        return;
-    }
-
-    hideProbeRecoveryModal();
-    showScreen(SCREEN_DASHBOARD);
-}
-
-export function initProbeRecoveryModal() {
-    const continueBtn = $('probe-recovery-continue-btn');
-    const discardBtn = $('probe-recovery-discard-btn');
-
-    if (continueBtn) {
-        continueBtn.addEventListener('click', handleProbeRecoveryContinue);
-    }
-    if (discardBtn) {
-        discardBtn.addEventListener('click', handleProbeRecoveryDiscard);
-    }
-}

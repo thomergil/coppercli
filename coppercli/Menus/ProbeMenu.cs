@@ -799,7 +799,6 @@ namespace coppercli.Menus
         private static void PromptSaveProbeData()
         {
             var session = AppState.Session;
-            var currentFile = AppState.CurrentFile;
 
             // `CurrentProbeGrid` is the map the Save entry was offered for: the one in
             // memory, or the autosave when nothing is loaded. `ProbePoints` alone reports
@@ -810,19 +809,9 @@ namespace coppercli.Menus
                 return;
             }
 
-            string defaultFilename;
-            if (currentFile != null && !string.IsNullOrEmpty(currentFile.FileName))
-            {
-                defaultFilename = Path.GetFileNameWithoutExtension(currentFile.FileName) + ProbeGridExtension;
-            }
-            else
-            {
-                defaultFilename = DateTime.Now.ToString(ProbeDateFormat) + ProbeGridExtension;
-            }
-
             var path = FileMenu.BrowseForSaveLocation(
                 ProbeGridExtensions,
-                defaultFilename,
+                Persistence.SuggestedProbeFileName(),
                 session.LastProbeBrowseDirectory);
 
             if (path == null)

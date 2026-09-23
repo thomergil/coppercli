@@ -2,6 +2,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using coppercli.Core.Communication;
 using coppercli.Core.Util;
 
 namespace coppercli.Tests.Fakes
@@ -63,6 +64,30 @@ namespace coppercli.Tests.Fakes
         /// </summary>
         public static bool ResetAlarms(string state) =>
             Holding(state) || state.StartsWith(GrblProtocol.StatusRun, StringComparison.Ordinal);
+
+        /// <summary>
+        /// Whether GRBL refuses this line because it is alarmed: it locks G-code out and takes
+        /// only its own $ commands until the alarm is cleared.
+        /// </summary>
+        public static bool LockedOut(string line, string state) =>
+            state.StartsWith(GrblProtocol.StatusAlarm, StringComparison.Ordinal)
+            && !line.StartsWith(GrblProtocol.SystemCommandPrefix, StringComparison.Ordinal);
+
+        /// <summary>
+        /// GRBL's answer to a line in this state: G-code refused while alarmed, nothing at all
+        /// while asleep, ok otherwise.
+        /// </summary>
+        public static GrblReply Answer(string line, string state)
+        {
+            if (LockedOut(line, state))
+            {
+                return GrblReply.Refused(new GrblRejection(GrblRejection.LockedOut, line, string.Empty));
+            }
+
+            return state.StartsWith(GrblProtocol.StatusSleep, StringComparison.Ordinal)
+                ? GrblReply.NoAnswer
+                : GrblReply.Ok;
+        }
 
         /// <summary>Whether this line is the $X that clears the alarm a reset raised.</summary>
         public static bool ClearsAlarm(string line, string state) =>

@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { $, showError, showConfirm, updatePauseButton, postJson, escapeMarkup, format } from './helpers.js';
+import { $, showError, showConfirm, updatePauseButton, postJson, escapeMarkup, format, settleButtons } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     PROMPT_OPTION_CONTINUE,
@@ -38,7 +38,6 @@ import {
     SCREEN_DASHBOARD,
     SCREEN_MILL,
     CLASS_HIDDEN,
-    CLASS_DOOR_MESSAGE,
     MSG_TYPE_MILL_STATE,
     MSG_TYPE_MILL_PROGRESS,
     MSG_TYPE_MILL_TOOLCHANGE,
@@ -59,8 +58,7 @@ import {
     TEXT_NO_FILE_LOADED,
     TEXT_ABORT_MILLING_CONFIRM,
     TEXT_ABORT_MILLING_TITLE,
-    TEXT_PROBE_REMOVED_CONFIRM,
-    TEXT_START_MILLING_TITLE,
+    TEXT_PROBE_REMOVED_QUESTION,
     TEXT_TOOL_CHANGE_FAILED
 } from './constants.js';
 
@@ -132,6 +130,11 @@ async function showPremillModal(fileInfo, warnings) {
     // The server holds the depth, so it is reset there rather than here.
     await adjustPremillDepth(DEPTH_ACTION_RESET);
 
+    // Unticked on every open, so the operator confirms for each run, as the terminal asks
+    // before each run.
+    $('premill-probe-removed-text').textContent = TEXT_PROBE_REMOVED_QUESTION;
+    setProbeRemoved(false);
+
     modal.classList.remove(CLASS_HIDDEN);
 
     return new Promise((resolve) => {
@@ -145,6 +148,13 @@ async function showPremillModal(fileInfo, warnings) {
 
         premillResolve = resolve;
     });
+}
+
+// Pressing Start is the operator's yes to the probe question, so Start stays disabled until
+// the box is ticked.
+function setProbeRemoved(ticked) {
+    $('premill-probe-removed').checked = ticked;
+    $('premill-start-btn').disabled = !ticked;
 }
 
 function hidePremillModal() {
@@ -469,11 +479,15 @@ export function initMillScreen() {
     $('premill-depth-minus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_DECREASE));
     $('premill-depth-plus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_INCREASE));
     $('premill-depth-reset').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_RESET));
-    $('premill-start-btn').addEventListener('click', async () => {
+    $('premill-probe-removed').addEventListener('change',
+        () => setProbeRemoved($('premill-probe-removed').checked));
+    $('premill-start-btn').addEventListener('click', () => {
+        if (!$('premill-probe-removed').checked) {
+            return;
+        }
         hidePremillModal();
-        const confirmed = await showConfirm(TEXT_PROBE_REMOVED_CONFIRM, TEXT_START_MILLING_TITLE, { danger: true });
         if (premillResolve) {
-            premillResolve(confirmed);
+            premillResolve(true);
             premillResolve = null;
         }
     });
@@ -673,10 +687,10 @@ export function updateDoorOverlay(status) {
     const canAbort = options.includes(PROMPT_OPTION_ABORT);
     setDoorButton('door-abort-btn', canAbort, () => answerPrompt(prompt, PROMPT_OPTION_ABORT));
 
-    // With no button there is nothing to answer, so the overlay becomes a banner rather
-    // than a layer over the page: the operator still has to reach Stop underneath.
+    // The overlay blocks the page even with no button: GRBL holds the machine while the
+    // door is open, and opening it again during a resume holds it again, so the door is
+    // the stop.
     const hasButton = canAbort || canContinue;
-    overlay.classList.toggle(CLASS_DOOR_MESSAGE, !hasButton);
 
     // A release with no run behind it has no earlier prompt a tap could belong to, so it
     // is answerable at once. Either way this is the only place the buttons are enabled.
@@ -781,21 +795,8 @@ function acceptAnswersAfterSettling(promptId, settleMs = PROMPT_SETTLE_MS) {
     }
     settledPromptId = promptId ?? null;
 
-    if (promptSettleTimer) {
-        clearTimeout(promptSettleTimer);
-        promptSettleTimer = null;
-    }
-
-    if (settleMs <= 0) {
-        answerButtons().forEach(btn => { btn.disabled = false; });
-        return;
-    }
-
-    answerButtons().forEach(btn => { btn.disabled = true; });
-    promptSettleTimer = setTimeout(() => {
-        promptSettleTimer = null;
-        answerButtons().forEach(btn => { btn.disabled = false; });
-    }, settleMs);
+    clearTimeout(promptSettleTimer);
+    promptSettleTimer = settleButtons(answerButtons(), settleMs);
 }
 
 /**

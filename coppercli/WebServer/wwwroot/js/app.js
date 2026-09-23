@@ -7,9 +7,9 @@ import { connectWebSocket } from './websocket.js';
 import { loadConfig, initJogScreen } from './jog.js';
 import { initFileScreen } from './file.js';
 import { initMillScreen, startMill } from './mill.js';
-import { initProbeScreen, initProbeFilesScreen, initProbeSaveModal, initProbeRecoveryModal, checkAndShowUnsavedProbe } from './probe.js';
+import { initProbeScreen, initProbeFilesScreen } from './probe.js';
 import { initSettingsScreen } from './settings.js';
-import { initTrustZeroModal, checkAndShowTrustZero } from './trust-zero.js';
+import { askPendingQuestions } from './session-restore.js';
 import { SCREEN_SUFFIX } from './constants.js';
 
 document.addEventListener('DOMContentLoaded', init);
@@ -35,16 +35,11 @@ async function init() {
     initMillScreen();
     initProbeScreen();
     initProbeFilesScreen();
-    initProbeSaveModal();
-    initProbeRecoveryModal();
-    initTrustZeroModal();
     initSettingsScreen();
 
     connectWebSocket();
 
     restoreScreenFromHash();
 
-    await checkAndShowTrustZero();
-
-    await checkAndShowUnsavedProbe();
+    await askPendingQuestions();
 }

@@ -27,7 +27,11 @@ namespace coppercli.Core.Controllers
     /// point and updates it after each later point. A usable autosave determines whether
     /// screens offer Save/Discard or Clear. <c>Persistence.SaveProbeToFile(path)</c>
     /// writes the map to the chosen file, loads it from the autosave if needed, then
-    /// deletes the autosave; <c>Persistence.ClearProbeAutoSave()</c> only deletes it.</para>
+    /// deletes the autosave; <c>Persistence.ClearProbeAutoSave()</c> only deletes it.
+    /// Saving or loading a map file records its path in the session, and loading the G-code
+    /// it was measured for offers it again, as one of the <c>SessionRestore</c> questions.
+    /// A completed mill deletes the autosave and the saved map measured for the milled file
+    /// (<c>AppState.DeleteStoredMapsForLoadedFile</c>), because that board is done.</para>
     /// </remarks>
     public class ProbeController : ControllerBase, IProbeController
     {

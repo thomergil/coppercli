@@ -64,8 +64,24 @@ namespace coppercli.Tests
         [Fact]
         public void MillingOptions_Create_SetsRequireHomingFromNotHomed()
         {
-            Assert.True(MillingOptions.Create("f.nc", 0f, machineIsHomed: false).RequireHoming);
-            Assert.False(MillingOptions.Create("f.nc", 0f, machineIsHomed: true).RequireHoming);
+            Assert.True(MillingOptions.Create("f.nc", 0f, machineIsHomed: false, enclosureConfirmed: true)
+                .RequireHoming);
+            Assert.False(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: true)
+                .RequireHoming);
+        }
+
+        /// <summary>
+        /// A run releases a door hold on the operator's enclosure answer, so a caller that
+        /// never took one must not be given it by default: the hold reaches them as a prompt.
+        /// </summary>
+        [Fact]
+        public void MillingOptions_CarriesTheEnclosureAnswerItWasGiven()
+        {
+            Assert.True(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: true)
+                .EnclosureConfirmed);
+            Assert.False(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: false)
+                .EnclosureConfirmed);
+            Assert.False(new MillingOptions().EnclosureConfirmed);
         }
 
         [Fact]

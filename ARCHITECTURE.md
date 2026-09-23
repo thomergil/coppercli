@@ -38,9 +38,10 @@ coppercli's tool-change logic has no reference implementation.
 - **macro** (`coppercli/Macro/`) — parses and runs `.cmacro` scripts, driving the TUI's
   own operations unattended.
 - **web-server** (`coppercli/WebServer/CncWebServer.cs`, `WebConstants.cs`,
-  `RequestPolicy.cs`) — embedded `HttpListener` serving the browser UI, the `/api/*`
-  endpoints, and the `/ws` socket. Presentation and transport; delegates work to
-  controllers.
+  `RequestPolicy.cs`, `MachineHold.cs`) — embedded `HttpListener` serving the browser UI,
+  the `/api/*` endpoints, and the `/ws` socket. Presentation and transport; delegates work
+  to controllers. `MachineHold` decides whether the server or a proxy terminal has the
+  serial port (rule `server-holds-the-machine`).
   *Finding: `CncWebServer.cs` combines request routing, workflow setup, and client updates.
   See the GAP under `ui → controllers`.*
 - **web-client** (`coppercli/WebServer/wwwroot/`) — vanilla ES-module browser UI, embedded
@@ -56,7 +57,7 @@ coppercli's tool-change logic has no reference implementation.
 
 ## Interfaces
 
-### controllers → machine · v4 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
+### controllers → machine · v5 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
 Every controller reaches the machine only through `IMachine`. That interface file is the
 contract; do not restate it here. It exists so controllers are testable without hardware;
 `coppercli.Tests/Fakes/` supplies the doubles.
@@ -79,6 +80,10 @@ contract; do not restate it here. It exists so controllers are testable without 
   The terminal calls the same functions. The payload sends `activity.ToString()`, so the
   member names are part of the wire contract. GRBL's status word is still sent, for display
   only. See rule `browser-uses-core-status-values`.
+- **v5:** whether a command ran is read from GRBL's answer to it, which
+  `IMachine.SendAsync` returns as a `GrblReply`; `GrblAnswer` says what each answer means.
+  `SendLine` remains for a caller that does not wait. See rule
+  `grbl-answers-its-own-commands`.
 - **GAP (undecided):** GRBL has one resume, so the cycle start that releases a door hold
   releases a feed hold with it. A run that was paused when the door opened therefore
   continues cutting while `ControllerState` still reads `Paused` and the screen still
@@ -90,15 +95,20 @@ contract; do not restate it here. It exists so controllers are testable without 
   client of `SerialProxy` writes its own bytes to the port and is outside this), and it sends
   the cycle start only on GRBL's own reading of the switch; `ControllerBase.EnsureDoorClosedAsync`
   is the only place a workflow asks the operator for it.
-- `MachineWait.HomeAsync` is the only place `IsHomed` is set **true**. It is set false only
-  inside `Machine` itself, on connect, disconnect, and soft reset — the three events after
-  which the machine no longer has a valid reference frame. No UI assigns it.
+- `MachineWait.HomeAsync` is the only place `IsHomed` is set **true**, and it sets it on
+  GRBL's `ok` for the `$H` — the one answer that means the cycle finished. It is set
+  false only inside `Machine` itself, on connect, disconnect, and any reset — one coppercli
+  sends, or one GRBL announces with its banner — the events after which the machine no longer
+  has a valid reference frame. No UI assigns it.
 - **GAP:** the `IMachine` interface stops at Core. `AppState.Machine`, `CncWebServer._machine`,
   `MachineCommands`, and `JogHelpers` are all typed to the concrete `Machine`, because
   `IMachine` was scoped to what controllers need — it lacks `Connect`/`Disconnect`,
   `SetFile`, `Jog`, `EnableAutoStateClear`, `FeedOverride*`. Core is testable,
   **both UIs are not**. Target: `IMachine` describes the transport contract, and the app
   layer holds an `IMachine`.
+- **GAP (open, raised to the owner 2026-09-23):** the milling loop can stall with the
+  spindle on after GRBL rejects a streamed line. Not yet investigated; the fix belongs in
+  `MillingController` under rule `fail-safe-on-uncertainty`.
 - **GAP:** `Machine` raises 17 events with a bare `action?.Invoke(...)` — no dispatcher, so
   every handler runs inline on the raising thread and blocks GRBL streaming.
   `Program.SetupEventHandlers` does Spectre console I/O from there, and its `LineReceived`
@@ -106,11 +116,9 @@ contract; do not restate it here. It exists so controllers are testable without 
   terminating the process from inside the serial read loop, bypassing every `finally`
   including `Machine`'s own teardown. (The proxy does send feed-hold then soft reset on
   client disconnect, so the spindle is stopped by the other side; the process teardown is
-  what is skipped.) Eight of the 17 events have no subscribers at all, and
-  `BufferStateChanged` is raised while `_bufferLock` is held — a deadlock that is latent
-  only because nothing listens.
+  what is skipped.) Some events have no subscribers at all.
 
-### ui → controllers · v5 · kind: function + event · contract: `coppercli.Core/Controllers/IController.cs` (law)
+### ui → controllers · v6 · kind: function + event · contract: `coppercli.Core/Controllers/IController.cs` (law)
 Both UIs start a workflow by configuring a controller, subscribing to its four events
 (`StateChanged`, `ProgressChanged`, `UserInputRequired`, `ErrorOccurred`), and awaiting
 `StartAsync`. Events are **synchronous** — the handler runs inline and the controller waits,
@@ -120,6 +128,9 @@ so a handler must not block on the UI thread's own input loop.
   `TryTransitionTo` where another thread may already have made the transition — an
   operator's pause arriving between a test and a `TransitionTo` would otherwise throw out
   of the run they were intervening in.
+- **v6:** `StopAsync` on a run in progress cancels it and completes once `StartAsync` has
+  finished, so the run's own teardown is the only one. It cleans up by itself only when no
+  run is in progress.
 - **v5:** `StartAsync` leaves the controller in a terminal state however the run ended, so
   the task completing and the run being over are one fact. `ReleaseAsync` is the only way
   back to Idle: it stops an unfinished run first, then resets. Every start and every stop
@@ -172,32 +183,65 @@ so a handler must not block on the UI thread's own input loop.
   with presentation only. The workflows run in Core, but the repeated setup sequence has
   already produced differences between the two UIs (see `stale-work-zero-and-height-map`).
 
-### machine → GRBL · v3 · kind: serial wire protocol · contract: `coppercli.Core/Util/GrblProtocol.cs` (law)
+### machine → GRBL · v4 · kind: serial wire protocol · contract: `coppercli.Core/Util/GrblProtocol.cs` (law)
 Status strings, real-time bytes, and command words are named there and nowhere else.
 Targets GRBL 1.1f; 0.8/0.9/1.0 are known-incompatible.
 - Every number sent to the machine is formatted through `GCodeFormat.Inv`; see rule
   `culture-invariant-gcode`.
 - **v2:** closing the port does not stop the machine - GRBL keeps working through its
   planner buffer. `Machine.WriteStopSequence(Stream)` is the one definition of the
-  stop: feed hold, then soft reset, each given time to act. `SerialProxy.SendSafetyStop`
-  calls it too. `Machine.NeedsStopBeforeDisconnect` decides whether to send it, exempting a
+  stop: feed hold, then soft reset, each given time to act.
+  `SerialProxy.StopMachineAndClosePort` calls it too. `Machine.NeedsStopBeforeDisconnect` decides whether to send it, exempting a
   port that never answered as GRBL. See rule `closing-the-port-does-not-stop-grbl`.
 - **v3:** GRBL reports the door as `Door:<n>`, and the number is what separates an open door
   from a closed one. `Machine` splits the two and `GrblProtocol` names both halves: `DoorSubStateClosed`,
   `Ajar`, `Retracting` and `Resuming`, plus `StatusJog`, `StatusHome`, `StatusCheck` and
   `StatusSleep` for the states coppercli does not drive. Nothing outside `GrblProtocol`
   contains a status word or a substate number.
+- **v4:** GRBL answers the lines it is sent in the order it received them, so `Machine`
+  matches each `ok` or `error:N` to the oldest line still unanswered. `BufferState` is
+  computed from those unanswered lines rather than tracked beside them. GRBL's banner means
+  it has restarted, whoever reset it: the lines it held are abandoned and `IsHomed` is
+  cleared. After coppercli sends a soft reset, lines are held until that banner arrives or
+  `Constants.ResetAnnounceTimeoutMs` passes, because GRBL drops a line it receives while
+  restarting without answering it. An alarm abandons the lines GRBL held, and also the lines
+  not yet sent unless they are held for the restart.
 
-### proxy → TCP clients · v1 · kind: tcp · port 34000
+### proxy → TCP clients · v2 · kind: tcp · port 34000
 `SerialProxy` re-exports the raw serial stream to one TCP client at a time, so a remote TUI
 can drive the mill. Deliberately **unauthenticated** — it forwards raw bytes, and anything
 that reaches the port can send arbitrary G-code. Documented as such in the README.
-- On client disconnect the proxy sends feed-hold then soft reset, so a dropped connection
-  cannot leave the spindle running.
-- Only one component may hold the serial port: `IsSerialPortInUse` lets the proxy refuse a
-  TUI client while the web server holds the `Machine` connection.
+- When a session ends the proxy sends feed hold then soft reset, so a dropped connection
+  cannot leave the spindle running. The stop is sent in one place,
+  `StopMachineAndClosePort`, after both pump threads have joined and before the port
+  closes; it takes the port with `Interlocked.Exchange`, so `Stop` and the session cannot
+  both send it.
+- **v2:** `MachineHold` owns the serial port in server mode (rule
+  `server-holds-the-machine`). A terminal first sends `POST /api/terminal-takeover`
+  (`ConnectionMenu.TryTakeOverFromServer`); the server refuses with `409`
+  (`ErrorTakeoverWhileBusy`) while a run is in progress, and otherwise disconnects. The
+  proxy then asks `TryClaimSerialPort` before admitting the terminal, and calls
+  `ReleaseSerialPort` after its stop and port close; the server reconnects after that. A
+  claim is granted once, and only while the server has yielded and is disconnected. If no
+  terminal claims the port within `TerminalTakeoverWindowMs`, the server connects again.
+- **v2:** while a session runs, the proxy refuses a second client rather than leaving it
+  unanswered. The slot
+  stays taken until the session's `finally` (stop, close, release) has finished, so a new
+  client is never admitted while the previous session is still stopping the machine.
+- A browser takeover (`/api/browser-takeover`) disconnects a proxy terminal even during a
+  job. That is intended: the browser's operator is taking the machine, and the proxy's
+  stop runs as for any other session end.
+  See `server-let-go-of-the-machine`, `takeover-and-proxy-races`.
+- **GAP (undecided):** a terminal takeover that arrives between a run start's connected
+  check and its controller starting is not refused, because no run-start gate exists.
+  Options: a gate that the run start and `TryYieldToTerminal` take under one lock (cost:
+  every start path must go through it), or accept the window (current behavior; the
+  proxy's stop still runs when the terminal leaves).
+- **GAP (undecided):** the terminal computes the server's web port as proxy port + 1, so the
+  takeover fails when `--web-port` is set to anything else. Options: publish the web port
+  from the proxy, or add a terminal setting for it (cost: one more setting to keep in step).
 
-### web → browser · v7 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
+### web → browser · v9 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
 Port 34001. Every path (`Api*`), every WebSocket message type (`WsMessageType*`), and every
 socket command (`WsCmd*`) is a named constant there; the client's mirror is
 `wwwroot/js/constants.js`. Neither side may hardcode a wire value.
@@ -267,6 +311,14 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   with `CliConstants.StopTimedOutWarning` when it could not. The browser leaves the progress
   view up when the stop is not confirmed, rather than a setup screen that implies the run is
   over.
+- **v8:** the browser asks the session questions through `/api/session/restore`, the same
+  list the terminal asks: `GET` lists the pending ones, `POST {topic, detail, yes}` answers
+  the one shown. It asks one at a time on page open, reconnect and G-code load, re-reading
+  after each answer, never while another question is open. A missing field or unknown topic
+  gets `400`; a question no longer pending as shown gets `409` (rule
+  `session-questions-cleared-by-their-answer`). `/api/trust-work-zero` and the
+  `hasStoredWorkZero` and `isWorkZeroSet` status fields, which the browser used to decide
+  that question itself, are gone.
 - **v7:** `/api/door/release` releases a door hold the operator confirmed in the browser's
   door overlay, and refuses while any run is in progress: a run holds the machine until it
   ends, and answering its own prompt is then the only way the cycle start is sent.
@@ -292,6 +344,19 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   `DetectToolChange`/`DetectPendingPrompt` in the status, the client's `lastPrompt`, and the
   answer body. The id alone does not stop a double-tap — see rule
   `delay-input-after-prompt-redraw`.
+- **v9:** the server holds the machine for its whole life (rule `server-holds-the-machine`),
+  so a browser neither connects nor disconnects it. `/api/connect`, `/api/disconnect` and
+  `/api/ports` are gone. `/api/force-disconnect` is now `/api/browser-takeover`: it closes
+  every other page and any proxy terminal, and never disconnects the server.
+  `/api/terminal-takeover` is new; its caller is the terminal, not the browser (see
+  `proxy → TCP clients`).
+- **v9:** `/api/probe/save` refuses to overwrite an existing file with `409`
+  and `fileExists`, and the browser sends it again with `overwrite` set once the operator
+  confirms. A finished browser probe opens the save screen with
+  `Persistence.SuggestedProbeFileName`, the name the terminal suggests.
+- **GAP (undecided):** machine errors are not shown in the browser. In server mode they go
+  to the console's message list only. Options: a WebSocket message type for them (four-place
+  update, rule `ws-message-types-updated-in-four-places`), or a field in `/api/status`.
 - **GAP:** failure signalling is still inconsistent on pause: `/api/mill/pause` returns 400 on
   illegal state while `/api/probe/pause` returns 200 with `{success:false}`. Left as it
   stands; the start path is the one the operator's screen depends on.
@@ -303,7 +368,10 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   extension.
   `/api/file/upload` still contains uploads (`Path.GetFileName` + `IsContainedIn`), because
   there the client supplies the bytes as well as the name.
-  See `prompt-id-did-not-stop-a-double-tap`.
+  The one exception is a path on another host. `IsLocalPath` refuses any path that starts
+  with two separators, in any mix, or with a separator and `?`, because on Windows opening
+  a network share sends the login to that host. See `prompt-id-did-not-stop-a-double-tap`,
+  `network-paths-missed-by-the-local-path-check`.
 
 ### shared constants → client · v2 · kind: http · `GET /api/constants`
 Any value both C# and JavaScript need crosses here. `GetSharedConstants()` in
@@ -483,6 +551,19 @@ document and `MacroParser` together.
   _Check: reader judgment; grep for assignments._
   _History: stale-work-zero-and-height-map, work-zero-deliberately-stays-in-appstate._
 
+- **server-holds-the-machine** *(error)* — in server mode only `MachineHold` connects or
+  disconnects the machine. It connects at startup and stays connected for the server's
+  life; a browser opening, closing or going idle never changes the connection. It disconnects
+  only for a terminal takeover, which is refused while a run is in progress, and connects
+  again once the proxy returns the port. Each hand-off step (check-and-set of the yield,
+  claim, release) is atomic. Homing and work zero are still cleared on every disconnect
+  (rule `machine-state-single-writer`); this rule exists so that disconnects happen only
+  when a terminal asks for the machine or the server stops.
+  _Check: `coppercli.Tests/MachineHoldTests.cs`, `coppercli.Tests/WebServerMachineHoldTests.cs`;
+  reader judgment (grep `CncWebServer.cs` for `Connect(`/`Disconnect(` outside
+  `ConnectMachine` and `MachineHold`)._
+  _History: server-let-go-of-the-machine, takeover-and-proxy-races._
+
 - **per-run-state-cleared-at-run-start** *(error)* — controllers are session-lifetime
   singletons, so every field describing the current run is declared in
   `ControllerBase.ResetRunState()` and cleared when a run *starts*, not only on `Reset()`:
@@ -567,19 +648,28 @@ document and `MacroParser` together.
   _History: one-door-policy-two-implementations,
   door-retry-loop-spun-on-a-canceled-token._
 
-- **startup-questions-asked-once** *(error)* — a loop that re-derives its own work list needs a
-  termination rule that does not depend on the work changing the state the list is derived
-  from. `SessionRestore.AskPendingSteps` asks the next pending startup question after each
-  answer, and three of the four questions are derived from state their answer leaves
-  untouched: reloading the file stores the same path again, keeping the height map leaves the
-  autosave on disk, and trusting the origin writes a different field from the one the
-  question reads. Every answer defaulted to yes, so the first screen repeated forever. The
-  set of topics already asked lives in that method, not in the caller, so a front end cannot
-  leave it out.
-  _Check: `coppercli.Tests/SessionRestoreTests.cs`
-  (`RestoreQuestions_EndAfterEachTopicForEitherAnswer`, a theory over both answers;
-  mutation-verified against both the filter and the caller)._
-  _History: startup-prompt-loop-never-terminated._
+- **session-questions-cleared-by-their-answer** *(error)* — each answer, yes or no, makes
+  its question's condition in `SessionRestore.GetPendingSteps` false. That condition is the
+  only record of what was asked, so no front end re-reading the list asks again a question
+  answered successfully. `SessionRestore.Answer` acts only on a pending question with the
+  topic and detail shown, under one lock, so a second screen cannot undo the first and a
+  stale "no" cannot delete a different map. It does not reuse `PendingPrompt`'s stored id,
+  because a session question is rebuilt from state on every read, so its topic and detail
+  are its identity. A failed answer stays pending for the next pass; the current pass skips
+  it so it does not hold back the rest. Never keep a list of asked topics beyond one pass:
+  the browser cannot see it, and it drifts from the conditions. The browser's `showConfirm`
+  resolves `null` for a question another dialog replaced before it was answered, and the
+  browser sends nothing. A front end's own question about the same map comes after the pass
+  and asks only about what the pass leaves (the File menu's apply question,
+  `HasCompleteMapNotApplied`).
+  _Check: `coppercli.Tests/SessionRestoreTests.cs` (`EveryAnswer_ClearsItsOwnQuestion`,
+  `DecliningTheSavedMap_ClearsItsQuestion`, `AnAnswerToAQuestionAlreadySettled_IsRefused`,
+  `AnAnswerToAQuestionThatChanged_IsRefused`,
+  `AFailedAnswer_IsSkippedForThePass_AndTheOthersAreAsked`,
+  `RestoreQuestions_EndAfterEachTopicForEitherAnswer`);
+  `coppercli.Tests/browser/session-restore.test.mjs`._
+  _History: startup-prompt-loop-never-terminated, session-questions-asked-twice-by-the-browser,
+  terminal-apply-question-repeated-the-session-pass._
 
 - **loaded-gcode-unchanged-during-run** *(error)* — do not replace the loaded G-code while a
   run is in progress. A run streams from `Machine.File` and tracks where it is by
@@ -623,15 +713,19 @@ document and `MacroParser` together.
   cached-tool-setter-height-from-previous-tool._
 
 - **derived-artifact-records-its-context** *(error)* — an artifact computed from a setup
-  stores that setup and is checked against it before use. A height map stores
-  its `ProbeContext` (source file, work origin); a map with no recorded context is `Unknown`
-  and is checked, never assumed usable. The check runs in one place,
-  `AppState.ReadUsableAutosave`, so nothing can reach the file without it, and a map that
-  names a source file must store a finite origin: a non-finite origin compares false
-  against every tolerance and would leave the map `Unknown`, which nothing refuses.
+  stores that setup and is checked against it before use. A height map stores its
+  `ProbeContext` (source file, work origin); a map with no recorded context is `Unknown`,
+  which `IsUsable` accepts because older maps did not record their setup, and the saved map
+  file is offered only with a known context (`ReadSavedProbeGridForLoadedFile`). The check
+  runs in one place, `AppState.UsableForThisJob`, and both the autosave and the saved map
+  file are read through it. A map that names a source file must store a finite origin: a
+  non-finite origin compares false against every tolerance and would leave the map
+  `Unknown`, which nothing refuses. The current origin with no machine is
+  `Vector3.MinValue`, which is finite, so `GetApplicability` reads such a map as
+  `OriginMoved` or `DifferentFile`, not `Unknown`.
   _Check: `coppercli.Tests/ProbeContextTests.cs`; `coppercli.Tests/ProbeGridLoadTests.cs`._
   _History: probe-data-inferred-from-a-file-on-disk,
-  usable-probe-data-computed-in-three-places._
+  usable-probe-data-computed-in-three-places, unknown-origin-is-a-finite-sentinel._
 
 - **validate-loaded-grid** *(error)* — validate a loaded grid before it controls machine
   motion, using the same checks as its constructor.
@@ -675,6 +769,25 @@ document and `MacroParser` together.
   that gates a decision._
   _History: synchronized-queues-and-wall-clock-deadlines,
   stopwatch-timed-more-than-the-probe._
+
+- **grbl-answers-its-own-commands** *(error)* — whether a command ran is read from GRBL's
+  answer to it, never from `Status`. GRBL answers no status query while it is busy —
+  the whole homing cycle, because GRBL drives it from a loop that never services one, and
+  the reboot after a soft reset — so a `Status` read after a command can be older than the
+  command, and a machine part-way through a cycle, one that never started and one that
+  finished all read the same. `IMachine.SendAsync` carries that answer, matched to its line
+  by queue order; matching by text cannot tell two identical lines apart, and a line GRBL
+  abandons would hand its answer to the next one. Where no answer is needed, send a command
+  that is harmless when it is not: a stop sends `$X` unconditionally, because GRBL ignores
+  it on a machine that is not alarmed and nothing then has to decide whether it is.
+  `Status` is for saying what the machine is doing. Waiting for the status to catch up
+  is allowed only for the door switch, which is not a command
+  (`MachineWait`'s use of `DoorReadingCatchUpReports`).
+  _Check: `coppercli.Tests/FakeGrblTests.cs`
+  (`AHomingCycle_IsNotReadAsARefusal_WhenOneReportWasStillInFlight`,
+  `AStopDuringHoming_ClearsTheAlarmItRaised_SoTheRetractIsAccepted`); reader judgment of any
+  `Status` read that follows a command on the same path._
+  _History: automatic-door-release-and-unverified-homing, status-read-as-a-command-answer._
 
 - **no-live-collections-across-threads** *(error)* — never expose a live mutable collection
   to another thread; own it and hand out snapshots. `Queue.Synchronized` does not
@@ -878,6 +991,11 @@ document and `MacroParser` together.
   machine's response and the commands it refuses.
   `coppercli.Tests/Fakes/DoorModel.cs` is GRBL's door rules for all three doubles, so a
   substate they must answer differently is written once.
+  A double must also answer the *status poll*, not only report when its own state changes:
+  counting those answers is how coppercli tells a machine that is working from one that has
+  gone quiet, and a double that never produces them makes every such wait run to its timeout
+  and no test able to tell the two apart. `coppercli.Tests/Fakes/StatusPoll.cs` is that
+  model for all three, including going quiet where GRBL does.
   _Check: reader judgment of `coppercli.Tests/Fakes/`;
   `coppercli.Tests/FakeMachineDoorTests.cs`._
   _History: fake-machine-reported-idle-for-every-pause,
@@ -925,6 +1043,15 @@ Planned changes. This section records intended work and does not set current con
 _No other planned changes are recorded here. The tree has no `TODO` or `FIXME` markers,
 design document, diagram, or reachable issue backlog. The owner records further decisions
 in the prompt log._
+
+## Owner's standing positions
+
+Stated repeatedly by the owner; apply them without asking.
+
+- Every fact is defined in one place, and every other value is derived from it. No second
+  copy, however convenient.
+- Plain, brief English in code, comments, names and documents. No mannered prose.
+- Runs, tests and subagents are bounded in time.
 
 ## Known gaps in the record
 

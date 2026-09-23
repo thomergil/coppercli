@@ -26,6 +26,8 @@ namespace coppercli.Tests.Fakes
 
         public MockMachine()
         {
+            AnswerTo = line => DoorModel.Answer(line, Status);
+
             _door = new DoorModel(
                 SetStatus,
                 () => Mode == OperatingMode.SendFile
@@ -50,7 +52,11 @@ namespace coppercli.Tests.Fakes
         public bool IsHomed { get; set; }
         public bool IsHoming { get; set; }
 
-        public long StatusReportCount { get; set; }
+        /// <summary>GRBL answering the status poll, so a wait for a fresh reading ends the
+        /// way it does on the machine. Set Answering false for a GRBL that has gone quiet.</summary>
+        public StatusPoll Poll { get; } = new StatusPoll();
+
+        public long StatusReportCount => Poll.Count;
 
         private List<string> _fileLines = new();
         public ReadOnlyCollection<string> File => _fileLines.AsReadOnly();
@@ -74,20 +80,53 @@ namespace coppercli.Tests.Fakes
         /// </summary>
         public event Action<string>? LineSent;
 
-        public void SendLine(string line)
+        /// <inheritdoc/>
+        public async Task<GrblReply> SendAsync(string line, int timeoutMs, CancellationToken ct = default)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            GrblReply reply = Receive(line);
+            if (reply.Answer == GrblAnswer.NoAnswer)
+            {
+                // The line was received and nothing comes back, so the caller waits out its
+                // own timeout, as it would on a machine that received it and went quiet.
+                await Task.Delay(timeoutMs, ct).ConfigureAwait(false);
+            }
+
+            return reply;
+        }
+
+        public void SendLine(string line) => Receive(line);
+
+        /// <summary>
+        /// Takes a line as GRBL would: records it, and acts on it only if GRBL would run it.
+        /// Both ways of sending come through here.
+        /// </summary>
+        private GrblReply Receive(string line)
         {
             SentCommands.Add(line);
 
-            // $X clears an alarm, which is the other half of the soft reset below: the reset
-            // alarms a busy machine and StopAndResetAsync unlocks it again.
-            if (DoorModel.ClearsAlarm(line, Status))
+            GrblReply reply = AnswerTo(line);
+            if (reply.Ran)
             {
-                SetStatus(GrblProtocol.StatusIdle, string.Empty);
+                // $X clears the alarm the soft reset below raises on a busy machine.
+                if (DoorModel.ClearsAlarm(line, Status))
+                {
+                    SetStatus(GrblProtocol.StatusIdle, string.Empty);
+                }
+
+                ApplyRapidZ(line);
             }
 
-            ApplyRapidZ(line);
             LineSent?.Invoke(line);
+            return reply;
         }
+
+        /// <summary>
+        /// What GRBL answers the lines it is sent: by default, <see cref="DoorModel.Answer"/>
+        /// for this double's state. A test about the answer sets its own.
+        /// </summary>
+        public Func<string, GrblReply> AnswerTo { get; set; }
 
         /// <summary>Set true for a machine that accepts a move and never reaches the target.</summary>
         public bool IgnoreMoves { get; set; }
@@ -210,7 +249,6 @@ namespace coppercli.Tests.Fakes
         {
             Status = state;
             StatusSubState = subState;
-            StatusReportCount++;
             StatusChanged?.Invoke();
         }
 
@@ -242,7 +280,6 @@ namespace coppercli.Tests.Fakes
         public event Action<string>? StatusReceived;
         public event Action<Vector3, bool>? ProbeFinished;
         public event Action<string>? NonFatalException;
-        public event Action<GrblRejection>? CommandRejected;
         public event Action<string>? Info;
         public event Action? ConnectionStateChanged;
         public event Action? StatusChanged;
@@ -280,10 +317,6 @@ namespace coppercli.Tests.Fakes
             ProbeFinished?.Invoke(position, success);
         }
 
-        public void SimulateRejection(int code, string command, string description = "")
-        {
-            CommandRejected?.Invoke(new GrblRejection(code, command, description));
-        }
 
         public void SimulateError(string message)
         {

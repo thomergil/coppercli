@@ -34,7 +34,7 @@ namespace coppercli.Tests
         /// </summary>
         private static async Task<bool> CheckRequestPolicyAsync(string headers)
         {
-            int port = FreePort();
+            int port = WebServerFixture.FreeTcpPort();
             var listener = new HttpListener();
 
             // The + prefix matches how the server binds, and is what lets a hostile Host
@@ -89,13 +89,5 @@ namespace coppercli.Tests
             }
         }
 
-        private static int FreePort()
-        {
-            var probe = new TcpListener(IPAddress.Loopback, 0);
-            probe.Start();
-            int port = ((IPEndPoint)probe.LocalEndpoint).Port;
-            probe.Stop();
-            return port;
-        }
     }
 }

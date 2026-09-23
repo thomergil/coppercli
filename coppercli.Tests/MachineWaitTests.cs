@@ -217,8 +217,6 @@ namespace coppercli.Tests
             // whenever the door is closed later, unattended.
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateAjar);
 
-            using var reporting = PumpStatusReports(machine);
-
             var elapsed = Stopwatch.StartNew();
             var left = await MachineWait.ReleaseDoorHoldAsync(machine, HangDetectTimeoutMs);
             elapsed.Stop();
@@ -228,47 +226,6 @@ namespace coppercli.Tests
             Assert.True(MachineWait.IsDoor(machine));
             Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2,
                 $"waited {elapsed.ElapsedMilliseconds}ms on a door that stayed open");
-        }
-
-        /// <summary>
-        /// A connected machine reports continuously. The catch-up allowance is counted in
-        /// reports, so a mock that never reports would wait out the whole timeout.
-        /// </summary>
-        private static IDisposable PumpStatusReports(MockMachine machine)
-        {
-            var stop = new CancellationTokenSource();
-            var pump = Task.Run(async () =>
-            {
-                while (!stop.IsCancellationRequested)
-                {
-                    machine.StatusReportCount++;
-                    await Task.Delay(StatusPollIntervalMs / 2);
-                }
-            });
-            return new StatusReportPump(stop, pump);
-        }
-
-        /// <summary>
-        /// Disposing a CancellationTokenSource does not cancel it, so a `using` over the
-        /// source alone would leave the pump loop running.
-        /// </summary>
-        private sealed class StatusReportPump : IDisposable
-        {
-            private readonly CancellationTokenSource _stop;
-            private readonly Task _pump;
-
-            public StatusReportPump(CancellationTokenSource stop, Task pump)
-            {
-                _stop = stop;
-                _pump = pump;
-            }
-
-            public void Dispose()
-            {
-                _stop.Cancel();
-                try { _pump.Wait(HangDetectTimeoutMs); } catch (AggregateException) { }
-                _stop.Dispose();
-            }
         }
 
         [Fact]

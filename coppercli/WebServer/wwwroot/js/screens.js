@@ -1,6 +1,6 @@
 import { state } from './state.js';
 import { $, setText, showError, showInfo, format } from './helpers.js';
-import { pollProbeStatus, dismissProbeComplete, fetchAndDisplayProbeData, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, updateProbeInfoDisplay } from './probe.js';
+import { pollProbeStatus, dismissProbeComplete, fetchAndDisplayProbeData, showProbeCompleteAndOfferSave, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, updateProbeInfoDisplay } from './probe.js';
 import { loadFiles } from './file.js';
 import { updateJogButtons, updateContinueMillingButton } from './jog.js';
 import {
@@ -160,7 +160,7 @@ export function updateStatus(status) {
         // The server's state decides, because a skipped point comes off the queue without
         // being measured and progress can reach total on an unusable map.
         if (status.probe && status.probe.state === PROBE_STATE_COMPLETE) {
-            fetchAndDisplayProbeData();
+            showProbeCompleteAndOfferSave();
         } else {
             dismissProbeComplete();
         }

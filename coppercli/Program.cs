@@ -295,12 +295,7 @@ class Program
             {
                 ExitIfDisconnected();
 
-                if (!string.IsNullOrEmpty(step.Detail))
-                {
-                    AnsiConsole.MarkupLine($"[{ColorDim}]{Markup.Escape(step.Detail)}[/]");
-                }
-
-                return MenuHelpers.ConfirmOrQuit(step.Question, step.DefaultYes);
+                return MenuHelpers.AskSessionStep(step, offerQuit: true);
             },
             MenuHelpers.ShowError);
 

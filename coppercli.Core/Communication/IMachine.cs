@@ -56,19 +56,41 @@ namespace coppercli.Core.Communication
         void EnsureManualMode();
         void FileGoto(int line);
 
+        /// <summary>Queues a line for GRBL without waiting to hear what became of it.</summary>
         void SendLine(string line);
+
+        /// <summary>
+        /// Sends a line and completes with GRBL's answer to it. Read whether a command ran
+        /// from this, not from <see cref="Status"/>: GRBL answers no status query during a
+        /// homing cycle or while it restarts after a soft reset, so a status report read
+        /// after a command can be older than the command.
+        /// </summary>
+        /// <param name="timeoutMs">
+        /// How long GRBL has to answer. <see cref="GrblAnswer.Ok"/> says when that is for the
+        /// line being sent.
+        /// </param>
+        /// <exception cref="OperationCanceledException">
+        /// The caller canceled. A token already canceled puts nothing on the wire, so a
+        /// cleanup path cannot start work it is about to report as refused.
+        /// </exception>
+        System.Threading.Tasks.Task<GrblReply> SendAsync(
+            string line, int timeoutMs, System.Threading.CancellationToken ct = default);
 
         /// <summary>Requests GRBL's stored coordinate offsets and waits for the reply.
         /// False means <see cref="G54Offset"/> must not be relied on.</summary>
         System.Threading.Tasks.Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, System.Threading.CancellationToken ct = default);
         void FeedHold();
         void CycleStart();
+
+        /// <summary>
+        /// Resets GRBL. Every line not yet answered is abandoned, and lines sent afterwards
+        /// wait until GRBL is back from the reset.
+        /// </summary>
         void SoftReset();
 
         event Action<string> StatusReceived;
         event Action<Vector3, bool> ProbeFinished;
         event Action<string> NonFatalException;
-        event Action<GrblRejection> CommandRejected;
         event Action<string> Info;
         event Action ConnectionStateChanged;
         event Action StatusChanged;

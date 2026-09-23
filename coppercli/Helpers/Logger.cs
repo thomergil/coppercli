@@ -6,12 +6,18 @@ namespace coppercli.Helpers
     public static class Logger
     {
         private const string LogFileName = "coppercli.log";
+
+        /// <summary>Replaces the extension of <see cref="LogFileName"/> for the kept copy.</summary>
+        private const string PreviousLogExtension = ".previous.log";
         private static readonly object _lock = new object();
         private static string? _logPath;
 
         public static bool Enabled { get; set; } = false;
 
         public static string LogFilePath => LogPath;
+
+        /// <summary>Where <see cref="Clear"/> keeps the session before this one.</summary>
+        public static string PreviousLogFilePath => Path.ChangeExtension(LogPath, PreviousLogExtension);
 
         private static string LogPath
         {
@@ -80,18 +86,25 @@ namespace coppercli.Helpers
             }
         }
 
+        /// <summary>
+        /// Start a fresh log and keep the session before it, so a failure the operator
+        /// restarts out of still has a log to send.
+        /// </summary>
         public static void Clear()
         {
             try
             {
-                if (File.Exists(LogPath))
+                lock (_lock)
                 {
-                    File.Delete(LogPath);
+                    if (File.Exists(LogPath))
+                    {
+                        File.Move(LogPath, PreviousLogFilePath, overwrite: true);
+                    }
                 }
             }
             catch
             {
-                // A failed delete must not break the caller; the old log stays.
+                // A failed rotation must not break the caller; the old log stays.
             }
         }
     }
