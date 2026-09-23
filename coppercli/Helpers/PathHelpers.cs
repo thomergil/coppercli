@@ -37,7 +37,11 @@ namespace coppercli.Helpers
 
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             string rest = path.Substring(1).TrimStart('/', '\\');
-            return rest.Length == 0 ? home : Path.Combine(home, rest);
+
+            // GetFullPath, because on Windows "~/pcb/board.nc" would otherwise keep its forward
+            // slashes after the home folder, and one file would have two spellings that path
+            // comparisons treat as different files.
+            return rest.Length == 0 ? home : Path.GetFullPath(Path.Combine(home, rest));
         }
     }
 }
