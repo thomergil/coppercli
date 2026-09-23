@@ -141,12 +141,11 @@ namespace coppercli.Tests
                 Assert.True(CncWebServer.HoldsMachine,
                     "the server does not report holding the machine right after a browser takeover");
 
-                WebServerFixture.WaitUntil(() => AppState.Machine.Connected,
-                    "the browser takeover to reconnect the machine",
+                // The flag is set just after the connect returns, so it is waited for as well.
+                WebServerFixture.WaitUntil(
+                    () => AppState.Machine.Connected && AppState.Machine.EnableAutoStateClear,
+                    "the browser takeover to reconnect the machine and re-enable automatic state clearing",
                     timeoutMs: WebConstants.ReconnectIntervalMs * 2);
-
-                Assert.True(AppState.Machine.EnableAutoStateClear,
-                    "reconnecting after the browser takeover did not re-enable automatic state clearing");
             }
             finally
             {

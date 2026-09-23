@@ -14,6 +14,7 @@ namespace coppercli.Tests
     // Covers MachineWait: the status predicates, the polling waits, the door hold release,
     // and the derived activity and control values every screen reads. MockMachine is the
     // only machine these run against, so GRBL behavior it does not simulate is untested.
+    [Collection(TimingSensitiveCollection.Name)]
     public class MachineWaitTests
     {
         /// <summary>Long enough that a wait running to its timeout fails the test.</summary>

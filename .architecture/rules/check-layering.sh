@@ -302,8 +302,9 @@ if [ -d coppercli.Tests ]; then
     # through a constant rather than a literal.
     used=$(grep -rhoE '\[Collection\([^)]+\)\]' --include="*.cs" coppercli.Tests/ 2>/dev/null \
         | sed -E 's/\[Collection\((.*)\)\]/\1/' | sort -u)
+    # The name is the first argument; DisableParallelization and the like may follow it.
     defined=$(grep -rhoE '\[CollectionDefinition\([^)]+\)\]' --include="*.cs" coppercli.Tests/ 2>/dev/null \
-        | sed -E 's/\[CollectionDefinition\((.*)\)\]/\1/' | sort -u)
+        | sed -E 's/\[CollectionDefinition\(([^,)]*).*\)\]/\1/' | sort -u)
     if [ -n "$used" ]; then
         undefined=$(echo "$used" | grep -vxF "$defined" 2>/dev/null)
         if [ -n "$undefined" ]; then

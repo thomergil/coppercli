@@ -87,6 +87,11 @@ namespace coppercli.Core.Communication
         private NetworkStream? _networkStream;
         private Thread? _acceptThread;
         private Thread? _sessionThread;
+
+        // From a client's admission until its session has stopped the machine and released
+        // the port. Under _clientLock, so the accept loop sees the release and the end of the
+        // session together.
+        private bool _sessionActive;
         private Thread? _serialToTcpThread;
         private Thread? _tcpToSerialThread;
         private CancellationTokenSource? _cts;
@@ -365,7 +370,7 @@ namespace coppercli.Core.Communication
                     {
                         // A session keeps the slot until it has stopped the machine and
                         // released the port, which is after its client is gone.
-                        if (_client != null || _sessionThread?.IsAlive == true)
+                        if (_sessionActive)
                         {
                             RaiseInfo($"Rejected connection from {newClientAddress} (client already connected)");
                             SendMessageAndClose(newClient, Constants.ProxyConnectionRejected);
@@ -386,6 +391,7 @@ namespace coppercli.Core.Communication
                     {
                         lock (_clientLock)
                         {
+                            _sessionActive = true;
                             _client = newClient;
                             _networkStream = _client.GetStream();
                             ClientAddress = newClientAddress;
@@ -410,8 +416,7 @@ namespace coppercli.Core.Communication
                     catch
                     {
                         // Admitted but no session started, so nothing else gives the port back.
-                        CloseClient();
-                        ReleaseSerialPort?.Invoke();
+                        EndSession();
                         throw;
                     }
                 }
@@ -482,8 +487,18 @@ namespace coppercli.Core.Communication
                 // The loops have stopped writing and the port is still open, so the stop goes
                 // out before the close.
                 StopMachineAndClosePort();
-                CloseClient();
+                EndSession();
+            }
+        }
+
+        /// <summary>Drops the client, gives the port back, and frees the slot, in one step.</summary>
+        private void EndSession()
+        {
+            lock (_clientLock)
+            {
+                CloseClientUnlocked();
                 ReleaseSerialPort?.Invoke();
+                _sessionActive = false;
             }
         }
 

@@ -19,6 +19,7 @@ namespace coppercli.Tests
     /// the middle of a job, and it must never open the serial port while the server has it.
     /// A fake serial link records what reached the port and when it was closed.
     /// </summary>
+    [Collection(TimingSensitiveCollection.Name)]
     public class SerialProxyTests
     {
         private const string PortName = "fake";

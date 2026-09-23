@@ -17,6 +17,7 @@ namespace coppercli.Tests
     // enclosure door. M6 has no reference implementation in OpenCNCPilot, so the GRBL door
     // behavior these tests rely on comes from DoorModel, which MockMachine shares with the
     // other doubles.
+    [Collection(TimingSensitiveCollection.Name)]
     public class ToolChangeControllerTests
     {
         /// <summary>The enclosure prompt has an empty Title, so this stands in for one.</summary>

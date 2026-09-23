@@ -13,12 +13,17 @@ namespace coppercli.Tests
     /// port, the server and the terminal both write to the controller; if it never reconnects,
     /// the browser shows a disconnected machine with nothing that will reconnect it.
     /// </summary>
+    [Collection(TimingSensitiveCollection.Name)]
     public class MachineHoldTests
     {
         // The window spans several reconnect intervals, so the loop checks it more than once
         // before it expires and a test can tell a reconnect inside it from one after it.
         private const int TakeoverWindowMs = 200;
         private const int ReconnectIntervalMs = 30;
+
+        // For a test that must still be inside the window when it acts or checks; a slow
+        // machine can take longer than TakeoverWindowMs between two lines of a test.
+        private const int WindowOutlastingTheTestMs = 60_000;
 
         // Long enough for the loop to run several times, to show something did not happen.
         private const int QuietPeriodMs = ReconnectIntervalMs * 4;
@@ -83,11 +88,11 @@ namespace coppercli.Tests
             private readonly CancellationTokenSource _cts = new();
             private readonly Task _loop;
 
-            public RunningHold(FakeConnection connection)
+            public RunningHold(FakeConnection connection, int takeoverWindowMs = TakeoverWindowMs)
             {
                 Connection = connection;
                 Hold = new MachineHold(() => connection.Connected, connection.Connect,
-                    connection.Disconnect, TakeoverWindowMs, ReconnectIntervalMs);
+                    connection.Disconnect, takeoverWindowMs, ReconnectIntervalMs);
                 _loop = Hold.KeepConnectedAsync(_cts.Token);
             }
 
@@ -108,9 +113,9 @@ namespace coppercli.Tests
             }
         }
 
-        private static async Task<RunningHold> ConnectedHoldAsync()
+        private static async Task<RunningHold> ConnectedHoldAsync(int takeoverWindowMs = TakeoverWindowMs)
         {
-            var running = new RunningHold(new FakeConnection());
+            var running = new RunningHold(new FakeConnection(), takeoverWindowMs);
             await running.WaitConnectedAsync("the hold to connect at start");
             return running;
         }
@@ -178,7 +183,7 @@ namespace coppercli.Tests
         [Fact]
         public async Task AYield_DisconnectsAtOnce_AndNoReconnectDuringTheTakeoverWindow()
         {
-            await using var running = await ConnectedHoldAsync();
+            await using var running = await ConnectedHoldAsync(WindowOutlastingTheTestMs);
 
             Assert.True(running.Hold.TryYieldToTerminal(() => false));
 
@@ -262,7 +267,7 @@ namespace coppercli.Tests
         [Fact]
         public async Task TheClaim_IsGrantedOnlyWhileYieldedAndDisconnected()
         {
-            await using var running = await ConnectedHoldAsync();
+            await using var running = await ConnectedHoldAsync(WindowOutlastingTheTestMs);
 
             Assert.False(running.Hold.TryClaimSerialPort(), "the port was lent while the server held it");
 
@@ -278,7 +283,7 @@ namespace coppercli.Tests
         [Fact]
         public async Task ASecondClaim_IsRefusedWhileTheFirstStands()
         {
-            await using var running = await ConnectedHoldAsync();
+            await using var running = await ConnectedHoldAsync(WindowOutlastingTheTestMs);
             running.Hold.TryYieldToTerminal(() => false);
             Assert.True(running.Hold.TryClaimSerialPort());
 
@@ -320,7 +325,7 @@ namespace coppercli.Tests
         public async Task AYieldArrivingWhileAConnectIsInFlight_EndsDisconnectedAndNotHeld()
         {
             var connection = new FakeConnection { Gate = new ManualResetEventSlim(false) };
-            await using var running = new RunningHold(connection);
+            await using var running = new RunningHold(connection, WindowOutlastingTheTestMs);
             Assert.True(connection.ConnectEntered.Wait(WaitTimeoutMs), "the connect never started");
 
             var stopwatch = Stopwatch.StartNew();
@@ -329,7 +334,10 @@ namespace coppercli.Tests
 
             connection.Gate.Set();
 
-            await running.StaysDisconnectedAsync("the connect that finished during the yield stayed connected");
+            // The late connect is connected for a moment before the hold disconnects it.
+            await AsyncWait.WaitUntilAsync(() => !connection.Connected,
+                "the connect that finished during the yield to be disconnected", WaitTimeoutMs);
+            await running.StaysDisconnectedAsync("the connect that finished during the yield reconnected");
             Assert.False(running.Hold.IsHeld, "the connect that finished during the yield cleared it");
         }
 

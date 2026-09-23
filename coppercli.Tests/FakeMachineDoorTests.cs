@@ -13,6 +13,7 @@ namespace coppercli.Tests
     /// while the hold is on, so lines arrive, queue, and wait for the cycle start. A double
     /// that moved instead would hide the defects the door tests cover.
     /// </summary>
+    [Collection(TimingSensitiveCollection.Name)]
     public class FakeMachineDoorTests
     {
         private const double FastSpeed = 10000.0;
