@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased
+## v0.5.1
 
 **Everywhere**
 

@@ -10,7 +10,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>The 'v' prefix is for display; installer/coppercli.iss carries the same version without it.</summary>
-        public const string AppVersion = "v0.5.0";
+        public const string AppVersion = "v0.5.1";
 
         public const int ConnectionTimeoutMs = 5000;
 
