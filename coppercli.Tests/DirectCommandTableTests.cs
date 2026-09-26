@@ -24,11 +24,8 @@ namespace coppercli.Tests
         }
 
         [Theory]
-        [InlineData(WsCmdHome)]
-        [InlineData(WsCmdUnlock)]
         [InlineData(WsCmdReset)]
         [InlineData(WsCmdFeedhold)]
-        [InlineData(WsCmdResume)]
         [InlineData(WsCmdGotoOrigin)]
         [InlineData(WsCmdGotoCenter)]
         [InlineData(WsCmdGotoSafe)]
@@ -40,21 +37,35 @@ namespace coppercli.Tests
             Assert.NotNull(CncWebServer.FindWsCommand(type));
         }
 
+        /// <summary>
+        /// HTTP only: each can be refused, and a refusal cannot come back over the WebSocket.
+        /// </summary>
         [Theory]
-        [InlineData(WsCmdReset, true)]
-        [InlineData(WsCmdFeedhold, true)]
-        [InlineData(WsCmdResume, true)]
-        [InlineData(WsCmdUnlock, true)]
-        [InlineData(WsCmdHome, false)]
-        [InlineData(WsCmdGotoOrigin, false)]
-        [InlineData(WsCmdGotoCenter, false)]
-        [InlineData(WsCmdGotoSafe, false)]
-        [InlineData(WsCmdGotoRef, false)]
-        [InlineData(WsCmdGotoZ0, false)]
-        [InlineData(WsCmdProbeZ, false)]
-        public void OnlyTheJobControls_RunDuringAJob(string type, bool duringRun)
+        [InlineData(ApiHome)]
+        [InlineData(ApiUnlock)]
+        [InlineData(ApiResume)]
+        public void RefusableCommands_AreNotOnTheWebSocket(string path)
         {
-            Assert.Equal(duringRun, CncWebServer.FindWsCommand(type)?.DuringRun);
+            var command = CncWebServer.FindHttpCommand(path);
+            Assert.NotNull(command);
+            Assert.Null(command!.WsCommand);
+        }
+
+        [Theory]
+        [InlineData(ApiReset, true)]
+        [InlineData(ApiFeedhold, true)]
+        [InlineData(ApiResume, true)]
+        [InlineData(ApiUnlock, true)]
+        [InlineData(ApiHome, false)]
+        [InlineData(ApiGotoOrigin, false)]
+        [InlineData(ApiGotoCenter, false)]
+        [InlineData(ApiGotoSafe, false)]
+        [InlineData(ApiGotoRef, false)]
+        [InlineData(ApiGotoZ0, false)]
+        [InlineData(ApiProbeZ, false)]
+        public void OnlyTheJobControls_RunDuringAJob(string path, bool duringRun)
+        {
+            Assert.Equal(duringRun, CncWebServer.FindHttpCommand(path)?.DuringRun);
         }
     }
 }

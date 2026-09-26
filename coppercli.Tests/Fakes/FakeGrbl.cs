@@ -48,6 +48,12 @@ namespace coppercli.Tests.Fakes
 
         private double _x, _y, _z;
         private string _state = GrblProtocol.StatusIdle;
+
+        /// <summary>
+        /// The door switch, kept apart from <c>_state</c> because an alarmed GRBL does not
+        /// report the door.
+        /// </summary>
+        private volatile bool _doorSwitchOpen;
         private string _subState = string.Empty;
 
         // When GRBL answers again, and why it stopped: a homing cycle, or a restart.
@@ -127,8 +133,22 @@ namespace coppercli.Tests.Fakes
         public int SoftResetCount => CountOf(SoftResetMark);
         public int CycleStartCount => CountOf(CycleStartMark);
 
+        /// <summary>The door opens while GRBL is alarmed. See <see cref="DoorModel.RefusedAtOpenDoor"/>.</summary>
+        public void SimulateDoorOpenWhileAlarmed()
+        {
+            SetState(GrblProtocol.StatusAlarm, string.Empty);
+            _doorSwitchOpen = true;
+        }
+
+        /// <summary>The door closes again. GRBL stays alarmed.</summary>
+        public void SimulateDoorClosedWhileAlarmed() => _doorSwitchOpen = false;
+
         public void SimulateDoorOpen() =>
             SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar);
+
+        /// <summary>GRBL is moving to the park position after the door opened.</summary>
+        public void SimulateDoorRetracting() =>
+            SetState(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateRetracting);
 
         /// <summary>GRBL is moving the parked axes back after a cycle start.</summary>
         public void SimulateDoorResuming() =>
@@ -303,6 +323,12 @@ namespace coppercli.Tests.Fakes
                 {
                     lock (_lock) { _deferred.Add(line); }
                 }
+                return;
+            }
+
+            if (DoorModel.RefusedAtOpenDoor(line, _state, _doorSwitchOpen))
+            {
+                Send($"{GrblProtocol.ResponseErrorPrefix}{GrblRejection.DoorOpen}");
                 return;
             }
 

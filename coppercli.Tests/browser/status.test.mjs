@@ -112,6 +112,7 @@ test('the pause control follows the two answers the server sends, not the status
 test('the header gives the door its own wording, and shows GRBL\'s word otherwise', async () => {
     const worded = {
         DoorOpen: 'Door open',
+        DoorRetracting: 'Door - machine retracting',
         DoorHolding: 'Door closed - machine holding',
         DoorResuming: 'Door closed - machine resuming'
     };

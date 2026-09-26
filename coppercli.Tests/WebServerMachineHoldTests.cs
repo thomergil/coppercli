@@ -247,7 +247,7 @@ namespace coppercli.Tests
         public async Task ATerminalTakeover_IsRefusedWhileTheMachineIsHoming()
         {
             Assert.True(AppState.Machine.Connected, "the fixture did not start this test connected");
-            AppState.Machine.IsHoming = true;
+            AppState.Machine.BeginHoming();
 
             try
             {
@@ -262,7 +262,7 @@ namespace coppercli.Tests
             }
             finally
             {
-                AppState.Machine.IsHoming = false;
+                AppState.Machine.EndHoming();
             }
         }
     }

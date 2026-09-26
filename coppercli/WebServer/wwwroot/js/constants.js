@@ -216,6 +216,7 @@ export const MILL_MIN_RANGE_THRESHOLD = 0.001;
 
 // Duplicated from the MachineActivity enum in coppercli.Core/Controllers/MachineActivity.cs.
 export const MACHINE_ACTIVITY_DOOR_OPEN = 'DoorOpen';
+export const MACHINE_ACTIVITY_DOOR_RETRACTING = 'DoorRetracting';
 export const MACHINE_ACTIVITY_DOOR_HOLDING = 'DoorHolding';
 export const MACHINE_ACTIVITY_DOOR_RESUMING = 'DoorResuming';
 
@@ -242,15 +243,17 @@ export const PHASE_WAITING_FOR_ZERO_Z = 'WaitingForZeroZ';
 export const PROMPT_OPTION_CONTINUE = 'Continue';
 export const PROMPT_OPTION_ABORT = 'Abort';
 
-// GRBL reports Door in three cases: enclosure open, closed and parked, and restoring after
-// a cycle start. The header uses these strings for those three and GRBL's own word for every
-// other state.
+// The header's wording for each door activity; it shows GRBL's own word for any other state.
+// TEXT_DOOR_RETRACTING does not say the door is open, because GRBL reports the park move
+// until it ends even if the door has closed.
 export const TEXT_DOOR_OPEN = 'Door open';
+export const TEXT_DOOR_RETRACTING = 'Door - machine retracting';
 export const TEXT_DOOR_HOLDING = 'Door closed - machine holding';
 export const TEXT_DOOR_RESUMING = 'Door closed - machine resuming';
 
 export const HEADER_TEXT_BY_ACTIVITY = {
     [MACHINE_ACTIVITY_DOOR_OPEN]: TEXT_DOOR_OPEN,
+    [MACHINE_ACTIVITY_DOOR_RETRACTING]: TEXT_DOOR_RETRACTING,
     [MACHINE_ACTIVITY_DOOR_HOLDING]: TEXT_DOOR_HOLDING,
     [MACHINE_ACTIVITY_DOOR_RESUMING]: TEXT_DOOR_RESUMING
 };
@@ -271,6 +274,8 @@ export const ERROR_INPUT_NOT_SENT =
 export const ERROR_PROBE_NOT_STARTED = 'Could not start probing. Check the connection.';
 export const ERROR_NOTHING_TO_ANSWER = 'Nothing is waiting for an answer.';
 export const ERROR_RESUME_NOT_SENT = 'Could not reach coppercli. Check the machine.';
+export const ERROR_HOME_NOT_SENT = 'Could not reach coppercli. Check whether the machine homed.';
+export const ERROR_UNLOCK_NOT_SENT = 'Could not reach coppercli. Check whether the machine unlocked.';
 export const ERROR_FEED_NOT_SENT =
     'Could not reach coppercli. The feed rate is unchanged - check the machine.';
 export const ERROR_DEPTH_NOT_SET =
@@ -327,8 +332,6 @@ export const WS_CLOSE_REASON_FORCE_DISCONNECT = 'Disconnected by another client'
 // Duplicated from WebConstants.cs (WsCmd*), sent from the browser.
 export const CMD_PING = 'ping';
 export const CMD_JOG_MODE = 'jog-mode';
-export const CMD_HOME = 'home';
-export const CMD_UNLOCK = 'unlock';
 export const CMD_RESET = 'reset';
 export const CMD_GOTO_ORIGIN = 'goto-origin';
 export const CMD_GOTO_CENTER = 'goto-center';
@@ -337,7 +340,6 @@ export const CMD_GOTO_REF = 'goto-ref';
 export const CMD_GOTO_Z0 = 'goto-z0';
 export const CMD_PROBE_Z = 'probe-z';
 export const CMD_FEEDHOLD = 'feedhold';
-export const CMD_RESUME = 'resume';
 
 // Duplicated from WebConstants.cs (Api*). A path that does not match exactly reaches no
 // handler.
@@ -345,6 +347,8 @@ export const API_CONFIG = '/api/config';
 export const API_CONSTANTS = '/api/constants';
 export const API_ZERO = '/api/zero';
 export const API_RESUME = '/api/resume';
+export const API_HOME = '/api/home';
+export const API_UNLOCK = '/api/unlock';
 export const API_DOOR_RELEASE = '/api/door/release';
 export const API_FILES = '/api/files';
 export const API_FILE_LOAD = '/api/file/load';

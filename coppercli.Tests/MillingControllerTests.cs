@@ -381,7 +381,7 @@ namespace coppercli.Tests
 
             controller.Resume();
 
-            Assert.Equal(ErrorDoorBlocksResume, refused?.Message);
+            Assert.Equal(ErrorDoorClosedStillHolding, refused?.Message);
             Assert.False(refused?.IsFatal, "a door hold leaves the run paused, not failed");
             Assert.Equal(ControllerState.Paused, controller.State);
 

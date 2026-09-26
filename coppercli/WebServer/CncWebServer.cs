@@ -451,9 +451,8 @@ public static class CncWebServer
 
     private static readonly DirectCommand[] DirectCommands =
     {
-        new(ApiHome, WsCmdHome, machine => { MachineCommands.HomeAndWait(machine); return null; }),
-        new(ApiUnlock, WsCmdUnlock, machine => { MachineCommands.Unlock(machine); return null; },
-            DuringRun: true),
+        new(ApiHome, null, machine => MachineCommands.HomeAndWait(machine).FailureMessage),
+        new(ApiUnlock, null, MachineCommands.Unlock, DuringRun: true),
         new(ApiReset, WsCmdReset, machine => { machine.SoftReset(); return null; }, DuringRun: true),
         // Unguarded on purpose: CanPause decides whether the Pause control is enabled, but
         // a feed hold is harmless in every state, so it is always sent.
@@ -461,10 +460,10 @@ public static class CncWebServer
             DuringRun: true),
         // Resume releases a feed hold. A door hold restarts the spindle, so it goes through
         // the workflow's prompt and this command does nothing at the door.
-        new(ApiResume, WsCmdResume, machine =>
+        new(ApiResume, null, machine =>
             {
                 var activity = MachineWait.GetActivity(machine);
-                if (!MachineWait.CanResume(activity)) { return GetResumeRefusalMessage(activity); }
+                if (!MachineWait.CanResume(activity)) { return GetResumeRefusalMessage(machine, activity); }
                 machine.CycleStart();
                 return null;
             }, DuringRun: true),
@@ -490,14 +489,13 @@ public static class CncWebServer
     /// Why a cycle start would do nothing in this state. Only the door needs the operator
     /// to act; the other cases report what the machine is doing.
     /// </summary>
-    private static string GetResumeRefusalMessage(MachineActivity activity) => activity switch
-    {
-        MachineActivity.DoorOpen or MachineActivity.DoorHolding or MachineActivity.DoorResuming
-            => ControllerConstants.ErrorDoorBlocksResume,
-        MachineActivity.Alarm => ControllerConstants.ErrorAlarmBeforeStart,
-        MachineActivity.Disconnected => ErrorMachineNotConnected,
-        _ => ErrorNothingToResume
-    };
+    private static string GetResumeRefusalMessage(Machine machine, MachineActivity activity) =>
+        MachineWait.GetDoorRefusal(machine) ?? activity switch
+        {
+            MachineActivity.Alarm => ControllerConstants.ErrorAlarmBeforeStart,
+            MachineActivity.Disconnected => ErrorMachineNotConnected,
+            _ => ErrorNothingToResume
+        };
 
     /// <summary>
     /// Why a release straight from a browser will not be taken, or null once it will. The
@@ -522,14 +520,12 @@ public static class CncWebServer
                 : ErrorMachineBusy;
         }
 
-        // Only a closed door can be released. An open one, or a park retract still running,
-        // would hand ReleaseDoorHoldAsync a state it has to wait out, and a switch that
-        // flipped closed inside that wait would take the cycle start.
+        // Only a closed door with the park move ended can be released. For any other door
+        // state ReleaseDoorHoldAsync waits for a fresh reading, and a switch that flipped
+        // closed inside that wait would get the cycle start.
         if (!MachineWait.CanReleaseDoorHold(machine))
         {
-            return MachineWait.IsDoor(machine)
-                ? ControllerConstants.ErrorDoorBlocksResume
-                : ErrorNoDoorToRelease;
+            return MachineWait.GetDoorRefusal(machine) ?? ErrorNoDoorToRelease;
         }
 
         return null;
@@ -557,11 +553,15 @@ public static class CncWebServer
         // Still restoring means the cycle start was accepted, so it is not a failure.
         return left is DoorState.None or DoorState.Resuming
             ? null
-            : ControllerConstants.ErrorDoorBlocksResume;
+            : MachineWait.GetDoorRefusal(left);
     }
 
     private static DirectCommand? FindDirectCommand(Func<DirectCommand, bool> match) =>
         DirectCommands.FirstOrDefault(match);
+
+    /// <summary>The command an HTTP endpoint runs, or null for none.</summary>
+    internal static DirectCommand? FindHttpCommand(string path) =>
+        FindDirectCommand(command => command.Path == path);
 
     /// <summary>
     /// Whether a stored connection is one this browser left behind, so a new connection
@@ -581,8 +581,8 @@ public static class CncWebServer
 
     /// <summary>
     /// Run a direct command, or return why it could not. <paramref name="offTheCallingThread"/>
-    /// is for the WebSocket: homing blocks until it finishes, and the socket must remain
-    /// available to receive Stop.
+    /// is for the WebSocket: a command that waits for the machine must not hold up the socket,
+    /// which must remain available to receive Stop.
     /// </summary>
     /// <returns>Null once the command has been sent, or the reason it was refused.</returns>
     private static string? RunDirectCommand(DirectCommand command, bool offTheCallingThread = false)
@@ -603,8 +603,8 @@ public static class CncWebServer
             return command.Run(machine);
         }
 
-        // Off the calling thread there is nothing to return to, so a refusal is logged.
-        // Only commands that never refuse are run this way.
+        // A command run by Task.Run has no caller to return a refusal to, so the refusal is
+        // logged. A control whose refusal the operator must see is sent over HTTP instead.
         _ = Task.Run(() =>
         {
             try
@@ -688,12 +688,14 @@ public static class CncWebServer
 
         // Commands that send one instruction and need nothing else from the request are
         // handled from the table shared with the WebSocket, rather than a case each.
-        var direct = FindDirectCommand(command => command.Path == path);
+        var direct = FindHttpCommand(path);
         if (direct != null)
         {
             if (await RequireMethod(response, method, MethodPost))
             {
-                await WriteStartResult(response, RunDirectCommand(direct));
+                // Homing blocks until it finishes, and run here it would hold the accept loop
+                // and every request behind it.
+                await WriteStartResult(response, await Task.Run(() => RunDirectCommand(direct)));
             }
             return;
         }
@@ -845,7 +847,7 @@ public static class CncWebServer
                     // with the response rather than only as an error event.
                     string? blocked = _machine == null
                         ? ErrorMachineNotConnected
-                        : MachineWait.GetResumeBlocker(_machine);
+                        : MachineWait.GetDoorRefusal(_machine);
 
                     if (resumeController.IsPaused && !toolChangeActive && blocked == null)
                     {
@@ -1568,11 +1570,12 @@ public static class CncWebServer
                 discarded = nameof(WorkZeroOutcome.MapDiscarded),
                 fileLeftAlone = nameof(WorkZeroOutcome.FileLeftAlone)
             },
-            // The activity names the browser branches on: the three it has its own text
-            // for. It shows GRBL's status word for the rest, so those are not published.
+            // The activity names the browser branches on: the door states it has its own
+            // text for. It shows GRBL's status word for the rest, so those are not published.
             machineActivities = new
             {
                 doorOpen = nameof(MachineActivity.DoorOpen),
+                doorRetracting = nameof(MachineActivity.DoorRetracting),
                 doorHolding = nameof(MachineActivity.DoorHolding),
                 doorResuming = nameof(MachineActivity.DoorResuming)
             },
@@ -1682,11 +1685,8 @@ public static class CncWebServer
             {
                 ping = WsCmdPing,
                 jogMode = WsCmdJogMode,
-                home = WsCmdHome,
-                unlock = WsCmdUnlock,
                 reset = WsCmdReset,
                 feedhold = WsCmdFeedhold,
-                resume = WsCmdResume,
                 gotoOrigin = WsCmdGotoOrigin,
                 gotoCenter = WsCmdGotoCenter,
                 gotoSafe = WsCmdGotoSafe,

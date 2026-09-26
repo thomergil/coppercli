@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { showError, showInfo, showConfirm, postJson } from './helpers.js';
+import { showError, showInfo, showConfirm, postOrShowError } from './helpers.js';
 import { updateStatus, showConnectionStatus } from './screens.js';
 import {
     MAX_RECONNECT_ATTEMPTS,
@@ -151,9 +151,8 @@ async function handleConnectionError(data) {
     if (data?.otherClientConnected === true) {
         if (await showConfirm(TEXT_FORCE_DISCONNECT_CONFIRM, TITLE_FORCE_DISCONNECT)) {
             // A refused takeover is shown rather than reloaded past.
-            const taken = await postJson(API_BROWSER_TAKEOVER);
+            const taken = await postOrShowError(API_BROWSER_TAKEOVER, TEXT_FORCE_DISCONNECT_FAILED);
             if (!taken.ok) {
-                showError(taken.error || TEXT_FORCE_DISCONNECT_FAILED);
                 return;
             }
 

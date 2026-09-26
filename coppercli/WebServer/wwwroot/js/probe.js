@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson, format } from './helpers.js';
+import { $, setText, addClass, removeClass, showError, showInfo, showConfirm, FileBrowser, updatePauseButton, postJson, postOrShowError, format } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     API_PROBE_SETUP,
@@ -78,9 +78,9 @@ export async function setupProbeGrid() {
     const margin = parseFloat(document.getElementById('probe-margin').value) || state.probeDefaults.margin;
     const gridSize = parseFloat(document.getElementById('probe-grid-size').value) || state.probeDefaults.gridSize;
 
-    const { ok, error, data } = await postJson(API_PROBE_SETUP, { margin, gridSize });
+    const { ok, data } = await postOrShowError(
+        API_PROBE_SETUP, TEXT_SETUP_FAILED, { margin, gridSize });
     if (!ok) {
-        showError(error || TEXT_SETUP_FAILED);
         return;
     }
 
@@ -126,9 +126,8 @@ export async function traceOutline() {
     applyProbeRunLock();
 
     try {
-        const { ok, error } = await postJson(API_PROBE_TRACE);
+        const { ok } = await postOrShowError(API_PROBE_TRACE, TEXT_TRACE_FAILED);
         if (!ok) {
-            showError(error || TEXT_TRACE_FAILED);
             return;
         }
 
@@ -151,10 +150,7 @@ async function stopTrace() {
 
     // The server reports whether it confirmed the machine stopped, the same value
     // stopProbing reads. The finally in traceOutline restores the button either way.
-    const { ok, error } = await postJson(API_PROBE_STOP);
-    if (!ok) {
-        showError(error || ERROR_STOP_NOT_SENT);
-    }
+    await postOrShowError(API_PROBE_STOP, ERROR_STOP_NOT_SENT);
 }
 
 // Ends when the server reports the trace over. One failed request must not unlock the
@@ -184,10 +180,9 @@ async function pollTraceStatus() {
 }
 
 export async function startProbing() {
-    const { ok, error } = await postJson(API_PROBE_START);
+    const { ok } = await postOrShowError(API_PROBE_START, ERROR_PROBE_NOT_STARTED);
     if (!ok) {
         // Nothing is probing, so leave the setup view up.
-        showError(error || ERROR_PROBE_NOT_STARTED);
         return;
     }
 
@@ -209,11 +204,10 @@ function resetProbeUI() {
 }
 
 export async function stopProbing() {
-    const { ok, error } = await postJson(API_PROBE_STOP);
+    const { ok } = await postOrShowError(API_PROBE_STOP, ERROR_STOP_NOT_SENT);
     if (!ok) {
         // The tool may still be down, so leave the progress view up rather than a setup
         // screen that implies the run is over.
-        showError(error || ERROR_STOP_NOT_SENT);
         return;
     }
 
@@ -226,11 +220,8 @@ export async function toggleProbePause() {
         return;
     }
 
-    const { ok, error } = await postJson(
-        pauseBtn.dataset.paused === 'true' ? API_PROBE_RESUME : API_PROBE_PAUSE);
-    if (!ok) {
-        showError(error || TEXT_PAUSE_FAILED);
-    }
+    await postOrShowError(
+        pauseBtn.dataset.paused === 'true' ? API_PROBE_RESUME : API_PROBE_PAUSE, TEXT_PAUSE_FAILED);
     // The next status sets the button text.
 }
 
@@ -246,11 +237,9 @@ export async function showProbeComplete() {
     state.probeDataDisplayed = true;
 
     // Applied without asking, as the terminal does by default.
-    const { ok, error } = await postJson(API_PROBE_APPLY);
+    const { ok } = await postOrShowError(API_PROBE_APPLY, TEXT_APPLY_FAILED);
     if (ok) {
         showInfo(TEXT_PROBE_APPLIED_TO_GCODE);
-    } else {
-        showError(error || TEXT_APPLY_FAILED);
     }
 }
 
@@ -431,10 +420,7 @@ function clearProbeGridUI() {
 }
 
 async function discardOnServer() {
-    const { ok, error } = await postJson(API_PROBE_DISCARD);
-    if (!ok) {
-        showError(error || TEXT_DISCARD_FAILED);
-    }
+    const { ok } = await postOrShowError(API_PROBE_DISCARD, TEXT_DISCARD_FAILED);
     return ok;
 }
 
@@ -454,9 +440,8 @@ export async function discardProbeData() {
 }
 
 export async function recoverAutosave() {
-    const { ok, error, data } = await postJson(API_PROBE_RECOVER_AUTOSAVE);
+    const { ok, data } = await postOrShowError(API_PROBE_RECOVER_AUTOSAVE, TEXT_RECOVERY_FAILED);
     if (!ok) {
-        showError(error || TEXT_RECOVERY_FAILED);
         return;
     }
 
@@ -534,7 +519,8 @@ export async function loadSelectedProbeFile() {
     btn.textContent = TEXT_LOADING;
 
     try {
-        const { ok, error, data } = await postJson(API_PROBE_LOAD, { path: selectedFile });
+        const { ok, data } = await postOrShowError(
+            API_PROBE_LOAD, TEXT_PROBE_LOAD_FAILED, { path: selectedFile });
 
         if (ok) {
             // The operator loaded this file, so the dashboard must not navigate away from it.
@@ -550,8 +536,6 @@ export async function loadSelectedProbeFile() {
                 showScreen(SCREEN_PROBE);
                 showInfo(`${TEXT_PROBE_DATA_LOADED}: ${data.progress}/${data.totalPoints} points probed`);
             }
-        } else {
-            showError(error || TEXT_PROBE_LOAD_FAILED);
         }
     } catch (err) {
         console.error('probe data load failed', err);

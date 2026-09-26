@@ -15,6 +15,9 @@ namespace coppercli.Core.Controllers
 
         DoorOpen,
 
+        /// <summary>GRBL is moving to the park position; the door may be open or closed.</summary>
+        DoorRetracting,
+
         /// <summary>The door is closed and the machine is parked, waiting to be resumed.</summary>
         DoorHolding,
 

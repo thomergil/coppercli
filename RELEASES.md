@@ -1,5 +1,22 @@
 # Release Notes
 
+## Unreleased
+
+**Everywhere**
+
+- Unlock and Home with the door open now say "The door is open. Close it, then try
+  again." in the terminal, the browser and macros. An alarmed machine stays in Alarm when
+  the door opens, instead of reporting Door, and refuses both until the door closes.
+  Before, the browser reported success and the terminal said "Unlocked".
+- Answering yes to "Home machine?" at startup with the door open no longer skips homing.
+  coppercli asks you to close the door, then homes.
+- The terminal and the browser now say "Retracting..." instead of "Close the door." while
+  the machine retracts after the door opens. GRBL reports the retract until the move ends,
+  so "Close the door." stayed on screen after you had closed it. You are asked "Door closed.
+  Continue?" when the retract ends, or told to close the door if it is still open.
+- Resume while the door is closed and the machine is holding says "Door closed, but the
+  machine is still holding." It said "Close it." about a door that was already closed.
+
 ## v0.5.0
 
 **Everywhere**

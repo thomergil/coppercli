@@ -660,89 +660,40 @@ namespace coppercli.Menus
                 return;
             }
 
-            var result = MenuHelpers.ConfirmOrQuit("Home machine?", false);
-            if (result == null)
-            {
-                Environment.Exit(0);
-            }
-            if (result != true)
+            if (!MenuHelpers.ConfirmOrExit(PromptHomeMachine))
             {
                 return;
             }
 
-            // The alarm retry is bounded by attempts, not by a deadline: most of the wait is
-            // the operator walking to the machine and back, and a timer would expire while they
-            // are away. A door hold goes to `MachineWait.ClearDoorHoldAsync`, with this
-            // screen's own confirmation and message.
-            int unlocks = 0;
-
-            while (MachineWait.IsUnavailable(machine))
+            // GRBL takes $H in Alarm, so a door hold is the only state to clear first.
+            if (MachineWait.IsDoor(machine) && !MenuHelpers.WaitForDoorClear(machine, DoorPrompts.ScrollingConsole))
             {
-                if (MachineWait.IsDoor(machine))
-                {
-                    var outcome = MachineWait.ClearDoorHoldAsync(
-                        machine,
-                        ask: message =>
-                        {
-                            // Keys typed while the message above was up are still buffered,
-                            // and one of them would answer this before it has been read.
-                            InputHelpers.FlushKeyboard();
-
-                            // A cycle start restarts the spindle and moves the tool back, so
-                            // the operator confirms it here as in a run.
-                            bool? release = MenuHelpers.ConfirmOrQuit(message, false);
-                            if (release == null)
-                            {
-                                Environment.Exit(0);
-                            }
-
-                            return Task.FromResult(release == true);
-                        },
-                        announce: message =>
-                            AnsiConsole.MarkupLine($"[{ColorWarning}]{Markup.Escape(message)}[/]"),
-                        // Escape ends the wait; a door left open would otherwise hold this
-                        // screen with no way out.
-                        onPoll: MenuHelpers.EscapePressed)
-                        .GetAwaiter().GetResult();
-
-                    if (outcome == DoorClearOutcome.WillNotRelease)
-                    {
-                        MenuHelpers.ShowError(ControllerConstants.ErrorDoorWillNotRelease);
-                    }
-
-                    if (outcome != DoorClearOutcome.Cleared)
-                    {
-                        return;
-                    }
-
-                    continue;
-                }
-
-                if (unlocks >= ControllerConstants.MachineClearAttempts)
-                {
-                    MenuHelpers.ShowError(
-                        MachineWait.IsAlarm(machine) ? ErrorAlarmWillNotClear : ErrorMachineWillNotClear);
-                    return;
-                }
-
-                if (!MachineWait.IsAlarm(machine))
-                {
-                    // Neither alarm nor door: asleep or not answering, which this loop cannot
-                    // clear.
-                    MenuHelpers.ShowError(ErrorMachineWillNotClear);
-                    return;
-                }
-
-                unlocks++;
-                MachineCommands.Unlock(machine);
-                Thread.Sleep(CommandDelayMs);
+                return;
             }
 
-            AnsiConsole.Status()
-                .Start("Homing...", ctx =>
-                {
-                    MachineCommands.HomeAndWait(machine);
-                });
+            // Asleep, GRBL answers nothing but a reset, so $H would wait out its whole timeout.
+            if (MachineWait.IsAsleep(machine))
+            {
+                MenuHelpers.ShowError(ErrorMachineAsleep);
+                return;
+            }
+
+            // A line rather than a spinner, because homing can stop to ask about the door.
+            AnsiConsole.MarkupLine(ControllerConstants.MessageHoming);
+
+            var homing = MachineCommands.HomeAndWait(machine, retryAfterDoorCloses: () =>
+            {
+                // Keys typed while homing ran are still buffered, and one of them would answer
+                // this before it has been read.
+                InputHelpers.FlushKeyboard();
+                return MenuHelpers.ConfirmOrExit(PromptHomeDoorOpen);
+            });
+
+            // A door refusal is returned only once the operator has declined to retry.
+            if (!homing.DoorOpen && homing.FailureMessage is { } failure)
+            {
+                MenuHelpers.ShowError(failure);
+            }
         }
     }
 }

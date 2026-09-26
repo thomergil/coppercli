@@ -50,7 +50,10 @@ namespace coppercli.Tests.Fakes
         }
         public bool Connected { get; set; } = true;
         public bool IsHomed { get; set; }
-        public bool IsHoming { get; set; }
+        private int _homingCycles;
+        public bool IsHoming => Volatile.Read(ref _homingCycles) > 0;
+        public void BeginHoming() => Interlocked.Increment(ref _homingCycles);
+        public void EndHoming() => Interlocked.Decrement(ref _homingCycles);
 
         /// <summary>GRBL answering the status poll, so a wait for a fresh reading ends the
         /// way it does on the machine. Set Answering false for a GRBL that has gone quiet.</summary>

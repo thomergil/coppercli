@@ -619,15 +619,18 @@ namespace coppercli.Helpers
 
         /// <summary>
         /// MachineWait.ClearDoorHoldAsync does the work, the same sequence a run follows; this
-        /// supplies the overlay it prompts and announces through. A screen with a run behind it
+        /// supplies the prompts it asks and announces through. A screen with a run behind it
         /// draws what the run publishes and never calls this.
         /// </summary>
+        /// <param name="prompts">Defaults to <see cref="DoorPrompts.Overlay"/>.</param>
         /// <returns>
         /// True once the machine is out of Door. False if the operator backed out, or if the
         /// hold was still there after MachineClearAttempts releases.
         /// </returns>
-        public static bool WaitForDoorClear(Machine machine)
+        public static bool WaitForDoorClear(Machine machine, DoorPrompts? prompts = null)
         {
+            prompts ??= DoorPrompts.Overlay;
+
             var outcome = MachineWait.ClearDoorHoldAsync(
                 machine,
                 ask: message =>
@@ -635,21 +638,16 @@ namespace coppercli.Helpers
                     // Keys typed while an earlier message was up are still buffered, and one of
                     // them would answer this prompt before the operator has read it.
                     InputHelpers.FlushKeyboard();
-
-                    // Defaults to yes: this prompt only appears once GRBL reports the door
-                    // closed, which is what it asks about.
-                    return Task.FromResult(
-                        DisplayHelpers.ShowOverlayConfirm(message, defaultYes: true) == true);
+                    return Task.FromResult(prompts.Ask(message));
                 },
-                announce: message => DisplayHelpers.ShowOverlay(
-                    message, messageColor: DisplayHelpers.AnsiWarning),
+                announce: prompts.Announce,
                 // Escape is the way out while waiting on an open door or a park restore.
                 onPoll: EscapePressed)
                 .GetAwaiter().GetResult();
 
             if (outcome == DoorClearOutcome.WillNotRelease)
             {
-                DisplayHelpers.ShowOverlayAndWait(ControllerConstants.ErrorDoorWillNotRelease);
+                prompts.ShowFailure(ControllerConstants.ErrorDoorWillNotRelease);
             }
 
             return outcome == DoorClearOutcome.Cleared;
@@ -751,6 +749,18 @@ namespace coppercli.Helpers
         /// </summary>
         public static bool? ConfirmOrQuit(string message, bool defaultYes = false) =>
             AskYesNo(message, defaultYes, offerQuit: true);
+
+        /// <summary>ConfirmOrQuit for a screen at startup, where quitting ends the program.</summary>
+        public static bool ConfirmOrExit(string message, bool defaultYes = false)
+        {
+            bool? answer = ConfirmOrQuit(message, defaultYes);
+            if (answer == null)
+            {
+                Environment.Exit(0);
+            }
+
+            return answer == true;
+        }
 
         /// <summary>
         /// The hint and the keys accepted are built from the same <paramref name="offerQuit"/>,

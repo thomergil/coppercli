@@ -326,6 +326,71 @@ namespace coppercli.Tests
             Assert.Equal(0, machine.CycleStartCount);
         }
 
+        /// <summary>
+        /// GRBL takes no cycle start until the park move ends. The release waits only for a
+        /// fresh reading, not for the retract to end.
+        /// </summary>
+        [Fact]
+        public async Task Release_WhileRetracting_SendsNothingAndDoesNotWaitOutTheRetract()
+        {
+            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+            var elapsed = Stopwatch.StartNew();
+
+            var left = await MachineWait.ReleaseDoorHoldAsync(machine, HangDetectTimeoutMs);
+
+            Assert.Equal(DoorState.Retracting, left);
+            Assert.Equal(0, machine.CycleStartCount);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2, "the release waited out the retract");
+        }
+
+        /// <summary>
+        /// The retract has just ended but the last report still reads it. The release waits for
+        /// a fresh reading instead of refusing on a stale one.
+        /// </summary>
+        [Fact]
+        public async Task Release_OnAStaleRetractReading_WaitsForTheClosedDoorAndReleases()
+        {
+            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+            // Flipped on the next report rather than after a delay, so a slow thread pool cannot
+            // push the change past the catch-up window.
+            long start = machine.StatusReportCount;
+            _ = Task.Run(async () =>
+            {
+                while (machine.StatusReportCount == start)
+                {
+                    await Task.Delay(1);
+                }
+                machine.StatusSubState = GrblProtocol.DoorSubStateClosed;
+            });
+
+            await MachineWait.ReleaseDoorHoldAsync(machine, HangDetectTimeoutMs);
+
+            Assert.Equal(1, machine.CycleStartCount);
+        }
+
+        /// <summary>
+        /// Resume and release are refused at the door, and only an open door is told to close:
+        /// the others may already be closed.
+        /// </summary>
+        [Theory]
+        [InlineData(DoorState.None, null)]
+        [InlineData(DoorState.Open, ControllerConstants.ErrorDoorBlocksResume)]
+        [InlineData(DoorState.WaitingForResume, ControllerConstants.ErrorDoorClosedStillHolding)]
+        [InlineData(DoorState.Retracting, ControllerConstants.DoorRetractingMessage)]
+        [InlineData(DoorState.Resuming, ControllerConstants.DoorResumingMessage)]
+        public void GetDoorRefusal_NamesAMoveStillRunningRatherThanTheDoor(DoorState state, string? expected)
+        {
+            Assert.Equal(expected, MachineWait.GetDoorRefusal(state));
+        }
+
+        [Fact]
+        public void DoorRefusal_WhileRetracting_DoesNotSayCloseTheDoor()
+        {
+            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+
+            Assert.Equal(ControllerConstants.DoorRetractingMessage, MachineWait.GetDoorRefusal(machine));
+        }
+
         [Fact]
         public async Task ReleaseCancelledBeforeTheCycleStart_SendsNothing()
         {
@@ -505,13 +570,13 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The three states cover Door between them, and each maps to the substate GRBL uses
-        /// for it. Every screen that shows door text reads this.
+        /// Each GRBL door substate maps to one door state; an unrecognized or empty substate
+        /// maps to Open.
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.DoorSubStateClosed, DoorState.WaitingForResume)]
         [InlineData(GrblProtocol.DoorSubStateAjar, DoorState.Open)]
-        [InlineData(GrblProtocol.DoorSubStateRetracting, DoorState.Open)]
+        [InlineData(GrblProtocol.DoorSubStateRetracting, DoorState.Retracting)]
         [InlineData(GrblProtocol.DoorSubStateResuming, DoorState.Resuming)]
         [InlineData("9", DoorState.Open)]
         [InlineData("", DoorState.Open)]
@@ -530,7 +595,7 @@ namespace coppercli.Tests
         [InlineData(GrblProtocol.StatusHold, GrblProtocol.HoldSubStateComplete, MachineActivity.Hold)]
         [InlineData(GrblProtocol.StatusAlarm, GrblProtocol.AlarmSubStateHardLimit, MachineActivity.Alarm)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar, MachineActivity.DoorOpen)]
-        [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateRetracting, MachineActivity.DoorOpen)]
+        [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateRetracting, MachineActivity.DoorRetracting)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed, MachineActivity.DoorHolding)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateResuming, MachineActivity.DoorResuming)]
         [InlineData(GrblProtocol.StatusDisconnected, "", MachineActivity.Disconnected)]
@@ -586,6 +651,7 @@ namespace coppercli.Tests
         [Theory]
         [InlineData(GrblProtocol.StatusAlarm, GrblProtocol.AlarmSubStateHardLimit, true)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateAjar, true)]
+        [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateRetracting, true)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateClosed, true)]
         [InlineData(GrblProtocol.StatusDoor, GrblProtocol.DoorSubStateResuming, true)]
         [InlineData(GrblProtocol.StatusHold, GrblProtocol.HoldSubStateComplete, false)]
@@ -610,6 +676,7 @@ namespace coppercli.Tests
         [InlineData(MachineActivity.Disconnected, false, false, false, false, true, false)]
         [InlineData(MachineActivity.Alarm, true, true, false, false, true, true)]
         [InlineData(MachineActivity.DoorOpen, true, true, false, false, true, false)]
+        [InlineData(MachineActivity.DoorRetracting, true, true, false, false, true, false)]
         [InlineData(MachineActivity.DoorHolding, true, true, false, false, true, false)]
         [InlineData(MachineActivity.DoorResuming, true, true, false, false, true, false)]
         [InlineData(MachineActivity.Hold, true, false, false, true, false, false)]

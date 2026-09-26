@@ -62,7 +62,7 @@ namespace coppercli.Tests.Fakes
         private List<string> _fileLines = new();
         private int _filePosition;
         private bool _isHomed;
-        private bool _isHoming;
+        private int _homingCycles;
         private CancellationTokenSource? _runCts;
         private Task? _runTask;
         private readonly object _stateLock = new();
@@ -117,8 +117,17 @@ namespace coppercli.Tests.Fakes
 
         public bool IsHoming
         {
-            get { lock (_stateLock) return _isHoming; }
-            set { lock (_stateLock) _isHoming = value; }
+            get { lock (_stateLock) return _homingCycles > 0; }
+        }
+
+        public void BeginHoming()
+        {
+            lock (_stateLock) _homingCycles++;
+        }
+
+        public void EndHoming()
+        {
+            lock (_stateLock) _homingCycles--;
         }
 
         /// <summary>GRBL answering the status poll, so a wait for a fresh reading ends the

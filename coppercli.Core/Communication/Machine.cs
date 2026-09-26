@@ -107,11 +107,18 @@ namespace coppercli.Core.Communication
         /// </summary>
         public bool IsHomed { get; set; } = false;
 
+        /// <summary>How many MachineWait.HomeAsync calls are running.</summary>
+        private int _homingCycles;
+
         /// <summary>
-        /// True while MachineWait.HomeAsync is running. That method is the only writer, so
-        /// homing by any other route leaves this false.
+        /// True while MachineWait.HomeAsync is running. That method is the only caller of
+        /// BeginHoming, so homing by any other route leaves this false.
         /// </summary>
-        public bool IsHoming { get; set; } = false;
+        public bool IsHoming => Volatile.Read(ref _homingCycles) > 0;
+
+        public void BeginHoming() => Interlocked.Increment(ref _homingCycles);
+
+        public void EndHoming() => Interlocked.Decrement(ref _homingCycles);
 
         private long _statusReportCount;
 
@@ -597,12 +604,6 @@ namespace coppercli.Core.Communication
 
                     RecordLog("< " + line);
 
-                    // // Log all non-status responses
-                    // if (!line.StartsWith("<"))
-                    // {
-                    //     Controllers.ControllerLog.Log($"GRBL_RECV: \"{line}\" Sent.Count={Sent.Count} BufferState={BufferState}");
-                    // }
-
                     if (line == ResponseOk)
                     {
                         AnswerOldest(GrblReply.Ok);
@@ -793,7 +794,6 @@ namespace coppercli.Core.Communication
             // Carrying a stale IsHomed across a reconnect would let milling skip homing
             // and run every G53 move against a coordinate system that no longer exists.
             IsHomed = false;
-            IsHoming = false;
 
             Mode = OperatingMode.Manual;
 
@@ -903,7 +903,6 @@ namespace coppercli.Core.Communication
             }
 
             IsHomed = false;
-            IsHoming = false;
 
             MachinePosition = new Vector3();
             WorkOffset = new Vector3();

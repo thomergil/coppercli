@@ -29,6 +29,8 @@ namespace coppercli.Core.Controllers
 
         public static bool IsDoor(IMachine machine) => machine.Status.StartsWith(StatusDoor);
 
+        public static bool IsAsleep(IMachine machine) => machine.Status == StatusSleep;
+
         /// <summary>
         /// Door closed, machine parked, waiting for a cycle start.
         /// </summary>
@@ -42,12 +44,17 @@ namespace coppercli.Core.Controllers
         private static bool IsDoorResuming(IMachine machine) =>
             IsDoor(machine) && machine.StatusSubState == DoorSubStateResuming;
 
+        /// <summary>GRBL is moving to the park position; see <see cref="DoorState.Retracting"/>.</summary>
+        private static bool IsDoorRetracting(IMachine machine) =>
+            IsDoor(machine) && machine.StatusSubState == DoorSubStateRetracting;
+
         /// <summary>
-        /// The enclosure may be open. Defined as the remainder of the other two, so an
-        /// unrecognized substate counts as open.
+        /// The door may be open. True for any Door substate that is not waiting, resuming or
+        /// retracting, so an unrecognized substate counts as open.
         /// </summary>
         private static bool IsDoorOpen(IMachine machine) =>
-            IsDoor(machine) && !IsDoorWaitingForResume(machine) && !IsDoorResuming(machine);
+            IsDoor(machine) && !IsDoorWaitingForResume(machine) && !IsDoorResuming(machine)
+                && !IsDoorRetracting(machine);
 
         /// <summary>
         /// Which door state the machine is in, or None when it is not at the door. Every
@@ -70,12 +77,17 @@ namespace coppercli.Core.Controllers
                 return DoorState.Resuming;
             }
 
+            if (IsDoorRetracting(machine))
+            {
+                return DoorState.Retracting;
+            }
+
             return DoorState.WaitingForResume;
         }
 
         /// <summary>
         /// True where a cycle start would end the hold. That is the only door state with
-        /// anything to ask the operator; the other two are waited out.
+        /// anything to ask the operator; every other door state is waited out.
         /// </summary>
         public static bool CanReleaseDoorHold(DoorState state) =>
             state == DoorState.WaitingForResume;
@@ -87,6 +99,7 @@ namespace coppercli.Core.Controllers
         {
             DoorState.Open => ControllerConstants.DoorOpenPrompt,
             DoorState.Resuming => ControllerConstants.DoorResumingMessage,
+            DoorState.Retracting => ControllerConstants.DoorRetractingMessage,
             _ => ControllerConstants.DoorHoldingPrompt
         };
 
@@ -111,6 +124,7 @@ namespace coppercli.Core.Controllers
                 case DoorState.Open: return MachineActivity.DoorOpen;
                 case DoorState.WaitingForResume: return MachineActivity.DoorHolding;
                 case DoorState.Resuming: return MachineActivity.DoorResuming;
+                case DoorState.Retracting: return MachineActivity.DoorRetracting;
             }
 
             if (IsHold(machine))
@@ -128,7 +142,7 @@ namespace coppercli.Core.Controllers
                 return MachineActivity.Idle;
             }
 
-            if (machine.Status == StatusSleep)
+            if (IsAsleep(machine))
             {
                 return MachineActivity.Sleep;
             }
@@ -159,12 +173,13 @@ namespace coppercli.Core.Controllers
         /// </summary>
         public static bool IsDoorActivity(MachineActivity activity) =>
             activity is MachineActivity.DoorOpen
+                or MachineActivity.DoorRetracting
                 or MachineActivity.DoorHolding
                 or MachineActivity.DoorResuming;
 
         /// <summary>
         /// The machine will not act on a command until the operator clears an alarm, closes
-        /// the enclosure, waits out a park restore, or resets it out of $SLP.
+        /// the enclosure, waits out a park retract or restore, or resets it out of $SLP.
         /// <see cref="IsUnavailable"/> is this set plus Disconnected.
         /// </summary>
         public static bool NeedsAttention(MachineActivity activity) =>
@@ -203,12 +218,22 @@ namespace coppercli.Core.Controllers
         public static bool CanResume(IMachine machine) => CanResume(GetActivity(machine));
 
         /// <summary>
-        /// Why restarting a paused run would not work, or null if it would. A machine holding
-        /// at the door takes the lines into its planner and runs them when the hold is
-        /// released, so the run waits for the operator to clear the enclosure first.
+        /// Why the door stops a resume or a release, or null when the machine is not at the
+        /// door. A machine holding at the door takes lines into its planner and runs them when
+        /// the hold is released, so a resume waits for the enclosure to be cleared first. A
+        /// retract or restore still moving returns its own message, not the door refusal.
         /// </summary>
-        public static string? GetResumeBlocker(IMachine machine) =>
-            IsDoor(machine) ? ControllerConstants.ErrorDoorBlocksResume : null;
+        public static string? GetDoorRefusal(DoorState state) => state switch
+        {
+            DoorState.None => null,
+            DoorState.Open => ControllerConstants.ErrorDoorBlocksResume,
+            DoorState.WaitingForResume => ControllerConstants.ErrorDoorClosedStillHolding,
+            DoorState.Retracting or DoorState.Resuming => GetDoorMessage(state),
+            _ => ControllerConstants.ErrorDoorBlocksResume
+        };
+
+        /// <inheritdoc cref="GetDoorRefusal(DoorState)"/>
+        public static string? GetDoorRefusal(IMachine machine) => GetDoorRefusal(GetDoorState(machine));
 
         /// <summary>
         /// Poll until the condition holds, the timeout expires, or the caller cancels.
@@ -374,8 +399,7 @@ namespace coppercli.Core.Controllers
         /// restarts the spindle and moves the tool back.
         /// </param>
         /// <param name="announce">
-        /// Shows a door state the operator cannot answer: an open door, or a park restore
-        /// still running.
+        /// Shows a door state the operator cannot answer (see <see cref="CanReleaseDoorHold(DoorState)"/>).
         /// </param>
         /// <param name="onPoll">
         /// Called on every poll while a state is waited out; true stops waiting and reports
@@ -447,8 +471,16 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
+        /// Past the door switch and the park move: a cycle start ends the hold, or the restore
+        /// it starts is already running.
+        /// </summary>
+        private static bool IsDoorReleasable(DoorState state) =>
+            state is DoorState.WaitingForResume or DoorState.Resuming;
+
+        /// <summary>
         /// Wait briefly for GRBL to report the closed switch, send CycleStart, then wait
-        /// for the hold to end. Return Open if the switch stays open during that wait.
+        /// for the hold to end. Returns Open or Retracting without a cycle start if, after that
+        /// wait, the switch reads open or the park move is still running.
         /// </summary>
         /// <returns>
         /// The door state the machine was left in. None means out of Door; Resuming means
@@ -465,13 +497,15 @@ namespace coppercli.Core.Controllers
             // Include the switch reading wait in the total timeout.
             var elapsed = Stopwatch.StartNew();
 
-            if (IsDoorOpen(machine))
+            if (!IsDoorReleasable(GetDoorState(machine)))
             {
                 await WaitForDoorReadingToCatchUpAsync(machine, timeoutMs, ct).ConfigureAwait(false);
 
-                if (IsDoorOpen(machine))
+                // GRBL takes no cycle start until the park move has ended and the door reads closed.
+                var state = GetDoorState(machine);
+                if (!IsDoorReleasable(state))
                 {
-                    return DoorState.Open;
+                    return state;
                 }
             }
 
@@ -501,7 +535,8 @@ namespace coppercli.Core.Controllers
 
             return WaitUntilAsync(
                 machine,
-                m => !IsDoorOpen(m) || m.StatusReportCount - startCount >= DoorReadingCatchUpReports,
+                m => IsDoorReleasable(GetDoorState(m))
+                    || m.StatusReportCount - startCount >= DoorReadingCatchUpReports,
                 timeoutMs,
                 ct,
                 abortWhenUnavailable: false);
@@ -597,8 +632,9 @@ namespace coppercli.Core.Controllers
 
                 // A refusal other than the alarm lock-out has a reason worth showing in
                 // GRBL's own words.
-                case GrblAnswer.Refused when reply.Rejection?.Code != GrblRejection.LockedOut:
-                    return reply.Rejection?.Description;
+                case GrblAnswer.Refused when reply.Rejection is { } rejection
+                    && rejection.Code != GrblRejection.LockedOut:
+                    return DescribeRefusal(rejection);
 
                 case GrblAnswer.Refused:
                 case GrblAnswer.NotSent:
@@ -627,37 +663,81 @@ namespace coppercli.Core.Controllers
         /// <summary>
         /// The only code that sets <see cref="IMachine.IsHomed"/> true, and it sets it on
         /// GRBL's own answer that the cycle finished. <see cref="IMachine.IsHoming"/> stays
-        /// true for the duration.
+        /// true for the duration, including while the operator is asked about the door.
         /// </summary>
+        /// <param name="retryAfterDoorCloses">
+        /// Asked when GRBL refused $H because the door is open. True sends $H again. Null
+        /// returns that refusal to the caller.
+        /// </param>
         /// <exception cref="OperationCanceledException">The caller cancelled.</exception>
-        public static async Task<HomingOutcome> HomeAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
+        public static async Task<HomingOutcome> HomeAsync(
+            IMachine machine, int timeoutMs, CancellationToken ct = default,
+            Func<Task<bool>>? retryAfterDoorCloses = null)
         {
-            machine.IsHoming = true;
+            machine.BeginHoming();
 
             try
             {
-                // GRBL answers $H only when the cycle is over: ok if the machine homed, an
-                // error if it refused the command, nothing if it alarmed part-way.
-                var reply = await machine.SendAsync(CmdHome, timeoutMs, ct).ConfigureAwait(false);
-
-                if (reply.Ran)
+                while (true)
                 {
-                    machine.IsHomed = true;
-                    return HomingOutcome.Homed;
+                    var outcome = await SendHomeAsync(machine, timeoutMs, ct).ConfigureAwait(false);
+
+                    if (!outcome.DoorOpen || retryAfterDoorCloses == null
+                        || !await retryAfterDoorCloses().ConfigureAwait(false))
+                    {
+                        return outcome;
+                    }
                 }
-
-                return reply.Answer switch
-                {
-                    GrblAnswer.Refused or GrblAnswer.NotSent => HomingOutcome.Refused(reply.Rejection),
-                    GrblAnswer.Abandoned => HomingOutcome.Interrupted(ErrorHomingInterrupted),
-                    _ => HomingOutcome.Interrupted(ControllerConstants.ErrorMachineNotResponding)
-                };
             }
             finally
             {
-                machine.IsHoming = false;
+                machine.EndHoming();
             }
         }
+
+        private static async Task<HomingOutcome> SendHomeAsync(IMachine machine, int timeoutMs, CancellationToken ct)
+        {
+            // GRBL answers $H only when the cycle is over: ok if the machine homed, an
+            // error if it refused the command, nothing if it alarmed part-way.
+            var reply = await machine.SendAsync(CmdHome, timeoutMs, ct).ConfigureAwait(false);
+
+            if (reply.Ran)
+            {
+                machine.IsHomed = true;
+                return HomingOutcome.Homed;
+            }
+
+            return reply.Answer switch
+            {
+                GrblAnswer.Refused or GrblAnswer.NotSent => HomingOutcome.Refused(reply.Rejection),
+                GrblAnswer.Abandoned => HomingOutcome.Interrupted(ErrorHomingInterrupted),
+                _ => HomingOutcome.Interrupted(ControllerConstants.ErrorMachineNotResponding)
+            };
+        }
+
+        /// <summary>Sends $X and reads GRBL's answer to it.</summary>
+        /// <returns>Null once the machine is unlocked, otherwise why it is not.</returns>
+        public static async Task<string?> UnlockAsync(IMachine machine, CancellationToken ct = default)
+        {
+            var reply = await machine.SendAsync(CmdUnlock, CommandAnswerTimeoutMs, ct).ConfigureAwait(false);
+
+            return reply.Answer switch
+            {
+                GrblAnswer.Ok => null,
+                GrblAnswer.Refused when reply.Rejection is { } rejection => DescribeRefusal(rejection),
+                GrblAnswer.NotSent => ControllerConstants.ErrorCommandNotSent,
+                _ => ControllerConstants.ErrorMachineNotResponding
+            };
+        }
+
+        /// <summary>
+        /// The operator's words for a refusal. GRBL's own text for an open door does not say
+        /// what to do about it.
+        /// </summary>
+        public static string DescribeRefusal(GrblRejection rejection) =>
+            rejection.Code == GrblRejection.DoorOpen
+                ? ControllerConstants.ErrorDoorOpenRefused
+                : rejection.Description;
 
         /// <summary>
         /// Stops all motion, clears GRBL's buffer, and optionally homes, so a bug elsewhere

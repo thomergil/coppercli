@@ -242,9 +242,7 @@ namespace coppercli.Macro
                     return ExecuteZero(command.Args);
 
                 case MacroCommandType.Unlock:
-                    MachineCommands.Unlock(machine);
-                    Thread.Sleep(CommandDelayMs);
-                    return true;
+                    return ReportFailure(MachineCommands.Unlock(machine));
 
                 case MacroCommandType.ProbeZ:
                     return ExecuteProbeZ();
@@ -317,15 +315,17 @@ namespace coppercli.Macro
             }
         }
 
-        private bool ExecuteHome()
+        private bool ExecuteHome() =>
+            ReportFailure(MachineCommands.HomeAndWait(AppState.Machine).FailureMessage);
+
+        /// <returns>True if there was no failure.</returns>
+        private static bool ReportFailure(string? failure)
         {
-            var machine = AppState.Machine;
-            if (!MachineCommands.HomeAndWait(machine))
+            if (failure != null)
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]Homing failed[/]");
-                return false;
+                AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(failure)}[/]");
             }
-            return true;
+            return failure == null;
         }
 
         private bool ExecuteZero(string[] args)
@@ -356,9 +356,8 @@ namespace coppercli.Macro
             }
 
             var zeroed = MachineCommands.SetWorkZeroAndWait(machine, axisCmd);
-            if (zeroed.Refused != null)
+            if (!ReportFailure(zeroed.Refused))
             {
-                AnsiConsole.MarkupLine($"[{ColorError}]{Markup.Escape(zeroed.Refused)}[/]");
                 return false;
             }
 

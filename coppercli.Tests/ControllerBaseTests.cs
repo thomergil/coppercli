@@ -823,18 +823,17 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The park retract is GRBL's own move away from the work, still with the enclosure
-        /// open. It reads as an open door, so it is waited out and never prompted about.
+        /// GRBL reports the park retract until the move ends, even after the operator has
+        /// closed the door, so the controller must not tell the operator to close it. Like an
+        /// open door, the retract is waited out without a prompt.
         /// </summary>
         [Fact]
-        public async Task DoorRetracting_IsEmittedAsAMessageLikeAnOpenDoor()
+        public async Task DoorRetracting_IsEmittedAsAMessageThatDoesNotSayTheDoorIsOpen()
         {
-            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+            var messages = await DoorMessagesAsync(GrblProtocol.DoorSubStateRetracting);
 
-            Assert.Equal(DoorState.Open, MachineWait.GetDoorState(machine));
-            Assert.Contains(
-                ControllerConstants.DoorOpenPrompt,
-                await DoorMessagesAsync(GrblProtocol.DoorSubStateRetracting));
+            Assert.Contains(ControllerConstants.DoorRetractingMessage, messages);
+            Assert.DoesNotContain(ControllerConstants.DoorOpenPrompt, messages);
         }
 
         /// <summary>

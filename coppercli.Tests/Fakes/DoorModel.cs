@@ -89,6 +89,16 @@ namespace coppercli.Tests.Fakes
                 : GrblReply.Ok;
         }
 
+        /// <summary>
+        /// Whether GRBL refuses this line with error:13 because the door is open. GRBL enters
+        /// Door from any state but Alarm; alarmed, it stays in Alarm and refuses $X and $H
+        /// until the switch reads closed.
+        /// </summary>
+        public static bool RefusedAtOpenDoor(string line, string state, bool switchOpen) =>
+            switchOpen
+            && state.StartsWith(GrblProtocol.StatusAlarm, StringComparison.Ordinal)
+            && (line == GrblProtocol.CmdUnlock || line.StartsWith(GrblProtocol.CmdHome, StringComparison.Ordinal));
+
         /// <summary>Whether this line is the $X that clears the alarm a reset raised.</summary>
         public static bool ClearsAlarm(string line, string state) =>
             line == GrblProtocol.CmdUnlock

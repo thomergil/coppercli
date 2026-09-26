@@ -88,7 +88,7 @@ namespace coppercli.Tests
         /// </summary>
         [Theory]
         [InlineData(GrblProtocol.DoorSubStateAjar, ControllerConstants.DoorOpenPrompt)]
-        [InlineData(GrblProtocol.DoorSubStateRetracting, ControllerConstants.DoorOpenPrompt)]
+        [InlineData(GrblProtocol.DoorSubStateRetracting, ControllerConstants.DoorRetractingMessage)]
         [InlineData(GrblProtocol.DoorSubStateResuming, ControllerConstants.DoorResumingMessage)]
         public async Task ADoorStateWithNothingToAnswer_IsAnnouncedAndCanBeGivenUpOn(
             string subState, string expected)
@@ -118,6 +118,63 @@ namespace coppercli.Tests
             Assert.Equal(DoorClearOutcome.Declined, outcome);
             Assert.Equal(expected, Assert.Single(announced));
             Assert.Equal(0, machine.CycleStartCount);
+        }
+
+        /// <summary>
+        /// The operator opens the door, GRBL retracts to the park position, and they close the
+        /// door before the retract ends. GRBL reports the retract until the move ends, so they
+        /// must not be told to close a door they already closed, and they are asked once the
+        /// retract ends.
+        /// </summary>
+        [Fact]
+        public async Task ADoorClosedDuringTheRetract_IsAskedAboutOnceTheRetractEnds()
+        {
+            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+            var announced = new List<string>();
+            string? asked = null;
+
+            var outcome = await MachineWait.ClearDoorHoldAsync(
+                machine,
+                ask: message =>
+                {
+                    asked = message;
+                    return No(message);
+                },
+                announce: message =>
+                {
+                    announced.Add(message);
+                    machine.StatusSubState = GrblProtocol.DoorSubStateClosed;
+                });
+
+            Assert.Equal(DoorClearOutcome.Declined, outcome);
+            Assert.Equal(new[] { ControllerConstants.DoorRetractingMessage }, announced);
+            Assert.Equal(ControllerConstants.DoorHoldingPrompt, asked);
+        }
+
+        /// <summary>
+        /// A retract that ends with the door still open leaves GRBL at Door:1, and only then is
+        /// the operator told to close it.
+        /// </summary>
+        [Fact]
+        public async Task ARetractEndingWithTheDoorOpen_ThenSaysToCloseIt()
+        {
+            using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateRetracting);
+            var announced = new List<string>();
+
+            var outcome = await MachineWait.ClearDoorHoldAsync(
+                machine,
+                ask: No,
+                announce: message =>
+                {
+                    announced.Add(message);
+                    machine.StatusSubState = GrblProtocol.DoorSubStateAjar;
+                },
+                onPoll: () => announced.Count > 1);
+
+            Assert.Equal(DoorClearOutcome.Declined, outcome);
+            Assert.Equal(
+                new[] { ControllerConstants.DoorRetractingMessage, ControllerConstants.DoorOpenPrompt },
+                announced);
         }
 
         /// <summary>

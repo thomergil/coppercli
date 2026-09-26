@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
+using coppercli.Core.Settings;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
 using Xunit;
@@ -443,6 +444,179 @@ namespace coppercli.Tests
 
             Assert.False(outcome.Success);
             Assert.Null(outcome.Reason);
+            Assert.Equal(ControllerConstants.ErrorHomingFailed, outcome.FailureMessage);
+        }
+
+        private static GrblReply RefusedWith(int code, string line, string description = "") =>
+            GrblReply.Refused(new GrblRejection(code, line, description));
+
+        private static MockMachine AlarmedWithTheDoorOpen() => new()
+        {
+            Status = GrblProtocol.StatusAlarm,
+            AnswerTo = line => RefusedWith(GrblRejection.DoorOpen, line)
+        };
+
+        /// <summary>
+        /// Alarmed, GRBL reports no Door state, so error:13 is the only sign the door is open.
+        /// It is also the one refusal after which a caller offers a retry.
+        /// </summary>
+        [Fact]
+        public async Task Home_RefusedAtAnOpenDoor_SaysSo()
+        {
+            var outcome = await MachineWait.HomeAsync(AlarmedWithTheDoorOpen(), HomingAnswerWaitMs);
+
+            Assert.False(outcome.Success);
+            Assert.True(outcome.DoorOpen);
+            Assert.Contains(ControllerConstants.ErrorDoorOpenRefused, outcome.FailureMessage);
+        }
+
+        /// <summary>A caller retries only on a door refusal; any other would ask to close a
+        /// door that is not the problem, until the operator says no.</summary>
+        [Theory]
+        [InlineData(GrblRejection.HomingNotEnabled)]
+        [InlineData(GrblRejection.LockedOut)]
+        public void Home_RefusedForAnotherReason_IsNotADoor(int code)
+        {
+            Assert.False(HomingOutcome.Refused(new GrblRejection(code, GrblProtocol.CmdHome, string.Empty)).DoorOpen);
+        }
+
+        [Fact]
+        public async Task Home_RefusedAtAnOpenDoor_AsksAndHomesOnceTheDoorCloses()
+        {
+            var machine = AlarmedWithTheDoorOpen();
+            int asks = 0;
+
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs,
+                retryAfterDoorCloses: () =>
+                {
+                    asks++;
+                    machine.AnswerTo = _ => GrblReply.Ok;
+                    return Task.FromResult(true);
+                });
+
+            Assert.True(outcome.Success, outcome.FailureMessage);
+            Assert.Equal(1, asks);
+            Assert.True(machine.IsHomed);
+            Assert.False(machine.IsHoming, "the homing claim was not released");
+        }
+
+        [Fact]
+        public async Task Home_RefusedAtAnOpenDoor_SendsNoMoreOnceTheOperatorDeclines()
+        {
+            var machine = AlarmedWithTheDoorOpen();
+
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs,
+                retryAfterDoorCloses: () => Task.FromResult(false));
+
+            Assert.True(outcome.DoorOpen);
+            Assert.Single(machine.SentCommands, GrblProtocol.CmdHome);
+        }
+
+        [Fact]
+        public async Task Home_RefusedForAnotherReason_DoesNotAsk()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusIdle,
+                AnswerTo = line => RefusedWith(GrblRejection.HomingNotEnabled, line)
+            };
+
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs,
+                retryAfterDoorCloses: () => throw new Xunit.Sdk.XunitException("asked about a door"));
+
+            Assert.False(outcome.Success);
+        }
+
+        /// <summary>
+        /// HomeAsync sends a Home during another cycle, and GRBL queues it and homes again.
+        /// The machine stays marked as homing until the other cycle ends too, or the server
+        /// would treat it as free while it still moves.
+        /// </summary>
+        [Fact]
+        public async Task Home_DuringAnotherCycle_IsSentAndHomingLastsUntilBothEnd()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusIdle };
+            machine.BeginHoming();
+
+            var outcome = await MachineWait.HomeAsync(machine, HomingAnswerWaitMs);
+
+            Assert.True(outcome.Success, outcome.FailureMessage);
+            Assert.Contains(GrblProtocol.CmdHome, machine.SentCommands);
+            Assert.True(machine.IsHoming, "the other cycle was marked finished");
+
+            machine.EndHoming();
+            Assert.False(machine.IsHoming);
+        }
+
+        [Fact]
+        public void Machine_StaysHoming_UntilTheLastCycleEnds()
+        {
+            var machine = new Machine(new MachineSettings());
+
+            machine.BeginHoming();
+            machine.BeginHoming();
+            machine.EndHoming();
+            Assert.True(machine.IsHoming, "one cycle ending ended the other");
+
+            machine.EndHoming();
+            Assert.False(machine.IsHoming);
+        }
+
+        /// <summary>At startup the question is a prompt that can throw; the machine must not
+        /// be left marked as homing.</summary>
+        [Fact]
+        public async Task Home_WhoseRetryQuestionThrows_IsNoLongerHoming()
+        {
+            var machine = AlarmedWithTheDoorOpen();
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => MachineWait.HomeAsync(
+                machine, HomingAnswerWaitMs, retryAfterDoorCloses: () => throw new InvalidOperationException()));
+
+            Assert.False(machine.IsHoming);
+        }
+
+        [Fact]
+        public async Task Unlock_RefusedForAnotherReason_GivesGrblsWords()
+        {
+            const string grblsWords = "Not idle";
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusAlarm,
+                AnswerTo = line => RefusedWith(GrblRejection.LockedOut, line, grblsWords)
+            };
+
+            Assert.Equal(grblsWords, await MachineWait.UnlockAsync(machine));
+        }
+
+        [Fact]
+        public async Task Unlock_RefusedAtAnOpenDoor_SaysSo()
+        {
+            Assert.Equal(ControllerConstants.ErrorDoorOpenRefused,
+                await MachineWait.UnlockAsync(AlarmedWithTheDoorOpen()));
+        }
+
+        [Fact]
+        public async Task Unlock_ReturnsNoReason_WhenGrblAcceptsIt()
+        {
+            Assert.Null(await MachineWait.UnlockAsync(new MockMachine { Status = GrblProtocol.StatusAlarm }));
+        }
+
+        /// <summary>A line held back while a job streams never reached GRBL, so the machine
+        /// is not the one failing to answer.</summary>
+        [Fact]
+        public async Task Unlock_NotSent_SaysSoRatherThanBlamingTheMachine()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusRun, AnswerTo = _ => GrblReply.NotSent };
+
+            Assert.Equal(ControllerConstants.ErrorCommandNotSent, await MachineWait.UnlockAsync(machine));
+        }
+
+        [Fact]
+        public async Task Unlock_ThatGetsNoAnswer_IsNotReportedAsDone()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusAlarm, AnswerTo = _ => GrblReply.NoAnswer };
+
+            Assert.Equal(ControllerConstants.ErrorMachineNotResponding, await MachineWait.UnlockAsync(machine));
         }
     
         /// <summary>

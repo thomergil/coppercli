@@ -26,6 +26,7 @@ import {
     HEIGHT_RANGE_EPSILON,
     MILL_MIN_RANGE_THRESHOLD,
     MACHINE_ACTIVITY_DOOR_OPEN,
+    MACHINE_ACTIVITY_DOOR_RETRACTING,
     MACHINE_ACTIVITY_DOOR_HOLDING,
     MACHINE_ACTIVITY_DOOR_RESUMING,
     CONTROLLER_STATE_IDLE,
@@ -42,11 +43,8 @@ import {
     PHASE_WAITING_FOR_ZERO_Z,
     CMD_PING,
     CMD_JOG_MODE,
-    CMD_HOME,
-    CMD_UNLOCK,
     CMD_RESET,
     CMD_FEEDHOLD,
-    CMD_RESUME,
     CMD_GOTO_ORIGIN,
     CMD_GOTO_CENTER,
     CMD_GOTO_SAFE,
@@ -151,6 +149,15 @@ export async function postJson(url, body = null) {
         console.error(`POST ${url} failed`, err);
         return { ok: false, error: null, data: {} };
     }
+}
+
+// For a request the server can refuse: shows its reason, or notSent when there is none.
+export async function postOrShowError(url, notSent, body = null) {
+    const result = await postJson(url, body);
+    if (!result.ok) {
+        showError(result.error || notSent);
+    }
+    return result;
 }
 
 export function isWsReady() {
@@ -507,6 +514,8 @@ export async function validateConstants() {
 
         if (server.machineActivities) {
             check(MACHINE_ACTIVITY_DOOR_OPEN, server.machineActivities.doorOpen, 'MACHINE_ACTIVITY_DOOR_OPEN');
+            check(MACHINE_ACTIVITY_DOOR_RETRACTING, server.machineActivities.doorRetracting,
+                'MACHINE_ACTIVITY_DOOR_RETRACTING');
             check(MACHINE_ACTIVITY_DOOR_HOLDING, server.machineActivities.doorHolding,
                 'MACHINE_ACTIVITY_DOOR_HOLDING');
             check(MACHINE_ACTIVITY_DOOR_RESUMING, server.machineActivities.doorResuming,
@@ -540,11 +549,8 @@ export async function validateConstants() {
         if (server.commands) {
             check(CMD_PING, server.commands.ping, 'CMD_PING');
             check(CMD_JOG_MODE, server.commands.jogMode, 'CMD_JOG_MODE');
-            check(CMD_HOME, server.commands.home, 'CMD_HOME');
-            check(CMD_UNLOCK, server.commands.unlock, 'CMD_UNLOCK');
             check(CMD_RESET, server.commands.reset, 'CMD_RESET');
             check(CMD_FEEDHOLD, server.commands.feedhold, 'CMD_FEEDHOLD');
-            check(CMD_RESUME, server.commands.resume, 'CMD_RESUME');
             check(CMD_GOTO_ORIGIN, server.commands.gotoOrigin, 'CMD_GOTO_ORIGIN');
             check(CMD_GOTO_CENTER, server.commands.gotoCenter, 'CMD_GOTO_CENTER');
             check(CMD_GOTO_SAFE, server.commands.gotoSafe, 'CMD_GOTO_SAFE');

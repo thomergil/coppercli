@@ -55,6 +55,7 @@ namespace coppercli.Helpers
             MachineActivity.Disconnected => GrblProtocol.StatusDisconnected,
             MachineActivity.Alarm => MillAlarmStatus,
             MachineActivity.DoorOpen => DoorOpenMessage,
+            MachineActivity.DoorRetracting => DoorRetractingStatus,
             MachineActivity.DoorHolding => DoorClosedMessage,
             MachineActivity.DoorResuming => DoorResumingStatus,
             MachineActivity.Sleep => MillSleepStatus,

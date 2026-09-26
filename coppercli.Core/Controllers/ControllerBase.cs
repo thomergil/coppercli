@@ -587,7 +587,7 @@ namespace coppercli.Core.Controllers
                     string.Format(ErrorCannotResume, State));
             }
 
-            if (MachineWait.GetResumeBlocker(Machine) is string blocked)
+            if (MachineWait.GetDoorRefusal(Machine) is string blocked)
             {
                 EmitError(new ControllerError(blocked, IsFatal: false));
                 return true;

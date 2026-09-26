@@ -176,11 +176,8 @@ public static class WebConstants
 
     // Sent by the browser; the WsMessageType* values go the other way.
     public const string WsCmdJogMode = "jog-mode";
-    public const string WsCmdHome = "home";
-    public const string WsCmdUnlock = "unlock";
     public const string WsCmdReset = "reset";
     public const string WsCmdFeedhold = "feedhold";
-    public const string WsCmdResume = "resume";
     public const string WsCmdGotoOrigin = "goto-origin";
     public const string WsCmdGotoCenter = "goto-center";
     public const string WsCmdGotoSafe = "goto-safe";

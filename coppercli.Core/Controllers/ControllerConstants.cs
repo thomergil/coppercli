@@ -92,6 +92,9 @@ namespace coppercli.Core.Controllers
 
         public const string DoorOpenPrompt = "Close the door.";
 
+        /// <summary>GRBL refused a command because the door is open.</summary>
+        public const string ErrorDoorOpenRefused = "The door is open. Close it, then try again.";
+
         /// <summary>Shown once the door reads closed but the machine is still holding.</summary>
         public const string DoorHoldingPrompt = "Door closed. Continue?";
 
@@ -100,6 +103,12 @@ namespace coppercli.Core.Controllers
         /// spindle, because the same message is shown for a probe, where no spindle runs.
         /// </summary>
         public const string DoorResumingMessage = "Resuming...";
+
+        /// <summary>
+        /// Shown while GRBL moves to the park position. It says nothing about the door: GRBL
+        /// reports this whether or not the operator has closed it since.
+        /// </summary>
+        public const string DoorRetractingMessage = "Retracting...";
 
         /// <summary>
         /// A controller raised a prompt with no subscriber on UserInputRequired. The run
@@ -112,6 +121,15 @@ namespace coppercli.Core.Controllers
             "Machine not accepting moves. Check door, alarm and sleep.";
 
         public const string ErrorDoorBlocksResume = "Holding at the door. Close it.";
+
+        /// <summary>
+        /// Refuses a resume or a release that did not take at Door:0. It names no action:
+        /// whether one is on offer depends on the screen.
+        /// </summary>
+        public const string ErrorDoorClosedStillHolding = "Door closed, but the machine is still holding.";
+
+        /// <summary>The line never left coppercli: a job is streaming, or the machine is not connected.</summary>
+        public const string ErrorCommandNotSent = "Not sent. Stop the job, or check the connection.";
 
         /// <summary>
         /// Do not send CycleStart from the door overlay while a run waits for its

@@ -1,6 +1,6 @@
 // Asks the session questions, including the saved height map a file load makes pending. The
 // server decides which apply and what each answer does.
-import { showConfirm, isConfirmOpen, showError, postJson } from './helpers.js';
+import { showConfirm, isConfirmOpen, postOrShowError } from './helpers.js';
 import { API_SESSION_RESTORE, PROMPT_SETTLE_MS, TEXT_SESSION_ANSWER_FAILED } from './constants.js';
 
 // Page open, reconnect and file load each start a pass. One arriving mid-pass reruns the pass
@@ -35,10 +35,9 @@ export async function askPendingQuestions() {
                 return;
             }
 
-            const { ok, error } = await postJson(
-                API_SESSION_RESTORE, { topic: step.topic, detail: step.detail, yes });
+            const { ok } = await postOrShowError(API_SESSION_RESTORE, TEXT_SESSION_ANSWER_FAILED,
+                { topic: step.topic, detail: step.detail, yes });
             if (!ok) {
-                showError(error || TEXT_SESSION_ANSWER_FAILED);
                 failedThisPass.add(step.topic);
             }
 

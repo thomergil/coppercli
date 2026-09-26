@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { $, showError, showConfirm, updatePauseButton, postJson, escapeMarkup, format, settleButtons } from './helpers.js';
+import { $, showError, showConfirm, updatePauseButton, postOrShowError, escapeMarkup, format, settleButtons } from './helpers.js';
 import { showScreen } from './screens.js';
 import {
     PROMPT_OPTION_CONTINUE,
@@ -94,11 +94,10 @@ export async function startMill() {
         showScreen(SCREEN_MILL);
 
         // The server does the safety retract and sets the modal G-codes.
-        const started = await postJson(API_MILL_START);
+        const started = await postOrShowError(API_MILL_START, ERROR_START_NOT_SENT);
         if (!started.ok) {
             // The run never started, so go back rather than sit on a milling screen that
             // would later report a job complete.
-            showError(started.error || ERROR_START_NOT_SENT);
             showScreen(SCREEN_DASHBOARD, true);
         }
     } catch (err) {
@@ -181,9 +180,10 @@ async function togglePause() {
     const btn = $('mill-pause-btn');
     const wasPaused = btn.dataset.paused === 'true';
     try {
-        const result = await postJson(wasPaused ? API_MILL_RESUME : API_MILL_PAUSE);
+        const result = await postOrShowError(
+            wasPaused ? API_MILL_RESUME : API_MILL_PAUSE,
+            wasPaused ? ERROR_RESUME_NOT_SENT : ERROR_PAUSE_NOT_SENT);
         if (!result.ok) {
-            showError(result.error || (wasPaused ? ERROR_RESUME_NOT_SENT : ERROR_PAUSE_NOT_SENT));
             return;
         }
         updatePauseButton(btn, !wasPaused);
@@ -195,10 +195,9 @@ async function togglePause() {
 
 async function stopMill() {
     try {
-        const result = await postJson(API_MILL_STOP);
+        const result = await postOrShowError(API_MILL_STOP, ERROR_STOP_NOT_SENT);
         if (!result.ok) {
             // Keep the mill screen visible when the server cannot confirm a stop.
-            showError(result.error || ERROR_STOP_NOT_SENT);
             return;
         }
     } catch (err) {
@@ -267,12 +266,10 @@ async function abortToolChange() {
     try {
         hideToolChangeOverlay();  // Aborting - no answer will be taken from a pending prompt.
 
-        const result = await postJson(API_MILL_TOOLCHANGE_ABORT);
+        const result = await postOrShowError(API_MILL_TOOLCHANGE_ABORT, ERROR_ABORT_NOT_SENT);
         if (!result.ok) {
-            // The server could not confirm both controllers stopped - report it and
-            // leave navigation alone rather than telling the operator it is safe to walk
-            // away from the machine.
-            showError(result.error || ERROR_ABORT_NOT_SENT);
+            // The server could not confirm both controllers stopped, so stay on this screen: the
+            // dashboard would tell the operator the machine is safe to leave.
             return;
         }
         console.log('abortToolChange: abort request complete, navigating to dashboard');
@@ -297,9 +294,8 @@ export function updateDepthDisplay(depth) {
 }
 
 async function adjustDepth(action) {
-    const result = await postJson(API_MILL_DEPTH, { action });
+    const result = await postOrShowError(API_MILL_DEPTH, ERROR_DEPTH_NOT_SET, { action });
     if (!result.ok) {
-        showError(result.error || ERROR_DEPTH_NOT_SET);
         return null;
     }
 
@@ -456,16 +452,13 @@ function drawMillGrid(canvas) {
 }
 
 async function sendFeedOverride(url) {
-    const result = await postJson(url);
-    if (!result.ok) {
-        showError(result.error || ERROR_FEED_NOT_SENT);
-    }
+    await postOrShowError(url, ERROR_FEED_NOT_SENT);
 }
 
 export function initMillScreen() {
     $('mill-pause-btn').addEventListener('click', togglePause);
     $('mill-stop-btn').addEventListener('click', stopMill);
-    // Through postJson: these are refused on a machine that has dropped off the link.
+    // Over HTTP: the server refuses these when the machine is not responding.
     $('feed-minus').addEventListener('click', () => sendFeedOverride(API_FEED_DECREASE));
     $('feed-plus').addEventListener('click', () => sendFeedOverride(API_FEED_INCREASE));
     $('feed-reset').addEventListener('click', () => sendFeedOverride(API_FEED_RESET));
@@ -727,10 +720,7 @@ async function releaseDoorHold() {
     buttons.forEach(btn => { btn.disabled = true; });
 
     try {
-        const result = await postJson(API_DOOR_RELEASE);
-        if (!result.ok) {
-            showError(result.error || ERROR_DOOR_NOT_RELEASED);
-        }
+        await postOrShowError(API_DOOR_RELEASE, ERROR_DOOR_NOT_RELEASED);
     } finally {
         buttons.forEach(btn => { btn.disabled = false; });
     }
@@ -814,10 +804,9 @@ async function answerPrompt(prompt, wanted = PROMPT_OPTION_CONTINUE) {
     buttons.forEach(btn => { btn.disabled = true; });
 
     try {
-        const result = await postJson(
-            API_MILL_TOOLCHANGE_INPUT, { id: prompt.id, response: option });
+        const result = await postOrShowError(
+            API_MILL_TOOLCHANGE_INPUT, ERROR_INPUT_NOT_SENT, { id: prompt.id, response: option });
         if (!result.ok) {
-            showError(result.error || ERROR_INPUT_NOT_SENT);
             buttons.forEach(btn => { btn.disabled = false; });
             return false;
         }

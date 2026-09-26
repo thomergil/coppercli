@@ -49,12 +49,7 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine($"[{ColorWarning}]that may occur to your machine, workpiece, or surroundings.[/]");
             AnsiConsole.WriteLine();
 
-            var result = MenuHelpers.ConfirmOrQuit("Silence this warning next time?", true);
-            if (result == null)
-            {
-                Environment.Exit(0);
-            }
-            if (result == true)
+            if (MenuHelpers.ConfirmOrExit("Silence this warning next time?", true))
             {
                 AppState.Settings.SilenceExperimentalWarning = true;
                 saveSettings();

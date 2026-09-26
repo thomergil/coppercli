@@ -57,7 +57,7 @@ coppercli's tool-change logic has no reference implementation.
 
 ## Interfaces
 
-### controllers → machine · v5 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
+### controllers → machine · v7 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
 Every controller reaches the machine only through `IMachine`. That interface file is the
 contract; do not restate it here. It exists so controllers are testable without hardware;
 `coppercli.Tests/Fakes/` supplies the doubles.
@@ -65,12 +65,12 @@ contract; do not restate it here. It exists so controllers are testable without 
   wait/poll loop live in `MachineWait`. A controller that spells out `machine.Status == "Idle"`
   or writes its own polling loop is a violation.
 - **v2:** before reusing a wait, check which states make it return early.
-  `MachineWait.IsUnavailable` includes alarm, the three door states, asleep and no link.
+  `MachineWait.IsUnavailable` includes alarm, each `DoorState`, asleep and no link.
   Hold is *not* in it. So `WaitForIdleAsync` cannot wait out a door, and a caller that must
   wait one out gets its own wait (`WaitForDoorReleasedAsync`, and the report-counted
   catch-up inside `ReleaseDoorHoldAsync`). See rule `waits-do-not-abort-on-awaited-state`.
-- **v3:** the door has three states, not two. `MachineWait.GetDoorState` returns which one
-  as a `DoorState`; the three predicates behind it are private, so one function reads the
+- **v3:** the door has more than two states. `MachineWait.GetDoorState` returns which one
+  as a `DoorState`; the predicates behind it are private, so one function reads the
   partition.
 - **v4:** every question a screen asks about the machine is answered in `MachineWait` and
   sent as a value: `GetActivity` returns a `MachineActivity`, and `IsResponding`,
@@ -84,6 +84,25 @@ contract; do not restate it here. It exists so controllers are testable without 
   `IMachine.SendAsync` returns as a `GrblReply`; `GrblAnswer` says what each answer means.
   `SendLine` remains for a caller that does not wait. See rule
   `grbl-answers-its-own-commands`.
+- **v6:** `IsHoming` is derived from a count, raised by `BeginHoming` and lowered by
+  `EndHoming`. Only `HomeAsync` calls them, paired in its `try`/`finally`, so the machine
+  reads as homing until the last of several queued cycles ends. A Home sent during another
+  cycle is passed to GRBL, never refused (owner's decision). Nothing resets the count: on
+  connect and disconnect `AbandonOutstanding` completes any pending `$H`, so each cycle's
+  `finally` lowers the count for that cycle. `HomingOutcome` keeps GRBL's `GrblRejection` and derives
+  `DoorOpen`, `Reason` and `FailureMessage` from it. `MachineWait.DescribeRefusal` is the one
+  place a refusal becomes the operator's words, except where the meaning depends on the
+  command (`error:5` from `$H`, worded in `HomingOutcome.Reason`). See
+  `a-second-home-is-sent-not-refused`, `homing-disabled-wording-belongs-to-homing`.
+- **v7:** `DoorState.Retracting` (`MachineActivity.DoorRetracting`, GRBL's `Door:2`) is its
+  own case. GRBL reports it for the whole park move, after the door has closed too, so it
+  says nothing about the door: its message is true whether the door is open or closed, and it is
+  waited out, never prompted.
+  `ReleaseDoorHoldAsync` sends a cycle start only in a releasable state (`IsDoorReleasable`);
+  in any other state it waits for the switch reading to catch up, reads again, then refuses.
+  `MachineWait.GetDoorRefusal` is the one mapping from a door state to the words that
+  refuse a resume or a release; `GetResumeBlocker` is gone. See
+  `park-retract-read-as-an-open-door`, `door-refusal-words-defined-once`.
 - **GAP (undecided):** GRBL has one resume, so the cycle start that releases a door hold
   releases a feed hold with it. A run that was paused when the door opened therefore
   continues cutting while `ControllerState` still reads `Paused` and the screen still
@@ -241,7 +260,7 @@ that reaches the port can send arbitrary G-code. Documented as such in the READM
   takeover fails when `--web-port` is set to anything else. Options: publish the web port
   from the proxy, or add a terminal setting for it (cost: one more setting to keep in step).
 
-### web → browser · v9 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
+### web → browser · v10 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
 Port 34001. Every path (`Api*`), every WebSocket message type (`WsMessageType*`), and every
 socket command (`WsCmd*`) is a named constant there; the client's mirror is
 `wwwroot/js/constants.js`. Neither side may hardcode a wire value.
@@ -354,6 +373,15 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   and `fileExists`, and the browser sends it again with `overwrite` set once the operator
   confirms. A finished browser probe opens the save screen with
   `Persistence.SuggestedProbeFileName`, the name the terminal suggests.
+- **v10:** a `DirectCommands` entry the server can refuse has no WebSocket command
+  (`WsCommand` null), because a command run from the socket can only log its refusal. Home,
+  Unlock and Resume are HTTP-only; `WsCmdHome`, `WsCmdUnlock`, `WsCmdResume`, their
+  `commands.*` in `GetSharedConstants` and their `CMD_*` in the client are gone.
+  `FindHttpCommand` finds an entry by path, and `HandleApi` runs it with `Task.Run`, because
+  the accept loop does not await `HandleRequest` and a homing request run inline stalled
+  every other request (`WebServerSequenceTests.OtherRequests_AreAnswered_WhileHomeRuns`).
+  The browser sends these through `postOrShowError` in `helpers.js`, the one helper that
+  POSTs and shows the server's reason. See `refusable-commands-left-the-websocket`.
 - **GAP (undecided):** machine errors are not shown in the browser. In server mode they go
   to the console's message list only. Options: a WebSocket message type for them (four-place
   update, rule `ws-message-types-updated-in-four-places`), or a field in `/api/status`.
@@ -602,7 +630,7 @@ document and `MacroParser` together.
   four substates and about ten places branched two ways, so `Door:3` — restoring from the
   park, with the machine moving — read as "holding" on every screen.
   `MachineWait.GetDoorState` names the cases and every screen reads it. The remainder case
-  is defined as the remainder (`IsDoorOpen`), so the three predicates always cover `Door`,
+  is defined as the remainder (`IsDoorOpen`), so the predicates always cover `Door`,
   and a substate GRBL adds falls into the case that prompts the operator.
   This also applies to constants and operations that implement a rule,
   or the duplicates move down a level where nothing reports them. One clearance height existed
@@ -631,22 +659,27 @@ document and `MacroParser` together.
   _Check: `.architecture/rules/check-layering.sh` (a `MachineWait` predicate with no caller
   outside `MachineWait.cs`); reader judgment of any case added to an existing question._
   _History: door-state-checked-in-ten-places,
-  two-resume-windows-for-one-door._
+  two-resume-windows-for-one-door, park-retract-read-as-an-open-door._
 
 - **door-policy-defined-in-machinewait** *(error)* — `MachineWait.ClearDoorHoldAsync` defines
   which door states the operator can answer, how many refused releases stop the attempt, and
   which states require waiting. Callers supply prompts and progress messages; a terminal
   screen also draws an overlay. The method defines the keyboard flush, Escape poll, and
   removal of the door message alongside its calls to `GetDoorState`,
-  `CanReleaseDoorHold`, `GetDoorMessage`, and `ReleaseDoorHoldAsync`. The
+  `CanReleaseDoorHold`, `GetDoorMessage`, `GetDoorRefusal` (the words for each
+  `DoorState` when a resume or release is refused; they name no action, since a paused run
+  has no door prompt), and `ReleaseDoorHoldAsync`. The
   browser's endpoint validates and releases once, because the page redraws every broadcast
-  interval and the operator clicks again.
+  interval and the operator clicks again. A terminal screen calls it through
+  `MenuHelpers.WaitForDoorClear(machine, DoorPrompts)`: `DoorPrompts.Overlay` (the default)
+  for a full-screen view, `DoorPrompts.ScrollingConsole` at startup.
   _Check: `coppercli.Tests/DoorClearTests.cs` and `coppercli.Tests/ControllerBaseTests.cs`;
   both are mutation-verified._
   Every caller supplies a way out: a run its token, a screen an `onPoll`. The waits return at
   once on a canceled token, so a loop with no way out spins instead of blocking.
   _History: one-door-policy-two-implementations,
-  door-retry-loop-spun-on-a-canceled-token._
+  door-retry-loop-spun-on-a-canceled-token, alarmed-machine-hides-an-open-door,
+  park-retract-read-as-an-open-door, door-refusal-words-defined-once._
 
 - **session-questions-cleared-by-their-answer** *(error)* — each answer, yes or no, makes
   its question's condition in `SessionRestore.GetPendingSteps` false. That condition is the
@@ -783,11 +816,20 @@ document and `MacroParser` together.
   `Status` is for saying what the machine is doing. Waiting for the status to catch up
   is allowed only for the door switch, which is not a command
   (`MachineWait`'s use of `DoorReadingCatchUpReports`).
+  **An alarmed machine reports no Door state; `error:13` is the door signal.** GRBL 1.1
+  stays in `Alarm` with the door open and refuses `$X` and `$H` with `error:13`
+  (`GrblRejection.DoorOpen`) until it closes; `Pn:D` depends on the board. Retrying on a
+  count only uses up the attempts: wait for the operator to close the door, then send again
+  (`HomeAsync`'s `retryAfterDoorCloses`). `$H` is accepted from `Alarm`, so homing needs
+  no `$X` first.
   _Check: `coppercli.Tests/FakeGrblTests.cs`
   (`AHomingCycle_IsNotReadAsARefusal_WhenOneReportWasStillInFlight`,
-  `AStopDuringHoming_ClearsTheAlarmItRaised_SoTheRetractIsAccepted`); reader judgment of any
+  `AStopDuringHoming_ClearsTheAlarmItRaised_SoTheRetractIsAccepted`);
+  `coppercli.Tests/SafetyCheckTests.cs` (`Home_RefusedAtAnOpenDoor_*`,
+  `Unlock_RefusedAtAnOpenDoor_SaysSo`); reader judgment of any
   `Status` read that follows a command on the same path._
-  _History: automatic-door-release-and-unverified-homing, status-read-as-a-command-answer._
+  _History: automatic-door-release-and-unverified-homing, status-read-as-a-command-answer,
+  alarmed-machine-hides-an-open-door._
 
 - **no-live-collections-across-threads** *(error)* — never expose a live mutable collection
   to another thread; own it and hand out snapshots. `Queue.Synchronized` does not

@@ -29,7 +29,17 @@ namespace coppercli.Core.Communication
         Vector3 G54Offset { get; }
 
         bool IsHomed { get; set; }
-        bool IsHoming { get; set; }
+
+        /// <summary>
+        /// True while any homing cycle runs. A Home sent during one is queued by GRBL and runs
+        /// after it, so this stays true until the last <see cref="EndHoming"/>.
+        /// </summary>
+        bool IsHoming { get; }
+
+        /// <summary>Only MachineWait.HomeAsync calls this, once per call, paired with EndHoming.</summary>
+        void BeginHoming();
+
+        void EndHoming();
 
         /// <summary>Monotonic count of status reports received.</summary>
         long StatusReportCount { get; }

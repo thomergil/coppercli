@@ -577,6 +577,37 @@ namespace coppercli.Tests
         }
 
         /// <summary>
+        /// During the park move the operator may already have closed the door, so neither a
+        /// release nor a resume may tell them to close it, and neither sends a cycle start.
+        /// </summary>
+        [Theory]
+        [InlineData(WebConstants.ApiDoorRelease)]
+        [InlineData(WebConstants.ApiResume)]
+        public async Task ARetract_IsNotReleasedAndSaysRetracting(string path)
+        {
+            _web.Grbl.SimulateDoorRetracting();
+            WebServerFixture.WaitUntil(
+                () => MachineWait.GetDoorState(AppState.Machine) == DoorState.Retracting, "the retract");
+
+            try
+            {
+                int cycleStarts = _web.Grbl.CycleStartCount;
+                var (_, body) = await Post(path);
+
+                Assert.False(Flag(body, "success"), "a retract was accepted for release");
+                Assert.Equal(
+                    ControllerConstants.DoorRetractingMessage, body.GetProperty("error").GetString());
+                Assert.Equal(cycleStarts, _web.Grbl.CycleStartCount);
+            }
+            finally
+            {
+                _web.Grbl.SimulateDoorClosedAndHolding();
+                await MachineWait.ReleaseDoorHoldAsync(AppState.Machine, ControllerConstants.DoorResumeTimeoutMs);
+                WebServerFixture.WaitUntil(() => MachineWait.IsIdle(AppState.Machine), "the machine to settle");
+            }
+        }
+
+        /// <summary>
         /// The text for a door state comes from ControllerConstants through the status
         /// payload. A second copy in the browser could show the wrong sentence for a state.
         /// </summary>
@@ -884,6 +915,91 @@ namespace coppercli.Tests
         }
 
         /// <summary>
+        /// An alarmed GRBL stays in Alarm when the door opens, and refuses $X and $H until the
+        /// door closes. Each refusal must reach the operator with
+        /// its reason.
+        /// </summary>
+        [Fact]
+        public async Task UnlockAndHome_WhileAlarmedWithTheDoorOpen_SayTheDoorIsOpen()
+        {
+            // The server's automatic $X would otherwise clear the alarm once the door closes,
+            // and the last $H below would not be sent from Alarm.
+            AppState.Machine.EnableAutoStateClear = false;
+            _web.Grbl.SimulateDoorOpenWhileAlarmed();
+            try
+            {
+                WebServerFixture.WaitUntil(() => MachineWait.IsAlarm(AppState.Machine), "the alarm");
+
+                var (unlockCode, unlockBody) = await Post(WebConstants.ApiUnlock);
+                Assert.Equal(HttpStatusCode.Conflict, unlockCode);
+                Assert.Equal(ControllerConstants.ErrorDoorOpenRefused,
+                    unlockBody.GetProperty("error").GetString());
+
+                var (homeCode, homeBody) = await Post(WebConstants.ApiHome);
+                Assert.Equal(HttpStatusCode.Conflict, homeCode);
+                Assert.Contains(ControllerConstants.ErrorDoorOpenRefused,
+                    homeBody.GetProperty("error").GetString());
+                Assert.False(AppState.Machine.IsHomed);
+
+                Assert.False(AppState.Machine.IsHoming, "a refused home left the machine marked as homing");
+                _web.Grbl.SimulateDoorClosedWhileAlarmed();
+
+                var (code, _) = await Post(WebConstants.ApiHome);
+                Assert.Equal(HttpStatusCode.OK, code);
+                Assert.True(AppState.Machine.IsHomed);
+            }
+            finally
+            {
+                _web.Grbl.SimulateDoorClosedWhileAlarmed();
+                await RestoreUnhomedAndIdle();
+            }
+        }
+
+        /// <summary>
+        /// Homing blocks its request until the cycle ends. Run on the loop that accepts
+        /// requests, it would leave every other request, Stop included, waiting behind it.
+        /// </summary>
+        [Fact]
+        public async Task OtherRequests_AreAnswered_WhileHomeRuns()
+        {
+            _web.Grbl.HomingMs = HomingCycleMs;
+            try
+            {
+                var homing = Post(WebConstants.ApiHome);
+                WebServerFixture.WaitUntil(() => AppState.Machine.IsHoming, "homing to start");
+
+                var status = Client.GetAsync(WebConstants.ApiStatus);
+                Assert.Same(status, await Task.WhenAny(status, Task.Delay(StatusAnswerMs)));
+                Assert.Equal(HttpStatusCode.OK, (await status).StatusCode);
+
+                Assert.Equal(HttpStatusCode.OK, (await homing).Code);
+            }
+            finally
+            {
+                _web.Grbl.HomingMs = 0;
+                await RestoreUnhomedAndIdle();
+            }
+        }
+
+        private const int HomingCycleMs = 3000;
+
+        /// <summary>A status request queued behind homing would still be waiting.</summary>
+        private const int StatusAnswerMs = HomingCycleMs / 3;
+
+        /// <summary>
+        /// The fixture's machine is shared: a restart clears the homed flag, and the unlock
+        /// returns it to Idle.
+        /// </summary>
+        private async Task RestoreUnhomedAndIdle()
+        {
+            _web.Grbl.SimulateRestart();
+            WebServerFixture.WaitUntil(() => !AppState.Machine.IsHomed, "the restart");
+            await MachineWait.UnlockAsync(AppState.Machine);
+            WebServerFixture.WaitUntil(() => MachineWait.IsIdle(AppState.Machine), "the machine to settle");
+            AppState.Machine.EnableAutoStateClear = true;
+        }
+
+        /// <summary>
         /// Resume releases a feed hold. Releasing a door hold restarts the spindle, so that
         /// path goes through the run's prompt instead.
         /// </summary>
@@ -902,7 +1018,7 @@ namespace coppercli.Tests
 
                 var (code, body) = await Post(WebConstants.ApiResume);
                 Assert.Equal(HttpStatusCode.Conflict, code);
-                Assert.Equal(ControllerConstants.ErrorDoorBlocksResume,
+                Assert.Equal(ControllerConstants.ErrorDoorClosedStillHolding,
                     body.GetProperty("error").GetString());
 
                 // A cycle start already sent would have reached the fake by the next report.

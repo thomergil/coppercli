@@ -1,14 +1,18 @@
 import { state } from './state.js';
-import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, format, postJson } from './helpers.js';
+import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, format, postOrShowError } from './helpers.js';
 import { sendCommand } from './websocket.js';
 import { showScreen } from './screens.js';
 import { isWaitingForZeroZ, continueLastPrompt } from './mill.js';
 import {
     API_CONFIG,
     API_PROBE_STATUS,
+    API_HOME,
     API_RESUME,
+    API_UNLOCK,
     API_ZERO,
+    ERROR_HOME_NOT_SENT,
     ERROR_RESUME_NOT_SENT,
+    ERROR_UNLOCK_NOT_SENT,
     ERROR_ZERO_NOT_SENT,
     TEXT_ZEROED_Z,
     TEXT_ZEROED_ALL,
@@ -16,8 +20,6 @@ import {
     MAP_DESCRIPTION_BY_STATE,
     HEIGHT_MAP_TEXT_BY_OUTCOME,
     CMD_JOG_MODE,
-    CMD_HOME,
-    CMD_UNLOCK,
     CMD_RESET,
     CMD_GOTO_ORIGIN,
     CMD_GOTO_CENTER,
@@ -26,7 +28,6 @@ import {
     CMD_GOTO_Z0,
     CMD_PROBE_Z,
     CMD_FEEDHOLD,
-    CMD_RESUME,
     CLASS_ACTIVE,
     CLASS_HIDDEN,
     PROBE_STATE_NONE,
@@ -88,8 +89,8 @@ export function setJogMode(index) {
     }
 }
 
-// Resume can be refused and the reason cannot come back over the WebSocket, so it goes over
-// HTTP like zeroing. A feed hold is never refused and stays on the socket.
+// A feed hold is never refused and stays on the socket. Resume can be refused, and the
+// reason cannot come back over the socket, so it goes over HTTP like zeroing.
 async function togglePause() {
     const btn = $('jog-pause-btn');
     if (btn.dataset.paused !== 'true') {
@@ -97,10 +98,7 @@ async function togglePause() {
         return;
     }
 
-    const resumed = await postJson(API_RESUME);
-    if (!resumed.ok) {
-        showError(resumed.error || ERROR_RESUME_NOT_SENT);
-    }
+    await postOrShowError(API_RESUME, ERROR_RESUME_NOT_SENT);
 }
 
 async function zeroWithWarning(axes) {
@@ -129,9 +127,8 @@ async function zeroWithWarning(axes) {
 
     // Over HTTP rather than the socket, because the server can refuse this and the operator
     // must not be told the origin was set when it was not.
-    const result = await postJson(API_ZERO, { axes });
+    const result = await postOrShowError(API_ZERO, ERROR_ZERO_NOT_SENT, { axes });
     if (!result.ok) {
-        showError(result.error || ERROR_ZERO_NOT_SENT);
         return;
     }
 
@@ -153,8 +150,8 @@ async function zeroWithWarning(axes) {
 }
 
 export function initJogScreen() {
-    $('jog-home-btn').addEventListener('click', () => sendCommand(CMD_HOME));
-    $('jog-unlock-btn').addEventListener('click', () => sendCommand(CMD_UNLOCK));
+    $('jog-home-btn').addEventListener('click', () => postOrShowError(API_HOME, ERROR_HOME_NOT_SENT));
+    $('jog-unlock-btn').addEventListener('click', () => postOrShowError(API_UNLOCK, ERROR_UNLOCK_NOT_SENT));
     $('jog-pause-btn').addEventListener('click', togglePause);
     $('jog-stop-btn').addEventListener('click', () => sendCommand(CMD_RESET));
 

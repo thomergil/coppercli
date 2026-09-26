@@ -21,16 +21,19 @@ namespace coppercli.Helpers
         /// MachineWait.HomeAsync is the only code that sets Machine.IsHomed, so every sync
         /// caller goes through here rather than sending $H itself.
         /// </summary>
-        public static bool HomeAndWait(Machine machine, int timeoutMs = HomingTimeoutMs)
+        /// <param name="retryAfterDoorCloses">See <see cref="MachineWait.HomeAsync"/>.</param>
+        public static HomingOutcome HomeAndWait(Machine machine, Func<bool>? retryAfterDoorCloses = null)
         {
             Logger.Log("HomeAndWait: calling MachineWait.HomeAsync");
-            return MachineWait.HomeAsync(machine, timeoutMs).GetAwaiter().GetResult().Success;
+            return MachineWait.HomeAsync(machine, HomingTimeoutMs, retryAfterDoorCloses: retryAfterDoorCloses == null
+                    ? null
+                    : () => Task.FromResult(retryAfterDoorCloses()))
+                .GetAwaiter().GetResult();
         }
 
-        public static void Unlock(Machine machine)
-        {
-            machine.SendLine(CmdUnlock);
-        }
+        /// <returns>Null once the machine is unlocked, otherwise why it is not.</returns>
+        public static string? Unlock(Machine machine) =>
+            MachineWait.UnlockAsync(machine).GetAwaiter().GetResult();
 
         /// <summary>
         /// Front ends set work zero here so every origin change calls

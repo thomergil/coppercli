@@ -355,7 +355,10 @@ namespace coppercli.Menus
             if (InputHelpers.IsKey(key, ConsoleKey.H))
             {
                 machine.SoftReset();
-                MachineCommands.HomeAndWait(machine);
+                if (MachineCommands.HomeAndWait(machine).FailureMessage is { } failure)
+                {
+                    ShowOverlayTimed(failure, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                }
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.U))
@@ -369,7 +372,11 @@ namespace coppercli.Menus
                     return true;
                 }
 
-                MachineCommands.Unlock(machine);
+                if (MachineCommands.Unlock(machine) is { } refused)
+                {
+                    ShowOverlayTimed(refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    return true;
+                }
                 if (MachineWait.CanResume(machine))
                 {
                     machine.CycleStart();

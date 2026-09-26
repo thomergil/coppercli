@@ -192,6 +192,12 @@ namespace coppercli
         /// <summary>Shown once the door is closed and the machine is waiting to be resumed.</summary>
         public const string DoorClosedMessage = "DOOR CLOSED - machine holding";
 
+        /// <summary>
+        /// While GRBL moves to the park position. The door may already be closed again, so this
+        /// does not say it is open.
+        /// </summary>
+        public const string DoorRetractingStatus = "DOOR - machine retracting";
+
         /// <summary>Mill screen status while GRBL moves the tool back after a resume.</summary>
         public const string DoorResumingStatus = "DOOR CLOSED - machine resuming";
 
@@ -476,14 +482,13 @@ namespace coppercli
         /// </summary>
         public const string ErrorZeroXYDuringRun = "Stop the job before re-zeroing X or Y.";
 
-        /// <summary>
-        /// Shown while connecting, when the machine is neither at the door nor alarmed and
-        /// still will not clear.
-        /// </summary>
-        public const string ErrorMachineWillNotClear = "Machine not ready. Reset it, then try again.";
+        /// <summary>Shown after "Home machine?" when the machine is asleep.</summary>
+        public const string ErrorMachineAsleep = "Machine not ready. Reset it, then try again.";
 
-        /// <summary>Shown while connecting, when the alarm is still set after several tries.</summary>
-        public const string ErrorAlarmWillNotClear = "Still in alarm. Clear it, then unlock.";
+        public const string PromptHomeMachine = "Home machine?";
+
+        /// <summary>Asked after GRBL refused $H because the door is open.</summary>
+        public const string PromptHomeDoorOpen = "The door is open. Close it, then home?";
 
         public const string ProbeStatusNotApplied = "* Probe data not yet applied to G-Code";
 

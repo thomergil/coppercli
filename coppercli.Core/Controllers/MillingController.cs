@@ -249,7 +249,7 @@ namespace coppercli.Core.Controllers
         /// need different actions, so they get different messages.
         /// </summary>
         private string DescribeRestartFailure() =>
-            MachineWait.IsDoor(_machine) ? ErrorDoorBlocksResume : ErrorMillingDidNotStart;
+            MachineWait.GetDoorRefusal(_machine) ?? ErrorMillingDidNotStart;
 
         /// <summary>
         /// Releases a feed hold, refuses a door hold, then restarts sending. Resume() and the
@@ -361,9 +361,7 @@ namespace coppercli.Core.Controllers
 
             if (!outcome.Success)
             {
-                throw new InvalidOperationException(outcome.Reason == null
-                    ? ErrorHomingFailed
-                    : string.Format(ErrorHomingFailedBecause, outcome.Reason));
+                throw new InvalidOperationException(outcome.FailureMessage);
             }
 
             ControllerLog.Log(LogHomingComplete);
