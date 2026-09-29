@@ -88,6 +88,8 @@ coppercli is a fork of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot
   the surface
 - Probing and milling displays with position grid visualization
 - Outline traversal to check clearance before probing
+- Warns when a file's work zero is not at the job's lower-left corner, as in a back-side
+  file generated without a board outline
 - Save and load probe grids
 - Macros for multi-step workflows, with file placeholders
 - Home, unlock, soft reset, XY/Z/XYZ homing, single Z probe

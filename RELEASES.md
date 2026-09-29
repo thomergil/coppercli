@@ -1,5 +1,31 @@
 # Release Notes
 
+## v0.5.2
+
+**Everywhere**
+
+- The outline trace no longer sends its descent before the rapid to the first corner
+  finishes. GRBL reports Idle until it starts a move, so the trace took a move it had just
+  sent as done. When that rapid drove into the frame, the tool came down anyway. The trace,
+  the grid probe and a tool change now wait until the machine is Idle at the end of each
+  move before they send the next.
+- A trace, a probe or a tool change that loses contact with the machine now stops at the
+  move it was on and says "Machine not accepting moves." Before, a trace went on sending
+  moves to a machine that was switched off, and then reported "Could not confirm the tool
+  lifted."
+- If you open the door during a trace, coppercli asks whether to continue, then finishes the
+  trace at the trace height. Before, it finished at the safe height. During a trace, a probe
+  or a tool change, coppercli waits through a feed hold until you resume.
+- A file whose job reaches more than 5 mm left of or below work zero now warns "The job's
+  lower-left corner is at X-59.7 Y-0.1, so work zero is not at the board's lower-left
+  corner. Set work zero X59.7 Y0.1 from the board's lower-left corner, or regenerate the
+  file with a board outline." This happens with a back-side file generated without a board
+  outline, where work zero is at the board's right edge. The warning appears when the file
+  loads, and you confirm it before probing, tracing or milling.
+- The browser now shows a file's DANGER and INCHES warnings when it loads.
+- Milling a job with an applied height map now shows the file's DANGER and INCHES warnings
+  before it starts. Applying the map used to drop them.
+
 ## v0.5.1
 
 **Everywhere**

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli.Core.Controllers;
@@ -11,9 +12,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     // Covers ProbeController: grid setup, options, the run phases, and what a run does at a
-    // stop or an open door. MockMachine follows a machine-coordinate Z rapid and records
-    // every other command without moving, so a test that needs a position reached sets it on
-    // the mock.
+    // stop or an open door. MockMachine follows G0 and G1 moves and records every other
+    // command without moving, so a test that needs a probe to land sets the reply itself.
     public class ProbeControllerTests
     {
         private static MockMachine CreateMockMachine()
@@ -422,7 +422,8 @@ namespace coppercli.Tests
             using var machine = CreateMockMachine();
             var controller = CreateController(machine);
 
-            // The fake never moves, so the tool never reaches this height.
+            // The machine never moves, so the tool never reaches this height.
+            machine.IgnoreMoves = true;
             controller.Options = new ProbeOptions { SafeHeight = machine.WorkPosition.Z + 10 };
             controller.LoadGrid(new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20)));
 
@@ -528,6 +529,305 @@ namespace coppercli.Tests
 
             Assert.NotEqual(ControllerState.Completed, controller.State);
             Assert.Contains(errors, e => e.Message == ControllerConstants.ErrorSafetyRetractFailed);
+        }
+
+        /// <summary>
+        /// A trace's grid, away from where the mock starts and with X and Y different, so a
+        /// target with its axes swapped cannot pass for the right one.
+        /// </summary>
+        private static ProbeGrid TraceGrid() => new ProbeGrid(10.0, new Vector2(5, 12), new Vector2(25, 32));
+
+        private static readonly Vector3 AwayFromTheGrid = new Vector3(60, 70, 0);
+
+        /// <summary>The XY a G0 or G1 line sends the tool to.</summary>
+        private static Vector2 TargetOf(string line) =>
+            new Vector2(GCodeWords.Axis(line, 'X')!.Value, GCodeWords.Axis(line, 'Y')!.Value);
+
+        private static bool IsXYMove(string line) =>
+            line.StartsWith(GrblProtocol.CmdRapidMove + " X", StringComparison.Ordinal)
+            || line.StartsWith(GrblProtocol.CmdLinearMove + " X", StringComparison.Ordinal);
+
+        private static bool IsAt(MockMachine machine, Vector2 xy) =>
+            Math.Abs(machine.WorkPosition.X - xy.X) < Constants.PositionToleranceMm
+            && Math.Abs(machine.WorkPosition.Y - xy.Y) < Constants.PositionToleranceMm;
+
+        /// <summary>
+        /// Holds the first XY rapid after the safety retract where it is, as a machine still
+        /// traveling would, and records whether the descent after it went out before the tool
+        /// got there. <see cref="Arrive"/> lands the rapid.
+        /// </summary>
+        private sealed class SlowFirstRapid
+        {
+            private readonly MockMachine _machine;
+            private Vector2? _target;
+
+            public bool DescentSent { get; private set; }
+            public bool DescentBeforeArrival { get; private set; }
+
+            public SlowFirstRapid(MockMachine machine)
+            {
+                _machine = machine;
+                machine.LineSent += line =>
+                {
+                    if (line.StartsWith(GrblProtocol.CmdMachineCoords, StringComparison.Ordinal))
+                    {
+                        machine.IgnoreMoves = true;
+                    }
+                    else if (_target == null && IsXYMove(line))
+                    {
+                        _target = TargetOf(line);
+                    }
+                    else if (line.StartsWith(GrblProtocol.CmdRapidMove + " Z", StringComparison.Ordinal))
+                    {
+                        DescentSent = true;
+                        DescentBeforeArrival |= _target == null || !IsAt(machine, _target.Value);
+                    }
+                };
+            }
+
+            public void Arrive()
+            {
+                var xy = _target ?? throw new InvalidOperationException("the rapid was never sent");
+                _machine.WorkPosition = new Vector3(xy.X, xy.Y, _machine.WorkPosition.Z);
+                _machine.IgnoreMoves = false;
+            }
+        }
+
+        /// <summary>
+        /// GRBL reports Idle until it starts a move, so a wait for Idle straight after the rapid
+        /// to the first corner passes at once. The descent must wait until the tool is at that
+        /// corner.
+        /// </summary>
+        [Fact]
+        public async Task ATrace_DescendsOnlyOnceTheFirstCornerIsReached()
+        {
+            using var machine = CreateMockMachine();
+            machine.WorkPosition = AwayFromTheGrid;
+            var controller = CreateController(machine);
+            controller.LoadGrid(TraceGrid());
+            var rapid = new SlowFirstRapid(machine);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var trace = controller.TraceOutlineAsync(cts.Token);
+
+            await Task.Delay(500);
+            Assert.False(rapid.DescentSent, "the descent went out before the first corner was reached");
+
+            rapid.Arrive();
+            await trace;
+
+            Assert.True(rapid.DescentSent);
+            Assert.False(rapid.DescentBeforeArrival);
+            Assert.Equal(ControllerState.Completed, controller.State);
+        }
+
+        /// <summary>The grid probe's descent must wait until the tool is at the first point.</summary>
+        [Fact]
+        public async Task AProbeRun_DescendsOnlyOnceTheFirstPointIsReached()
+        {
+            using var machine = CreateMockMachine();
+            machine.WorkPosition = AwayFromTheGrid;
+            var controller = CreateController(machine);
+            controller.LoadGrid(TraceGrid());
+            var rapid = new SlowFirstRapid(machine);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            machine.LineSent += line =>
+            {
+                if (rapid.DescentSent)
+                {
+                    cts.Cancel();
+                }
+            };
+
+            var run = controller.StartAsync(cts.Token);
+
+            await Task.Delay(500);
+            Assert.False(rapid.DescentSent, "the descent went out before the first point was reached");
+
+            rapid.Arrive();
+            try
+            {
+                await run;
+            }
+            catch (OperationCanceledException)
+            {
+                // Canceled once the descent is seen; its timing is what this checks.
+            }
+
+            Assert.True(rapid.DescentSent);
+            Assert.False(rapid.DescentBeforeArrival);
+        }
+
+        /// <summary>
+        /// A machine powered off mid-trace fails every wait at once, so the trace must stop at
+        /// that move rather than send the rest.
+        /// </summary>
+        [Fact]
+        public async Task ATrace_ThatLosesTheMachine_StopsAtTheMoveItWasOn()
+        {
+            using var machine = CreateMockMachine();
+            machine.WorkPosition = AwayFromTheGrid;
+            var controller = CreateController(machine);
+            controller.LoadGrid(TraceGrid());
+
+            machine.LineSent += line =>
+            {
+                if (line.StartsWith(GrblProtocol.CmdMachineCoords, StringComparison.Ordinal))
+                {
+                    machine.IgnoreMoves = true;
+                }
+                else if (IsXYMove(line))
+                {
+                    machine.Connected = false;
+                }
+            };
+
+            var errors = new List<ControllerError>();
+            controller.ErrorOccurred += errors.Add;
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => controller.TraceOutlineAsync(cts.Token));
+
+            Assert.Equal(ControllerState.Failed, controller.State);
+            Assert.Contains(errors, e => e.Message == ControllerConstants.ErrorMachineNotResponding);
+
+            // The stop's unlock starts the cleanup, whose lift is not the trace's.
+            var traceMoves = machine.SentCommands.TakeWhile(c => c != GrblProtocol.CmdUnlock);
+            Assert.DoesNotContain(traceMoves,
+                c => c.StartsWith(GrblProtocol.CmdRapidMove + " Z", StringComparison.Ordinal)
+                     || c.StartsWith(GrblProtocol.CmdLinearMove, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// The door parks a trace part-way along an edge. Once the operator continues, GRBL
+        /// finishes that edge, and the trace must wait for it before sending the next one.
+        /// </summary>
+        [Fact]
+        public async Task ATrace_InterruptedByTheDoor_WaitsForTheEdgeBeforeTheNext()
+        {
+            using var machine = CreateMockMachine();
+            machine.DoorRestoreMs = 0;
+            var controller = CreateController(machine);
+            controller.LoadGrid(TraceGrid());
+
+            Vector2? interrupted = null;
+            bool nextEdgeBeforeArrival = false;
+            int edges = 0;
+            machine.LineSent += line =>
+            {
+                if (line.StartsWith(GrblProtocol.CmdRapidMove + " Z", StringComparison.Ordinal))
+                {
+                    // At the trace height: the first edge is the one the door interrupts.
+                    machine.IgnoreMoves = true;
+                }
+                else if (line.StartsWith(GrblProtocol.CmdLinearMove, StringComparison.Ordinal) && edges == 1)
+                {
+                    interrupted = TargetOf(line);
+                    machine.SimulateDoorClosedAndHolding();
+                }
+            };
+
+            // Answered before the mock applies the line, so this reads where the tool was
+            // when the next edge went out.
+            var answer = machine.AnswerTo;
+            machine.AnswerTo = line =>
+            {
+                if (line.StartsWith(GrblProtocol.CmdLinearMove, StringComparison.Ordinal) && ++edges == 2)
+                {
+                    nextEdgeBeforeArrival = !IsAt(machine, interrupted!.Value);
+                }
+                return answer(line);
+            };
+
+            int prompts = 0;
+            controller.UserInputRequired += request =>
+            {
+                prompts++;
+                request.OnResponse(ControllerConstants.OptionContinue);
+                _ = Task.Run(async () =>
+                {
+                    // GRBL finishes the edge after the release.
+                    await Task.Delay(300);
+                    machine.WorkPosition = new Vector3(interrupted!.Value.X, interrupted.Value.Y, machine.WorkPosition.Z);
+                    machine.IgnoreMoves = false;
+                });
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await controller.TraceOutlineAsync(cts.Token);
+
+            Assert.Equal(1, prompts);
+            Assert.False(nextEdgeBeforeArrival, "the next edge went out before the interrupted one finished");
+            Assert.Equal(ControllerState.Completed, controller.State);
+            Assert.Equal(4, edges);
+            Assert.Equal(controller.Options.TraceHeight, machine.WorkPosition.Z, 3);
+        }
+
+        /// <summary>
+        /// An abort at the door ends the trace there: nothing after the interrupted edge is sent.
+        /// </summary>
+        [Fact]
+        public async Task ATrace_AbortedAtTheDoor_SendsNoFurtherEdge()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+            controller.LoadGrid(TraceGrid());
+
+            machine.LineSent += line =>
+            {
+                if (line.StartsWith(GrblProtocol.CmdLinearMove, StringComparison.Ordinal))
+                {
+                    machine.SimulateDoorClosedAndHolding();
+                }
+            };
+            controller.UserInputRequired += request => request.OnResponse(ControllerConstants.OptionAbort);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.TraceOutlineAsync(cts.Token));
+
+            Assert.NotEqual(ControllerState.Completed, controller.State);
+            var traceMoves = machine.SentCommands.TakeWhile(c => c != GrblProtocol.CmdUnlock);
+            Assert.Single(traceMoves, c => c.StartsWith(GrblProtocol.CmdLinearMove, StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// A feed hold during a lift inside the run is the operator pausing it. The run waits
+        /// for the resume and finishes, rather than failing with the tool part-way up.
+        /// </summary>
+        [Fact]
+        public async Task AFeedHoldDuringTheFinalRetract_IsWaitedOut()
+        {
+            using var machine = CreateMockMachine();
+            var controller = CreateController(machine);
+            controller.LoadGrid(new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(10, 10)));
+
+            // The hold comes after the mock has applied the lift, as a hold part-way up would.
+            bool held = false;
+            machine.LineSent += line =>
+            {
+                if (line.StartsWith(GrblProtocol.CmdProbeToward, StringComparison.Ordinal))
+                {
+                    machine.SimulateProbeFinished(new Vector3(0, 0, MeasuredHeight), true);
+                }
+                else if (!held && controller.Phase == ProbePhase.FinalRetract
+                    && line.StartsWith(GrblProtocol.CmdRapidMove + " Z", StringComparison.Ordinal))
+                {
+                    held = true;
+                    machine.Status = GrblProtocol.StatusHold + ":0";
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(300);
+                        machine.Status = GrblProtocol.StatusIdle;
+                    });
+                }
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await controller.StartAsync(cts.Token);
+
+            Assert.True(held, "the run never reached its final retract");
+            Assert.Equal(ControllerState.Completed, controller.State);
         }
 
         [Fact]

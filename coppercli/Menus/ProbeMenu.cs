@@ -431,6 +431,11 @@ namespace coppercli.Menus
 
         private static bool RunProbeController(ProbeGrid grid, bool traceOutline)
         {
+            if (!MenuHelpers.ConfirmFileWarnings(AppState.CurrentFile?.WarningsToConfirm ?? Array.Empty<string>()))
+            {
+                return false;
+            }
+
             var controller = AppState.Probe;
             var settings = AppState.Settings;
 

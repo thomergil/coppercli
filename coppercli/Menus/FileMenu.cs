@@ -510,10 +510,7 @@ namespace coppercli.Menus
                 if (currentFile.Warnings.Count > 0)
                 {
                     AnsiConsole.MarkupLine($"[{ColorWarning}]Warnings ({currentFile.Warnings.Count}):[/]");
-                    foreach (var w in currentFile.Warnings.Take(MaxFileLoadWarningsShown))
-                    {
-                        AnsiConsole.MarkupLine($"  [{ColorWarning}]{Markup.Escape(w)}[/]");
-                    }
+                    MenuHelpers.WriteWarningLines(currentFile.Warnings.Take(MaxFileLoadWarningsShown));
                     if (currentFile.Warnings.Count > MaxFileLoadWarningsShown)
                     {
                         AnsiConsole.MarkupLine($"  [{ColorWarning}]... and {currentFile.Warnings.Count - MaxFileLoadWarningsShown} more[/]");

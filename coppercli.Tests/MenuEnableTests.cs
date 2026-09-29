@@ -23,7 +23,7 @@ namespace coppercli.Tests
             foreach (MillBlocker error in System.Enum.GetValues<MillBlocker>())
             {
                 var check = new MillStartCheck(
-                    error, new System.Collections.Generic.List<MillWarning>(), "0/9");
+                    error, new System.Collections.Generic.List<MillWarning>(), System.Array.Empty<string>(), "0/9");
 
                 Assert.Equal(error == MillBlocker.None, check.CanStart);
 
@@ -41,7 +41,7 @@ namespace coppercli.Tests
             foreach (MillBlocker error in System.Enum.GetValues<MillBlocker>())
             {
                 string? reason = MenuHelpers.GetMillBlockerReason(
-                    new MillStartCheck(error, new System.Collections.Generic.List<MillWarning>(), "0/9"));
+                    new MillStartCheck(error, new System.Collections.Generic.List<MillWarning>(), System.Array.Empty<string>(), "0/9"));
 
                 if (error == MillBlocker.None)
                 {
@@ -59,7 +59,7 @@ namespace coppercli.Tests
         {
             Assert.Equal(DisabledAlarm, MenuHelpers.GetMillBlockerReason(
                 new MillStartCheck(MillBlocker.AlarmState,
-                    new System.Collections.Generic.List<MillWarning>(), null)));
+                    new System.Collections.Generic.List<MillWarning>(), System.Array.Empty<string>())));
         }
 
 

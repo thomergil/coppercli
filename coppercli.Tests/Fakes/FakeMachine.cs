@@ -390,15 +390,15 @@ namespace coppercli.Tests.Fakes
             var target = MachinePosition;
             bool isMachineCoords = line.Contains("G53");
 
-            if (TryParseAxis(line, "X", out double x))
+            if (GCodeWords.Axis(line, 'X') is double x)
             {
                 target = new Vector3(isMachineCoords ? x : x + WorkOffset.X, target.Y, target.Z);
             }
-            if (TryParseAxis(line, "Y", out double y))
+            if (GCodeWords.Axis(line, 'Y') is double y)
             {
                 target = new Vector3(target.X, isMachineCoords ? y : y + WorkOffset.Y, target.Z);
             }
-            if (TryParseAxis(line, "Z", out double z))
+            if (GCodeWords.Axis(line, 'Z') is double z)
             {
                 target = new Vector3(target.X, target.Y, isMachineCoords ? z : z + WorkOffset.Z);
             }
@@ -503,7 +503,7 @@ namespace coppercli.Tests.Fakes
             }
 
             // G10 L2 P1 Zvalue - set work offset
-            if (line.Contains("L2") && TryParseAxis(line, "Z", out double z))
+            if (line.Contains("L2") && GCodeWords.Axis(line, 'Z') is double z)
             {
                 SetWorkOffset(new Vector3(G54Offset.X, G54Offset.Y, z));
             }
@@ -600,22 +600,6 @@ namespace coppercli.Tests.Fakes
             StatusSubState = colon < 0 ? string.Empty : status.Substring(colon + 1);
             StatusChanged?.Invoke();
             StatusReceived?.Invoke($"<{status}|MPos:{MachinePosition.X:F3},{MachinePosition.Y:F3},{MachinePosition.Z:F3}>");
-        }
-
-        private static bool TryParseAxis(string line, string axis, out double value)
-        {
-            value = 0;
-            var match = System.Text.RegularExpressions.Regex.Match(
-                line, $@"{axis}(-?\d+\.?\d*)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-            if (match.Success)
-            {
-                return double.TryParse(match.Groups[1].Value,
-                    System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out value);
-            }
-            return false;
         }
 
         private Vector3 ClampToLimits(Vector3 pos)

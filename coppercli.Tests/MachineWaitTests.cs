@@ -134,42 +134,116 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public async Task WaitForZHeightAsync_WhenAtTarget_ReturnsTrue()
+        public async Task WaitForArrivalAsync_WhenIdleAtTarget_ReturnsTrue()
         {
             var machine = new MockMachine
             {
-                WorkPosition = new Vector3(0, 0, 5.0)
+                WorkPosition = new Vector3(10.0, 20.0, 5.0)
             };
 
-            var result = await MachineWait.WaitForZHeightAsync(machine, 5.0, 1000);
+            var result = await MachineWait.WaitForArrivalAsync(machine, new MoveTarget(10.0, 20.0, 5.0), 1000);
 
             Assert.True(result);
         }
 
         [Fact]
-        public async Task WaitForZHeightAsync_WhenWithinTolerance_ReturnsTrue()
+        public async Task WaitForArrivalAsync_WhenWithinTolerance_ReturnsTrue()
         {
             var machine = new MockMachine
             {
                 WorkPosition = new Vector3(0, 0, 5.05) // inside PositionToleranceMm
             };
 
-            var result = await MachineWait.WaitForZHeightAsync(machine, 5.0, 1000);
+            var result = await MachineWait.WaitForArrivalAsync(machine, new MoveTarget(Z: 5.0), 1000);
 
             Assert.True(result);
         }
 
+        /// <summary>
+        /// GRBL reports Idle until it starts a move it was just sent, so a wait for Idle passes
+        /// at once. This is how the outline trace queued its descent behind a rapid it had not
+        /// seen finish; the arrival wait has to hold until the machine is at the target.
+        /// </summary>
         [Fact]
-        public async Task WaitForZHeightAsync_WhenNeverReachesTarget_ReturnsFalse()
+        public async Task WaitForArrivalAsync_IdleBeforeTheMoveStarts_DoesNotPass()
         {
             var machine = new MockMachine
             {
-                WorkPosition = new Vector3(0, 0, 10.0)
+                WorkPosition = new Vector3(0, 0, 5.0)
+            };
+            var target = new MoveTarget(-60.0, 0);
+
+            Assert.True(await MachineWait.WaitForIdleAsync(machine, 200), "the premise: Idle passes before the move");
+            Assert.False(await MachineWait.WaitForArrivalAsync(machine, target, 200));
+        }
+
+        [Fact]
+        public async Task WaitForArrivalAsync_AtTheTargetButStillRunning_WaitsForIdle()
+        {
+            var machine = new MockMachine
+            {
+                Status = GrblProtocol.StatusRun,
+                WorkPosition = new Vector3(10.0, 20.0, 0)
             };
 
-            var result = await MachineWait.WaitForZHeightAsync(machine, 5.0, 200);
+            var wait = MachineWait.WaitForArrivalAsync(machine, new MoveTarget(10.0, 20.0), HangDetectTimeoutMs);
+            await Task.Delay(200);
+            Assert.False(wait.IsCompleted, "a machine still running has not finished the move");
 
-            Assert.False(result);
+            machine.Status = GrblProtocol.StatusIdle;
+            Assert.True(await wait);
+        }
+
+        [Fact]
+        public async Task WaitForArrivalAsync_ChecksOnlyTheAxesItNames()
+        {
+            var machine = new MockMachine
+            {
+                WorkPosition = new Vector3(123.0, -45.0, 5.0),
+                MachinePosition = new Vector3(0, 0, -1.0)
+            };
+
+            Assert.True(await MachineWait.WaitForArrivalAsync(machine, new MoveTarget(Z: 5.0), 1000));
+            Assert.True(await MachineWait.WaitForArrivalAsync(
+                machine, new MoveTarget(Z: -1.0, InMachineCoordinates: true), 1000));
+            Assert.False(await MachineWait.WaitForArrivalAsync(
+                machine, new MoveTarget(Z: 5.0, InMachineCoordinates: true), 200));
+        }
+
+        /// <summary>
+        /// A held machine does not arrive until someone resumes it, so the wait ends at once and
+        /// leaves the caller to wait out the hold without spending the move's timeout.
+        /// </summary>
+        [Fact]
+        public async Task WaitForArrivalAsync_WhenHeld_ReturnsFalseAtOnce()
+        {
+            var machine = new MockMachine { Status = GrblProtocol.StatusHold + ":0" };
+
+            var elapsed = Stopwatch.StartNew();
+            bool arrived = await MachineWait.WaitForArrivalAsync(machine, new MoveTarget(10.0), HangDetectTimeoutMs);
+
+            Assert.False(arrived);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2, "the wait sat out its timeout");
+        }
+
+        /// <summary>
+        /// A disconnected machine never arrives, so the wait ends at once rather than sitting
+        /// out its timeout while the run goes on as if the move had happened.
+        /// </summary>
+        [Fact]
+        public async Task WaitForArrivalAsync_WhenDisconnected_ReturnsFalseAtOnce()
+        {
+            var machine = new MockMachine
+            {
+                Connected = false,
+                WorkPosition = new Vector3(0, 0, 0)
+            };
+
+            var elapsed = Stopwatch.StartNew();
+            bool arrived = await MachineWait.WaitForArrivalAsync(machine, new MoveTarget(10.0, 0), HangDetectTimeoutMs);
+
+            Assert.False(arrived);
+            Assert.True(elapsed.ElapsedMilliseconds < HangDetectTimeoutMs / 2, "the wait sat out its timeout");
         }
 
         [Fact]

@@ -25,6 +25,7 @@ test('a load that dropped the height map says why', async () => {
         success: true,
         name: 'b.ngc',
         lines: 9,
+        warningsToConfirm: [],
         droppedMap: 'it was measured for a.ngc'
     });
 
@@ -35,7 +36,17 @@ test('a load that dropped the height map says why', async () => {
 });
 
 test('a load that dropped nothing says nothing about a map', async () => {
-    await pageAfterLoad({ success: true, name: 'b.ngc', lines: 9 });
+    await pageAfterLoad({ success: true, name: 'b.ngc', lines: 9, warningsToConfirm: [] });
 
     assert.equal(lastToast().textContent, format(TEXT_FILE_LOADED, 'b.ngc', 9));
+});
+
+// The terminal lists a file's warnings as it loads; the browser said nothing until the
+// pre-mill check, after the operator had already zeroed and probed.
+test('a load shows each warning the file carries', async () => {
+    const warnings = ['DANGER: the first', 'INCHES: the second'];
+    await pageAfterLoad({ success: true, name: 'b.ngc', lines: 9, warningsToConfirm: warnings });
+
+    const shown = globalThis.document.body.children.map(toast => toast.textContent);
+    assert.deepEqual(shown.filter(text => warnings.includes(text)), warnings);
 });

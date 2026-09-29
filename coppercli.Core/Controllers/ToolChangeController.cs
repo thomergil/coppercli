@@ -357,33 +357,25 @@ namespace coppercli.Core.Controllers
             return true;
         }
 
-        private async Task MoveToToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct)
-        {
-            string cmd = Inv($"{CmdMachineCoords} {CmdRapidMove} X{setterPos.X:F1}");
-            if (setterPos.Y.HasValue)
-            {
-                cmd += Inv($" Y{setterPos.Y.Value:F1}");
-            }
-            _machine.SendLine(cmd);
-            await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
-        }
+        private Task MoveToToolSetterAsync((double X, double? Y) setterPos, CancellationToken ct) =>
+            MoveAndConfirmAsync(
+                new MoveTarget(setterPos.X, setterPos.Y, InMachineCoordinates: true), MoveCompleteTimeoutMs, ct);
 
-        private async Task MoveToWorkAreaCenterAsync(CancellationToken ct)
-        {
-            double targetX = Options.WorkAreaCenter?.X ?? _returnX;
-            double targetY = Options.WorkAreaCenter?.Y ?? _returnY;
-
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} X{targetX:F3} Y{targetY:F3}"));
-            await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
-        }
+        private Task MoveToWorkAreaCenterAsync(CancellationToken ct) =>
+            MoveToWorkXYAsync(Options.WorkAreaCenter?.X ?? _returnX, Options.WorkAreaCenter?.Y ?? _returnY, ct);
 
         private async Task ReturnToPositionAsync(CancellationToken ct)
         {
             await RaiseZToClearanceAsync(ct);
-            _machine.SendLine(Inv($"{CmdRapidMove} X{_returnX:F3} Y{_returnY:F3}"));
-            await MachineWait.WaitForIdleAsync(_machine, MoveCompleteTimeoutMs, ct);
+            await MoveToWorkXYAsync(_returnX, _returnY, ct);
         }
+
+        private Task MoveToWorkXYAsync(double x, double y, CancellationToken ct) =>
+            MoveAndConfirmAsync(new MoveTarget(x, y), MoveCompleteTimeoutMs, ct);
+
+        /// <summary>A G53 rapid in Z, clear of the setter after a probe touched it.</summary>
+        private Task LiftOffSetterAsync(double machineZ, CancellationToken ct) =>
+            MoveAndConfirmAsync(new MoveTarget(Z: machineZ, InMachineCoordinates: true), ZHeightWaitTimeoutMs, ct);
 
         private async Task<double?> ProbeToolSetterAsync(CancellationToken ct)
         {
@@ -401,9 +393,7 @@ namespace coppercli.Core.Controllers
                 return null;
             }
 
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{seekZ + retract:F3}"));
-            await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
+            await LiftOffSetterAsync(seekZ + retract, ct);
 
             double slowTarget = seekZ - 1.0;
             var (probeSuccess, probeZ) = await ExecuteProbeToMachineZAsync(slowTarget, slowFeed, ct);
@@ -412,8 +402,7 @@ namespace coppercli.Core.Controllers
                 return null;
             }
 
-            _machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{probeZ + retract:F3}"));
-            await MachineWait.WaitForIdleAsync(_machine, ZHeightWaitTimeoutMs, ct);
+            await LiftOffSetterAsync(probeZ + retract, ct);
 
             return probeZ;
         }

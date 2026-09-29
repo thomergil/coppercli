@@ -34,18 +34,17 @@ namespace coppercli.Helpers
     public enum MillWarning
     {
         NotHomed,
-        DangerousCommands,
         NoMachineProfile
     }
 
     /// <param name="Warnings">Shown to the operator, but none of them stops the job.</param>
+    /// <param name="FileWarnings">The loaded file's warnings to confirm; empty for none.</param>
     /// <param name="ProbeProgress">Set only for ProbeIncomplete, in the form "5/20".</param>
-    /// <param name="DangerousWarnings">Set only when Warnings holds DangerousCommands.</param>
     public record MillStartCheck(
         MillBlocker Error,
         List<MillWarning> Warnings,
-        string? ProbeProgress = null,
-        List<string>? DangerousWarnings = null)
+        IReadOnlyList<string> FileWarnings,
+        string? ProbeProgress = null)
     {
         public bool CanStart => Error == MillBlocker.None;
     }
@@ -128,7 +127,7 @@ namespace coppercli.Helpers
         /// </summary>
         public static string? GetMachineDisabledReason() =>
             GetMillBlockerReason(new MillStartCheck(
-                GetMachineBlocker(), new List<MillWarning>()));
+                GetMachineBlocker(), new List<MillWarning>(), Array.Empty<string>()));
 
         /// <summary>
         /// Why probing is unavailable, or null when it can start. Shares the machine check
@@ -173,36 +172,19 @@ namespace coppercli.Helpers
         public static MillStartCheck CheckMillCanStart(ProbeGrid? probeGrid)
         {
             var warnings = new List<MillWarning>();
-            List<string>? dangerousWarnings = null;
+            var fileWarnings = AppState.CurrentFile?.WarningsToConfirm ?? Array.Empty<string>();
             string? probeProgress = null;
 
             // An open port GRBL has not answered is not a machine to start a job on.
             var machineBlocker = GetMachineBlocker();
             if (machineBlocker == MillBlocker.NotConnected)
             {
-                return new MillStartCheck(machineBlocker, warnings);
+                return new MillStartCheck(machineBlocker, warnings, fileWarnings);
             }
 
             if (AppState.Machine.File.Count == 0)
             {
-                return new MillStartCheck(MillBlocker.NoFile, warnings);
-            }
-
-            // Collect warnings before early returns so every result includes them.
-            var currentFile = AppState.CurrentFile;
-            if (currentFile?.Warnings.Count > 0)
-            {
-                dangerousWarnings = currentFile.Warnings
-                    .Where(w => w.Contains(WarningPrefixDanger) || w.Contains(WarningPrefixInches))
-                    .ToList();
-                if (dangerousWarnings.Count > 0)
-                {
-                    warnings.Add(MillWarning.DangerousCommands);
-                }
-                else
-                {
-                    dangerousWarnings = null;
-                }
+                return new MillStartCheck(MillBlocker.NoFile, warnings, fileWarnings);
             }
 
             // A complete autosaved map still needs to be applied before milling uses its
@@ -212,9 +194,9 @@ namespace coppercli.Helpers
                 if (!probeGrid.HasCompleteData)
                 {
                     probeProgress = $"{probeGrid.Progress}/{probeGrid.TotalPoints}";
-                    return new MillStartCheck(MillBlocker.ProbeIncomplete, warnings, probeProgress, dangerousWarnings);
+                    return new MillStartCheck(MillBlocker.ProbeIncomplete, warnings, fileWarnings, probeProgress);
                 }
-                return new MillStartCheck(MillBlocker.ProbeNotApplied, warnings, null, dangerousWarnings);
+                return new MillStartCheck(MillBlocker.ProbeNotApplied, warnings, fileWarnings);
             }
 
             // An applied map has added its corrections to every cutting move, so if the setup
@@ -223,13 +205,13 @@ namespace coppercli.Helpers
             {
                 if (!AppState.GetProbeApplicability().IsUsable())
                 {
-                    return new MillStartCheck(MillBlocker.ProbeSetupChanged, warnings, null, dangerousWarnings);
+                    return new MillStartCheck(MillBlocker.ProbeSetupChanged, warnings, fileWarnings);
                 }
             }
 
             if (machineBlocker != MillBlocker.None)
             {
-                return new MillStartCheck(machineBlocker, warnings, null, dangerousWarnings);
+                return new MillStartCheck(machineBlocker, warnings, fileWarnings);
             }
 
             // A warning rather than a blocker, because the run homes first.
@@ -243,7 +225,35 @@ namespace coppercli.Helpers
                 warnings.Add(MillWarning.NoMachineProfile);
             }
 
-            return new MillStartCheck(MillBlocker.None, warnings, null, dangerousWarnings);
+            return new MillStartCheck(MillBlocker.None, warnings, fileWarnings);
+        }
+
+        /// <summary>
+        /// Shows the loaded file's warnings to confirm, and asks whether to go on. Probing and
+        /// milling both ask this before the machine moves.
+        /// </summary>
+        /// <returns>True when there is nothing to confirm or the operator chose to go on.</returns>
+        public static bool ConfirmFileWarnings(IReadOnlyList<string> warnings)
+        {
+            if (warnings.Count == 0)
+            {
+                return true;
+            }
+
+            AnsiConsole.MarkupLine($"[{ColorError}]{FileWarningsHeading}[/]");
+            WriteWarningLines(warnings);
+            AnsiConsole.WriteLine();
+
+            return ConfirmOrQuit(FileWarningsPrompt, false) == true;
+        }
+
+        /// <summary>A file's warnings, one indented line each.</summary>
+        public static void WriteWarningLines(IEnumerable<string> warnings)
+        {
+            foreach (var warning in warnings)
+            {
+                AnsiConsole.MarkupLine($"  [{ColorWarning}]{Markup.Escape(warning)}[/]");
+            }
         }
 
         /// <returns>The chosen rate, or <paramref name="current"/> if it was kept.</returns>

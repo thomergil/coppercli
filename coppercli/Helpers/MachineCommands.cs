@@ -3,7 +3,6 @@ using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using static coppercli.Core.Util.Constants;
 using static coppercli.Core.Util.GrblProtocol;
-using static coppercli.Core.Util.GCodeFormat;
 
 namespace coppercli.Helpers
 {
@@ -12,8 +11,7 @@ namespace coppercli.Helpers
         public static void MoveToSafeHeight(Machine machine, double height)
         {
             Logger.Log($"MoveToSafeHeight: sending {CmdAbsolute} then {CmdRapidMove} Z{height:F3}");
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine(Inv($"{CmdRapidMove} Z{height:F3}"));
+            new MoveTarget(Z: height).Send(machine);
         }
 
 
@@ -80,7 +78,7 @@ namespace coppercli.Helpers
 
         public static void RapidMoveXY(Machine machine, double x, double y)
         {
-            machine.SendLine(Inv($"{CmdRapidMove} X{x:F3} Y{y:F3}"));
+            machine.SendLine(new MoveTarget(x, y).ToGCode());
         }
 
         /// <summary>

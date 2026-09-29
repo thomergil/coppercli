@@ -61,14 +61,26 @@ namespace coppercli.Core.GCode
         public double TravelDistance { get; private set; } = 0;
         public TimeSpan TotalTime { get; private set; } = TimeSpan.Zero;
 
-        public List<string> Warnings = new List<string>();
+        /// <summary>What the parser reported, kept so a file derived from this one reports it too.</summary>
+        private readonly IReadOnlyList<string> _parseWarnings;
+
+        /// <summary>The warning about where the job lies, if any, then the parser's.</summary>
+        public IReadOnlyList<string> Warnings { get; }
+
+        /// <summary>
+        /// The warnings the operator confirms before the machine runs this job: the ones that
+        /// can put the tool somewhere it should not be.
+        /// </summary>
+        public IReadOnlyList<string> WarningsToConfirm { get; }
 
         public static bool GCodeIncludeMEnd { get; set; } = true;
         public static bool GCodeIncludeSpindle { get; set; } = true;
         public static bool GCodeIncludeDwell { get; set; } = true;
 
-        private GCodeFile(List<Command> toolpath)
+        private GCodeFile(List<Command> toolpath, IReadOnlyList<string> parseWarnings)
         {
+            _parseWarnings = parseWarnings;
+
             for (int i = 0; i < toolpath.Count; i++)
             {
                 Command c = toolpath[i];
@@ -140,7 +152,23 @@ namespace coppercli.Core.GCode
             Min = min;
             MaxFeed = maxfeed;
             MinFeed = minfeed;
+
+            Warnings = ReachesPastOrigin
+                ? parseWarnings.Prepend(string.Format(Constants.WarningJobOriginFormat, Min.X, Min.Y, -Min.X, -Min.Y)).ToList()
+                : parseWarnings;
+            WarningsToConfirm = Warnings
+                .Where(w => w.StartsWith(Constants.WarningPrefixDanger, StringComparison.Ordinal)
+                    || w.StartsWith(Constants.WarningPrefixInches, StringComparison.Ordinal))
+                .ToList();
         }
+
+        /// <summary>
+        /// The job reaches more than JobOriginToleranceMm left of or below work zero, so zero is
+        /// not at its lower-left corner. A file with no motion leaves Min at its empty sentinel,
+        /// so it never warns.
+        /// </summary>
+        private bool ReachesPastOrigin =>
+            Min.X < -Constants.JobOriginToleranceMm || Min.Y < -Constants.JobOriginToleranceMm;
 
         public static GCodeFile Load(string path)
         {
@@ -150,13 +178,11 @@ namespace coppercli.Core.GCode
                 GCodeParser.ParseFile(path);
 
                 string fileName = Path.GetFileName(path);
-                GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands)
+                return new GCodeFile(GCodeParser.Commands, GCodeParser.Warnings.ToList())
                 {
                     FileName = fileName,
                     FilePath = Path.GetFullPath(path)
                 };
-                gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
-                return gcodeFile;
             }
         }
 
@@ -167,15 +193,13 @@ namespace coppercli.Core.GCode
                 GCodeParser.Reset();
                 GCodeParser.Parse(file);
 
-                GCodeFile gcodeFile = new GCodeFile(GCodeParser.Commands) { FileName = "output.nc" };
-                gcodeFile.Warnings.InsertRange(0, GCodeParser.Warnings);
-                return gcodeFile;
+                return new GCodeFile(GCodeParser.Commands, GCodeParser.Warnings.ToList()) { FileName = "output.nc" };
             }
         }
 
         public static GCodeFile Empty
         {
-            get { return new GCodeFile(new List<Command>()); }
+            get { return new GCodeFile(new List<Command>(), Array.Empty<string>()); }
         }
 
         public void Save(string path)
@@ -377,7 +401,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile) { FileName = this.FileName };
+            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
         }
 
         public GCodeFile ArcsToLines(double length)
@@ -406,7 +430,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile) { FileName = this.FileName };
+            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
         }
 
         public GCodeFile ApplyProbeGrid(ProbeGrid map)
@@ -456,7 +480,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newToolPath) { FileName = this.FileName };
+            return new GCodeFile(newToolPath, _parseWarnings) { FileName = this.FileName };
         }
 
         public GCodeFile RotateCW()
@@ -519,7 +543,7 @@ namespace coppercli.Core.GCode
                 }
             }
 
-            return new GCodeFile(newFile) { FileName = this.FileName };
+            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
         }
 
         public string GetInfo()

@@ -168,12 +168,11 @@ namespace coppercli.Core.Controllers
 
                 var firstCoords = _grid.GetCoordinates(firstPoint.X, firstPoint.Y);
                 Phase = ProbePhase.MovingToStart;
-                _machine.SendLine(CmdAbsolute);
-                _machine.SendLine(Inv($"{CmdRapidMove} X{firstCoords.X:F3} Y{firstCoords.Y:F3}"));
-                await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
+                await MoveAndConfirmAsync(
+                    new MoveTarget(firstCoords.X, firstCoords.Y), Constants.MoveCompleteTimeoutMs, ct);
 
                 Phase = ProbePhase.Descending;
-                await RaiseZToSafeHeightAsync(ct);
+                await LiftToSafeHeightAsync(ct);
 
                 TransitionTo(ControllerState.Running);
 
@@ -259,7 +258,7 @@ namespace coppercli.Core.Controllers
                             // Lift before giving up. Returning normally here skips
                             // ControllerBase's cleanup (it only runs on an exception),
                             // which would leave the tool resting on the board.
-                            await RaiseZToSafeHeightAsync(ct);
+                            await LiftToSafeHeightAsync(ct);
 
                             EmitError(new ControllerError(ControllerConstants.ErrorProbeNoContact, null, true));
                             TransitionTo(ControllerState.Failed);
@@ -278,10 +277,7 @@ namespace coppercli.Core.Controllers
 
                         // The next move is an XY rapid, so confirm the retract first, as
                         // at the start of the run.
-                        if (!await RaiseZToSafeHeightAsync(ct))
-                        {
-                            throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
-                        }
+                        await LiftToSafeHeightAsync(ct);
                     }
                 }
 
@@ -289,13 +285,10 @@ namespace coppercli.Core.Controllers
                 // CleanupAsync, which stops the machine and retracts.
                 ct.ThrowIfCancellationRequested();
 
+                // The operator is about to reach in, so an unconfirmed retract fails the run
+                // rather than reporting it finished.
                 Phase = ProbePhase.FinalRetract;
-                if (!await RaiseZToSafeHeightAsync(ct))
-                {
-                    // The operator is about to reach in, so an unconfirmed retract fails
-                    // the run rather than reporting it finished.
-                    throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
-                }
+                await LiftToSafeHeightAsync(ct);
 
                 ControllerLog.Log(LogProbeComplete, _grid.TotalPoints);
                 TransitionTo(ControllerState.Completing);
@@ -416,16 +409,11 @@ namespace coppercli.Core.Controllers
             }
 
             ControllerLog.Log("TraceOutline: moving to first corner ({0:F3}, {1:F3})", minX, minY);
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} X{minX:F3} Y{minY:F3}"));
-            await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
+            await MoveAndConfirmAsync(new MoveTarget(minX, minY), Constants.MoveCompleteTimeoutMs, ct);
 
             ControllerLog.Log("TraceOutline: moving to trace height Z={0:F3} (workZ={1:F3} machZ={2:F3})",
                 Options.TraceHeight, _machine.WorkPosition.Z, _machine.MachinePosition.Z);
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.TraceHeight:F3}"));
-            await MachineWait.WaitForZHeightAsync(_machine, Options.TraceHeight, Constants.MoveCompleteTimeoutMs, ct);
-            await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
+            await MoveAndConfirmAsync(new MoveTarget(Z: Options.TraceHeight), Constants.ZHeightWaitTimeoutMs, ct);
             ControllerLog.Log("TraceOutline: at trace height (workZ={0:F3} machZ={1:F3}), starting trace",
                 _machine.WorkPosition.Z, _machine.MachinePosition.Z);
 
@@ -440,39 +428,30 @@ namespace coppercli.Core.Controllers
 
             foreach (var (x, y) in corners)
             {
-                ct.ThrowIfCancellationRequested();
-
-                // Both waits below give up the moment the machine parks at the door, and the
-                // next corner would then be queued into a held machine and run when the hold
-                // is released. Handle the enclosure first, and retract before moving again.
-                if (MachineWait.IsDoor(_machine))
-                {
-                    await RecoverFromDoorAsync(ct).ConfigureAwait(false);
-                }
-
                 ControllerLog.Log("TraceOutline: moving to ({0:F3}, {1:F3})", x, y);
-                _machine.SendLine(CmdAbsolute);
-                _machine.SendLine(Inv($"{CmdLinearMove} X{x:F3} Y{y:F3} F{Options.TraceFeed:F0}"));
-
-                await MachineWait.WaitForStatusChangeAsync(_machine, StatusIdle, Constants.MotionStartTimeoutMs, ct);
-                await MachineWait.WaitForIdleAsync(_machine, Constants.MoveCompleteTimeoutMs, ct);
+                await MoveAndConfirmAsync(new MoveTarget(x, y), Options.TraceFeed, Constants.MoveCompleteTimeoutMs, ct);
             }
         }
 
+        /// <summary>A lift within the run: at a door or a feed hold it asks or waits, and it throws if the tool does not get there.</summary>
+        private Task LiftToSafeHeightAsync(CancellationToken ct) =>
+            MoveAndConfirmAsync(SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
+
+        /// <summary>The run's own safe height, in work coordinates.</summary>
+        private MoveTarget SafeHeight => new(Z: Options.SafeHeight);
+
+        /// <summary>
+        /// The lift after a stop. The machine has been reset, so there is no door or hold to
+        /// handle, and the caller reports a lift that is not confirmed rather than throwing.
+        /// </summary>
         /// <returns>True once Z is confirmed at the safe height.</returns>
         private async Task<bool> RaiseZToSafeHeightAsync(CancellationToken ct)
         {
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} Z{Options.SafeHeight:F3}"));
+            SafeHeight.Send(_machine);
 
-            // An alarm or an open door makes these return false in milliseconds with the
-            // rapid unexecuted, so the return value decides whether the tool is clear.
-            bool reached = await MachineWait.WaitForZHeightAsync(
-                _machine, Options.SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
-            bool stopped = await MachineWait.WaitForIdleAsync(
-                _machine, Constants.ZHeightWaitTimeoutMs, ct);
-
-            return reached && stopped;
+            // An alarm makes this return false in milliseconds with the rapid unexecuted, so
+            // the return value decides whether the tool is clear.
+            return await MachineWait.WaitForArrivalAsync(_machine, SafeHeight, Constants.ZHeightWaitTimeoutMs, ct);
         }
 
         /// <summary>
@@ -499,10 +478,7 @@ namespace coppercli.Core.Controllers
 
             // Confirmed, unlike the buffered retract above: nothing else checks the tool
             // is clear before the operator is asked to reach in.
-            if (!await RaiseZToSafeHeightAsync(ct))
-            {
-                throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
-            }
+            await LiftToSafeHeightAsync(ct);
 
             ControllerLog.Log(LogProbeHeightUnexpected, measuredZ, deviation.Value);
             EmitError(new ControllerError(
@@ -544,11 +520,7 @@ namespace coppercli.Core.Controllers
         private async Task RecoverFromDoorAsync(CancellationToken ct)
         {
             await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
-
-            if (!await RaiseZToSafeHeightAsync(ct))
-            {
-                throw new InvalidOperationException(ControllerConstants.ErrorSafetyRetractFailed);
-            }
+            await LiftToSafeHeightAsync(ct);
         }
 
         private Task RetractZAsync(double currentZ, CancellationToken ct)
@@ -556,16 +528,14 @@ namespace coppercli.Core.Controllers
             // Deliberately not awaited, so GRBL buffers this retract with the next move and
             // the traverse stays smooth.
             double targetZ = Math.Max(currentZ + Options.MinimumHeight, Options.MinimumHeight);
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} Z{targetZ:F3}"));
+            new MoveTarget(Z: targetZ).Send(_machine);
             return Task.CompletedTask;
         }
 
         private Task MoveToPointAsync(Vector2 coords, CancellationToken ct)
         {
             // Deliberately not awaited, so GRBL buffers this with the probe that follows.
-            _machine.SendLine(CmdAbsolute);
-            _machine.SendLine(Inv($"{CmdRapidMove} X{coords.X:F3} Y{coords.Y:F3}"));
+            new MoveTarget(coords.X, coords.Y).Send(_machine);
             return Task.CompletedTask;
         }
 

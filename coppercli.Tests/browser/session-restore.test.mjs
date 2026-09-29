@@ -40,7 +40,7 @@ function serverWith(pending, { refuse = null, afterRead = () => { } } = {}) {
             pending.splice(pending.findIndex(step => step.topic === answer.topic), 1);
             return { ok: true, json: async () => ({ success: true }) };
         }
-        return { ok: true, json: async () => ({ success: true, name: 'b.ngc', lines: 3 }) };
+        return { ok: true, json: async () => ({ success: true, name: 'b.ngc', lines: 3, warningsToConfirm: [] }) };
     };
 
     return { posted, reads: () => reads };

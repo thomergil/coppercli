@@ -15,6 +15,7 @@ import {
     API_PROBE_FILES,
     API_PROBE_DISCARD,
     API_PROBE_RECOVER_AUTOSAVE,
+    API_FILE_INFO,
     SCREEN_DASHBOARD,
     SCREEN_PROBE,
     SCREEN_PROBE_FILES,
@@ -67,6 +68,7 @@ import {
     TRACE_BUTTON_SETTLE_MS,
     TRACE_POLL_MAX_FAILURES,
     ERROR_LOST_CONTACT,
+    TEXT_FILE_WARNINGS_TITLE,
     PROBE_GRID_CELL_SIZE_PX,
     POSITION_DECIMALS_FULL,
     PHASE_TRACING_OUTLINE,
@@ -118,7 +120,27 @@ export function getIsTracing() {
     return traceOverride ?? state.tracingOutline;
 }
 
+// The loaded file's warnings are put to the operator before the machine moves, as the
+// terminal does and as the pre-mill check does for milling.
+async function confirmFileWarnings() {
+    try {
+        const response = await fetch(API_FILE_INFO);
+        const file = await response.json();
+        const warnings = file.warningsToConfirm ?? [];
+        return warnings.length === 0
+            || await showConfirm(warnings.join('\n'), TEXT_FILE_WARNINGS_TITLE, { danger: true });
+    } catch (err) {
+        console.error('file info failed', err);
+        showError(ERROR_LOST_CONTACT);
+        return false;
+    }
+}
+
 export async function traceOutline() {
+    if (!await confirmFileWarnings()) {
+        return;
+    }
+
     const startBtn = document.getElementById('probe-start-btn');
 
     traceOverride = true;
@@ -180,6 +202,10 @@ async function pollTraceStatus() {
 }
 
 export async function startProbing() {
+    if (!await confirmFileWarnings()) {
+        return;
+    }
+
     const { ok } = await postOrShowError(API_PROBE_START, ERROR_PROBE_NOT_STARTED);
     if (!ok) {
         // Nothing is probing, so leave the setup view up.

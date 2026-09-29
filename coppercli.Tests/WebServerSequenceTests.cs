@@ -907,7 +907,7 @@ namespace coppercli.Tests
                 if (error == MillBlocker.None) { continue; }
 
                 string named = CncWebServer.GetMillBlockerMessage(
-                    new MillStartCheck(error, new System.Collections.Generic.List<MillWarning>(), "0/9"));
+                    new MillStartCheck(error, new System.Collections.Generic.List<MillWarning>(), System.Array.Empty<string>(), "0/9"));
 
                 Assert.False(string.IsNullOrWhiteSpace(named), $"{error} has no reason to show");
                 Assert.NotEqual(WebConstants.MillBlockedUnknown, named);

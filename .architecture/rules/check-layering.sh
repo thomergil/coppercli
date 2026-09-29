@@ -313,4 +313,17 @@ if [ -d coppercli.Tests ]; then
     fi
 fi
 
+# --- rule: moves-confirmed-by-arrival ---------------------------------------
+# GRBL reports Idle until it starts a move, so an Idle wait passes before the move runs.
+# Controllers confirm a move through MoveAndConfirmAsync. The one Idle wait allowed is
+# ToolChangeController's first, for the file's own buffered moves.
+idle_waits=$(grep -nE 'MachineWait\.WaitFor(Idle|StatusChange)Async' coppercli.Core/Controllers/*.cs 2>/dev/null \
+    | grep -v '^coppercli.Core/Controllers/MachineWait.cs:' | grep -vE '^[^:]*:[0-9]+: *(//|\*|/\*)')
+if echo "$idle_waits" | grep -v '^coppercli.Core/Controllers/ToolChangeController.cs:' | grep -q .; then
+    fail moves-confirmed-by-arrival "a controller waits for Idle instead of arrival: $(echo "$idle_waits" | grep -v ToolChangeController | head -1)"
+fi
+if [ "$(echo "$idle_waits" | grep -c '^coppercli.Core/Controllers/ToolChangeController.cs:')" -gt 1 ]; then
+    fail moves-confirmed-by-arrival "ToolChangeController waits for Idle more than once; confirm its moves with MoveAndConfirmAsync"
+fi
+
 exit $status

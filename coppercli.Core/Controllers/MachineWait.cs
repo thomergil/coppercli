@@ -281,9 +281,30 @@ namespace coppercli.Core.Controllers
         public static Task<bool> WaitForIdleAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
             => WaitUntilAsync(machine, m => m.Status == StatusIdle, timeoutMs, ct);
 
-        /// <summary>Machine Z, for a G53 move.</summary>
-        private static Task<bool> WaitForMachineZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
-            => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.MachinePosition.Z, ct);
+        /// <summary>
+        /// Wait until the machine is Idle at <paramref name="target"/>, which confirms a move
+        /// just sent has finished. Idle alone does not: GRBL reports Idle until it starts the
+        /// move, so a wait for Idle straight after sending one returns at once.
+        /// </summary>
+        /// <returns>
+        /// False on timeout, and at once when the machine is held, alarms, sleeps or
+        /// disconnects: a held machine does not arrive until someone resumes it.
+        /// </returns>
+        public static async Task<bool> WaitForArrivalAsync(IMachine machine, MoveTarget target, int timeoutMs, CancellationToken ct = default)
+        {
+            bool HasArrived(IMachine m) => IsIdle(m) && target.IsReachedBy(m);
+
+            await WaitUntilAsync(machine, m => IsHold(m) || HasArrived(m), timeoutMs, ct).ConfigureAwait(false);
+            return HasArrived(machine);
+        }
+
+        /// <summary>
+        /// Wait for a feed hold to end, for as long as it lasts: the operator decides when to
+        /// resume. Ends at once, returning false, when the machine alarms, parks at the door or
+        /// disconnects instead.
+        /// </summary>
+        public static Task<bool> WaitForHoldToEndAsync(IMachine machine, CancellationToken ct)
+            => WaitUntilAsync(machine, m => !IsHold(m), int.MaxValue, ct);
 
         /// <summary>
         /// Wait for motion to start, which confirms the command is executing rather than
@@ -297,19 +318,18 @@ namespace coppercli.Core.Controllers
                 timeoutMs,
                 ct);
 
-        /// <summary>Work Z; <see cref="WaitForMachineZHeightAsync"/> is the G53 one.</summary>
-        public static Task<bool> WaitForZHeightAsync(IMachine machine, double targetZ, int timeoutMs, CancellationToken ct = default)
-            => WaitForZHeightCoreAsync(machine, targetZ, timeoutMs, m => m.WorkPosition.Z, ct);
-
-        private static Task<bool> WaitForZHeightCoreAsync(IMachine machine, double targetZ, int timeoutMs, Func<IMachine, double> getZ, CancellationToken ct)
+        /// <summary>
+        /// Z only, not Idle: a safety retract is confirmed as soon as the tool is clear, while
+        /// the planner may still hold the move that follows it.
+        /// </summary>
+        private static Task<bool> WaitForZHeightCoreAsync(IMachine machine, MoveTarget target, int timeoutMs, CancellationToken ct)
         {
             if (timeoutMs <= 0)
             {
                 timeoutMs = ZHeightWaitTimeoutMs;
             }
 
-            return WaitUntilAsync(
-                machine, m => Math.Abs(getZ(m) - targetZ) < PositionToleranceMm, timeoutMs, ct);
+            return WaitUntilAsync(machine, target.IsReachedBy, timeoutMs, ct);
         }
 
         /// <summary>
@@ -768,22 +788,23 @@ namespace coppercli.Core.Controllers
             }
 
             double startZ = machine.MachinePosition.Z;
+            var target = new MoveTarget(Z: targetMachineZ, InMachineCoordinates: true);
+            bool alreadyThere = target.IsReachedBy(machine);
 
-            machine.SendLine(CmdAbsolute);
-            machine.SendLine(Inv($"{CmdMachineCoords} {CmdRapidMove} Z{targetMachineZ:F3}"));
+            target.Send(machine);
 
-            if (Math.Abs(startZ - targetMachineZ) < PositionToleranceMm)
+            if (alreadyThere)
             {
                 await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
                 await WaitForIdleAsync(machine, IdleWaitTimeoutMs, ct);
-                return Math.Abs(machine.MachinePosition.Z - targetMachineZ) < PositionToleranceMm;
+                return target.IsReachedBy(machine);
             }
 
             // Arrival is what is reported, not the start: a move that never started fails
             // the height check anyway.
             await WaitForMoveStartAsync(machine, startZ, timeoutMs, ct);
 
-            return await WaitForMachineZHeightAsync(machine, targetMachineZ, timeoutMs, ct);
+            return await WaitForZHeightCoreAsync(machine, target, timeoutMs, ct);
         }
     }
 }

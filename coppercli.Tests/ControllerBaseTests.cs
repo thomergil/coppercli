@@ -78,7 +78,7 @@ namespace coppercli.Tests
 
                 TransitionTo(ControllerState.Running);
 
-                // Honours the stop as a real run does: every wait in one takes its token.
+                // Honors the stop as a real run does: every wait in one takes its token.
                 if (RunBlocker != null)
                 {
                     await RunBlocker.Task.WaitAsync(ct);
@@ -106,6 +106,95 @@ namespace coppercli.Tests
             }
 
             public void TestTransitionTo(ControllerState state) => TransitionTo(state);
+
+            public Task TestMoveAndConfirmAsync(MoveTarget target, int timeoutMs, CancellationToken ct = default) =>
+                MoveAndConfirmAsync(target, timeoutMs, ct);
+        }
+
+        /// <summary>Short, so a test can run a move out of time; long enough for a status poll.</summary>
+        private const int ShortMoveTimeoutMs = 300;
+
+        /// <summary>
+        /// A connected machine that accepts the move and never gets there must fail the move
+        /// with ErrorMoveNotConfirmed rather than send the next one.
+        /// </summary>
+        [Fact]
+        public async Task AMoveThatNeverArrives_ThrowsMoveNotConfirmed()
+        {
+            var controller = new TestController();
+            controller.Fake.IgnoreMoves = true;
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => controller.TestMoveAndConfirmAsync(new MoveTarget(10.0), ShortMoveTimeoutMs));
+
+            Assert.Equal(ErrorMoveNotConfirmed, ex.Message);
+            Assert.Equal(
+                new[] { GrblProtocol.CmdAbsolute, GrblProtocol.CmdRapidMove + " X10.000" },
+                controller.Fake.SentCommands);
+        }
+
+        /// <summary>
+        /// A feed hold is the operator pausing the move, so the time held does not count
+        /// against the move's timeout: the move finishes after the resume, however long the
+        /// hold lasted.
+        /// </summary>
+        [Fact]
+        public async Task AMoveFeedHeldPastItsTimeout_FinishesAfterTheResume()
+        {
+            var controller = new TestController();
+            var machine = controller.Fake;
+            machine.IgnoreMoves = true;
+            machine.Status = GrblProtocol.StatusHold + ":0";
+
+            var move = controller.TestMoveAndConfirmAsync(new MoveTarget(10.0), ShortMoveTimeoutMs);
+
+            await Task.Delay(ShortMoveTimeoutMs * 3);
+            Assert.False(move.IsCompleted, "the move gave up while the machine was held");
+
+            machine.WorkPosition = new Vector3(10.0, 0, 0);
+            machine.Status = GrblProtocol.StatusIdle;
+            await move;
+        }
+
+        /// <summary>
+        /// A Run that GRBL has stopped reporting is the last thing it said before going quiet,
+        /// not a move in progress, so the move fails rather than waiting forever.
+        /// </summary>
+        [Fact]
+        public async Task AMoveLeftRunningByAMachineThatWentQuiet_Fails()
+        {
+            var controller = new TestController();
+            var machine = controller.Fake;
+            machine.IgnoreMoves = true;
+            machine.Status = GrblProtocol.StatusRun;
+            machine.Poll.Answering = false;
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => controller.TestMoveAndConfirmAsync(new MoveTarget(10.0), ShortMoveTimeoutMs));
+
+            Assert.Equal(ErrorMoveNotConfirmed, ex.Message);
+        }
+
+        /// <summary>
+        /// A move still running when its timeout passes is a slow feed or a lowered override,
+        /// not a machine that stopped: it is waited out.
+        /// </summary>
+        [Fact]
+        public async Task AMoveStillRunningPastItsTimeout_IsWaitedOut()
+        {
+            var controller = new TestController();
+            var machine = controller.Fake;
+            machine.IgnoreMoves = true;
+            machine.Status = GrblProtocol.StatusRun;
+
+            var move = controller.TestMoveAndConfirmAsync(new MoveTarget(10.0), ShortMoveTimeoutMs);
+
+            await Task.Delay(ShortMoveTimeoutMs * 3);
+            Assert.False(move.IsCompleted, "the move gave up while the machine was still running it");
+
+            machine.WorkPosition = new Vector3(10.0, 0, 0);
+            machine.Status = GrblProtocol.StatusIdle;
+            await move;
         }
 
         [Fact]

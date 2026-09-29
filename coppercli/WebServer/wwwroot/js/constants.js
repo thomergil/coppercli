@@ -119,6 +119,8 @@ export const TEXT_MILLING_COMPLETE = 'Milling complete';
 export const TEXT_CONNECTION_LOST = 'Connection lost. Refresh the page.';
 export const TEXT_CONNECTION_ERROR = 'Connection error.';
 export const TEXT_CONFIRM_TITLE = 'Confirm';
+// Titles the file's warnings, put to the operator before a trace or a probe moves the machine.
+export const TEXT_FILE_WARNINGS_TITLE = 'Check this file';
 export const TEXT_PROBING_IN_PROGRESS = 'Probing in progress';
 export const TEXT_MILLING_IN_PROGRESS = 'Milling in progress';
 export const TEXT_PROBE_DATA_SAVED = 'Probe data saved';

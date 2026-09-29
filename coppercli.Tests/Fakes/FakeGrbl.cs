@@ -414,26 +414,9 @@ namespace coppercli.Tests.Fakes
 
         private void ApplyMove(string line)
         {
-            _x = AxisWord(line, 'X') ?? _x;
-            _y = AxisWord(line, 'Y') ?? _y;
-            _z = AxisWord(line, 'Z') ?? _z;
-        }
-
-        private static double? AxisWord(string line, char axis)
-        {
-            int i = line.IndexOf(axis);
-            if (i < 0) { return null; }
-
-            int end = i + 1;
-            while (end < line.Length && (char.IsDigit(line[end]) || line[end] == '.' || line[end] == '-'))
-            {
-                end++;
-            }
-
-            string word = line.Substring(i + 1, end - i - 1);
-            return double.TryParse(word, NumberStyles.Float, CultureInfo.InvariantCulture, out double v)
-                ? v
-                : null;
+            _x = GCodeWords.Axis(line, 'X') ?? _x;
+            _y = GCodeWords.Axis(line, 'Y') ?? _y;
+            _z = GCodeWords.Axis(line, 'Z') ?? _z;
         }
 
         /// <summary>True while GRBL is busy in a routine that answers no status query.</summary>

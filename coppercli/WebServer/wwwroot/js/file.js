@@ -100,6 +100,7 @@ export async function loadFile() {
 // awaited, so the load button is not held busy while the operator decides.
 function showLoaded(loadedText, data) {
     showInfo(format(loadedText, data.name, data.lines));
+    data.warningsToConfirm.forEach(warning => showError(warning));
     if (data.droppedMap) {
         showError(format(TEXT_HEIGHT_MAP_DROPPED, data.droppedMap));
     }

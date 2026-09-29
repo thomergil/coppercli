@@ -57,7 +57,7 @@ coppercli's tool-change logic has no reference implementation.
 
 ## Interfaces
 
-### controllers → machine · v7 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
+### controllers → machine · v8 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
 Every controller reaches the machine only through `IMachine`. That interface file is the
 contract; do not restate it here. It exists so controllers are testable without hardware;
 `coppercli.Tests/Fakes/` supplies the doubles.
@@ -103,6 +103,14 @@ contract; do not restate it here. It exists so controllers are testable without 
   `MachineWait.GetDoorRefusal` is the one mapping from a door state to the words that
   refuse a resume or a release; `GetResumeBlocker` is gone. See
   `park-retract-read-as-an-open-door`, `door-refusal-words-defined-once`.
+- **v8:** a controller confirms a move it sends by arrival, never by Idle alone (rule
+  `moves-confirmed-by-arrival`). `MoveTarget` holds where a move ends on the axes it names;
+  its `ToGCode`/`Send` build the line, and `IsReachedBy` checks the same values.
+  `MachineWait.WaitForArrivalAsync` waits for Idle at the target;
+  `MachineWait.WaitForHoldToEndAsync` waits out a feed hold with no timeout;
+  `ControllerBase.MoveAndConfirmAsync` sends, waits, and handles door, hold and a slow move
+  before it throws. `MachineWait.WaitForZHeightAsync` is gone. See
+  `trace-confirmed-moves-by-idle`.
 - **GAP (undecided):** GRBL has one resume, so the cycle start that releases a door hold
   releases a feed hold with it. A run that was paused when the door opened therefore
   continues cutting while `ControllerState` still reads `Paused` and the screen still
@@ -260,7 +268,7 @@ that reaches the port can send arbitrary G-code. Documented as such in the READM
   takeover fails when `--web-port` is set to anything else. Options: publish the web port
   from the proxy, or add a terminal setting for it (cost: one more setting to keep in step).
 
-### web → browser · v10 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
+### web → browser · v11 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
 Port 34001. Every path (`Api*`), every WebSocket message type (`WsMessageType*`), and every
 socket command (`WsCmd*`) is a named constant there; the client's mirror is
 `wwwroot/js/constants.js`. Neither side may hardcode a wire value.
@@ -382,6 +390,11 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   every other request (`WebServerSequenceTests.OtherRequests_AreAnswered_WhileHomeRuns`).
   The browser sends these through `postOrShowError` in `helpers.js`, the one helper that
   POSTs and shows the server's reason. See `refusable-commands-left-the-websocket`.
+- **v11:** the loaded file's summary carries `warningsToConfirm`, read from
+  `GCodeFile.WarningsToConfirm`, the one filter for which file warnings the operator must
+  confirm. The browser shows them at load and asks for them before probing, tracing and
+  milling, as the terminal does. The server does not refuse a start on them. See
+  `job-origin-warning-dropped-by-derived-files`.
 - **GAP (undecided):** machine errors are not shown in the browser. In server mode they go
   to the console's message list only. Options: a WebSocket message type for them (four-place
   update, rule `ws-message-types-updated-in-four-places`), or a field in `/api/status`.
@@ -937,6 +950,24 @@ document and `MacroParser` together.
   _Check: `coppercli.Tests/MachineWaitTests.cs`._
   _History: wait-helper-aborted-on-door-state._
 
+- **moves-confirmed-by-arrival** *(error)* — a controller confirms a move it sends by
+  arrival: Idle and at the target on the axes the move names, through
+  `ControllerBase.MoveAndConfirmAsync`. Never by `WaitForIdleAsync` or
+  `WaitForStatusChangeAsync` alone: GRBL reports Idle until it starts a move, so those pass
+  at once, and the next line goes out while the tool is still traveling. A wait's result
+  is never discarded. A move's timeout is not derived from distance and feed, because the
+  operator can lower the feed override during the move; a move still reported `Run` is
+  waited out while `StatusReportCount` keeps advancing. Exceptions, which return a bool
+  the caller acts on: `MachineWait.SafetyRetractZAsync` (a run's first retract) and a lift
+  after a stop. `ToolChangeController`'s first wait, for the file's own buffered moves, is
+  left on `WaitForIdleAsync`, because an `M0` in the file can leave GRBL in Hold.
+  _Check: `.architecture/rules/check-layering.sh`; `coppercli.Tests/ControllerBaseTests.cs`
+  (`AMoveThatNeverArrives_ThrowsMoveNotConfirmed`,
+  `AMoveStillRunningPastItsTimeout_IsWaitedOut`); `coppercli.Tests/ProbeControllerTests.cs`
+  (`ATrace_DescendsOnlyOnceTheFirstCornerIsReached`,
+  `AFeedHoldDuringTheFinalRetract_IsWaitedOut`)._
+  _History: trace-confirmed-moves-by-idle._
+
 - **tests-detect-plausible-defects** *(error)* — a test is only worth keeping if some plausible
   defect makes it fail. Subscribing to an event without raising it, or passing an enum
   literal to `Enum.IsDefined`, asserts nothing; seventeen such tests were removed or replaced.
@@ -1009,6 +1040,7 @@ document and `MacroParser` together.
   (`AMillWhoseFinalRetractIsNotConfirmed_NeverReportsItFinished`) and
   `coppercli.Tests/ProbeControllerTests.cs`
   (`ATraceWhoseSafetyRetractIsNotConfirmed_NeverReportsItFinished`)._
+  _History: trace-confirmed-moves-by-idle._
 
 - **record-unresolved-design-decisions** *(error)* — record an unresolved choice as a
   **GAP (undecided)** on the relevant interface. State each option and its cost, and keep
@@ -1043,7 +1075,7 @@ document and `MacroParser` together.
   _History: fake-machine-reported-idle-for-every-pause,
   test-project-stopped-compiling-and-no-ci-ran-it,
   door-state-checked-in-ten-places,
-  two-resume-windows-for-one-door._
+  two-resume-windows-for-one-door, mock-machine-follows-moves._
 
 - **delay-input-after-prompt-redraw** *(error)* — a control redrawn with a new question in
   the same place refuses input for `PROMPT_SETTLE_MS`. An id alone does not prevent a second

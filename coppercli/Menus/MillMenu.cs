@@ -66,20 +66,9 @@ namespace coppercli.Menus
                     return;
                 }
 
-                if (canStart.Warnings.Contains(MillWarning.DangerousCommands) &&
-                    canStart.DangerousWarnings?.Count > 0)
+                if (!MenuHelpers.ConfirmFileWarnings(canStart.FileWarnings))
                 {
-                    AnsiConsole.MarkupLine($"[{ColorError}]WARNING: File contains potentially dangerous commands:[/]");
-                    foreach (var warning in canStart.DangerousWarnings)
-                    {
-                        AnsiConsole.MarkupLine($"[{ColorWarning}]  {warning}[/]");
-                    }
-                    AnsiConsole.WriteLine();
-
-                    if (MenuHelpers.ConfirmOrQuit("Continue despite warnings?", false) != true)
-                    {
-                        return;
-                    }
+                    return;
                 }
 
                 if (canStart.Warnings.Contains(MillWarning.NoMachineProfile))

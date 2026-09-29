@@ -10,7 +10,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>The 'v' prefix is for display; installer/coppercli.iss carries the same version without it.</summary>
-        public const string AppVersion = "v0.5.1";
+        public const string AppVersion = "v0.5.2";
 
         public const int ConnectionTimeoutMs = 5000;
 
@@ -185,6 +185,11 @@ namespace coppercli
         public const string JogContinueOrCancelKeyHint = "J=Jog  " + ContinueOrCancelKeyHint;
 
         public const string SleepPreventionWarning = "Sleep prevention unavailable";
+
+        /// <summary>Heads the file's warnings before a probe or a mill moves the machine.</summary>
+        public const string FileWarningsHeading = "WARNING: Check this file before the machine moves:";
+
+        public const string FileWarningsPrompt = "Continue despite warnings?";
 
         /// <summary>Shown while GRBL reports the enclosure open.</summary>
         public const string DoorOpenMessage = "DOOR OPEN";

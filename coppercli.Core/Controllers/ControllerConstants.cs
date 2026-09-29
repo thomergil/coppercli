@@ -47,6 +47,8 @@ namespace coppercli.Core.Controllers
 
         public const string ErrorSafetyRetractFailed = "Could not confirm the tool lifted. Stopped.";
 
+        public const string ErrorMoveNotConfirmed = "Could not confirm the tool reached the position it was sent to. Stopped.";
+
         public const string ErrorProbePointSkipped = "No contact at point {0} of {1}. Left unmeasured.";
 
         public const string ErrorStopRetractFailed =

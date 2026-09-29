@@ -2307,7 +2307,8 @@ public static class CncWebServer
             maxZ = file.Max.Z
         },
         travelDistance = file.TravelDistance,
-        estimatedTime = file.TotalTime.TotalMinutes
+        estimatedTime = file.TotalTime.TotalMinutes,
+        warningsToConfirm = file.WarningsToConfirm
     };
 
     private static object? GetFileInfo()
@@ -2352,7 +2353,7 @@ public static class CncWebServer
     private static object HandleMillCanStart()
     {
         var result = MenuHelpers.CheckMillCanStart();
-        var warnings = new List<string>();
+        var warnings = new List<string>(result.FileWarnings);
         var errors = new List<string>();
 
         if (result.Error != MillBlocker.None)
@@ -2366,12 +2367,6 @@ public static class CncWebServer
             {
                 case MillWarning.NotHomed:
                     warnings.Add(MillWarningNotHomed);
-                    break;
-                case MillWarning.DangerousCommands:
-                    if (result.DangerousWarnings != null)
-                    {
-                        warnings.AddRange(result.DangerousWarnings);
-                    }
                     break;
                 case MillWarning.NoMachineProfile:
                     warnings.Add(MillWarningNoProfile);

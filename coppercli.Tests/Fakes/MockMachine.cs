@@ -13,7 +13,7 @@ namespace coppercli.Tests.Fakes
 {
     /// <summary>
     /// An IMachine whose state a test sets directly. Nothing moves or changes on its own here
-    /// apart from the door rules and the Z rapid in <see cref="ApplyRapidZ"/>; a test that needs
+    /// apart from the door rules and the moves in <see cref="ApplyMove"/>; a test that needs
     /// a move to take time uses FakeMachine instead.
     /// </summary>
     public class MockMachine : IMachine, IDisposable
@@ -118,7 +118,7 @@ namespace coppercli.Tests.Fakes
                     SetStatus(GrblProtocol.StatusIdle, string.Empty);
                 }
 
-                ApplyRapidZ(line);
+                ApplyMove(line);
             }
 
             LineSent?.Invoke(line);
@@ -135,27 +135,42 @@ namespace coppercli.Tests.Fakes
         public bool IgnoreMoves { get; set; }
 
         /// <summary>
-        /// Follows a machine-coordinate rapid in Z, so a caller waiting for the tool to reach a
-        /// height sees it arrive. A line sent while the machine holds queues in GRBL's planner
-        /// instead, so a retract sent at the door only runs once the hold lifts.
+        /// Follows a G0 or G1, on the axes it names and in the frame it names (G53 moves the
+        /// machine position, anything else the work position), so a caller waiting for a move
+        /// to arrive sees it arrive. A move sent while the machine holds is recorded and not
+        /// applied, and nothing applies it when the hold lifts: a test that needs it to land
+        /// sets the position itself.
         /// </summary>
-        private void ApplyRapidZ(string line)
+        private void ApplyMove(string line)
         {
-            if (IgnoreMoves
-                || DoorModel.Holding(Status)
-                || !line.StartsWith(GrblProtocol.CmdMachineCoords, StringComparison.Ordinal))
+            if (IgnoreMoves || DoorModel.Holding(Status))
             {
                 return;
             }
 
-            int z = line.IndexOf('Z');
-            if (z < 0 || !double.TryParse(
-                    line.AsSpan(z + 1), NumberStyles.Float, CultureInfo.InvariantCulture, out double target))
+            var words = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            bool machineFrame = words.Length > 0 && words[0] == GrblProtocol.CmdMachineCoords;
+            int motion = machineFrame ? 1 : 0;
+            if (words.Length <= motion
+                || (words[motion] != GrblProtocol.CmdRapidMove && words[motion] != GrblProtocol.CmdLinearMove))
             {
                 return;
             }
 
-            MachinePosition = new Vector3(MachinePosition.X, MachinePosition.Y, target);
+            var from = machineFrame ? MachinePosition : WorkPosition;
+            var to = new Vector3(
+                GCodeWords.Axis(line, 'X') ?? from.X,
+                GCodeWords.Axis(line, 'Y') ?? from.Y,
+                GCodeWords.Axis(line, 'Z') ?? from.Z);
+
+            if (machineFrame)
+            {
+                MachinePosition = to;
+            }
+            else
+            {
+                WorkPosition = to;
+            }
         }
 
         public bool RefuseFileStart { get; set; }

@@ -180,6 +180,22 @@ namespace coppercli.Core.Util
         public const string WarningPrefixInches = "INCHES";
 
         /// <summary>
+        /// How far, in mm, a job may reach left of or below work zero before its file warns
+        /// that zero is not at the job's lower-left corner. Isolation passes around a board
+        /// zeroed at that corner reach a fraction of a millimeter past it; a job zeroed at
+        /// another corner reaches the whole width of the board.
+        /// </summary>
+        public const double JobOriginToleranceMm = 5.0;
+
+        /// <summary>
+        /// {0} and {1} are the X and Y of the job's lower-left corner; {2} and {3} are where
+        /// work zero sits measured from the job's lower-left corner.
+        /// </summary>
+        public const string WarningJobOriginFormat = WarningPrefixDanger +
+            ": The job's lower-left corner is at X{0:F1} Y{1:F1}, so work zero is not at the board's lower-left corner. " +
+            "Set work zero X{2:F1} Y{3:F1} from the board's lower-left corner, or regenerate the file with a board outline.";
+
+        /// <summary>
         /// How long a stop waits for a run to unwind: the machine is stopped and reset, then
         /// the tool is lifted clear and confirmed. Too short and a stop that is working
         /// reports that the machine may still be moving.

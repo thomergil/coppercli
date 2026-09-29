@@ -456,5 +456,45 @@ namespace coppercli.Tests
             Assert.Equal(1, machine.SentCommands.Count(
                 c => c.Contains(CmdMachineCoords) && c.Contains("Z")));
         }
+
+        /// <summary>
+        /// The probe onto the setter goes straight down from wherever the tool is. Sent before
+        /// the rapid is confirmed finished, it would come down beside the setter.
+        /// </summary>
+        [Fact]
+        public async Task TheSetterProbe_WaitsForTheToolToReachTheSetter()
+        {
+            using var machine = CreateMockMachine();
+            var setter = (X: -100.0, Y: (double?)-50.0);
+            var controller = CreateController(machine, hasToolSetter: true, toolSetterPos: setter);
+
+            // The clearance raise lands; the rapid to the setter is accepted and takes its time.
+            bool probeBeforeArrival = false;
+            machine.LineSent += line =>
+            {
+                if (line.StartsWith($"{CmdMachineCoords} {CmdRapidMove} Z", StringComparison.Ordinal))
+                {
+                    machine.IgnoreMoves = true;
+                }
+                else if (line.StartsWith(CmdProbeToward, StringComparison.Ordinal))
+                {
+                    probeBeforeArrival |= Math.Abs(machine.MachinePosition.X - setter.X) >= Constants.PositionToleranceMm;
+                    machine.SimulateProbeFinished(new Vector3(), false);
+                }
+            };
+            controller.UserInputRequired += request => request.OnResponse(OptionAbort);
+
+            var toolChange = controller.HandleToolChangeAsync(CreateToolChangeInfo());
+
+            await Task.Delay(500);
+            Assert.Equal(0, machine.ProbeStartCount);
+
+            machine.MachinePosition = new Vector3(setter.X, setter.Y!.Value, machine.MachinePosition.Z);
+            machine.IgnoreMoves = false;
+            await toolChange;
+
+            Assert.Equal(1, machine.ProbeStartCount);
+            Assert.False(probeBeforeArrival);
+        }
     }
 }

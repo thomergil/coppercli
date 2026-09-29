@@ -329,6 +329,56 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
+        /// Send a rapid to <paramref name="target"/> and return once the machine is Idle there,
+        /// so no move is sent before the last one finishes. A door hold asks the operator, and
+        /// a feed hold, or a move still running at a slow feed or a lowered override, is waited
+        /// out; the wait then starts again with the full timeout. A move reported running is
+        /// waited out only while GRBL goes on reporting, so a machine that has gone quiet fails.
+        /// </summary>
+        /// <param name="timeoutMs">How long each wait for arrival lasts before the machine's state is checked again.</param>
+        /// <exception cref="InvalidOperationException">
+        /// The machine alarmed, disconnected, or stopped short of the target.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">The run was canceled, or the operator stopped it at the door.</exception>
+        protected Task MoveAndConfirmAsync(MoveTarget target, int timeoutMs, CancellationToken ct) =>
+            MoveAndConfirmCoreAsync(target, null, timeoutMs, ct);
+
+        /// <summary>The same, as a feed move at <paramref name="feed"/> mm/min.</summary>
+        /// <inheritdoc cref="MoveAndConfirmAsync(MoveTarget, int, CancellationToken)"/>
+        protected Task MoveAndConfirmAsync(MoveTarget target, double feed, int timeoutMs, CancellationToken ct) =>
+            MoveAndConfirmCoreAsync(target, feed, timeoutMs, ct);
+
+        private async Task MoveAndConfirmCoreAsync(MoveTarget target, double? feed, int timeoutMs, CancellationToken ct)
+        {
+            target.Send(Machine, feed);
+            long reports = Machine.StatusReportCount;
+
+            while (!await MachineWait.WaitForArrivalAsync(Machine, target, timeoutMs, ct).ConfigureAwait(false))
+            {
+                ct.ThrowIfCancellationRequested();
+
+                bool stillReporting = Machine.StatusReportCount != reports;
+                reports = Machine.StatusReportCount;
+
+                if (MachineWait.IsDoor(Machine))
+                {
+                    await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
+                }
+                else if (MachineWait.IsHold(Machine))
+                {
+                    await MachineWait.WaitForHoldToEndAsync(Machine, ct).ConfigureAwait(false);
+                }
+                else if (!(stillReporting && MachineWait.GetActivity(Machine) == MachineActivity.Running))
+                {
+                    ControllerLog.Log("{0}: {1} not confirmed, status={2}", GetType().Name, target.ToGCode(feed), Machine.Status);
+                    throw new InvalidOperationException(MachineWait.IsUnavailable(Machine)
+                        ? ErrorMachineNotResponding
+                        : ErrorMoveNotConfirmed);
+                }
+            }
+        }
+
+        /// <summary>
         /// Do not send a retract while the machine holds at the door: GRBL would execute it
         /// when the hold is released. Use a separate timeout because the run's token has
         /// already been cancelled.
