@@ -66,6 +66,20 @@ namespace coppercli.Core.Communication
 
         void ProbeStop();
 
+        /// <summary>GRBL's feed override, as a percentage of the feed the G-code asks for.</summary>
+        int FeedOverride { get; }
+
+        /// <summary>GRBL's rapid override, as a percentage of its top speeds.</summary>
+        int RapidOverride { get; }
+
+        /// <summary>
+        /// GRBL's top speed on each axis in mm/min, from its settings as last listed by
+        /// <see cref="RefreshSettingsAsync"/>; null until all three are listed, and again once
+        /// disconnected.
+        /// </summary>
+        Vector3? TopSpeeds { get; }
+
+        /// <summary>The lines loaded to stream: the same instance until the file is replaced.</summary>
         ReadOnlyCollection<string> File { get; }
         int FilePosition { get; }
         /// <summary>Begins streaming the loaded file, and returns false when it could not
@@ -100,6 +114,10 @@ namespace coppercli.Core.Communication
         /// <summary>Requests GRBL's stored coordinate offsets and waits for the reply.
         /// False means <see cref="G54Offset"/> must not be relied on.</summary>
         System.Threading.Tasks.Task<bool> RefreshWorkOffsetsAsync(int timeoutMs, System.Threading.CancellationToken ct = default);
+
+        /// <summary>Requests GRBL's settings and waits for the reply. False means GRBL did not
+        /// list them, and <see cref="TopSpeeds"/> holds what it listed before, if anything.</summary>
+        System.Threading.Tasks.Task<bool> RefreshSettingsAsync(int timeoutMs, System.Threading.CancellationToken ct = default);
         void FeedHold();
         void CycleStart();
 

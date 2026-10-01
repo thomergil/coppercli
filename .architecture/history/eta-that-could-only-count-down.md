@@ -23,3 +23,6 @@ handover with nothing to tune. The algebra above shows the weighting cancels the
 instead.
 
 **Rule:** Derive or simulate the formula that combines the model estimate with measured pace. Test that a mid-job slowdown raises the remaining-time estimate, and confirm the test fails against the old formula.
+
+Superseded by `eta-from-where-the-tool-is.md` (2026-10-01): `EtaEstimator` is gone, and the
+estimate no longer uses the measured pace.

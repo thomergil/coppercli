@@ -129,6 +129,28 @@ namespace coppercli.Core.GCode.GCodeCommands
         }
 
         /// <inheritdoc/>
+        /// <remarks>
+        /// The point at the same angle around the center is tried, and both ends: a point past a
+        /// partial arc is nearest an end, and the start and end of a helical full circle lie at
+        /// the same angle, told apart by height. Called for each status report, so it allocates
+        /// nothing.
+        /// </remarks>
+        public override (double Distance, double Ratio) Nearest(Vector3 point)
+        {
+            Vector3 inPlane = point.RollComponents(-(int)Plane);
+            double atTheAngle = RatioAtAngle(Math.Atan2(inPlane.Y - V, inPlane.X - U));
+
+            var nearest = Nearer(DistanceAt(point, 0), DistanceAt(point, 1));
+            return atTheAngle < 1 ? Nearer(nearest, DistanceAt(point, atTheAngle)) : nearest;
+        }
+
+        private (double Distance, double Ratio) DistanceAt(Vector3 point, double ratio) =>
+            ((point - Interpolate(ratio)).Magnitude, ratio);
+
+        private static (double Distance, double Ratio) Nearer((double Distance, double Ratio) a, (double Distance, double Ratio) b) =>
+            b.Distance < a.Distance ? b : a;
+
+        /// <inheritdoc/>
         /// <remarks>For an arc in the XY plane only.</remarks>
         public override IEnumerable<double> RatiosWhereXIs(double x)
         {
@@ -152,20 +174,27 @@ namespace coppercli.Core.GCode.GCodeCommands
         /// </summary>
         private IEnumerable<double> RatiosAtAngles(params double[] angles)
         {
-            double span = AngleSpan;
-
             foreach (double angle in angles)
             {
-                // How far the arc turns from its start to the angle, in its own direction.
-                double turned = span > 0 ? angle - StartAngle : StartAngle - angle;
-                turned -= FullTurn * Math.Floor(turned / FullTurn);
-
-                double ratio = turned / Math.Abs(span);
+                double ratio = RatioAtAngle(angle);
                 if (ratio > 0 && ratio < 1)
                 {
                     yield return ratio;
                 }
             }
+        }
+
+        /// <summary>
+        /// How far the arc turns from its start to reach <paramref name="angle"/>, in its own
+        /// direction and within one turn, as a share of its span: past 1 for an angle it never
+        /// reaches, and NaN for NaN.
+        /// </summary>
+        private double RatioAtAngle(double angle)
+        {
+            double span = AngleSpan;
+            double turned = span > 0 ? angle - StartAngle : StartAngle - angle;
+            turned -= FullTurn * Math.Floor(turned / FullTurn);
+            return turned / Math.Abs(span);
         }
 
         private void ThrowUnlessInTheXYPlane()

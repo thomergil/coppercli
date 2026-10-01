@@ -1,4 +1,5 @@
 using coppercli.Core.Util;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -47,6 +48,19 @@ namespace coppercli.Core.GCode.GCodeCommands
         protected override Vector3 PointAlongPath(double ratio)
         {
             return Start + Delta * ratio;
+        }
+
+        /// <inheritdoc/>
+        public override (double Distance, double Ratio) Nearest(Vector3 point)
+        {
+            if (!FullyKnown)
+            {
+                return KnownEnd is Vector3 end ? ((point - end).Magnitude, 1) : (double.PositiveInfinity, 0);
+            }
+
+            double lengthSquared = Vector3.Dot(Delta, Delta);
+            double ratio = lengthSquared == 0 ? 0 : Math.Clamp(Vector3.Dot(point - Start, Delta) / lengthSquared, 0, 1);
+            return ((point - Interpolate(ratio)).Magnitude, ratio);
         }
 
         public override IEnumerable<double> RatiosWhereXIs(double x) => RatiosWhere(Start.X, End.X, x);

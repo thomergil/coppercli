@@ -60,7 +60,7 @@ namespace coppercli.Core.GCode
                 {
                     toolChange = i;
                 }
-                else if (toolpath[i] is Motion { FullyKnown: true, IsCut: true } or Line { FullyKnown: false, ZKnown: true, End.Z: < 0 })
+                else if (toolpath[i] is Motion { CutsTheBoard: true })
                 {
                     if (toolChange is int start)
                     {

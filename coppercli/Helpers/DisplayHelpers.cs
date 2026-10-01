@@ -204,7 +204,7 @@ namespace coppercli.Helpers
 
         public static string FormatTimeSpan(TimeSpan ts)
         {
-            return ts.ToString(@"hh\:mm\:ss");
+            return string.Format(HoursMinutesSecondsFormat, (int)ts.TotalHours, ts.Minutes, ts.Seconds);
         }
 
         public static string FormatDuration(TimeSpan duration)
@@ -470,6 +470,39 @@ namespace coppercli.Helpers
                 if (InputHelpers.IsEnterKey(key) || InputHelpers.IsEscapeKey(key))
                 {
                     return;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Draws a question with a key for each of <paramref name="choices"/>, its first letter,
+        /// and waits for one of them, or for Escape or Q. The first letters must differ.
+        /// </summary>
+        /// <param name="exitHint">What Escape does, shown after the choices.</param>
+        /// <returns>The choice, or null when the operator pressed Escape or Q.</returns>
+        public static string? ShowOverlayChoice(string message, IReadOnlyList<string> choices, string exitHint)
+        {
+            if (choices.Select(choice => char.ToUpperInvariant(choice[0])).Distinct().Count() != choices.Count)
+            {
+                throw new ArgumentException("Two choices share a first letter, so one key would answer both.", nameof(choices));
+            }
+
+            string hint = string.Join(KeyHintSeparator, choices
+                .Select(choice => string.Format(KeyHintFormat, char.ToUpperInvariant(choice[0]), choice))
+                .Append(exitHint));
+            DrawCenteredOverlay(message, hint, AnsiPrompt);
+
+            while (true)
+            {
+                var key = Console.ReadKey(true);
+                string? chosen = choices.FirstOrDefault(choice => InputHelpers.IsCharKey(key, choice[0]));
+                if (chosen != null)
+                {
+                    return chosen;
+                }
+                if (InputHelpers.IsExitKey(key))
+                {
+                    return null;
                 }
             }
         }

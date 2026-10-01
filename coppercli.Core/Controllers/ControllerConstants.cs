@@ -199,6 +199,31 @@ namespace coppercli.Core.Controllers
         public const string OptionContinue = "Continue";
         public const string OptionAbort = "Abort";
 
+        /// <summary>The answers to <see cref="SectionsAndDepthPrompt"/> besides <see cref="OptionAbort"/>.</summary>
+        public const string OptionKeep = "Keep";
+        public const string OptionClear = "Clear";
+
+        public const string SectionsAndDepthTitle = "Sections and Depth";
+
+        /// <summary>Asked at a tool change after milling with sections or a depth adjustment.</summary>
+        public const string SectionsAndDepthPrompt =
+            "The milling before this tool change is done. Keep: the next tool's work stays in the "
+            + "chosen sections at the adjusted depth, and you are asked again at the next tool "
+            + "change, if any. Clear: the rest of the job, and the next run, use the whole board at "
+            + "the file's depth, still following the height map if one is applied.";
+
+        public const string ErrorSectionsAndDepthNotEnded =
+            "The run stopped at the tool change: coppercli could not switch the rest of the job "
+            + "to the whole board at the file's depth. To finish the job, first clear the sections "
+            + "and the depth adjustment. Next, choose the phases after this tool change. Then "
+            + "start the job again.";
+
+        public const string LogSectionsAndDepthAnswer = "Sections and depth at the tool change: {0}";
+
+        public const string LogSettingsNotListed = "GRBL did not list its settings for $$";
+        public const string LogNoTopSpeeds = "GRBL has not given its top speeds: the estimate counts rapids as taking no time";
+        public const string LogNoEstimate = "No estimate for this G-code: {0}";
+
         public const string LogToolChangeStart = "Tool change started: T{0}";
         public const string LogToolChangeComplete = "Tool change complete";
         public const string LogToolChangeAborted = "Tool change aborted by user";

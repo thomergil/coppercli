@@ -745,12 +745,14 @@ namespace coppercli.Helpers
             string.IsNullOrEmpty(title) ? message : $"{title}\n\n{message}";
 
         /// <summary>
-        /// The door prompt defaults to yes, because it only appears once GRBL reports the door
-        /// closed; every other prompt defaults to no, so a reflex Enter cannot resume motion.
-        /// The caller redraws its own content afterwards.
+        /// Asks a run's prompt in an overlay. One that offers only Continue and Abort is a yes/no
+        /// question: the door prompt defaults to yes, because it only appears once GRBL reports
+        /// the door closed; every other prompt defaults to no, so a reflex Enter cannot resume
+        /// motion. Any other prompt gets a key for each option but Abort, and Escape or Q
+        /// answers Abort. The caller redraws its own content afterwards.
         /// </summary>
-        /// <returns>True if the operator chose to continue.</returns>
-        public static bool ShowPromptOverlay(UserInputRequest request)
+        /// <returns>The option the operator chose.</returns>
+        public static string ShowPromptOverlay(UserInputRequest request)
         {
             string text = FormatPrompt(request.Title, request.Message);
 
@@ -758,13 +760,17 @@ namespace coppercli.Helpers
             // a keystroke still in the buffer would answer a prompt nobody has read.
             InputHelpers.FlushKeyboard();
 
-            bool? proceed = DisplayHelpers.ShowOverlayConfirm(text, defaultYes: request.IsDoorPrompt);
-            string response = proceed == true
-                ? ControllerConstants.OptionContinue
-                : ControllerConstants.OptionAbort;
+            bool continueOrAbort = request.Options.All(
+                option => option == ControllerConstants.OptionContinue || option == ControllerConstants.OptionAbort);
+            string response = continueOrAbort
+                ? DisplayHelpers.ShowOverlayConfirm(text, defaultYes: request.IsDoorPrompt) == true
+                    ? ControllerConstants.OptionContinue
+                    : ControllerConstants.OptionAbort
+                : DisplayHelpers.ShowOverlayChoice(
+                    text, request.Options.Where(option => option != ControllerConstants.OptionAbort).ToArray(), StopKeyHint)
+                    ?? ControllerConstants.OptionAbort;
             request.OnResponse(response);
-
-            return response == ControllerConstants.OptionContinue;
+            return response;
         }
 
         /// <summary>

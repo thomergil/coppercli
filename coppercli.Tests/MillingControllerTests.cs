@@ -1,9 +1,11 @@
 #nullable enable
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
@@ -185,6 +187,398 @@ namespace coppercli.Tests
 
             Assert.Equal(SingleRunToolNumber, detected.ToolNumber);
             Assert.Equal(ToolChangeLineIndex, detected.LineNumber);
+        }
+
+        /// <summary>A cut, then a tool change, then the next tool's work.</summary>
+        private static readonly string[] CutThenToolChange =
+        {
+            "G21", "G90", "G0 X0 Y0 Z1", "G1 Z-0.1 F100", "G1 X1 F100", "G0 Z1", "M6 T2", "G1 X2 Y2 F100"
+        };
+
+        /// <summary>The line after the M6, where the stream stops.</summary>
+        private const int CutThenToolChangeResumeLine = 7;
+
+        /// <summary>
+        /// Sections or a depth adjustment the run can be told to end, recording the machine's
+        /// file position each time the run asked about them and ended them.
+        /// </summary>
+        private sealed class FakeSectionsAndDepth : ISectionsAndDepth
+        {
+            public bool Apply { get; init; } = true;
+            public string? Refusal { get; init; }
+
+            /// <summary>Runs as the rest of the job is rebuilt, as a stop arriving then would.</summary>
+            public Action? WhileEnding { get; init; }
+
+            /// <summary>The G-code the rebuild puts on the machine, keeping its place; null to keep the G-code.</summary>
+            public string[]? Rebuilt { get; init; }
+
+            public IMachine? Machine { get; set; }
+            public ConcurrentQueue<int> AskedAt { get; } = new();
+            public ConcurrentQueue<int> EndedAt { get; } = new();
+
+            public bool ApplyAfterTheToolChange()
+            {
+                AskedAt.Enqueue(Machine!.FilePosition);
+                return Apply;
+            }
+
+            public string? EndAtTheToolChange()
+            {
+                EndedAt.Enqueue(Machine!.FilePosition);
+                WhileEnding?.Invoke();
+                if (Rebuilt != null && Machine is FakeMachine fake)
+                {
+                    int streamed = fake.FilePosition;
+                    fake.LoadFile(Rebuilt);
+                    fake.FileGoto(streamed);
+                }
+                return Refusal;
+            }
+        }
+
+        /// <summary>What a run of CutThenToolChange did at its tool change.</summary>
+        private sealed record ToolChangeOutcome(
+            UserInputRequest? Asked, MillingPhase PhaseWhenAsked, ControllerState StateWhenAsked,
+            bool ReachedToolChange, int EndedBeforeTheToolChange, bool OperatorMayResumeThere,
+            JobEstimate? EstimateThere, ControllerState Ended, string? Error, bool StoppedWhileCutting);
+
+        /// <summary>
+        /// Starts a run of CutThenToolChange with <paramref name="sectionsAndDepth"/>, answers
+        /// the question about them with <paramref name="answer"/> if one is asked, and stops the
+        /// run once the tool change is reached or the run ends.
+        /// </summary>
+        private static async Task<ToolChangeOutcome> RunToTheToolChangeAsync(
+            FakeSectionsAndDepth sectionsAndDepth, string answer, CancellationTokenSource? stop = null,
+            int feedPercent = Constants.OverrideDefaultPercent)
+        {
+            using var machine = CreateMachineToEstimate(CutThenToolChange);
+            machine.FeedOverride = feedPercent;
+            sectionsAndDepth.Machine = machine;
+            var controller = new MillingController(machine, sectionsAndDepth) { Options = new MillingOptions() };
+            var prompts = new PromptRecorder(controller);
+            string? error = null;
+            controller.ErrorOccurred += e => error = e.Message;
+            bool reached = false;
+            int endedBefore = -1;
+            bool mayResumeThere = true;
+            JobEstimate? estimateThere = null;
+            controller.ToolChangeDetected += _ =>
+            {
+                reached = true;
+                endedBefore = sectionsAndDepth.EndedAt.Count;
+                mayResumeThere = controller.OperatorMayResume;
+                estimateThere = controller.Estimate;
+            };
+
+            using var cts = stop ?? new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+            UserInputRequest? asked = null;
+            var phaseWhenAsked = MillingPhase.NotStarted;
+            var stateWhenAsked = ControllerState.Idle;
+            ControllerState ended;
+            try
+            {
+                await AsyncWait.WaitUntilAsync(() => reached || prompts.All.Count > 0 || controller.HasFinished,
+                    ToolChangeTimeoutMessage, ToolChangeWaitTimeoutMs);
+                if (prompts.All.Count > 0)
+                {
+                    asked = await prompts.NextAsync(StateTransitionWaitTimeoutMs);
+                    phaseWhenAsked = controller.Phase;
+                    stateWhenAsked = controller.State;
+                    asked.OnResponse(answer);
+                    await AsyncWait.WaitUntilAsync(() => reached || controller.HasFinished,
+                        ToolChangeTimeoutMessage, ToolChangeWaitTimeoutMs);
+                }
+                ended = controller.State;
+            }
+            finally
+            {
+                cts.Cancel();
+                await AwaitRunOutcomeAsync(run);
+            }
+
+            return new ToolChangeOutcome(asked, phaseWhenAsked, stateWhenAsked, reached, endedBefore, mayResumeThere,
+                estimateThere, ended, error, machine.StoppedWhileCutting);
+        }
+
+        /// <summary>
+        /// Catches a run carrying sections or a depth adjustment past a tool change without
+        /// asking: the next tool usually drills and cuts the board out, which the operator
+        /// means for the whole board. The run asks while paused at the tool change, and Clear
+        /// ends them at the line after it.
+        /// </summary>
+        [Fact]
+        public async Task AToolChangeAfterMillingWithSectionsOrDepth_AsksKeepClearOrAbort_AndClearEndsThemThere()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth();
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionClear);
+
+            Assert.NotNull(outcome.Asked);
+            Assert.Equal(SectionsAndDepthTitle, outcome.Asked!.Title);
+            Assert.Equal(new[] { OptionKeep, OptionClear, OptionAbort }, outcome.Asked.Options);
+            Assert.Equal(MillingPhase.ToolChange, outcome.PhaseWhenAsked);
+            Assert.Equal(ControllerState.WaitingForUserInput, outcome.StateWhenAsked);
+            Assert.Equal(new[] { CutThenToolChangeResumeLine }, sectionsAndDepth.AskedAt);
+            Assert.Equal(new[] { CutThenToolChangeResumeLine }, sectionsAndDepth.EndedAt);
+            Assert.True(outcome.ReachedToolChange, "the tool change did not follow the answer");
+            Assert.Equal(1, outcome.EndedBeforeTheToolChange);
+            Assert.False(outcome.OperatorMayResumeThere, "the operator's resume would stream past the tool change");
+            Assert.Equal(ControllerState.Paused, outcome.Ended);
+            Assert.Null(outcome.Error);
+        }
+
+        /// <summary>
+        /// Catches a stop that arrives while the rest of the job is rebuilt still starting a tool
+        /// change, whose run the stop does not wait for and which moves the machine.
+        /// </summary>
+        [Fact]
+        public async Task AStop_WhileClearRebuildsTheJob_StartsNoToolChange()
+        {
+            using var stop = new CancellationTokenSource();
+            var sectionsAndDepth = new FakeSectionsAndDepth { WhileEnding = stop.Cancel };
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionClear, stop);
+
+            Assert.False(outcome.ReachedToolChange, "a stopped run started a tool change");
+            Assert.Equal(ControllerState.Cancelled, outcome.Ended);
+        }
+
+        /// <summary>
+        /// Catches a resume after the operator paused while the machine still ran the moves sent
+        /// before a tool change: restarting the stream there ran the next tool's work with the
+        /// old tool.
+        /// </summary>
+        [Fact]
+        public async Task AResume_AfterAPauseWhileTheMovesBeforeAToolChangeRun_StillStopsForTheToolChange()
+        {
+            using var machine = CreateFastFakeMachine(CutThenToolChange);
+            machine.IsHomed = true;
+            machine.DrainAfterPauseMs = DrainBeforeTheToolChangeMs;
+            var controller = new MillingController(machine) { Options = new MillingOptions() };
+            bool reached = false;
+            controller.ToolChangeDetected += _ => reached = true;
+
+            using var cts = new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+            try
+            {
+                await AsyncWait.WaitUntilAsync(
+                    () => machine.Mode == Machine.OperatingMode.Manual && machine.FilePosition == CutThenToolChangeResumeLine
+                        && controller.Phase == MillingPhase.Milling,
+                    ToolChangeTimeoutMessage, ToolChangeWaitTimeoutMs);
+                controller.Pause();
+                Assert.True(controller.OperatorMayResume);
+
+                controller.Resume();
+
+                await AsyncWait.WaitUntilAsync(() => reached || controller.HasFinished,
+                    ToolChangeTimeoutMessage, ToolChangeWaitTimeoutMs);
+                Assert.True(reached, "the resume streamed past the tool change");
+                Assert.Equal(CutThenToolChangeResumeLine, machine.FilePosition);
+            }
+            finally
+            {
+                cts.Cancel();
+                await AwaitRunOutcomeAsync(run);
+            }
+        }
+
+        /// <summary>Long enough for the test to pause the run before the machine finishes the moves.</summary>
+        private const int DrainBeforeTheToolChangeMs = 2_000;
+
+        /// <summary>
+        /// Catches the tool change showing the time left of the G-code the operator cleared:
+        /// the estimate follows the G-code the rebuild put on the machine.
+        /// </summary>
+        [Fact]
+        public async Task AfterClear_TheToolChangeShowsTheTimeLeftOfTheRebuiltGCode()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth { Rebuilt = CutThenToolChange.Append(ExtraCut).ToArray() };
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionClear);
+
+            Assert.Equal(SecondsAfterTheToolChange + ExtraCutSeconds, outcome.EstimateThere!.TimeLeft.TotalSeconds, EstimatePrecision);
+        }
+
+        /// <summary>A cut from (2, 2) to (3, 3) at the feed before it, 100 mm/min.</summary>
+        private const string ExtraCut = "G1 X3 Y3";
+        private static readonly double ExtraCutSeconds = 60 * Math.Sqrt(2) / 100;
+
+        /// <summary>
+        /// Catches the estimate ignoring GRBL's overrides: at half the feed the next tool's cut
+        /// takes twice as long.
+        /// </summary>
+        [Fact]
+        public async Task TheTimeLeft_FollowsTheFeedOverride()
+        {
+            var outcome = await RunToTheToolChangeAsync(new FakeSectionsAndDepth { Apply = false }, OptionKeep, feedPercent: 50);
+
+            Assert.Equal(2 * SecondsAfterTheToolChange, outcome.EstimateThere!.TimeLeft.TotalSeconds, EstimatePrecision);
+        }
+
+        /// <summary>Catches Keep ending the sections or depth anyway.</summary>
+        [Fact]
+        public async Task KeepingTheSectionsAndDepth_LeavesThemAndGoesOnToTheToolChange()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth();
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionKeep);
+
+            Assert.NotNull(outcome.Asked);
+            Assert.Empty(sectionsAndDepth.EndedAt);
+            Assert.True(outcome.ReachedToolChange, "the tool change did not follow the answer");
+        }
+
+        /// <summary>
+        /// Catches an operator who wants out at this question being made to pick Keep or Clear:
+        /// Abort stops the run there, as a stop does, and not as a stop while cutting.
+        /// </summary>
+        [Fact]
+        public async Task AbortingAtTheSectionsAndDepthQuestion_StopsTheRun()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth();
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionAbort);
+
+            Assert.False(outcome.ReachedToolChange, "the run went on to the tool change after Abort");
+            Assert.Empty(sectionsAndDepth.EndedAt);
+            Assert.Equal(ControllerState.Cancelled, outcome.Ended);
+            Assert.False(outcome.StoppedWhileCutting, "a stop at the tool change was taken for a stop while cutting");
+        }
+
+        /// <summary>
+        /// Catches a run going on to the next tool in the sections the operator declined, when
+        /// the rest of the job could not be rebuilt for the whole board: it fails and says why,
+        /// and the next job is not told it stopped while cutting.
+        /// </summary>
+        [Fact]
+        public async Task ClearingTheSectionsAndDepth_WhenTheyCannotBeEnded_FailsTheRunWithTheReason()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth { Refusal = ErrorSectionsAndDepthNotEnded };
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionClear);
+
+            Assert.False(outcome.ReachedToolChange, "the run went on to the tool change in the sections the operator declined");
+            Assert.Equal(ControllerState.Failed, outcome.Ended);
+            Assert.Equal(ErrorSectionsAndDepthNotEnded, outcome.Error);
+            Assert.False(outcome.StoppedWhileCutting, "a stop at the tool change was taken for a stop while cutting");
+        }
+
+        /// <summary>Catches the question asked when there is nothing to keep or clear.</summary>
+        [Fact]
+        public async Task AToolChangeWithNoSectionsOrDepthToEnd_IsNotQuestioned()
+        {
+            var sectionsAndDepth = new FakeSectionsAndDepth { Apply = false };
+
+            var outcome = await RunToTheToolChangeAsync(sectionsAndDepth, OptionKeep);
+
+            Assert.Equal(new[] { CutThenToolChangeResumeLine }, sectionsAndDepth.AskedAt);
+            Assert.Null(outcome.Asked);
+            Assert.True(outcome.ReachedToolChange);
+        }
+
+        /// <summary>
+        /// A fake that lists a Nomad 3's top speeds, with work zero inside its travel so the
+        /// tool's place on the G-code can be found.
+        /// </summary>
+        private static FakeMachine CreateMachineToEstimate(params string[] lines)
+        {
+            var machine = CreateFastFakeMachine(lines);
+            machine.IsHomed = true;
+            machine.SetWorkOffset(-150, -100, -50);
+            machine.TopSpeeds = FakeGrbl.TopSpeeds;
+            return machine;
+        }
+
+        // CutThenToolChange's moves at their feeds and top speeds, in seconds: the plunge's 1.1 mm
+        // and the cut's 1 mm at 100 mm/min, the rapid's 1.1 mm of Z at Z's top speed, and after
+        // the tool change the next tool's sqrt(5) mm at 100 mm/min. The first rapid's start is
+        // not known, so it takes none.
+        private static readonly double SecondsBeforeTheToolChange = 60 * 1.1 / 100 + 60 * 1.0 / 100 + 60 * 1.1 / FakeGrbl.TopSpeeds.Z;
+        private static readonly double SecondsAfterTheToolChange = 60 * Math.Sqrt(5) / 100;
+
+        /// <summary>
+        /// Catches a run counting its progress in lines, or a tool change showing the time the
+        /// job had before it: stopped at the tool change, the estimate has the work before it
+        /// done and the next tool's work left.
+        /// </summary>
+        [Fact]
+        public async Task AtAToolChange_TheEstimate_LeavesTheNextToolsWork()
+        {
+            using var machine = CreateMachineToEstimate(CutThenToolChange);
+            var controller = new MillingController(machine) { Options = new MillingOptions() };
+            JobEstimate? atTheToolChange = null;
+            controller.ToolChangeDetected += _ => atTheToolChange = controller.Estimate;
+
+            using var cts = new CancellationTokenSource();
+            var run = controller.StartAsync(cts.Token);
+            try
+            {
+                await AsyncWait.WaitUntilAsync(() => atTheToolChange != null || controller.HasFinished,
+                    ToolChangeTimeoutMessage, ToolChangeWaitTimeoutMs);
+            }
+            finally
+            {
+                cts.Cancel();
+                await AwaitRunOutcomeAsync(run);
+            }
+
+            Assert.NotNull(atTheToolChange);
+            Assert.Equal(SecondsAfterTheToolChange, atTheToolChange!.TimeLeft.TotalSeconds, EstimatePrecision);
+            Assert.Equal(SecondsBeforeTheToolChange / (SecondsBeforeTheToolChange + SecondsAfterTheToolChange),
+                atTheToolChange.FractionDone, EstimatePrecision);
+        }
+
+        private const int EstimatePrecision = 3;
+
+        /// <summary>
+        /// Catches a finished run showing time left, here a last dwell no tool position can
+        /// show is done, or its estimate outliving the run once released.
+        /// </summary>
+        [Fact]
+        public async Task ACompletedRun_HasAllDoneAndNothingLeft_UntilReleased()
+        {
+            using var machine = CreateMachineToEstimate(EndsInADwell);
+            var controller = new MillingController(machine) { Options = new MillingOptions() };
+
+            await controller.StartAsync();
+
+            Assert.Equal(ControllerState.Completed, controller.State);
+            Assert.Equal(new JobEstimate(1, TimeSpan.Zero), controller.Estimate);
+
+            await controller.ReleaseAsync();
+            Assert.Null(controller.Estimate);
+        }
+
+        private static readonly string[] EndsInADwell = { "G21", "G90", "G0 X0 Y0 Z1", "G1 Z-0.1 F100", "G1 X1 F100", "G0 Z1", "G4 P1" };
+
+        /// <summary>Catches top speeds read once per connection, so a change to GRBL's settings goes unseen.</summary>
+        [Fact]
+        public async Task EachRun_ReadsGrblsSettings()
+        {
+            using var machine = CreateMachineToEstimate(EndsInADwell);
+            var controller = new MillingController(machine) { Options = new MillingOptions() };
+
+            await controller.StartAsync();
+            await controller.ReleaseAsync();
+            await controller.StartAsync();
+
+            Assert.Equal(2, machine.SettingsRefreshCount);
+        }
+
+        /// <summary>Catches a run stopped because GRBL would not list its settings, which only the estimate uses.</summary>
+        [Fact]
+        public async Task ARun_WhoseSettingsGrblWillNotList_StillCompletes()
+        {
+            using var machine = CreateMachineToEstimate(EndsInADwell);
+            machine.SettingsRefreshSucceeds = false;
+            var controller = new MillingController(machine) { Options = new MillingOptions() };
+
+            await controller.StartAsync();
+
+            Assert.Equal(ControllerState.Completed, controller.State);
         }
 
         [Fact]

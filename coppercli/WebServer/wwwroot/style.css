@@ -1189,6 +1189,10 @@ header {
     margin-top: 20px;
 }
 
+.toolchange-choices {
+    display: contents;
+}
+
 .toolchange-actions .btn {
     width: 200px;
 }

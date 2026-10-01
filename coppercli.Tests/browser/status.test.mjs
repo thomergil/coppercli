@@ -300,6 +300,24 @@ test('a door question with no run behind it is answerable at once', async () => 
     assert.equal(dom.el('door-continue-btn').disabled, false);
 });
 
+test('a run\'s progress and time left are drawn as the server worked them out', async () => {
+    // The server sends the run's own estimate; the browser counts nothing itself, so a page
+    // that drew lines sent would disagree with the terminal.
+    const dom = await render({ file: { currentLine: 40, totalLines: 400, progress: 0.75, timeLeft: '00:02:05' } });
+
+    assert.equal(dom.el('progress-percent').textContent, '75%');
+    assert.equal(dom.el('progress-eta').textContent, 'ETA 00:02:05');
+
+});
+
+test('a time left the server stops sending is cleared, not left on the page', async () => {
+    const dom = await renderInTurn(
+        { file: { currentLine: 40, totalLines: 400, progress: 0.75, timeLeft: '00:02:05' } },
+        { file: { currentLine: 0, totalLines: 400, progress: 0, timeLeft: null } });
+
+    assert.equal(dom.el('progress-eta').textContent, '', 'the last run\'s time left stayed on the page');
+});
+
 test('a run that offers Abort gets a way off the door overlay', async () => {
     // The overlay covers the whole page. With only Continue on it, an operator who wants to
     // stop the job can reach no control that does.
@@ -345,6 +363,48 @@ test('a run\'s enclosure prompt is drawn in the page-level overlay', async () =>
     assert.equal(dom.el('door-message').textContent, 'Door closed. Continue?');
     assert.equal(dom.el('door-continue-btn').style.display, '');
     assert.equal(dom.el('toolchange-message').textContent, '');
+});
+
+test('a run\'s prompt with its own options gets a button for each, which answers with that option', async () => {
+    // At a tool change after milling sections, the run asks Keep, Clear or Abort; Continue is
+    // not offered, so the overlay must draw the options the run sent beside its Abort.
+    const dom = await render({
+        toolChange: {
+            phase: 'WaitingForOperator', id: 'p7', isDoorPrompt: false,
+            title: 'Sections and Depth', message: 'Keep them?', options: ['Keep', 'Clear', 'Abort']
+        }
+    });
+    const posted = [];
+    globalThis.fetch = async (url, options = {}) => {
+        posted.push({ url, body: JSON.parse(options.body) });
+        return { ok: true, json: async () => ({ success: true }) };
+    };
+
+    const choices = dom.el('toolchange-choices').children;
+    assert.deepEqual(choices.map(btn => btn.textContent), ['Keep', 'Clear']);
+    assert.equal(dom.el('toolchange-continue-btn').style.display, 'none');
+    assert.equal(dom.el('toolchange-abort-btn').style.display, '');
+
+    await choices[1].fire('click');
+
+    const { API_MILL_TOOLCHANGE_INPUT } = await load('constants.js');
+    assert.deepEqual(posted, [{ url: API_MILL_TOOLCHANGE_INPUT, body: { id: 'p7', response: 'Clear' } }]);
+});
+
+test('a prompt the live message delivers after status drew it keeps its buttons settling', async () => {
+    // Status polling and the live message both deliver a prompt. Drawing it a second time
+    // would make new buttons, enabled while the first drawing still settles.
+    const prompt = {
+        phase: 'WaitingForOperator', id: 'p8', isDoorPrompt: false,
+        title: 'Sections and Depth', message: 'Keep them?', options: ['Keep', 'Clear', 'Abort']
+    };
+    const dom = await render({ toolChange: prompt });
+    const { MSG_TYPE_TOOLCHANGE_INPUT } = await load('constants.js');
+
+    (await load('mill.js')).handleToolChangeControllerEvent(MSG_TYPE_TOOLCHANGE_INPUT, prompt);
+
+    assert.deepEqual(dom.el('toolchange-choices').children.map(btn => btn.disabled), [true, true],
+        'the prompt drawn again was answerable before it settled');
 });
 
 test('a status message with no answers in it disables the controls rather than enabling them', async () => {

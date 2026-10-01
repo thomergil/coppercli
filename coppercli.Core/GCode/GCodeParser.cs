@@ -32,6 +32,13 @@ namespace coppercli.Core.GCode
         public ParseUnit Unit;
         public int LastMotionMode;
 
+        /// <summary>
+        /// The line of the tool change that last made a known position unknown, or null when
+        /// something else did or the position was never known. Read only to explain a move that
+        /// needs the position.
+        /// </summary>
+        public int? PositionLostAtToolChange;
+
         public ParserState()
         {
             Position = Vector3.MinValue;
@@ -296,16 +303,27 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
-        /// Marks the modeled position unknown after a block that could not be modeled, so
+        /// Marks the modeled position unknown after a block or a tool change that could not be modeled, so
         /// every axis word of the next move is emitted rather than elided as "already
         /// there", and no move is deleted as zero-length until every axis is known again.
         /// Without this, a file that retracts with G53 and then says "G0 Z5" to come back has
         /// that recovery move deleted, and the cut that follows runs at the retract height.
         /// </summary>
-        private static void InvalidatePositionAfterUnmodeledMove()
+        /// <param name="toolChangeLine">The tool change's line, when a tool change lost it.</param>
+        private static void InvalidatePositionAfterUnmodeledMove(int? toolChangeLine = null)
         {
+            if (State.PositionValid.All(isValid => isValid))
+            {
+                State.PositionLostAtToolChange = toolChangeLine;
+            }
             State.PositionValid = new bool[] { false, false, false };
         }
+
+        /// <summary>The tool change that lost the position, for a parse error, or nothing.</summary>
+        private static string WhyThePositionIsLost() =>
+            State.PositionLostAtToolChange is int line
+                ? string.Format(Constants.ParseErrorPositionLostAtToolChange, line)
+                : "";
 
         /// <summary>The position along the axis a center word names: I is X, J is Y, K is Z.</summary>
         private static double CenterAxisPosition(Vector3 position, char centerWord) => centerWord switch
@@ -367,6 +385,12 @@ namespace coppercli.Core.GCode
                     preserveBlock = true;
                     probesOrSetsAnOffset = true;
                 }
+            }
+
+            // Read with the machine's own test for a tool change line, which it holds back whole.
+            if ((refuseBlock || preserveBlock) && IsM6Line(line))
+            {
+                throw new ParseException(Constants.ParseErrorToolChangeInBlock, lineNumber);
             }
 
             if (refuseBlock)
@@ -439,7 +463,15 @@ namespace coppercli.Core.GCode
                         throw new ParseException("M code can only have positive integer parameters", lineNumber);
                     }
 
-                    Commands.Add(new MCode() { Code = param, LineNumber = lineNumber });
+                    var mCode = new MCode() { Code = param, LineNumber = lineNumber };
+                    Commands.Add(mCode);
+
+                    // The tool change moves the tool: with a tool setter it returns at the safe
+                    // height, without one the operator jogs it to the surface.
+                    if (mCode.IsToolChange)
+                    {
+                        InvalidatePositionAfterUnmodeledMove(lineNumber);
+                    }
 
                     Words.RemoveAt(i);
                     i--;
@@ -606,12 +638,12 @@ namespace coppercli.Core.GCode
 
             if (State.DistanceMode == ParseDistanceMode.Incremental && !StartValid)
             {
-                throw new ParseException("incremental motion is only allowed after an absolute position has been established (eg. with \"G90 G0 X0 Y0 Z5\")", lineNumber);
+                throw new ParseException("incremental motion is only allowed after an absolute position has been established (eg. with \"G90 G0 X0 Y0 Z5\")" + WhyThePositionIsLost(), lineNumber);
             }
 
             if ((MotionMode == 2 || MotionMode == 3) && !StartValid)
             {
-                throw new ParseException("arcs (G2/G3) are only allowed after an absolute position has been established (eg. with \"G90 G0 X0 Y0 Z5\")", lineNumber);
+                throw new ParseException("arcs (G2/G3) are only allowed after an absolute position has been established (eg. with \"G90 G0 X0 Y0 Z5\")" + WhyThePositionIsLost(), lineNumber);
             }
 
             {

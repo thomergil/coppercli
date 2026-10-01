@@ -206,7 +206,7 @@ export function payload(overrides) {
         machinePos: { x: 0, y: 0, z: 0 },
         feedOverride: 100,
         probePin: false,
-        file: { currentLine: 0, totalLines: 0 },
+        file: { currentLine: 0, totalLines: 0, progress: 0, timeLeft: null },
         probe: { state: 'none', total: 0, progress: 0, hasHeights: false },
         ...overrides
     };

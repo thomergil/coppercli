@@ -10,7 +10,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>The 'v' prefix is for display; installer/coppercli.iss carries the same version without it.</summary>
-        public const string AppVersion = "v0.5.2";
+        public const string AppVersion = "v0.6.0-alpha";
 
         public const int ConnectionTimeoutMs = 5000;
 
@@ -165,8 +165,11 @@ namespace coppercli
         /// <summary>Characters, left and right margin together.</summary>
         public const int MillGridHorizontalPadding = 4;
 
-        /// <summary>Shown until enough of the job has run to estimate the time left.</summary>
+        /// <summary>Shown while a run has no estimate of its time left.</summary>
         public const string EtaUnknown = "--:--:--";
+
+        /// <summary>A length of time as hours, minutes and seconds; hours past a day keep counting.</summary>
+        public const string HoursMinutesSecondsFormat = "{0:00}:{1:00}:{2:00}";
 
         public const string MillCurrentPosMarker = "● ";
 
@@ -319,6 +322,11 @@ namespace coppercli
         public const string ToolChangeAbortingMessage = "Stopping the tool change...";
 
         public const string StopKeyHint = "Esc=Stop";
+
+        /// <summary>One key in a hint: {0} is the key, {1} what it does.</summary>
+        public const string KeyHintFormat = "{0}={1}";
+
+        public const string KeyHintSeparator = "  ";
 
         /// <summary>
         /// Appended to the tool-change status while the machine moves on its own, because Escape

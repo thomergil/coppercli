@@ -58,6 +58,19 @@ namespace coppercli.Core.Controllers
         public int LinesCompleted => _machine.FilePosition;
         public int TotalLines => _machine.File.Count;
 
+        // What the estimate is worked out from, by the monitor loop alone (see UpdateEstimate).
+        private JobTimeline? _timeline;
+        private IReadOnlyList<string>? _timelineOf;
+        private JobPosition _reached;
+
+        private JobEstimate? _estimate;
+
+        /// <inheritdoc/>
+        public JobEstimate? Estimate => Volatile.Read(ref _estimate);
+
+        /// <summary>The estimate's progress for the progress line: 0 to 100, 0 before there is one.</summary>
+        private float PercentDone => (float)(100 * (Estimate?.FractionDone ?? 0));
+
         public IReadOnlyList<(double X, double Y)> CuttingPath
         {
             get
@@ -73,9 +86,16 @@ namespace coppercli.Core.Controllers
 
         public event Action<ToolChangeInfo>? ToolChangeDetected;
 
-        public MillingController(IMachine machine)
+        private readonly ISectionsAndDepth? _sectionsAndDepth;
+
+        /// <param name="sectionsAndDepth">
+        /// The job's sections and depth adjustment, which a run offers to end at a tool change;
+        /// null when the caller has none to offer.
+        /// </param>
+        public MillingController(IMachine machine, ISectionsAndDepth? sectionsAndDepth = null)
         {
             _machine = machine ?? throw new ArgumentNullException(nameof(machine));
+            _sectionsAndDepth = sectionsAndDepth;
         }
 
         protected override async Task RunAsync(CancellationToken ct)
@@ -144,6 +164,11 @@ namespace coppercli.Core.Controllers
                 _phase = MillingPhase.NotStarted;
             }
 
+            _timeline = null;
+            _timelineOf = null;
+            _reached = default;
+            Volatile.Write(ref _estimate, null);
+
             _pauseCts?.Dispose();
             _pauseCts = null;
         }
@@ -181,7 +206,12 @@ namespace coppercli.Core.Controllers
                 }
             }
 
-            if (!RestartStreaming())
+            // The operator can pause after the stream stopped at a pause line and before the
+            // moves sent ahead of it have run. Restarting the stream would send the lines past
+            // it, so only the hold is released, and the monitor loop handles the line once
+            // those moves end.
+            bool pauseLineNotHandled = Phase != MillingPhase.ToolChange && PauseTheStreamStoppedAt() != GCodeNumbers.PauseMCode.None;
+            if (!RestartStreaming(startTheFile: !pauseLineNotHandled))
             {
                 throw new InvalidOperationException(DescribeRestartFailure());
             }
@@ -243,10 +273,17 @@ namespace coppercli.Core.Controllers
             MachineWait.GetDoorRefusal(_machine) ?? ErrorMillingDidNotStart;
 
         /// <summary>
+        /// Whether the operator's resume control applies: the run is paused, and not at a tool
+        /// change, which only the tool change's own run resumes. Both UIs read this.
+        /// </summary>
+        public bool OperatorMayResume => IsPaused && Phase != MillingPhase.ToolChange;
+
+        /// <summary>
         /// Releases a feed hold, refuses a door hold, then restarts sending. Resume() and the
         /// M0/M1 continue path both come through here, so the sequence is written once.
         /// </summary>
-        private bool RestartStreaming()
+        /// <param name="startTheFile">False to release the hold only, leaving a stopped stream stopped.</param>
+        private bool RestartStreaming(bool startTheFile = true)
         {
             // A machine holding at the door takes lines into its planner and runs them
             // when the hold is released, so refuse now rather than queueing them.
@@ -262,7 +299,7 @@ namespace coppercli.Core.Controllers
             // not holding does nothing.
             _machine.CycleStart();
 
-            if (_machine.Mode == OperatingMode.Manual)
+            if (startTheFile && _machine.Mode == OperatingMode.Manual)
             {
                 return _machine.FileStart();
             }
@@ -380,6 +417,13 @@ namespace coppercli.Core.Controllers
 
             ControllerLog.Log(LogStateInit);
 
+            // GRBL's top speeds, which the estimate runs rapids at. They can change between
+            // runs, so they are read for each.
+            if (!await _machine.RefreshSettingsAsync(CommandAnswerTimeoutMs, ct).ConfigureAwait(false))
+            {
+                ControllerLog.Log(LogSettingsNotListed);
+            }
+
             await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
         }
 
@@ -389,6 +433,9 @@ namespace coppercli.Core.Controllers
             // both read as idle-and-not-running. A stream that does not begin - the machine is
             // not in Manual mode, for instance - is reported here instead.
             _machine.FileGoto(0);
+
+            // Worked out before the stream starts, so reading the G-code holds up no check below.
+            UpdateEstimate();
 
             if (!_machine.FileStart())
             {
@@ -422,6 +469,9 @@ namespace coppercli.Core.Controllers
                     ControllerLog.Log(LogMillingAlarm, _machine.Status);
                     throw new InvalidOperationException(ErrorMillingAlarm);
                 }
+
+                // Before a stopped stream is handled, so a tool change shows the time left after it.
+                UpdateEstimate();
 
                 bool reachedEnd = _machine.FilePosition >= _machine.File.Count;
                 bool isRunning = _machine.Mode == OperatingMode.SendFile;
@@ -463,10 +513,9 @@ namespace coppercli.Core.Controllers
 
                 TrackCuttingPosition();
 
-                float pct = TotalLines > 0 ? (100f * LinesCompleted / TotalLines) : 0;
                 EmitProgress(new ProgressInfo(
                     PhaseMilling,
-                    pct,
+                    PercentDone,
                     string.Format(MessageMillingProgress, LinesCompleted, TotalLines),
                     LinesCompleted,
                     TotalLines
@@ -491,6 +540,44 @@ namespace coppercli.Core.Controllers
                 {
                     await WaitWhilePausedAsync(ct).ConfigureAwait(false);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Moves the estimate on to where the tool is, and rebuilds the timeline when the
+        /// machine's G-code is replaced, as when the operator ends the chosen sections and depth
+        /// at a tool change. The place reached carries over, because the lines already sent do
+        /// not change.
+        /// </summary>
+        private void UpdateEstimate()
+        {
+            var lines = _machine.File;
+            try
+            {
+                if (!ReferenceEquals(lines, _timelineOf))
+                {
+                    _timelineOf = lines;
+                    _timeline = JobTimeline.Of(lines, _machine.TopSpeeds);
+                    if (_machine.TopSpeeds is null)
+                    {
+                        ControllerLog.Log(LogNoTopSpeeds);
+                    }
+                }
+
+                if (_timeline != null)
+                {
+                    _reached = _timeline.Locate(_machine.WorkPosition, _reached, _machine.FilePosition);
+                    Volatile.Write(ref _estimate, new JobEstimate(
+                        _timeline.FractionDone(_reached),
+                        _timeline.TimeLeft(_reached, _machine.FeedOverride, _machine.RapidOverride)));
+                }
+            }
+            catch (Exception e)
+            {
+                // A run never fails for want of an estimate; it shows none until the G-code changes.
+                ControllerLog.Log(LogNoEstimate, e.Message);
+                _timeline = null;
+                Volatile.Write(ref _estimate, null);
             }
         }
 
@@ -528,18 +615,11 @@ namespace coppercli.Core.Controllers
         private async Task<bool> HandlePausedStreamAsync(CancellationToken ct)
         {
             int prevLine = _machine.FilePosition - 1;
-            if (prevLine < 0 || prevLine >= _machine.File.Count)
-            {
-                return false;
-            }
 
-            string line = _machine.File[prevLine];
-            var kind = GCodeParser.ClassifyPauseLine(line);
-
-            switch (kind)
+            switch (PauseTheStreamStoppedAt())
             {
                 case GCodeNumbers.PauseMCode.ToolChange:
-                    HandleToolChangePause(prevLine);
+                    await HandleToolChangePauseAsync(prevLine, ct).ConfigureAwait(false);
                     return false;
 
                 case GCodeNumbers.PauseMCode.ProgramStop:
@@ -557,11 +637,24 @@ namespace coppercli.Core.Controllers
         }
 
         /// <summary>
-        /// Pauses, then raises ToolChangeDetected, so a subscriber finds the controller
-        /// already paused. The run stays parked until Resume() or cancellation, so a subscriber
-        /// may return at once and do the work elsewhere, as both front ends do.
+        /// The kind of pause line the stream last sent, by the GCodeParser.ClassifyPauseLine that
+        /// Machine stops the stream with; None when the last line is not one, or none was sent.
         /// </summary>
-        private void HandleToolChangePause(int prevLine)
+        private GCodeNumbers.PauseMCode PauseTheStreamStoppedAt()
+        {
+            int prevLine = _machine.FilePosition - 1;
+            return prevLine < 0 || prevLine >= _machine.File.Count
+                ? GCodeNumbers.PauseMCode.None
+                : GCodeParser.ClassifyPauseLine(_machine.File[prevLine]);
+        }
+
+        /// <summary>
+        /// Pauses, asks about the sections and depth adjustment where they apply after this tool
+        /// change, then raises ToolChangeDetected, so a subscriber finds the controller already
+        /// paused. The run stays paused until Resume() or cancellation, so a subscriber may
+        /// return at once and do the work elsewhere, as both UIs do.
+        /// </summary>
+        private async Task HandleToolChangePauseAsync(int prevLine, CancellationToken ct)
         {
             var (toolNumber, toolName) = GCodeParser.FindToolInfo(_machine.File, prevLine);
             int toolNum = toolNumber ?? 0;
@@ -575,17 +668,83 @@ namespace coppercli.Core.Controllers
                 prevLine
             );
 
+            // Paused before the question, so a stop from here is not a stop while cutting, and
+            // no operator's pause arrives while the run rebuilds the rest of the job. One that
+            // arrived since the stream stopped has paused the run already.
             Phase = MillingPhase.ToolChange;
-
-            // Pause before notifying subscribers; a subscriber may call Resume()
-            // immediately and must see the Paused state.
             var pauseCts = _pauseCts;
-            TransitionTo(ControllerState.Paused);
+            TryTransitionTo(ControllerState.Paused);
+
+            await OfferToEndSectionsAndDepthAsync(ct).ConfigureAwait(false);
+
+            // A stop during the rebuild must not start a tool change it does not wait for.
+            ct.ThrowIfCancellationRequested();
+
+            // While the machine is still, and so the tool change shows the time left of the
+            // G-code the operator chose to run.
+            UpdateEstimate();
+
+            // A subscriber may call Resume() immediately and must see the Paused state.
             ToolChangeDetected?.Invoke(info);
 
             // Cancel the captured source. A subscriber may have resumed inline and
             // installed a new source, which must remain active.
             pauseCts?.Cancel();
+        }
+
+        /// <summary>
+        /// At a tool change after milling with sections or a depth adjustment, asks whether they
+        /// apply to the rest of the job: the next tool usually drills and cuts the board out,
+        /// which the operator means for the whole board at the file's depth.
+        /// </summary>
+        private async Task OfferToEndSectionsAndDepthAsync(CancellationToken ct)
+        {
+            if (_sectionsAndDepth?.ApplyAfterTheToolChange() != true)
+            {
+                return;
+            }
+
+            string response = await AskOrStopAsync(
+                SectionsAndDepthTitle, SectionsAndDepthPrompt, new[] { OptionKeep, OptionClear, OptionAbort }, ct)
+                .ConfigureAwait(false);
+            ControllerLog.Log(LogSectionsAndDepthAnswer, response);
+
+            if (response != OptionClear)
+            {
+                return;
+            }
+
+            // Carrying on would mill the next tool's work in the sections the operator declined.
+            string? notEnded = _sectionsAndDepth.EndAtTheToolChange();
+            if (notEnded != null)
+            {
+                throw new InvalidOperationException(notEnded);
+            }
+        }
+
+        /// <summary>
+        /// Asks the operator, and stops the run on Abort. The question goes on the progress line
+        /// too: without it the last thing either UI received is "Milling", so a job waiting on
+        /// the operator looks stalled.
+        /// </summary>
+        /// <returns>The answer, any option but Abort.</returns>
+        private async Task<string> AskOrStopAsync(string title, string message, string[] options, CancellationToken ct)
+        {
+            EmitProgress(new ProgressInfo(
+                PhaseWaitingForOperator,
+                PercentDone,
+                message,
+                LinesCompleted,
+                TotalLines));
+
+            string response = await RequestUserInputAsync(title, message, options, ct).ConfigureAwait(false);
+            if (response == OptionAbort)
+            {
+                // Use the external Stop cleanup path so retract and spindle-off run once.
+                throw new OperationCanceledException();
+            }
+
+            return response;
         }
 
         /// <summary>
@@ -602,26 +761,8 @@ namespace coppercli.Core.Controllers
                 ? OperatorPausePrompt
                 : string.Format(OperatorPausePromptWithNote, note);
 
-            // Report it on the progress line too. Without this the last thing either UI
-            // received is "Milling", so a job waiting on the operator looks stalled.
-            EmitProgress(new ProgressInfo(
-                PhaseWaitingForOperator,
-                TotalLines > 0 ? (100f * LinesCompleted / TotalLines) : 0,
-                message,
-                LinesCompleted,
-                TotalLines));
-
-            string response = await RequestUserInputAsync(
-                OperatorPauseTitle,
-                message,
-                new[] { OptionContinue, OptionAbort },
-                ct).ConfigureAwait(false);
-
-            if (response != OptionContinue)
-            {
-                // Use the external Stop cleanup path so retract and spindle-off run once.
-                throw new OperationCanceledException();
-            }
+            await AskOrStopAsync(OperatorPauseTitle, message, new[] { OptionContinue, OptionAbort }, ct)
+                .ConfigureAwait(false);
 
             ControllerLog.Log(LogOperatorPauseContinued, prevLine);
 
@@ -656,6 +797,9 @@ namespace coppercli.Core.Controllers
             // the machine executing commands. Without it a completed job can keep cutting from
             // commands still queued.
             await MachineWait.SafeCompletionAsync(_machine, homeAfter: true, ct);
+
+            // The machine went home after the last line, off the path the estimate follows.
+            Volatile.Write(ref _estimate, new JobEstimate(1, TimeSpan.Zero));
 
             EmitProgress(new ProgressInfo(
                 PhaseCompleting,

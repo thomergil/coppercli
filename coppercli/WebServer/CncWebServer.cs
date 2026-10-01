@@ -850,22 +850,16 @@ public static class CncWebServer
                 {
                     var resumeController = AppState.Milling;
 
-                    // A tool change leaves the milling controller Paused, and resuming here
-                    // while one is under way would restart file streaming mid tool-swap.
-                    // Gated on the milling controller's own Phase rather than DetectToolChange
-                    // (the tool-change controller's status): Phase flips to ToolChange before
-                    // the Paused transition and before the event that starts the tool-change
-                    // controller fires, while DetectToolChange lags up to a few seconds behind
-                    // it (see DetectToolChange's own remarks).
-                    bool toolChangeActive = resumeController.Phase == MillingPhase.ToolChange;
-
+                    // Gated on the milling controller's own rule rather than DetectToolChange
+                    // (the tool-change controller's status), which lags up to a few seconds
+                    // behind the pause at a tool change (see DetectToolChange's own remarks).
                     // The same check Resume() makes, made first so the refusal comes back
                     // with the response rather than only as an error event.
                     string? blocked = _machine == null
                         ? ErrorMachineNotConnected
                         : MachineWait.GetDoorRefusal(_machine);
 
-                    if (resumeController.IsPaused && !toolChangeActive && blocked == null)
+                    if (resumeController.OperatorMayResume && blocked == null)
                     {
                         resumeController.Resume();
                         await WriteJson(response, new { success = true });
@@ -876,7 +870,7 @@ public static class CncWebServer
                         await WriteJson(response, new
                         {
                             error = blocked
-                                ?? (toolChangeActive ? ErrorCannotResumeToolChangeActive : ErrorCannotResumeNotPaused)
+                                ?? (resumeController.IsPaused ? ErrorCannotResumeToolChangeActive : ErrorCannotResumeNotPaused)
                         });
                     }
                 }
@@ -1808,6 +1802,7 @@ public static class CncWebServer
         int totalLines = _machine?.File.Count ?? file.Toolpath.Count;
         int currentLine = _machine?.FilePosition ?? 0;
         var (min, max) = file.CuttingBounds;
+        var estimate = AppState.MillEstimate;
 
         return new
         {
@@ -1815,7 +1810,9 @@ public static class CncWebServer
             path = file.FileName,
             totalLines,
             currentLine,
-            progress = totalLines > 0 ? (double)currentLine / totalLines : 0,
+            // The run's own estimate, worked out once for both screens.
+            progress = estimate?.FractionDone ?? 0,
+            timeLeft = estimate is null ? null : DisplayHelpers.FormatTimeSpan(estimate.TimeLeft),
             // The bounds the cells are indexed on, so the browser sizes its grid to match.
             minX = min.X,
             maxX = max.X,

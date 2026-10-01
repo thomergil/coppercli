@@ -116,6 +116,9 @@ export const ICON_PAUSE = '<svg width="14" height="14" viewBox="0 0 24 24" fill=
 export const ICON_RESUME = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
 export const TEXT_START_PROBING = 'Start Probing';
 export const TEXT_STOP = 'STOP';
+export const CLASS_BTN = 'btn';
+export const CLASS_BTN_LARGE = 'btn-large';
+export const CLASS_BTN_PRIMARY = 'btn-primary';
 export const CLASS_BTN_DANGER = 'btn-danger';
 export const CLASS_BTN_SUCCESS = 'btn-success';
 export const CLASS_BTN_WARNING = 'btn-warning';
@@ -179,6 +182,7 @@ export const TEXT_FILE_LOADED = 'Loaded: {0} ({1} lines)';
 export const TEXT_LINE_COUNT = '{0} lines';
 export const TEXT_POINT_COUNT = '{0}/{1} points';
 export const TEXT_LINE_PROGRESS = '{0} / {1}';
+export const TEXT_TIME_LEFT = 'ETA {0}';
 // Shown when loading a file dropped the loaded height map.
 export const TEXT_HEIGHT_MAP_DROPPED =
     'Height map discarded - {0}. Probe again before milling.';

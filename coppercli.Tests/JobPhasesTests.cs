@@ -435,7 +435,7 @@ namespace coppercli.Tests
         {
             var source = SectionTestSupport.Parse(
                 "G21", "G90", "G0 X0 Y0 Z0", "G1 Z-0.1 F100", "G1 X10 F300", "G0 Z0",
-                "M6", "G0 X20 Y0", "G1 Z-0.1 F100", "G1 X30 F300", "G0 Z0", "M2");
+                "M6", "G0 X20 Y0 Z0", "G1 Z-0.1 F100", "G1 X30 F300", "G0 Z0", "M2");
 
             Assert.Equal((null, Constants.ErrorPhaseNoTravelHeight), source.KeepPart(PhaseTestSupport.Choose(source, 2), null));
         }
@@ -449,7 +449,7 @@ namespace coppercli.Tests
         {
             var source = SectionTestSupport.Parse(
                 "G21", "G90", "G0 X0 Y0 Z0", "G1 Z-0.1 F100", "G1 X10 F300", "G0 Z0",
-                "M6", "G0 X20 Y0", "G1 Z-0.1 F100", "G1 X30 Y10 F300", "G0 Z0", "M2");
+                "M6", "G0 X20 Y0 Z0", "G1 Z-0.1 F100", "G1 X30 Y10 F300", "G0 Z0", "M2");
             var rightHalf = SectionTestSupport.Choose(source, 2, 1, (1, 0));
 
             Assert.Equal((null, Constants.ErrorPhaseNoTravelHeight), source.KeepPart(PhaseTestSupport.Choose(source, 2), rightHalf));
@@ -515,6 +515,44 @@ namespace coppercli.Tests
                 Assert.Equal(5, c.End.X, SectionTestSupport.Tolerance);
                 Assert.Equal(5, c.End.Y, SectionTestSupport.Tolerance);
             });
+        }
+
+        private const double RemillDepth = -0.1;
+
+        /// <summary>
+        /// Catches a depth adjustment ended at a tool change still deepening the next tool's
+        /// cuts, or no longer deepening the cuts before it.
+        /// </summary>
+        [Fact]
+        public void ADepthAdjustment_EndsAtTheToolChangeGiven()
+        {
+            var source = SectionTestSupport.Parse(PhaseTestSupport.TwoPhaseBoard);
+
+            var ended = source.OffsetCutDepth(RemillDepth, endAtToolChange: 1);
+
+            Assert.Equal(new[] { PhaseTestSupport.TraceZ + RemillDepth, PhaseTestSupport.SecondPhaseDrillZ }.ToHashSet(),
+                PhaseTestSupport.CutDepths(ended));
+        }
+
+        /// <summary>
+        /// Catches sections ended at a tool change still clipping the next tool's work, or the
+        /// work before it changing, which a run has already sent.
+        /// </summary>
+        [Fact]
+        public void SectionsEndedAtAToolChange_KeepTheWorkBeforeIt_AndTheWholeBoardAfter()
+        {
+            var source = SectionTestSupport.Parse(PhaseTestSupport.TwoPhaseBoard);
+            var lowerLeft = SectionTestSupport.Choose(source, 2, 2, (0, 0));
+            var throughout = SectionTestSupport.Keep(source, lowerLeft).GetGCode();
+
+            var ended = source.KeepPart(null, lowerLeft, sectionsEndAtToolChange: 1).File!;
+
+            var lines = ended.GetGCode();
+            int afterChange = throughout.IndexOf("M6") + 1;
+            Assert.Equal(throughout.Take(afterChange), lines.Take(afterChange));
+            Assert.Equal(new[] { (5.0, 5.0), (15.0, 15.0) }.ToHashSet(),
+                SectionTestSupport.Cuts(ended).Where(c => c.End.Z == PhaseTestSupport.SecondPhaseDrillZ)
+                    .Select(c => (c.End.X, c.End.Y)).ToHashSet());
         }
 
         /// <summary>Catches the board picture showing cuts of a phase the run skips.</summary>

@@ -54,6 +54,7 @@ namespace coppercli.Core.Communication
 
         private static readonly Regex GCodeSplitter = new Regex(@"([GZ])\s*(\-?\d+\.?\d*)", RegexOptions.Compiled);
         private static readonly Regex StatusEx = new Regex(@"(?<=[<|])(\w+):?([^|>]*)?(?=[|>])", RegexOptions.Compiled);
+        private static readonly Regex SettingEx = new Regex(@"^\$(\d{1,9})=(-?\d*\.?\d+)$", RegexOptions.Compiled);
         private static readonly Regex ProbeEx = new Regex(@"\[PRB:(?'Pos'\-?[0-9\.]*(?:,\-?[0-9\.]*)+):(?'Success'0|1)\]", RegexOptions.Compiled);
         private static readonly Regex StartupRegex = new Regex(
             "grbl v?([0-9])\\.([0-9])([a-z])", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -94,6 +95,17 @@ namespace coppercli.Core.Communication
 
         public int FeedOverride { get; private set; } = Constants.OverrideDefaultPercent;
         public int RapidOverride { get; private set; } = Constants.OverrideDefaultPercent;
+
+        /// <summary>GRBL's settings by number ($110 is 110), as GRBL last listed them.</summary>
+        private readonly ConcurrentDictionary<int, double> _grblSettings = new();
+
+        /// <inheritdoc/>
+        public Vector3? TopSpeeds =>
+            _grblSettings.TryGetValue(SettingMaxRateX, out double x) && x > 0
+            && _grblSettings.TryGetValue(SettingMaxRateY, out double y) && y > 0
+            && _grblSettings.TryGetValue(SettingMaxRateZ, out double z) && z > 0
+                ? new Vector3(x, y, z)
+                : null;
         public int SpindleOverride { get; private set; } = Constants.OverrideDefaultPercent;
 
         public bool PinStateProbe { get; private set; } = false;
@@ -724,6 +736,12 @@ namespace coppercli.Core.Communication
                             RaiseEvent(LineReceived, line);
                             RaiseEvent(ParseStartup, line);
                         }
+                        else if (SettingEx.Match(line) is { Success: true } setting)
+                        {
+                            _grblSettings[int.Parse(setting.Groups[1].Value, Constants.DecimalParseFormat)] =
+                                double.Parse(setting.Groups[2].Value, Constants.DecimalParseFormat);
+                            RaiseEvent(LineReceived, line);
+                        }
                         else if (line.Length > 0)
                         {
                             RaiseEvent(LineReceived, line);
@@ -946,6 +964,9 @@ namespace coppercli.Core.Communication
             FeedRateRealtime = 0;
             CurrentTLO = 0;
 
+            // The next connection may be to another GRBL.
+            _grblSettings.Clear();
+
             PositionUpdateReceived?.Invoke();
 
             Status = StatusDisconnected;
@@ -1069,6 +1090,14 @@ namespace coppercli.Core.Communication
             return (await SendAsync(CmdViewParameters, timeoutMs, ct).ConfigureAwait(false)).Ran;
         }
 
+        /// <inheritdoc/>
+        public async Task<bool> RefreshSettingsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            // GRBL lists the settings before its ok for $$, and they are recorded as they
+            // arrive, so an ok means TopSpeeds has been read from this answer.
+            return (await SendAsync(CmdViewSettings, timeoutMs, ct).ConfigureAwait(false)).Ran;
+        }
+
         public void SoftReset()
         {
             if (!Connected)
@@ -1182,12 +1211,23 @@ namespace coppercli.Core.Communication
             SendLine(cmd);
         }
 
-        public void SetFile(IList<string> file)
+        /// <summary>
+        /// Loads <paramref name="file"/> to stream from <paramref name="startAt"/>, a line of it.
+        /// Refused while streaming, and for a line outside the file.
+        /// </summary>
+        /// <returns>Whether the file was loaded.</returns>
+        public bool SetFile(IList<string> file, int startAt = 0)
         {
             if (Mode == OperatingMode.SendFile)
             {
                 RaiseEvent(Info, "Can't change file while active");
-                return;
+                return false;
+            }
+
+            if (startAt != 0 && !IsLineOf(startAt, file.Count))
+            {
+                RaiseEvent(NonFatalException, Constants.ErrorLineOutsideFile);
+                return false;
             }
 
             bool[] pauselines = new bool[file.Count];
@@ -1197,12 +1237,14 @@ namespace coppercli.Core.Communication
                 pauselines[line] = GCodeParser.ClassifyPauseLine(file[line]) != PauseMCode.None;
             }
 
-            File = new ReadOnlyCollection<string>(file);
+            // Copied, so a caller changing its list afterwards cannot change what streams.
+            File = new ReadOnlyCollection<string>(new List<string>(file));
             PauseLines = new ReadOnlyCollection<bool>(pauselines);
 
-            FilePosition = 0;
+            FilePosition = startAt;
 
             RaiseEvent(FilePositionChanged);
+            return true;
         }
 
         public void ClearFile()
@@ -1311,6 +1353,12 @@ namespace coppercli.Core.Communication
             Mode = OperatingMode.Manual;
         }
 
+        /// <summary>
+        /// Whether <paramref name="line"/> is a line of a file of <paramref name="count"/> lines,
+        /// where the stream can be put to send it next.
+        /// </summary>
+        private static bool IsLineOf(int line, int count) => line >= 0 && line < count;
+
         public void FileGoto(int lineNumber)
         {
             if (Mode == OperatingMode.SendFile)
@@ -1318,9 +1366,9 @@ namespace coppercli.Core.Communication
                 return;
             }
 
-            if (lineNumber >= File.Count || lineNumber < 0)
+            if (!IsLineOf(lineNumber, File.Count))
             {
-                RaiseEvent(NonFatalException, "Line Number outside of file length");
+                RaiseEvent(NonFatalException, Constants.ErrorLineOutsideFile);
                 return;
             }
 

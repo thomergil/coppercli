@@ -55,11 +55,16 @@ namespace coppercli.Tests.Fakes
         /// </summary>
         public bool PauseFileOnHold { get; set; } = true;
 
+        /// <summary>
+        /// How long the machine still reports Run after the stream stops at a pause line, as
+        /// GRBL does while it runs the moves sent before that line. A feed hold stops the clock.
+        /// </summary>
+        public int DrainAfterPauseMs { get; set; }
+
         private OperatingMode _mode = OperatingMode.Manual;
         private string _status = "Idle";
         private Vector3 _machinePosition = new Vector3();
         private Vector3 _workOffset = new Vector3();
-        private List<string> _fileLines = new();
         private int _filePosition;
         private bool _isHomed;
         private int _homingCycles;
@@ -101,7 +106,26 @@ namespace coppercli.Tests.Fakes
 
         public bool Connected { get; private set; } = true;
 
-        public ReadOnlyCollection<string> File => _fileLines.AsReadOnly();
+        /// <summary>The same instance until LoadFile replaces it, as Machine.File is.</summary>
+        public ReadOnlyCollection<string> File { get; private set; } = new List<string>().AsReadOnly();
+
+        public int FeedOverride { get; set; } = Constants.OverrideDefaultPercent;
+        public int RapidOverride { get; set; } = Constants.OverrideDefaultPercent;
+
+        /// <summary>What a test says GRBL's top speeds are; null until it says.</summary>
+        public Vector3? TopSpeeds { get; set; }
+
+        /// <summary>How many times a run has asked GRBL for its settings.</summary>
+        public int SettingsRefreshCount { get; private set; }
+
+        /// <summary>False to have GRBL not list its settings.</summary>
+        public bool SettingsRefreshSucceeds { get; set; } = true;
+
+        public Task<bool> RefreshSettingsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            SettingsRefreshCount++;
+            return Task.FromResult(SettingsRefreshSucceeds);
+        }
 
         public int FilePosition
         {
@@ -279,7 +303,7 @@ namespace coppercli.Tests.Fakes
 
         public void FileGoto(int line)
         {
-            FilePosition = Math.Clamp(line, 0, _fileLines.Count);
+            FilePosition = Math.Clamp(line, 0, File.Count);
             FilePositionChanged?.Invoke();
         }
 
@@ -558,7 +582,7 @@ namespace coppercli.Tests.Fakes
         {
             SetStatus("Run");
 
-            while (FilePosition < _fileLines.Count && !ct.IsCancellationRequested)
+            while (FilePosition < File.Count && !ct.IsCancellationRequested)
             {
                 while (IsHolding && !ct.IsCancellationRequested)
                 {
@@ -570,7 +594,7 @@ namespace coppercli.Tests.Fakes
                     break;
                 }
 
-                var line = _fileLines[FilePosition];
+                var line = File[FilePosition];
 
                 // Matches production Machine.cs: M6 is recognized with GCodeParser.IsM6Line,
                 // the anchored pattern rather than a substring check that also fires on
@@ -604,6 +628,7 @@ namespace coppercli.Tests.Fakes
                     Mode = OperatingMode.Manual;
                     OperatingModeChanged?.Invoke();
 
+                    await DrainAsync(ct);
                     SetStatus(holdsOnPause ? "Hold:0" : "Idle");
                     return;
                 }
@@ -612,6 +637,24 @@ namespace coppercli.Tests.Fakes
             Mode = OperatingMode.Manual;
             OperatingModeChanged?.Invoke();
             SetStatus("Idle");
+        }
+
+        /// <summary>Runs out <see cref="DrainAfterPauseMs"/> of Run, waiting out a hold.</summary>
+        private async Task DrainAsync(CancellationToken ct)
+        {
+            if (DrainAfterPauseMs > 0)
+            {
+                SetStatus(GrblProtocol.StatusRun);
+            }
+
+            for (int ranMs = 0; ranMs < DrainAfterPauseMs; ranMs += PollIntervalMs)
+            {
+                while (IsHolding)
+                {
+                    await Task.Delay(PollIntervalMs, ct);
+                }
+                await Task.Delay(PollIntervalMs, ct);
+            }
         }
 
         /// <summary>
@@ -638,7 +681,7 @@ namespace coppercli.Tests.Fakes
 
         public void LoadFile(params string[] lines)
         {
-            _fileLines = new List<string>(lines);
+            File = new List<string>(lines).AsReadOnly();
             FilePosition = 0;
         }
 

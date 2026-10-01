@@ -71,12 +71,17 @@ namespace coppercli
 
         private static MillingController CreateMillingController()
         {
-            var controller = new MillingController(Machine);
+            var controller = new MillingController(Machine, new MillSectionsAndDepth());
             controller.StateChanged += state =>
             {
                 if (state == ControllerState.Completed)
                 {
                     DeleteStoredMapsForLoadedFile();
+                }
+
+                if (ControllerBase.IsFinishedState(state))
+                {
+                    ClearEndedSectionsAndDepth();
                 }
             };
             return controller;
@@ -84,11 +89,27 @@ namespace coppercli
 
         private static ToolChangeController? _toolChangeController;
         public static ToolChangeController ToolChange =>
-            _toolChangeController ??= new ToolChangeController(
+            _toolChangeController ??= CreateToolChangeController();
+
+        private static ToolChangeController CreateToolChangeController()
+        {
+            var controller = new ToolChangeController(
                 Machine,
                 MachineProfiles.HasToolSetter,
                 MachineProfiles.GetToolSetterPosition,
                 () => ConvertToolSetterConfig(MachineProfiles.GetToolSetterConfig()));
+
+            // A stop whose tool change did not finish in time ends the milling run first, and the
+            // file cannot change until this run ends too.
+            controller.StateChanged += state =>
+            {
+                if (ControllerBase.IsFinishedState(state))
+                {
+                    ClearEndedSectionsAndDepth();
+                }
+            };
+            return controller;
+        }
 
         private static ProbeController? _probeController;
         public static ProbeController Probe =>
@@ -111,13 +132,25 @@ namespace coppercli
         /// <summary>
         /// What the machine's G-code is built from: the file as loaded, the applied map, the
         /// depth adjustment, and the part of the job chosen (null phases or sections mean all).
+        /// The sections and depth apply up to <paramref name="SectionsAndDepthEnd"/>, a tool
+        /// change of the machine's G-code counted from 1, once the operator has ended them there
+        /// during a run; null applies them to the whole job.
         /// </summary>
         private sealed record JobInputs(
-            GCodeFile Source, ProbeGrid? Map, double DepthAdjustment, BoardSections? Sections, ChosenPhases? Phases)
+            GCodeFile Source, ProbeGrid? Map, double DepthAdjustment, BoardSections? Sections, ChosenPhases? Phases,
+            int? SectionsAndDepthEnd)
         {
             /// <summary>The file as loaded, with nothing applied and every part of the job chosen.</summary>
             public static JobInputs WholeJob(GCodeFile source) =>
-                new(source, Map: null, DepthAdjustment: 0, Sections: null, Phases: null);
+                new(source, Map: null, DepthAdjustment: 0, Sections: null, Phases: null, SectionsAndDepthEnd: null);
+
+            /// <summary>Whether sections or a depth adjustment are chosen and apply to the whole job.</summary>
+            public bool SectionsOrDepthApplyToTheEnd =>
+                SectionsAndDepthEnd == null && (Sections != null || DepthAdjustment != 0);
+
+            /// <summary>These inputs with the sections and depth adjustment gone from the whole job.</summary>
+            public JobInputs WithoutSectionsAndDepth() =>
+                this with { Sections = null, DepthAdjustment = 0, SectionsAndDepthEnd = null };
         }
 
         /// <summary>
@@ -145,8 +178,8 @@ namespace coppercli
         public static GCodeFile? MachineFile => _machineFileBuild?.File;
 
         /// <summary>
-        /// Changes whenever the file, the applied map, the depth, the sections or the phases do,
-        /// and is 0 with no file loaded. A start names the version the operator checked and is refused if
+        /// Changes whenever any input to the machine's G-code does (see JobInputs), and is 0 with
+        /// no file loaded. A start names the version the operator checked and is refused if
         /// the version has changed since.
         /// </summary>
         public static long MachineFileVersion => _machineFileBuild?.Version ?? 0;
@@ -192,6 +225,14 @@ namespace coppercli
         public static bool IsProbing => _probeController?.IsActive ?? false;
 
         /// <summary>
+        /// The progress and time left of the milling run in progress (MillingController.Estimate),
+        /// or null with no run in progress. Read from the backing field, so asking does not
+        /// create a controller.
+        /// </summary>
+        public static JobEstimate? MillEstimate =>
+            _millingController is { IsRunInProgress: true } milling ? milling.Estimate : null;
+
+        /// <summary>
         /// True while any run is under way, parked at a prompt or not. Read from the backing
         /// fields, so asking does not create a controller.
         /// </summary>
@@ -233,7 +274,8 @@ namespace coppercli
         /// <summary>
         /// Millimeters added to the Z of every cut below work zero, so a negative value cuts
         /// deeper; travel keeps its height. Back to zero when a file loads or the height map
-        /// changes, so it carries over only between runs of the same job.
+        /// changes, so it carries over only between runs of the same job, and after a run in
+        /// which the operator cleared it at a tool change (ClearEndedSectionsAndDepth).
         /// </summary>
         public static double DepthAdjustment => _machineFileBuild?.Inputs.DepthAdjustment ?? 0;
 
@@ -275,8 +317,7 @@ namespace coppercli
 
         /// <summary>
         /// The sections of the board the machine's G-code keeps, or null for the whole board.
-        /// Resets to the whole board, as the depth resets to 0, when a file loads or the height map
-        /// changes (ClearJobCorrections).
+        /// Resets to the whole board whenever the depth resets to 0 (see DepthAdjustment).
         /// </summary>
         public static BoardSections? MillSections => _machineFileBuild?.Inputs.Sections;
 
@@ -333,7 +374,8 @@ namespace coppercli
         /// chosen, each "all" when it is the whole job.
         /// </summary>
         public static string DescribeJobPart() =>
-            $"phases {MillPhases?.ToString() ?? "all"}, sections {MillSections?.ToString() ?? "all"}";
+            $"phases {MillPhases?.ToString() ?? "all"}, sections {MillSections?.ToString() ?? "all"}"
+            + (_machineFileBuild?.Inputs.SectionsAndDepthEnd is int end ? $", sections and depth end at tool change {end}" : "");
 
         /// <summary>
         /// Rebuilds the machine's G-code from the inputs <paramref name="change"/> makes of the
@@ -557,50 +599,176 @@ namespace coppercli
 
         /// <summary>
         /// Builds the G-code the machine streams from <paramref name="inputs"/> and loads it into
-        /// the machine, or unloads it for null; callers check WhyTheFileCannotChange first,
-        /// because this does not refuse during a run. Every change to any input comes through
-        /// here, under FileLock, so the machine's G-code cannot disagree with them.
+        /// the machine, or unloads it for null. Callers check WhyTheFileCannotChange first,
+        /// because this does not refuse during a run; the one exception is
+        /// EndSectionsAndDepthAtTheToolChange, which passes the lines streamed. Every change to
+        /// any input comes through here, under FileLock, so the machine's G-code cannot disagree
+        /// with them.
         /// </summary>
+        /// <param name="keepStreamed">
+        /// The number of lines a run waiting at a tool change has already streamed; the new G-code
+        /// must repeat those lines exactly, and the stream continues after them. 0 otherwise.
+        /// </param>
         /// <returns>Null once loaded, or why the file cannot take the inputs.</returns>
-        private static string? PutFileOnMachine(JobInputs? inputs)
+        private static string? PutFileOnMachine(JobInputs? inputs, int keepStreamed = 0)
         {
             lock (FileLock)
             {
-                if (inputs is not JobInputs (var source, var map, var depthAdjustment, var sections, var phases))
+                if (inputs == null)
                 {
                     _machineFileBuild = null;
                     Machine?.ClearFile();
                     return null;
                 }
 
-                if ((map != null || depthAdjustment != 0 || sections != null) && source.HasArcsOutsideXYPlane)
+                var (file, refused) = BuildMachineFile(inputs);
+                if (file == null)
                 {
-                    Logger.Log("PutFileOnMachine: {0} has arcs outside the XY plane", source.FileName);
-                    return Constants.ErrorArcsOutsideXYPlane;
+                    return refused;
                 }
 
-                var file = source;
-                if (sections != null || phases != null)
+                var lines = file.GetGCode();
+                if (keepStreamed > 0 && !lines.Take(keepStreamed).SequenceEqual(Machine.File.Take(keepStreamed)))
                 {
-                    var (kept, refused) = source.KeepPart(phases, sections);
-                    if (kept == null)
-                    {
-                        Logger.Log($"PutFileOnMachine: {refused}");
-                        return refused;
-                    }
-                    file = kept;
+                    Logger.Log("PutFileOnMachine: the new G-code differs in the {0} lines already streamed", keepStreamed);
+                    return CliConstants.ErrorFileChangeDuringRun;
                 }
 
-                file = file.OffsetCutDepth(depthAdjustment);
-                if (map != null)
+                if (Machine?.SetFile(lines, keepStreamed) == false)
                 {
-                    file = file.ApplyProbeGrid(map);
+                    Logger.Log("PutFileOnMachine: the machine refused the file, streaming from line {0}", keepStreamed);
+                    return CliConstants.ErrorFileChangeDuringRun;
                 }
 
                 _machineFileBuild = new MachineFileBuild(inputs, file, ++_lastMachineFileVersion);
-                Machine?.SetFile(file.GetGCode());
                 return null;
             }
+        }
+
+        /// <summary>The G-code the machine streams for <paramref name="inputs"/>, or null with why the file cannot take them.</summary>
+        private static (GCodeFile? File, string? Refused) BuildMachineFile(JobInputs inputs)
+        {
+            var (part, refused) = KeepChosenPart(inputs);
+            if (part == null)
+            {
+                return (null, refused);
+            }
+
+            var file = part.OffsetCutDepth(inputs.DepthAdjustment, inputs.SectionsAndDepthEnd);
+            return (inputs.Map == null ? file : file.ApplyProbeGrid(inputs.Map), null);
+        }
+
+        /// <summary>
+        /// The chosen phases of the file, and in them the cuts in the chosen sections: the first
+        /// step of <see cref="BuildMachineFile"/>, before the depth and the map move any cut.
+        /// </summary>
+        private static (GCodeFile? File, string? Refused) KeepChosenPart(JobInputs inputs)
+        {
+            var (source, map, depthAdjustment, sections, phases, sectionsAndDepthEnd) = inputs;
+
+            if ((map != null || depthAdjustment != 0 || sections != null) && source.HasArcsOutsideXYPlane)
+            {
+                Logger.Log("BuildMachineFile: {0} has arcs outside the XY plane", source.FileName);
+                return (null, Constants.ErrorArcsOutsideXYPlane);
+            }
+
+            if (sections == null && phases == null)
+            {
+                return (source, null);
+            }
+
+            var (kept, refused) = source.KeepPart(phases, sections, sectionsAndDepthEnd);
+            if (kept == null)
+            {
+                Logger.Log($"BuildMachineFile: {refused}");
+            }
+            return (kept, refused);
+        }
+
+        /// <summary>
+        /// The number, counted from 1, of the tool change the machine's stream stopped at, or
+        /// null where the last line streamed is not a tool change. The parser refuses a tool
+        /// change on a line the machine's M6 test would hold back with other words, so the count
+        /// of M6 lines in the machine's G-code matches the count of tool change commands.
+        /// </summary>
+        private static int? ToolChangeTheStreamStoppedAt()
+        {
+            var lines = Machine.File;
+            int streamed = Machine.FilePosition;
+            return streamed > 0 && streamed <= lines.Count && GCodeParser.IsM6Line(lines[streamed - 1])
+                ? lines.Take(streamed).Count(GCodeParser.IsM6Line)
+                : null;
+        }
+
+        /// <summary>
+        /// Whether sections or a depth adjustment are chosen for the whole job and the job cuts
+        /// before the tool change the stream stopped at; MillingController then offers to end
+        /// them there. The cuts are read before the depth adjustment and the map, which can lift
+        /// a shallow cut above the surface.
+        /// </summary>
+        internal static bool SectionsOrDepthApplyAfterTheToolChange()
+        {
+            lock (FileLock)
+            {
+                return _machineFileBuild is { Inputs.SectionsOrDepthApplyToTheEnd: true } build
+                    && ToolChangeTheStreamStoppedAt() is int toolChange
+                    && KeepChosenPart(build.Inputs).File?.CutsBeforeToolChange(toolChange) == true;
+            }
+        }
+
+        /// <summary>
+        /// Rebuilds the machine's G-code so the sections and depth adjustment apply only up to the
+        /// tool change a milling run waits at, with the map still applied, and continues the
+        /// stream where it stopped. It is the one change to the file made during a run; the
+        /// lines already sent must come out the same, so the run carries on where it stopped.
+        /// </summary>
+        /// <returns>Null once the rest of the job is rebuilt, or why it was not.</returns>
+        internal static string? EndSectionsAndDepthAtTheToolChange()
+        {
+            lock (FileLock)
+            {
+                int streamed = Machine.FilePosition;
+                if (_millingController is not { IsRunInProgress: true, Phase: MillingPhase.ToolChange }
+                    || _machineFileBuild is not MachineFileBuild build
+                    || ToolChangeTheStreamStoppedAt() is not int toolChange)
+                {
+                    Logger.Log("EndSectionsAndDepthAtTheToolChange: no milling run waits at a tool change ({0} lines streamed)", streamed);
+                    return ControllerConstants.ErrorSectionsAndDepthNotEnded;
+                }
+
+                string? refused = PutFileOnMachine(build.Inputs with { SectionsAndDepthEnd = toolChange }, streamed);
+                if (refused != null)
+                {
+                    Logger.Log("EndSectionsAndDepthAtTheToolChange: {0}", refused);
+                    return ControllerConstants.ErrorSectionsAndDepthNotEnded;
+                }
+
+                Logger.Log("EndSectionsAndDepthAtTheToolChange: sections and depth end at tool change {0}; {1} lines, resuming at {2}",
+                    toolChange, Machine.File.Count, streamed);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// After a milling run that ended the sections and depth adjustment at a tool change,
+        /// clears them from the whole job, as the operator chose, so the next run mills the
+        /// whole board at the file's depth. Called when the milling run ends and when a tool
+        /// change's run ends, whichever is last.
+        /// </summary>
+        private static void ClearEndedSectionsAndDepth()
+        {
+            if (_machineFileBuild?.Inputs.SectionsAndDepthEnd != null && _millingController?.IsRunInProgress != true)
+            {
+                ChangeJob(nameof(ClearEndedSectionsAndDepth), inputs => (inputs.WithoutSectionsAndDepth(), null));
+            }
+        }
+
+        /// <summary>The milling controller's view of the job's sections and depth adjustment.</summary>
+        private sealed class MillSectionsAndDepth : ISectionsAndDepth
+        {
+            public bool ApplyAfterTheToolChange() => SectionsOrDepthApplyAfterTheToolChange();
+
+            public string? EndAtTheToolChange() => EndSectionsAndDepthAtTheToolChange();
         }
 
         /// <summary>Leaves no G-code loaded, as at startup. Tests only: it does not refuse during a run.</summary>

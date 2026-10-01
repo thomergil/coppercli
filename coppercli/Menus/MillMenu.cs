@@ -25,21 +25,6 @@ namespace coppercli.Menus
         private static UserInputRequest? _pendingPrompt;
         private static ControllerError? _latestError;
 
-        // The clock starts when streaming begins: counting the settle, home and retract
-        // phases would distort the pace the estimate is built from.
-        private static EtaEstimator? _etaEstimator;
-        /// <summary>
-        /// When the run began streaming, on the monotonic clock. The ETA is computed from
-        /// this, and a wall clock that steps would move it by an hour mid-job.
-        /// </summary>
-        private static long? _millStreamStartMs;
-
-        /// <summary>
-        /// The paused total when streaming began. The ETA's clock starts later than the
-        /// display's, so subtracting the whole paused total gives negative first estimates.
-        /// </summary>
-        private static long _millStreamPausedAtStartMs;
-
         private static string? _toolChangeOverlayMessage;
         private static string? _toolChangeOverlaySubMessage;
         private static string? _toolChangeStatusAction;
@@ -124,9 +109,6 @@ namespace coppercli.Menus
             _pendingToolChange = null;
             _pendingPrompt = null;
             _latestError = null;
-            _etaEstimator = null;
-            _millStreamStartMs = null;
-            _millStreamPausedAtStartMs = 0;
 
             bool paused = false;
             var visitedCells = new HashSet<(int, int)>();
@@ -208,7 +190,7 @@ namespace coppercli.Menus
                     string safetyMsg = string.Format(SafetyMessageFormat,
                         ProbeRemovedQuestion, depthStr, GetSectionsText(AppState.MillSections),
                         hasPhases ? string.Format(SafetyPhasesFormat, GetPhasesText(AppState.MillPhases)) : "");
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, EtaUnknown, safetyMsg,
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, null, safetyMsg,
                         string.Format(SafetyDepthSubMessage, hasPhases ? SafetyPhasesKeyHint : ""));
 
                     if (Console.KeyAvailable)
@@ -310,8 +292,9 @@ namespace coppercli.Menus
                         }
                     }
 
-                    // The mill controller's own M0/M1 prompt, which does not go through
-                    // RunToolChangeController because no tool-change run is under way.
+                    // The mill controller's own prompts, an M0/M1 pause and the sections and depth
+                    // question at a tool change, which do not go through RunToolChangeController
+                    // because no tool-change run is under way.
                     var pendingPrompt = Interlocked.Exchange(ref _pendingPrompt, null);
                     if (pendingPrompt != null)
                     {
@@ -320,7 +303,7 @@ namespace coppercli.Menus
                         Logger.Log("Handling operator pause: {0}", request.Message);
                         pauseStartMs = Environment.TickCount64;
 
-                        bool continued = MenuHelpers.ShowPromptOverlay(request);
+                        bool continued = MenuHelpers.ShowPromptOverlay(request) != OptionAbort;
                         Console.Clear();
 
                         if (continued)
@@ -345,7 +328,7 @@ namespace coppercli.Menus
                         }
                         else if (InputHelpers.IsKey(key, ConsoleKey.R))
                         {
-                            if (ControllerBase.IsPausedState(state))
+                            if (controller.OperatorMayResume)
                             {
                                 Logger.Log("Resuming");
                                 controller.Resume();
@@ -379,33 +362,10 @@ namespace coppercli.Menus
                     // and a pause the run raised itself both show here.
                     paused = ControllerBase.IsPausedState(controller.State);
 
-                    // The ETA clock starts the moment streaming begins, so setup time does
-                    // not distort the pace it learns from.
-                    if (_millStreamStartMs == null &&
-                        Volatile.Read(ref _latestProgress)?.Phase == PhaseMilling &&
-                        AppState.MachineFile != null)
-                    {
-                        _millStreamStartMs = Environment.TickCount64;
-                        _millStreamPausedAtStartMs = totalPausedMs;
-                        _etaEstimator = new EtaEstimator(AppState.MachineFile.TotalTime, machine.File.Count);
-                    }
-
-                    // One pause count feeds both clocks. Elapsed runs from the moment the
-                    // operator hit go; the ETA subtracts only the pauses since streaming
-                    // began, through `_millStreamPausedAtStartMs`.
+                    // Elapsed runs from the moment the operator hit go, less the pauses.
                     long currentPausedMs = paused ? Environment.TickCount64 - pauseStartMs : 0;
                     var elapsed = TimeSpan.FromMilliseconds(
                         Environment.TickCount64 - startMs - totalPausedMs - currentPausedMs);
-
-                    string etaStr = EtaUnknown;
-                    if (_etaEstimator != null && _millStreamStartMs != null)
-                    {
-                        var millingElapsed = TimeSpan.FromMilliseconds(
-                            Environment.TickCount64 - _millStreamStartMs.Value
-                            - (totalPausedMs - _millStreamPausedAtStartMs) - currentPausedMs);
-                        var remaining = _etaEstimator.Update(machine.FilePosition, millingElapsed);
-                        etaStr = remaining.HasValue ? FormatTimeSpan(remaining.Value) : EtaUnknown;
-                    }
 
                     var (curWidth, curHeight) = GetSafeWindowSize();
                     if (curWidth != lastWidth || curHeight != lastHeight)
@@ -426,7 +386,7 @@ namespace coppercli.Menus
                             ? progress.Message
                             : null;
 
-                    DrawMillProgress(paused, visitedCells, elapsed, etaStr, statusMessage);
+                    DrawMillProgress(paused, visitedCells, elapsed, controller.Estimate, statusMessage);
                     Thread.Sleep(StatusPollIntervalMs);
                 }
 
@@ -436,7 +396,7 @@ namespace coppercli.Menus
 
                 if (finalState == ControllerState.Completed)
                 {
-                    DrawMillProgress(false, visitedCells, finalElapsed, EtaUnknown);
+                    DrawMillProgress(false, visitedCells, finalElapsed, controller.Estimate);
 
                     if (AppState.ProbePoints != null)
                     {
@@ -520,7 +480,8 @@ namespace coppercli.Menus
             }
         }
 
-        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, string etaStr, string? statusMessage = null, string? statusSubMessage = null)
+        /// <param name="estimate">The run's progress and time left, or null before there is one.</param>
+        private static void DrawMillProgress(bool paused, HashSet<(int, int)> visitedCells, TimeSpan elapsed, JobEstimate? estimate, string? statusMessage = null, string? statusSubMessage = null)
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
@@ -542,7 +503,8 @@ namespace coppercli.Menus
             var pos = machine.WorkPosition;
             int fileLine = machine.FilePosition;
             int totalLines = machine.File.Count;
-            double pct = totalLines > 0 ? (100.0 * fileLine / totalLines) : 0;
+            double pct = 100 * (estimate?.FractionDone ?? 0);
+            string etaStr = estimate is null ? EtaUnknown : FormatTimeSpan(estimate.TimeLeft);
 
             // `MachineWait.GetActivity` names the case; the wording below is this screen's.
             var activity = MachineWait.GetActivity(machine);
@@ -869,7 +831,7 @@ namespace coppercli.Menus
                 long currentPausedMs = Environment.TickCount64 - pauseStartMs;
                 var elapsed = TimeSpan.FromMilliseconds(
                     Environment.TickCount64 - startMs - totalPausedMs - currentPausedMs);
-                DrawMillProgress(false, visitedCells, elapsed, EtaUnknown);
+                DrawMillProgress(false, visitedCells, elapsed, AppState.Milling.Estimate);
             }
 
             Action<ControllerState> onStateChanged = state =>

@@ -203,6 +203,40 @@ namespace coppercli.Core.Util
         public const string ErrorArcsOutsideXYPlane =
             "This file has arcs outside the XY plane (G18 or G19), so coppercli cannot apply a height map or a depth adjustment to it, or mill it by section. Mill it without a height map, a depth adjustment or sections.";
 
+        /// <summary>
+        /// The tool counts as on a move when it is within this distance of the move's path:
+        /// above the rounding of reported positions and GRBL's arc tolerance ($12), below the
+        /// gap between passes.
+        /// </summary>
+        public const double ToolOnPathToleranceMm = 0.02;
+
+        /// <summary>The blocks GRBL 1.1's planner holds.</summary>
+        public const int GrblPlannerBlocks = 16;
+
+        /// <summary>The shortest line coppercli streams, such as "M3" and its newline.</summary>
+        public const int ShortestLineBytes = 3;
+
+        /// <summary>
+        /// The most lines GRBL can have been sent and not yet run: a full planner, and a full
+        /// receive buffer of the shortest lines. Every line sent before those has run.
+        /// </summary>
+        public const int GrblLinesHeldMax = GrblPlannerBlocks + GrblBufferSize / ShortestLineBytes;
+
+        /// <summary>Shown when the stream is put at a line the loaded file does not have.</summary>
+        public const string ErrorLineOutsideFile = "Line Number outside of file length";
+
+        /// <summary>
+        /// A G-code file is refused for this: the machine holds back a tool change line whole,
+        /// so a move or probe on it would never run, and a G28 or G30 line, dropped, would take
+        /// the tool change with it.
+        /// </summary>
+        public const string ParseErrorToolChangeInBlock =
+            "A tool change (M6) cannot share a line with G28, G30, G53, a probe or an offset.";
+
+        /// <summary>Added to a parse error for a move that needs the position, when a tool change lost it. {0} is its line.</summary>
+        public const string ParseErrorPositionLostAtToolChange =
+            ". The tool change on line {0} can move the tool, so a move after it must give X, Y and Z first.";
+
         /// <summary>The most columns, and the most rows, the board can be divided into.</summary>
         public const int MaxSectionsPerAxis = 8;
 

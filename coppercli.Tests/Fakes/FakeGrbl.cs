@@ -22,6 +22,9 @@ namespace coppercli.Tests.Fakes
         /// <summary>What GRBL 1.1f prints each time it starts.</summary>
         private const string WelcomeBanner = "Grbl 1.1f ['$' for help]";
 
+        /// <summary>The top speeds $$ lists, in mm/min: a Nomad 3's. Tests of the estimate use them too.</summary>
+        public static readonly Vector3 TopSpeeds = new(3800, 3800, 1900);
+
         /// <summary>The alarm GRBL reports when a reset ends a homing cycle.</summary>
         private const int AlarmHomingReset = 6;
 
@@ -405,6 +408,15 @@ namespace coppercli.Tests.Fakes
             if (DoorModel.LockedOut(line, _state))
             {
                 Send($"{GrblProtocol.ResponseErrorPrefix}{GrblRejection.LockedOut}");
+                return;
+            }
+
+            if (line == GrblProtocol.CmdViewSettings)
+            {
+                Send(GCodeFormat.Inv($"${GrblProtocol.SettingMaxRateX}={TopSpeeds.X:F3}"));
+                Send(GCodeFormat.Inv($"${GrblProtocol.SettingMaxRateY}={TopSpeeds.Y:F3}"));
+                Send(GCodeFormat.Inv($"${GrblProtocol.SettingMaxRateZ}={TopSpeeds.Z:F3}"));
+                Send(GrblProtocol.ResponseOk);
                 return;
             }
 

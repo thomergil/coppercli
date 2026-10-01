@@ -180,6 +180,11 @@ namespace coppercli.Core.Util
             return !(v1 == v2);
         }
 
+        public static double Dot(Vector3 v1, Vector3 v2)
+        {
+            return v1.X * v2.X + v1.Y * v2.Y + v1.Z * v2.Z;
+        }
+
         public static double Abs(Vector3 v1)
         {
             return v1.Magnitude;

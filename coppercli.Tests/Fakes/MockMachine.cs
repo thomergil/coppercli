@@ -75,8 +75,26 @@ namespace coppercli.Tests.Fakes
 
         public long StatusReportCount => Poll.Count;
 
-        private List<string> _fileLines = new();
-        public ReadOnlyCollection<string> File => _fileLines.AsReadOnly();
+        /// <summary>The same instance until LoadFile replaces it, as Machine.File is.</summary>
+        public ReadOnlyCollection<string> File { get; private set; } = new List<string>().AsReadOnly();
+
+        public int FeedOverride { get; set; } = Constants.OverrideDefaultPercent;
+        public int RapidOverride { get; set; } = Constants.OverrideDefaultPercent;
+
+        /// <summary>What a test says GRBL's top speeds are; null until it says.</summary>
+        public Vector3? TopSpeeds { get; set; }
+
+        /// <summary>How many times a run has asked GRBL for its settings.</summary>
+        public int SettingsRefreshCount { get; private set; }
+
+        /// <summary>False to have GRBL not list its settings.</summary>
+        public bool SettingsRefreshSucceeds { get; set; } = true;
+
+        public Task<bool> RefreshSettingsAsync(int timeoutMs, CancellationToken ct = default)
+        {
+            SettingsRefreshCount++;
+            return Task.FromResult(SettingsRefreshSucceeds);
+        }
         public int FilePosition { get; set; }
 
         public List<string> SentCommands { get; } = new();
@@ -328,7 +346,7 @@ namespace coppercli.Tests.Fakes
 
         public void LoadFile(params string[] lines)
         {
-            _fileLines = new List<string>(lines);
+            File = new List<string>(lines).AsReadOnly();
             FilePosition = 0;
         }
 

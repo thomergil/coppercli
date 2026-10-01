@@ -16,13 +16,18 @@ namespace coppercli.Core.Controllers
         public string Id { get; init; } = Guid.NewGuid().ToString();
 
         /// <summary>
-        /// The prompt's heading: "Tool Change", "Set Z Zero" or "Program Paused". Empty for
+        /// The prompt's heading: "Tool Change", "Set Z Zero", "Program Paused" or "Sections and
+        /// Depth". Empty for
         /// the enclosure prompt, whose message already names the enclosure.
         /// </summary>
         public required string Title { get; init; }
 
         public required string Message { get; init; }
 
+        /// <summary>
+        /// The answers the run takes. A screen answers Continue and Abort with its own controls;
+        /// any other option gets a control of its own, in this order.
+        /// </summary>
         public required string[] Options { get; init; }
 
         /// <summary>

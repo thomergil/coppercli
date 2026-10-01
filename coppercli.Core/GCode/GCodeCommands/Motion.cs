@@ -17,6 +17,12 @@ namespace coppercli.Core.GCode.GCodeCommands
 
         public abstract double Length { get; }
 
+        /// <summary>
+        /// Whether the move cuts: <see cref="IsCut"/> for a move whose ends are known, and for
+        /// one whose start is not, whether it ends below the surface.
+        /// </summary>
+        public bool CutsTheBoard => FullyKnown ? IsCut : this is Line { ZKnown: true } && End.Z < 0;
+
         /// <summary>Where the move leaves the tool, or null where the file has not said.</summary>
         public virtual Vector3? KnownEnd => End;
 
@@ -53,6 +59,13 @@ namespace coppercli.Core.GCode.GCodeCommands
 
         /// <summary>The point at <paramref name="ratio"/>, strictly between 0 and 1.</summary>
         protected abstract Vector3 PointAlongPath(double ratio);
+
+        /// <summary>
+        /// The point of the path nearest <paramref name="point"/>: how far away it is, and its
+        /// ratio along the path. A move whose start is not known measures to its end, at ratio 1,
+        /// and returns an infinite distance when its end is not known either.
+        /// </summary>
+        public abstract (double Distance, double Ratio) Nearest(Vector3 point);
 
         /// <summary>The ratios strictly between 0 and 1 at which the path crosses X = <paramref name="x"/>.</summary>
         public abstract IEnumerable<double> RatiosWhereXIs(double x);

@@ -35,6 +35,12 @@
   starts at that tool change and keeps the height map. Sections and depth apply to the
   phases that run. coppercli chooses every phase again when you load a file or change the
   height map.
+- At a tool change after milling with sections or a depth adjustment, the run asks whether
+  to keep them. Keep mills the next tool's work, such as the drills and the outline, in the
+  same sections at the same depth, and the run asks again at the next tool change. Clear
+  mills the rest of the job on the whole board at the file's depth, with the height map
+  still applied, and the next run also mills the whole board at the file's depth. Abort
+  stops the run. In the terminal, press K, C or Esc.
 - coppercli cannot skip a phase that probes or changes an offset when a later phase runs.
   It also cannot skip a phase that starts the spindle when a later phase cuts without
   starting the spindle again.
@@ -82,8 +88,17 @@
   G-code as written without saying so.
 - The terminal's mill picture now covers the area the job cuts, as the browser's does.
   Before, it also covered where the job only travels.
-- The time estimate now counts arc moves, such as milled holes. During a run of chosen
-  sections or phases, the terminal's time remaining counts only the work that runs.
+- The time estimate now counts arc moves, such as milled holes.
+- The time remaining during a run now comes from where the tool is in the G-code and how
+  long each move left takes: a cut or an arc its length at its feed, a rapid at GRBL's top
+  speeds ($110 to $112, read at the start of each run), a dwell its time. Before, it judged
+  the rest of the job by how fast lines had gone by, so while drilling, where lines go by
+  quickly, it showed far too little time for the outline still to come: on a 10-minute
+  drill and outline run it was up to 9 minutes short. Replayed against two runs on a Nomad
+  3, it was off by 3 to 4 seconds on average, and never by more than 12. It follows the
+  feed and rapid overrides at once, counts only the sections and phases that run, and
+  leaves out time at a tool change or pause. The browser shows it too, beside the progress
+  bar; the bar and its percentage now count time rather than lines.
 
 **Probing**
 
@@ -113,8 +128,23 @@
 - A move whose start is not known on every axis, such as the second move after a G53
   block, is no longer dropped as a move of zero length.
 - coppercli now writes a feed into the G-code it sends only before a feed move, and writes
-  it again after a block that sets its own feed, such as a probe. Before, a rapid could carry
-  an `F0`, and a cut after a probe ran at the probe's feed.
+  it again after a block that sets its own feed, such as a probe, and after a tool change.
+  Before, a rapid could carry an `F0`, and a cut after a probe or a tool-setter measurement
+  could run at the probe's feed.
+- The retract a file writes after a tool change, such as pcb2gcode's `G00 Z35 ( safety
+  retract )`, is no longer dropped. On a machine without a tool setter, the tool waits just
+  above the surface after you set Z0, and the next move used to cross the board there
+  instead of at the file's height.
+- coppercli no longer assumes the tool is where it was before a tool change. A file that
+  moves in G91 or along an arc right after a tool change, before it gives X, Y and Z, no
+  longer loads, and the error names the tool change. A file with a tool change on the same
+  line as G53, G28, G30, a probe or an offset no longer loads either: coppercli would have
+  skipped that line's move, or the tool change. A file that, after a tool change, moves in X
+  and Y and then cuts down without first giving Z can no longer be milled by section or with
+  phases skipped.
+- With a height map applied, a cut whose start is not known, such as one right after a G53
+  block or a tool change, now has the map's height added at its end. Before, a cut after a
+  G53 block got no correction from the map.
 
 ## v0.5.2
 

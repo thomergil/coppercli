@@ -46,6 +46,7 @@ import {
     TEXT_NOT_LOADED,
     TEXT_POINT_COUNT,
     TEXT_LINE_PROGRESS,
+    TEXT_TIME_LEFT,
     POSITION_DECIMALS_BRIEF,
     TEXT_POSITION_BRIEF,
     POSITION_DECIMALS_FULL,
@@ -322,12 +323,16 @@ export function updateStatus(status) {
         const progressFill = document.getElementById('progress-fill');
         const progressPercent = document.getElementById('progress-percent');
         const progressLines = document.getElementById('progress-lines');
+        const progressEta = document.getElementById('progress-eta');
 
         if (progressFill) progressFill.style.width = (progress * PROGRESS_PERCENT_MULTIPLIER) + '%';
         if (progressPercent) progressPercent.textContent = Math.round(progress * PROGRESS_PERCENT_MULTIPLIER) + '%';
         if (progressLines && status.file.currentLine != null && status.file.totalLines != null) {
             progressLines.textContent = format(
                 TEXT_LINE_PROGRESS, status.file.currentLine, status.file.totalLines);
+        }
+        if (progressEta) {
+            progressEta.textContent = status.file.timeLeft ? format(TEXT_TIME_LEFT, status.file.timeLeft) : '';
         }
     }
 

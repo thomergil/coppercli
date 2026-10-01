@@ -22,9 +22,17 @@ namespace coppercli.Core.GCode
     /// </remarks>
     internal sealed class PartClip
     {
-        private readonly GCodeFile _file;
         private readonly ChosenPhases? _phases;
+
         private readonly BoardSections? _sections;
+
+        /// <summary>The tool change, counted from 1 in the output, after which the whole board is kept; null for none.</summary>
+        private readonly int? _sectionsEndAtToolChange;
+
+        private int _toolChangesWritten;
+
+        /// <summary>The sections the output keeps now; null for the whole board.</summary>
+        private BoardSections? Sections => _toolChangesWritten >= _sectionsEndAtToolChange ? null : _sections;
         private readonly List<Command> _toolpath = new();
 
         /// <summary>The file's travel since the output last wrote a move.</summary>
@@ -88,23 +96,24 @@ namespace coppercli.Core.GCode
 
         /// <summary>The line that takes the tool to the machine's safe height, the retract every run starts with.</summary>
         internal static readonly string MachineSafeHeightLine =
-                        GCodeFormat.MoveLine(x: null, y: null, z: Constants.SafeClearanceZ, inMachineCoordinates: true);
+            GCodeFormat.MoveLine(x: null, y: null, z: Constants.SafeClearanceZ, inMachineCoordinates: true);
 
         /// <summary>The rise to the machine's safe height, as the clip writes it.</summary>
         private static PassThrough MachineSafeHeightBlock() => new() { Line = MachineSafeHeightLine, MovesOnly = true };
 
-        private PartClip(GCodeFile file, ChosenPhases? phases, BoardSections? sections)
+        private PartClip(GCodeFile file, ChosenPhases? phases, BoardSections? sections, int? sectionsEndAtToolChange)
         {
-            _file = file;
             _phases = phases;
             _sections = sections;
+            _sectionsEndAtToolChange = sectionsEndAtToolChange;
             _stageClearances = ClearancePerStage(file.Toolpath);
         }
 
         /// <returns>The toolpath, or null with the reason it cannot be built.</returns>
-        public static (List<Command>? Toolpath, string? Refused) Keep(GCodeFile file, ChosenPhases? phases, BoardSections? sections)
+        public static (List<Command>? Toolpath, string? Refused) Keep(
+            GCodeFile file, ChosenPhases? phases, BoardSections? sections, int? sectionsEndAtToolChange)
         {
-            var clip = new PartClip(file, phases, sections);
+            var clip = new PartClip(file, phases, sections, sectionsEndAtToolChange);
 
             for (int i = 0; i < file.Toolpath.Count; i++)
             {
@@ -302,6 +311,7 @@ namespace coppercli.Core.GCode
             if (command is MCode { IsToolChange: true })
             {
                 _toolAt = null;
+                _toolChangesWritten++;
             }
         }
 
@@ -318,7 +328,7 @@ namespace coppercli.Core.GCode
                 _plungeFeed = cut.Feed;
             }
 
-            var stretches = (_sections?.KeptStretches(cut) ?? new[] { (From: 0.0, To: 1.0) }).ToList();
+            var stretches = (Sections?.KeptStretches(cut) ?? new[] { (From: 0.0, To: 1.0) }).ToList();
             foreach (var (from, to) in stretches)
             {
                 Motion part = from == 0 && to == 1 ? cut : cut.Slice(from, to);
@@ -373,7 +383,7 @@ namespace coppercli.Core.GCode
         /// </summary>
         private void TakeUnplaced(Motion move)
         {
-            if (move is not Line { ZKnown: true } || move.End.Z >= 0)
+            if (!move.CutsTheBoard)
             {
                 TakeTravel(move);
                 return;
@@ -434,7 +444,7 @@ namespace coppercli.Core.GCode
         /// file, and either knows where the tool is or keeps the whole board, so the file's
         /// travel cannot bring the tool down over a section that is left out.
         /// </summary>
-        private bool CanCopyTheFile => _following && (_toolAt != null || _sections == null);
+        private bool CanCopyTheFile => _following && (_toolAt != null || Sections == null);
 
         /// <summary>
         /// Takes the tool out of the copper: by the file's own held travel, only as far as the
@@ -603,7 +613,7 @@ namespace coppercli.Core.GCode
 
         /// <summary>The refusal names what made the output leave the file: a skipped phase, or a section.</summary>
         private void Refuse(string forSections, string forPhases) =>
-            _refused = _sections == null || _leftByASkippedPhase ? forPhases : forSections;
+            _refused = Sections == null || _leftByASkippedPhase ? forPhases : forSections;
 
         private bool RefusesACutWithTheSpindleStopped()
         {

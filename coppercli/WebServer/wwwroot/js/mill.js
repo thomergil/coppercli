@@ -43,6 +43,9 @@ import {
     SCREEN_DASHBOARD,
     SCREEN_MILL,
     CLASS_HIDDEN,
+    CLASS_BTN,
+    CLASS_BTN_LARGE,
+    CLASS_BTN_PRIMARY,
     MSG_TYPE_MILL_STATE,
     MSG_TYPE_MILL_PROGRESS,
     MSG_TYPE_MILL_TOOLCHANGE,
@@ -270,6 +273,7 @@ function hideToolChangeOverlay() {
     const overlay = $('toolchange-overlay');
     if (overlay) {
         overlay.classList.add(CLASS_HIDDEN);
+        $('toolchange-choices').innerHTML = '';
     }
 }
 
@@ -867,6 +871,21 @@ function renderUserInputPrompt(data) {
         // The abort button's handler is set in initMillScreen, which confirms first.
     }
 
+    // Any other option, such as keeping or clearing the sections at a tool change, gets a
+    // button of its own, in the order the server sent them.
+    const choices = $('toolchange-choices');
+    choices.innerHTML = '';
+    for (const option of (data.options || []).filter(o => o !== PROMPT_OPTION_CONTINUE && o !== PROMPT_OPTION_ABORT)) {
+        const btn = document.createElement('button');
+        btn.classList.add(CLASS_BTN, CLASS_BTN_LARGE, CLASS_BTN_PRIMARY);
+        // Enabled once the prompt settles, so a prompt drawn again after it was answered
+        // cannot be answered from here.
+        btn.disabled = true;
+        btn.textContent = option;
+        btn.onclick = () => answerPrompt(data, option);
+        choices.appendChild(btn);
+    }
+
     overlay.classList.remove(CLASS_HIDDEN);
     acceptAnswersAfterSettling(data.id);
 }
@@ -877,6 +896,7 @@ function renderUserInputPrompt(data) {
 function answerButtons() {
     return [
         $('toolchange-continue-btn'),
+        ...Array.from($('toolchange-choices')?.children ?? []),
         $('jog-continue-milling-btn'),
         $('door-continue-btn'),
         $('door-abort-btn')
@@ -942,6 +962,12 @@ export function continueLastPrompt() {
 
 function handleToolChangeInput(data) {
     console.log('Tool change input required:', data);
+
+    // Status polling may have drawn it already. Drawing it again would make new buttons for
+    // it, enabled while it settles or while an answer to it is in flight.
+    if (shownPrompt?.id === data.id) {
+        return;
+    }
 
     shownPrompt = data;
 

@@ -80,6 +80,10 @@ namespace coppercli.Helpers
             return key.Key == consoleKey;
         }
 
+        /// <summary>Whether <paramref name="key"/> types <paramref name="c"/>, in either case.</summary>
+        public static bool IsCharKey(ConsoleKeyInfo key, char c) =>
+            char.ToLowerInvariant(key.KeyChar) == char.ToLowerInvariant(c);
+
         public static bool IsEscapeKey(ConsoleKeyInfo key)
         {
             return key.Key == ConsoleKey.Escape;

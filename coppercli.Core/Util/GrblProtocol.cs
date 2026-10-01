@@ -86,6 +86,14 @@ namespace coppercli.Core.Util
         public const string CmdViewGCodeState = "$G";
         public const string CmdViewParameters = "$#";
 
+        /// <summary>Lists GRBL's settings, one "$number=value" line each, then ok.</summary>
+        public const string CmdViewSettings = "$$";
+
+        /// <summary>The settings for the top speed of X, Y and Z, in mm/min.</summary>
+        public const int SettingMaxRateX = 110;
+        public const int SettingMaxRateY = 111;
+        public const int SettingMaxRateZ = 112;
+
         public const string CmdAbsolute = "G90";
         public const string CmdRelative = "G91";
         public const string CmdRapidMove = "G0";

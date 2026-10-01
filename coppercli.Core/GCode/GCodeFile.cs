@@ -368,6 +368,12 @@ namespace coppercli.Core.GCode
                         }
                     }
                     GCode.Add($"M{code}");
+
+                    // The tool change's tool-setter probe sets the machine's feed too.
+                    if (c is MCode { IsToolChange: true })
+                    {
+                        State.Feed = double.NaN;
+                    }
                     continue;
                 }
 
@@ -399,11 +405,11 @@ namespace coppercli.Core.GCode
 
         /// <summary>
         /// A copy fitted to the probed surface: feed moves follow the map's height under them,
-        /// and rapids rise by the map's highest point, or stay as written when that point is
-        /// below zero, so travel clears the highest copper by at least the height the file
-        /// wrote. A rapid that
-        /// has to rise from where the last move left the tool rises in Z alone before it moves
-        /// in X or Y, so it cannot cross copper on the way up.
+        /// and one whose start is not known is fitted at its end. Rapids rise by the map's
+        /// highest point, or stay as written when that point is below zero, so travel clears the
+        /// highest copper by at least the height the file wrote. A rapid that has to rise from
+        /// where the last move left the tool rises in Z alone before it moves in X or Y, so it
+        /// cannot cross copper on the way up.
         /// </summary>
         public GCodeFile ApplyProbeGrid(ProbeGrid map)
         {
@@ -415,7 +421,7 @@ namespace coppercli.Core.GCode
             List<Command> toolpath = new List<Command>();
 
             // Where the last move left the tool in the fitted file, or null where the file
-            // does not say: a block the parser could not model, or a move with an axis missing.
+            // does not say, such as after a move with an axis missing.
             Vector3? toolAt = null;
 
             foreach (Command command in Toolpath)
@@ -423,23 +429,30 @@ namespace coppercli.Core.GCode
                 if (command is not Motion motion)
                 {
                     toolpath.Add(command);
-                    if (command is PassThrough)
-                    {
-                        toolAt = null;
-                    }
                     continue;
                 }
 
+                // A move whose start is not known follows something the file cannot place the
+                // tool after, such as a tool change or a G53 block, so the last move's end does
+                // not say where it starts.
                 if (motion is Line line && line.Rapid)
                 {
-                    toolAt = AddTravel(toolpath, line, travelLift, toolAt);
+                    toolAt = AddTravel(toolpath, line, travelLift, line.StartValid ? toolAt : null);
                     continue;
                 }
 
+                // Without a start the map cannot follow the move along its length, as after a
+                // tool change or a G53 block, so only its end is fitted, where the file gives it.
                 if (motion is Line { FullyKnown: false } unknown)
                 {
-                    toolpath.Add(unknown);
-                    toolAt = unknown.KnownEnd;
+                    var fitted = (Line)unknown.Copy();
+                    if (fitted.KnownEnd is Vector3 end)
+                    {
+                        fitted.End.Z += map.InterpolateZ(end.X, end.Y);
+                    }
+
+                    toolpath.Add(fitted);
+                    toolAt = fitted.KnownEnd;
                     continue;
                 }
 
@@ -495,7 +508,11 @@ namespace coppercli.Core.GCode
         /// as a drill's G1 retract, keep their height.
         /// </summary>
         /// <param name="offset">Added to Z, so a negative offset cuts deeper.</param>
-        public GCodeFile OffsetCutDepth(double offset)
+        /// <param name="endAtToolChange">
+        /// The offset applies up to this tool change, counted from 1, and not after it; null
+        /// applies it to the whole file.
+        /// </param>
+        public GCodeFile OffsetCutDepth(double offset, int? endAtToolChange = null)
         {
             if (offset == 0)
             {
@@ -505,10 +522,16 @@ namespace coppercli.Core.GCode
             ThrowUnlessEveryArcIsInTheXYPlane();
 
             List<Command> toolpath = new List<Command>(Toolpath.Count);
+            int toolChanges = 0;
 
             foreach (Command command in Toolpath)
             {
-                if (command is not Motion motion || motion is Line { Rapid: true })
+                if (command is MCode { IsToolChange: true })
+                {
+                    toolChanges++;
+                }
+
+                if (command is not Motion motion || motion is Line { Rapid: true } || toolChanges >= endAtToolChange)
                 {
                     toolpath.Add(command);
                     continue;
@@ -534,18 +557,46 @@ namespace coppercli.Core.GCode
         }
 
         /// <summary>
+        /// Whether the file cuts before its tool change <paramref name="toolChange"/>, counted
+        /// from 1: whether a tool's work comes before it, or only setup, such as Fusion's T1 M6.
+        /// </summary>
+        public bool CutsBeforeToolChange(int toolChange)
+        {
+            int toolChanges = 0;
+            foreach (Command command in Toolpath)
+            {
+                if (command is MCode { IsToolChange: true } && ++toolChanges == toolChange)
+                {
+                    return false;
+                }
+
+                if (command is Motion { CutsTheBoard: true })
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
         /// A copy with only the chosen phases and, within them, only the chosen sections (see
         /// PartClip). Null phases means every phase, and null sections the whole board.
         /// </summary>
+        /// <param name="sectionsEndAtToolChange">
+        /// The sections apply up to this tool change of the copy, counted from 1, and not after
+        /// it; null applies them to the whole file.
+        /// </param>
         /// <returns>The copy, or null with the reason it cannot be made.</returns>
-        public (GCodeFile? File, string? Refused) KeepPart(ChosenPhases? phases, BoardSections? sections)
+        public (GCodeFile? File, string? Refused) KeepPart(
+            ChosenPhases? phases, BoardSections? sections, int? sectionsEndAtToolChange = null)
         {
             if (sections != null)
             {
                 ThrowUnlessEveryArcIsInTheXYPlane();
             }
 
-            var (toolpath, refused) = PartClip.Keep(this, phases, sections);
+            var (toolpath, refused) = PartClip.Keep(this, phases, sections, sectionsEndAtToolChange);
             return toolpath == null ? (null, refused) : (Derive(toolpath), null);
         }
 

@@ -220,6 +220,7 @@
                 <div class="progress-text">
                     <span id="progress-percent">0%</span>
                     <span id="progress-lines">0 / 0</span>
+                    <span id="progress-eta"></span>
                 </div>
             </div>
 
@@ -243,6 +244,7 @@
                     <h2 id="toolchange-info">Tool Change Required</h2>
                     <p id="toolchange-message">Starting tool change workflow...</p>
                     <div class="toolchange-actions">
+                        <span class="toolchange-choices" id="toolchange-choices"></span>
                         <button class="btn btn-success btn-large" id="toolchange-continue-btn" style="display: none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px;"><polyline points="9 18 15 12 9 6"/></svg> Continue</button>
                         <button class="btn btn-danger btn-large" id="toolchange-abort-btn"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: -2px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Abort</button>
                     </div>
