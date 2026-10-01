@@ -88,7 +88,7 @@ namespace coppercli.Menus
                     portMenu.Add(new MenuItem<PortOption>("Auto-detect (scan all ports)", 'a', PortOption.AutoDetect));
                     for (int i = 0; i < ports.Length; i++)
                     {
-                        portMenu.Add(new MenuItem<PortOption>(ports[i], (char)('0' + ((i + 2) % 10)), PortOption.Port, i));
+                        portMenu.Add(new MenuItem<PortOption>(ports[i], MenuHelpers.DigitMnemonic(i + 2), PortOption.Port, i));
                     }
                     portMenu.Add(new MenuItem<PortOption>("Enter manually", 'm', PortOption.Manual));
 

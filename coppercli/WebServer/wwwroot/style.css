@@ -1015,27 +1015,28 @@ header {
     top: 2px;
 }
 
-.depth-adjust-section {
+.premill-group {
     background: var(--bg-color);
     border-radius: var(--border-radius);
     padding: 16px;
     margin: 16px 0;
 }
 
-.depth-label {
+.premill-group-label {
     color: var(--text-color);
     font-weight: 600;
     margin-bottom: 8px;
 }
 
-.depth-controls {
+.premill-group-controls {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: center;
     gap: 8px;
 }
 
-.depth-controls .depth-value {
+.premill-group-controls .depth-value {
     color: var(--text-color);
     font-size: 1.5rem;
     font-weight: 600;
@@ -1043,10 +1044,66 @@ header {
     text-align: center;
 }
 
-.depth-hint {
+.premill-group-hint {
     font-size: 0.85rem;
     margin-top: 8px;
     margin-bottom: 0;
+}
+
+.premill-phases {
+    flex-direction: column;
+    align-items: flex-start;
+    width: fit-content;
+    margin: 0 auto;
+}
+
+.premill-phases label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-color);
+}
+
+.sections-value,
+.sections-count {
+    color: var(--text-color);
+    font-weight: 600;
+}
+
+.sections-count {
+    min-width: 2ch;
+}
+
+.sections-board {
+    position: relative;
+    width: 100%;
+    margin: 16px auto;
+    border: 1px solid var(--text-dim);
+}
+
+.sections-board canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+}
+
+.sections-grid {
+    position: absolute;
+    inset: 0;
+    display: grid;
+}
+
+.sections-cell {
+    background: transparent;
+    border: 1px dashed var(--text-dim);
+    cursor: pointer;
+}
+
+.sections-cell.selected {
+    background: color-mix(in srgb, var(--success-color) 35%, transparent);
+    border: 2px solid var(--success-color);
 }
 
 .premill-warnings {
@@ -1073,7 +1130,8 @@ header {
     font-weight: 600;
 }
 
-.premill-checklist input {
+.premill-checklist input,
+.premill-phases input {
     width: 24px;
     height: 24px;
 }

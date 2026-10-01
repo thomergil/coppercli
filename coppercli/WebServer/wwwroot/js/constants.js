@@ -90,6 +90,18 @@ export const MILL_MARKER_CELL_FRACTION = 3;
 export const CLASS_PROBE_OPEN = 'open';
 export const CLASS_PROBE_CONTACT = 'contact';
 export const CLASS_CLICKABLE = 'clickable';
+export const CLASS_SECTIONS_CELL = 'sections-cell';
+
+// How the sections picker draws the board: each cell of the picture the server sends, in
+// canvas pixels, and the tallest the board may be, in percent of the window's height.
+export const SECTIONS_PICTURE_CELL_PX = 8;
+export const SECTIONS_BOARD_MAX_HEIGHT_VH = 55;
+
+// The keys that add and remove the picker's lines, as KeyboardEvent.key names them.
+export const KEY_ARROW_UP = 'ArrowUp';
+export const KEY_ARROW_DOWN = 'ArrowDown';
+export const KEY_ARROW_LEFT = 'ArrowLeft';
+export const KEY_ARROW_RIGHT = 'ArrowRight';
 
 // JS-only: text the operator reads.
 export const TEXT_DISCONNECTED = 'Disconnected';
@@ -115,6 +127,8 @@ export const TEXT_UNKNOWN = 'Unknown';
 export const TEXT_NO_FILES = 'No files found';
 export const TEXT_PROBING_TITLE = 'Probing';
 export const TEXT_PROBING_DONE_TITLE = 'Probing Complete';
+export const TEXT_HEIGHT_MAP_TITLE = 'Height Map';
+export const TEXT_NO_HEIGHTS = 'No measured heights to show.';
 export const TEXT_MILLING_COMPLETE = 'Milling complete';
 export const TEXT_CONNECTION_LOST = 'Connection lost. Refresh the page.';
 export const TEXT_CONNECTION_ERROR = 'Connection error.';
@@ -145,16 +159,12 @@ export const TEXT_ZEROED_WITH_MAP = '{0} - {1}';
 
 // What became of the height map, named by WorkZeroOutcome. validateConstants checks the
 // names against /api/constants; the words are this screen's.
-export const ZEROED_MAP_REAPPLIED = 'MapReapplied';
-export const ZEROED_MAP_NOT_REAPPLIED = 'MapNotReapplied';
-export const ZEROED_MAP_NOT_DISCARDED = 'MapNotDiscarded';
+export const ZEROED_MAP_STILL_APPLIED = 'MapStillApplied';
 export const ZEROED_MAP_DISCARDED = 'MapDiscarded';
 export const ZEROED_FILE_LEFT_ALONE = 'FileLeftAlone';
 
 export const HEIGHT_MAP_TEXT_BY_OUTCOME = {
-    [ZEROED_MAP_REAPPLIED]: 'height map re-applied',
-    [ZEROED_MAP_NOT_REAPPLIED]: 'height map was not re-applied - reload the file before milling',
-    [ZEROED_MAP_NOT_DISCARDED]: 'height map was not removed - reload the file before milling',
+    [ZEROED_MAP_STILL_APPLIED]: 'height map still applied',
     [ZEROED_MAP_DISCARDED]: 'height map discarded',
     [ZEROED_FILE_LEFT_ALONE]: 'height map kept for this run'
 };
@@ -201,6 +211,7 @@ export const TEXT_NO_FILE_LOADED = 'Load a G-code file first';
 export const TEXT_ABORT_MILLING_CONFIRM = 'Abort milling?';
 export const TEXT_ABORT_MILLING_TITLE = 'Abort';
 export const TEXT_PROBE_REMOVED_QUESTION = 'Probing equipment removed?';
+export const HOME_FIRST_BY_DEFAULT = true;
 export const TEXT_TOOL_CHANGE_FAILED = 'The tool change did not finish';
 export const ERROR_LOST_CONTACT = 'Lost contact with the machine. Check it.';
 export const TEXT_NOT_LOADED = '[not loaded]';
@@ -282,6 +293,11 @@ export const ERROR_FEED_NOT_SENT =
     'Could not reach coppercli. The feed rate is unchanged - check the machine.';
 export const ERROR_DEPTH_NOT_SET =
     'Could not reach coppercli. The cut depth is unchanged.';
+export const ERROR_SECTIONS_NOT_SET =
+    'Could not reach coppercli. The sections are unchanged.';
+export const ERROR_PHASES_NOT_SET =
+    'Could not reach coppercli. The phases are unchanged.';
+export const ERROR_BOARD_NOT_SHOWN = 'Could not reach coppercli to show the board.';
 
 export const ERROR_DOOR_NOT_RELEASED = ERROR_RESUME_NOT_SENT;
 
@@ -307,6 +323,9 @@ export const MAP_DESCRIPTION_BY_STATE = {
 export const DEPTH_ACTION_INCREASE = 'increase';
 export const DEPTH_ACTION_DECREASE = 'decrease';
 export const DEPTH_ACTION_RESET = 'reset';
+
+// The most columns, and the most rows, the picker offers. Mirrors Constants.MaxSectionsPerAxis.
+export const SECTIONS_MAX_PER_AXIS = 8;
 
 // How the socket is addressed and how the browser names itself on it. Mirrors
 // WebConstants.cs WsPath, QueryParamClientId and ClientIdCookieName.
@@ -365,6 +384,8 @@ export const API_MILL_TOOLCHANGE_ABORT = '/api/mill/toolchange/abort';
 export const API_MILL_TOOLCHANGE_INPUT = '/api/mill/toolchange/input';
 export const API_MILL_DEPTH = '/api/mill/depth';
 export const API_MILL_GRID = '/api/mill/grid';
+export const API_MILL_SECTIONS = '/api/mill/sections';
+export const API_MILL_PHASES = '/api/mill/phases';
 export const API_FEED_INCREASE = '/api/feed-override/increase';
 export const API_FEED_DECREASE = '/api/feed-override/decrease';
 export const API_FEED_RESET = '/api/feed-override/reset';

@@ -439,21 +439,10 @@ namespace coppercli.Core.Controllers
                 timeoutMs);
 
         /// <summary>Every run ends through here.</summary>
-        /// <param name="betweenStopAndLift">
-        /// Run after the machine has stopped and before the lift, for a controller with
-        /// something to undo while nothing is moving.
-        /// </param>
         /// <inheritdoc cref="LiftAfterStopAsync(bool, Func{CancellationToken, Task{bool}}, int)"/>
-        protected async Task StopAndLiftAsync(
-            Func<CancellationToken, Task<bool>> lift, int timeoutMs, Func<Task>? betweenStopAndLift = null)
+        protected async Task StopAndLiftAsync(Func<CancellationToken, Task<bool>> lift, int timeoutMs)
         {
             bool wasHoldingAtDoor = await MachineWait.StopAndResetAsync(Machine).ConfigureAwait(false);
-
-            if (betweenStopAndLift != null)
-            {
-                await betweenStopAndLift().ConfigureAwait(false);
-            }
-
             await LiftAfterStopAsync(wasHoldingAtDoor, lift, timeoutMs).ConfigureAwait(false);
         }
 
@@ -461,14 +450,12 @@ namespace coppercli.Core.Controllers
         /// The same, lifting to a machine Z. Use this where the work frame may not be set,
         /// since a work-coordinate lift could then be a descent.
         /// </summary>
-        /// <inheritdoc cref="StopAndLiftAsync(Func{CancellationToken, Task{bool}}, int, Func{Task})"/>
-        protected Task StopAndLiftAsync(
-            double clearanceMachineZ, int timeoutMs, Func<Task>? betweenStopAndLift = null) =>
+        /// <inheritdoc cref="StopAndLiftAsync(Func{CancellationToken, Task{bool}}, int)"/>
+        protected Task StopAndLiftAsync(double clearanceMachineZ, int timeoutMs) =>
             StopAndLiftAsync(
                 ct => MachineWait.SafetyRetractZAsync(
                     Machine, clearanceMachineZ, Util.Constants.ZHeightWaitTimeoutMs, ct),
-                timeoutMs,
-                betweenStopAndLift);
+                timeoutMs);
 
         /// <summary>Called by StartAsync once the state allows a run.</summary>
         protected abstract Task RunAsync(CancellationToken ct);

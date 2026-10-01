@@ -17,6 +17,7 @@ import {
     DEPTH_ACTION_INCREASE,
     DEPTH_ACTION_DECREASE,
     DEPTH_ACTION_RESET,
+    SECTIONS_MAX_PER_AXIS,
     WS_PATH,
     WS_QUERY_PARAM_CLIENT_ID,
     CLIENT_ID_COOKIE_NAME,
@@ -79,9 +80,8 @@ import {
     TEXT_PROBE_STATE_PARTIAL,
     TEXT_PROBE_STATE_COMPLETE,
     TEXT_PROBE_REMOVED_QUESTION,
-    ZEROED_MAP_REAPPLIED,
-    ZEROED_MAP_NOT_REAPPLIED,
-    ZEROED_MAP_NOT_DISCARDED,
+    HOME_FIRST_BY_DEFAULT,
+    ZEROED_MAP_STILL_APPLIED,
     PROBE_FILE_EXTENSION,
     ZEROED_MAP_DISCARDED,
     ZEROED_FILE_LEFT_ALONE,
@@ -248,13 +248,35 @@ export function settleButtons(buttons, settleMs) {
     return setTimeout(() => buttons.forEach(btn => { btn.disabled = false; }), settleMs);
 }
 
-/** Resolve the current question before displaying another one. */
-let pendingConfirm = null;
+/**
+ * Pairs each `ask` from a modal's caller with the `give` of its answer, for a modal that serves
+ * one caller at a time. Asking again answers the earlier caller with `replaced`, or that caller
+ * would wait forever.
+ */
+export function singleModalAnswer(replaced) {
+    let pending = null;
+    return {
+        ask() {
+            pending?.(replaced);
+            return new Promise(resolve => { pending = resolve; });
+        },
+        give(value) {
+            const resolve = pending;
+            pending = null;
+            resolve?.(value);
+        },
+        get waiting() {
+            return pending !== null;
+        }
+    };
+}
+
+const confirmAnswer = singleModalAnswer(null);
 
 let confirmSettleTimer = null;
 
 export function isConfirmOpen() {
-    return pendingConfirm !== null;
+    return confirmAnswer.waiting;
 }
 
 /**
@@ -263,48 +285,40 @@ export function isConfirmOpen() {
  * settleButtons.
  */
 export function showConfirm(message, title = TEXT_CONFIRM_TITLE, options = {}) {
-    return new Promise((resolve) => {
-        if (pendingConfirm) {
-            const previousResolve = pendingConfirm;
-            pendingConfirm = null;
-            previousResolve(null);
-        }
-        pendingConfirm = resolve;
+    const answer = confirmAnswer.ask();
+    const modal = $('confirm-modal');
+    const titleEl = $('confirm-title');
+    const messageEl = $('confirm-message');
+    const yesBtn = $('confirm-yes-btn');
+    const noBtn = $('confirm-no-btn');
 
-        const modal = $('confirm-modal');
-        const titleEl = $('confirm-title');
-        const messageEl = $('confirm-message');
-        const yesBtn = $('confirm-yes-btn');
-        const noBtn = $('confirm-no-btn');
+    titleEl.textContent = title;
+    if (options.danger) {
+        messageEl.innerHTML = '⚠️ ' + escapeMarkup(message);
+        messageEl.classList.add(CLASS_CONFIRM_DANGER);
+    } else {
+        messageEl.textContent = message;
+        messageEl.classList.remove(CLASS_CONFIRM_DANGER);
+    }
 
-        titleEl.textContent = title;
-        if (options.danger) {
-            messageEl.innerHTML = '⚠️ ' + escapeMarkup(message);
-            messageEl.classList.add(CLASS_CONFIRM_DANGER);
-        } else {
-            messageEl.textContent = message;
-            messageEl.classList.remove(CLASS_CONFIRM_DANGER);
-        }
+    clearTimeout(confirmSettleTimer);
+    confirmSettleTimer = settleButtons([yesBtn, noBtn], options.settleMs ?? 0);
 
+    const cleanup = () => {
         clearTimeout(confirmSettleTimer);
-        confirmSettleTimer = settleButtons([yesBtn, noBtn], options.settleMs ?? 0);
+        confirmSettleTimer = null;
+        modal.classList.add(CLASS_HIDDEN);
+        messageEl.classList.remove(CLASS_CONFIRM_DANGER);
+        yesBtn.disabled = noBtn.disabled = false;
+        yesBtn.onclick = null;
+        noBtn.onclick = null;
+    };
 
-        const cleanup = () => {
-            clearTimeout(confirmSettleTimer);
-            confirmSettleTimer = null;
-            pendingConfirm = null;
-            modal.classList.add(CLASS_HIDDEN);
-            messageEl.classList.remove(CLASS_CONFIRM_DANGER);
-            yesBtn.disabled = noBtn.disabled = false;
-            yesBtn.onclick = null;
-            noBtn.onclick = null;
-        };
+    yesBtn.onclick = () => { cleanup(); confirmAnswer.give(true); };
+    noBtn.onclick = () => { cleanup(); confirmAnswer.give(false); };
 
-        yesBtn.onclick = () => { cleanup(); resolve(true); };
-        noBtn.onclick = () => { cleanup(); resolve(false); };
-
-        modal.classList.remove(CLASS_HIDDEN);
-    });
+    modal.classList.remove(CLASS_HIDDEN);
+    return answer;
 }
 
 /** The file list for both the G-code browser and the probe browser. */
@@ -471,6 +485,10 @@ export async function validateConstants() {
             check(DEPTH_ACTION_RESET, server.depthActions.reset, 'DEPTH_ACTION_RESET');
         }
 
+        if (server.sections) {
+            check(SECTIONS_MAX_PER_AXIS, server.sections.maxPerAxis, 'SECTIONS_MAX_PER_AXIS');
+        }
+
         if (server.decimals) {
             check(POSITION_DECIMALS_BRIEF, server.decimals.brief, 'POSITION_DECIMALS_BRIEF');
             check(POSITION_DECIMALS_FULL, server.decimals.full, 'POSITION_DECIMALS_FULL');
@@ -490,6 +508,10 @@ export async function validateConstants() {
                 'TEXT_PROBE_REMOVED_QUESTION');
         }
 
+        if (server.homeFirstByDefault !== undefined) {
+            check(HOME_FIRST_BY_DEFAULT, server.homeFirstByDefault, 'HOME_FIRST_BY_DEFAULT');
+        }
+
         if (server.zeroWarning) {
             check(TEXT_ZERO_XY_INVALIDATES, server.zeroWarning.discardsMap,
                 'TEXT_ZERO_XY_INVALIDATES');
@@ -502,11 +524,7 @@ export async function validateConstants() {
         }
 
         if (server.heightMapOutcomes) {
-            check(ZEROED_MAP_REAPPLIED, server.heightMapOutcomes.reapplied, 'ZEROED_MAP_REAPPLIED');
-            check(ZEROED_MAP_NOT_REAPPLIED, server.heightMapOutcomes.notReapplied,
-                'ZEROED_MAP_NOT_REAPPLIED');
-            check(ZEROED_MAP_NOT_DISCARDED, server.heightMapOutcomes.notDiscarded,
-                'ZEROED_MAP_NOT_DISCARDED');
+            check(ZEROED_MAP_STILL_APPLIED, server.heightMapOutcomes.stillApplied, 'ZEROED_MAP_STILL_APPLIED');
             check(ZEROED_MAP_DISCARDED, server.heightMapOutcomes.discarded, 'ZEROED_MAP_DISCARDED');
             check(ZEROED_FILE_LEFT_ALONE, server.heightMapOutcomes.fileLeftAlone,
                 'ZEROED_FILE_LEFT_ALONE');

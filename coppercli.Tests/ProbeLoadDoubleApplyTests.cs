@@ -9,10 +9,10 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// ApplyProbeGrid is additive (commanded Z += interpolated height), so loading a second
-    /// height map over an applied one without first restoring the un-corrected G-code stacks
-    /// both corrections and cuts at the wrong depth. AppState.LoadProbeGridFromFile reloads
-    /// the original before adopting a new map, for both front ends.
+    /// ApplyProbeGrid is additive (commanded Z += interpolated height), so applying a second
+    /// height map on top of the first would stack both corrections and cut at the wrong depth.
+    /// The machine's G-code is built from the file as loaded, so adopting a new map drops the
+    /// old one's corrections, for both front ends.
     /// </summary>
     [Collection(WebServerCollection.Name)]
     public class ProbeLoadDoubleApplyTests
@@ -236,12 +236,12 @@ namespace coppercli.Tests
 
                 Assert.Null(AppState.AdoptProbeGrid(ProbeGrid.Load(grid1Path)));
                 Assert.Null(AppState.ApplyProbeData());
-                Assert.NotEqual(originalGCode, string.Join("\n", AppState.CurrentFile!.GetGCode()));
+                Assert.NotEqual(originalGCode, string.Join("\n", AppState.MachineFile!.GetGCode()));
 
                 Assert.Null(AppState.LoadProbeGridFromFile(grid2Path).Refused);
 
                 Assert.False(AppState.AreProbePointsApplied);
-                Assert.Equal(originalGCode, string.Join("\n", AppState.CurrentFile!.GetGCode()));
+                Assert.Equal(originalGCode, string.Join("\n", AppState.MachineFile!.GetGCode()));
 
                 // A grid loaded from a file is already saved, so the autosave is cleared. Left
                 // behind, it would be offered later as unsaved work for a map that is gone.

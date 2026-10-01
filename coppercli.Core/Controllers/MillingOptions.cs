@@ -6,25 +6,20 @@ namespace coppercli.Core.Controllers
     /// </summary>
     public class MillingOptions
     {
-        /// <summary>The RequireHoming = not-yet-homed rule is written here once, so both front
-        /// ends enforce it identically.</summary>
         /// <param name="enclosureConfirmed">
         /// Whether the operator has just answered for the enclosure - see
         /// <see cref="EnclosureConfirmed"/>. Required rather than defaulted, so a caller that
         /// starts a job without asking cannot inherit an answer the operator never gave.
         /// </param>
-        public static MillingOptions Create(string? filePath, double depthAdjustment,
-            bool machineIsHomed, bool enclosureConfirmed)
+        public static MillingOptions Create(string? filePath, bool homeFirst, bool enclosureConfirmed)
         {
             return new MillingOptions
             {
                 FilePath = filePath,
-                DepthAdjustment = depthAdjustment,
-                RequireHoming = !machineIsHomed,
+                HomeFirst = homeFirst,
                 EnclosureConfirmed = enclosureConfirmed,
             };
         }
-
 
         public string? FilePath { get; set; }
 
@@ -36,12 +31,10 @@ namespace coppercli.Core.Controllers
         internal int SettleTimeoutMs { get; set; } = Util.Constants.SettleTimeoutMs;
 
         /// <summary>
-        /// Millimeters, negative for deeper. Applied as an offset to the work coordinate Z
-        /// origin.
+        /// The operator asked to home although the machine reads as homed: after a stop while
+        /// cutting, see IMachine.StoppedWhileCutting. A machine that has not homed homes anyway.
         /// </summary>
-        public double DepthAdjustment { get; set; }
-
-        public bool RequireHoming { get; set; } = true;
+        public bool HomeFirst { get; set; }
 
         /// <summary>
         /// The operator has just said the enclosure is clear of probing equipment - the

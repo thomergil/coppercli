@@ -532,59 +532,52 @@ namespace coppercli.Tests
             Assert.Equal(DoorState.WaitingForResume, left);
         }
 
+        /// <summary>A steady-Idle wait short enough to keep these tests quick.</summary>
+        private const int ShortSteadyMs = Constants.StatusPollIntervalMs;
+
         [Fact]
-        public async Task EnsureMachineReadyAsync_WhenIdle_ReturnsTrue()
+        public async Task WaitForSteadyIdle_WhenIdle_ReturnsTrue()
         {
             var machine = new MockMachine { Status = "Idle" };
 
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 1000);
-
-            Assert.True(result);
+            Assert.True(await MachineWait.WaitForSteadyIdleAsync(machine, ShortSteadyMs, 1000));
         }
 
+        /// <summary>
+        /// An alarm is waited out, not taken for settled: someone may clear it. Still alarmed
+        /// at the timeout, the machine has not settled.
+        /// </summary>
         [Fact]
-        public async Task EnsureMachineReadyAsync_WhenAlarm_ReturnsFalse()
+        public async Task WaitForSteadyIdle_WhenAlarmed_ReturnsFalse()
         {
             var machine = new MockMachine { Status = GrblProtocol.StatusAlarm, StatusSubState = "1" };
 
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 200);
-
-            Assert.False(result);
+            Assert.False(await MachineWait.WaitForSteadyIdleAsync(machine, ShortSteadyMs, 300));
         }
 
         /// <summary>
         /// CycleStart restarts the spindle and resumes motion while the operator may be
-        /// reaching in, so only the operator asks for it, through MillingController's prompt.
+        /// reaching in, so only the operator asks for it, through the controller's prompt. The
+        /// wait hands the door back at once rather than sitting out its timeout.
         /// </summary>
         [Fact]
-        public async Task EnsureMachineReadyAsync_DoesNotResumeADoorHold()
+        public async Task WaitForSteadyIdle_AtADoorHold_StopsAtOnceAndDoesNotResume()
         {
             using var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
+            var elapsed = Stopwatch.StartNew();
 
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
+            Assert.False(await MachineWait.WaitForSteadyIdleAsync(machine, ShortSteadyMs, 5000));
 
             Assert.Equal(0, machine.CycleStartCount);
-            Assert.False(result);
+            Assert.True(elapsed.ElapsedMilliseconds < 2000, "the wait sat out its timeout at the door");
         }
 
         [Fact]
-        public async Task EnsureMachineReadyAsync_IsNotReadyWhileStillMoving()
+        public async Task WaitForSteadyIdle_IsNotSettledWhileStillMoving()
         {
             var machine = new MockMachine { Status = "Run" };
 
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
-
-            Assert.False(result);
-        }
-
-        [Fact]
-        public async Task EnsureMachineReadyAsync_IsReadyWhenIdle()
-        {
-            var machine = new MockMachine { Status = "Idle" };
-
-            var result = await MachineWait.EnsureMachineReadyAsync(machine, 500);
-
-            Assert.True(result);
+            Assert.False(await MachineWait.WaitForSteadyIdleAsync(machine, ShortSteadyMs, 500));
         }
 
         [Fact]
@@ -622,7 +615,7 @@ namespace coppercli.Tests
 
             // Stopwatch rather than wall-clock time: a clock adjustment mid-test would
             // change the elapsed figure this asserts on.
-            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            var elapsed = Stopwatch.StartNew();
             await MachineWait.SafetyRetractZAsync(machine, -1.0, 5000);
 
             Assert.True(elapsed.ElapsedMilliseconds < 1000,

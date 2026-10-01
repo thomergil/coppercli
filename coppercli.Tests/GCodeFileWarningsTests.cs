@@ -95,7 +95,7 @@ namespace coppercli.Tests
             Assert.StartsWith(Constants.WarningPrefixInches, file.WarningsToConfirm[0]);
         }
 
-        public static TheoryData<string> Transforms => new() { "Split", "ArcsToLines", "RotateCW" };
+        public static TheoryData<string> Transforms => new() { "ApplyProbeGrid", "OffsetCutDepth" };
 
         /// <summary>Every file built from another keeps what the parser said about the source.</summary>
         [Theory]
@@ -106,13 +106,24 @@ namespace coppercli.Tests
 
             var derived = transform switch
             {
-                "Split" => file.Split(1.0),
-                "ArcsToLines" => file.ArcsToLines(1.0),
-                _ => file.RotateCW()
+                "ApplyProbeGrid" => file.ApplyProbeGrid(FlatMapOver(file)),
+                _ => file.OffsetCutDepth(-0.1)
             };
 
-            // Rotating can move the job past work zero, which adds a warning of its own.
             Assert.Contains(Assert.Single(file.WarningsToConfirm), derived.WarningsToConfirm);
+        }
+
+        private static ProbeGrid FlatMapOver(GCodeFile file)
+        {
+            var map = new ProbeGrid(10.0, new Vector2(file.Min.X, file.Min.Y), new Vector2(file.Max.X, file.Max.Y));
+            for (int x = 0; x < map.SizeX; x++)
+            {
+                for (int y = 0; y < map.SizeY; y++)
+                {
+                    map.RecordMeasurement(x, y, 0);
+                }
+            }
+            return map;
         }
     }
 }

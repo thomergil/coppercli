@@ -1,12 +1,18 @@
 #nullable enable
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Json;
+using System.Text.Json;
 using System.Threading;
+using System.Threading.Tasks;
 using coppercli;
 using coppercli.Core.Communication;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using coppercli.Core.Settings;
 using coppercli.Core.Util;
 using coppercli.Tests.Fakes;
@@ -142,6 +148,145 @@ namespace coppercli.Tests
             }
 
             Assert.Fail($"Timed out after {timeoutMs}ms waiting for: {what}");
+        }
+
+        internal const string JsonFieldVersion = "version";
+
+        /// <summary>
+        /// A complete height map over the test boards, stamped with the loaded file and the
+        /// machine's origin (or <paramref name="measuredFor"/>), rising by
+        /// <paramref name="perColumn"/> from column to column.
+        /// </summary>
+        public static ProbeGrid CompleteMapForThisJob(
+            double baseHeight = CompleteMapHeight, double perColumn = 0, string? measuredFor = null)
+        {
+            var map = new ProbeGrid(CompleteMapGridSize, new Vector2(0, 0), new Vector2(CompleteMapSpan, CompleteMapSpan))
+            {
+                Context = new ProbeContext(
+                    measuredFor ?? AppState.Session.LastLoadedGCodeFile!, AppState.Machine.G54Offset)
+            };
+            for (int x = 0; x < map.SizeX; x++)
+            {
+                for (int y = 0; y < map.SizeY; y++)
+                {
+                    map.RecordMeasurement(x, y, baseHeight + perColumn * x);
+                }
+            }
+
+            return map;
+        }
+
+        private const double CompleteMapHeight = -0.1;
+        private const double CompleteMapGridSize = 10.0;
+        private const double CompleteMapSpan = 20.0;
+        private const string JsonFieldHomeFirst = "homeFirst";
+
+        /// <summary>A GET as the browser makes it: the status and the JSON body.</summary>
+        public async Task<(HttpStatusCode Code, JsonElement Body)> GetJsonAsync(string path)
+        {
+            var response = await Client.GetAsync(path);
+            return (response.StatusCode, await JsonBodyAsync(response));
+        }
+
+        /// <summary>A POST as the browser makes it, with <paramref name="body"/> as JSON when given: the status and the JSON body.</summary>
+        public async Task<(HttpStatusCode Code, JsonElement Body)> PostJsonAsync(string path, object? body = null)
+        {
+            var response = body == null
+                ? await Client.PostAsync(path, null)
+                : await Client.PostAsJsonAsync(path, body);
+            return (response.StatusCode, await JsonBodyAsync(response));
+        }
+
+        /// <summary>Whether <paramref name="name"/> is true in a JSON reply.</summary>
+        public static bool Flag(JsonElement json, string name) =>
+            json.ValueKind == JsonValueKind.Object
+            && json.TryGetProperty(name, out var value)
+            && value.ValueKind == JsonValueKind.True;
+
+        /// <summary>The error a JSON reply names, or null.</summary>
+        public static string? Error(JsonElement json) =>
+            json.ValueKind == JsonValueKind.Object && json.TryGetProperty(WebConstants.JsonFieldError, out var error)
+                ? error.GetString()
+                : null;
+
+        /// <returns>The body as JSON, or default for an empty body.</returns>
+        private static async Task<JsonElement> JsonBodyAsync(HttpResponseMessage response)
+        {
+            string text = await response.Content.ReadAsStringAsync();
+            return string.IsNullOrWhiteSpace(text) ? default : JsonDocument.Parse(text).RootElement.Clone();
+        }
+
+        /// <summary>The version /api/mill/can-start reports, which the browser reads when the pre-mill window opens.</summary>
+        public async Task<long> CheckedVersionAsync() =>
+            (await GetJsonAsync(WebConstants.ApiMillCanStart)).Body.GetProperty(JsonFieldVersion).GetInt64();
+
+        /// <summary>
+        /// A start request as the browser sends it: the version can-start reports now, and the
+        /// home-first answer when one is given.
+        /// </summary>
+        public async Task<Dictionary<string, object>> MillStartBodyAsync(bool? homeFirst = null)
+        {
+            var body = new Dictionary<string, object> { [JsonFieldVersion] = await CheckedVersionAsync() };
+            if (homeFirst is bool answer)
+            {
+                body[JsonFieldHomeFirst] = answer;
+            }
+
+            return body;
+        }
+
+        /// <summary>
+        /// Loads the file at <paramref name="path"/> as the browser does, with work zero set,
+        /// and applies a complete height map to it, so a mill run can start.
+        /// </summary>
+        public async Task LoadWithAMapAppliedAsync(string path)
+        {
+            AppState.MarkWorkZeroSet();
+            var load = await Client.PostAsJsonAsync(WebConstants.ApiFileLoad, new { path });
+            Assert.True(load.IsSuccessStatusCode, "loading the board failed");
+            AppState.DiscardProbeData();
+            CompleteMapForThisJob().Save(Persistence.GetProbeAutoSavePath());
+            Assert.Equal(HttpStatusCode.OK, (await Client.PostAsync(WebConstants.ApiProbeApply, null)).StatusCode);
+        }
+
+        /// <summary>
+        /// Starts a mill run held at a closed door, runs <paramref name="body"/> while it waits
+        /// there, then stops the run and releases the hold.
+        /// </summary>
+        public Task WhileAMillRunHoldsAtTheDoorAsync(Func<Task> body, bool? homeFirst = null) =>
+            AtAClosedDoorAsync(async () =>
+            {
+                var started = await Client.PostAsJsonAsync(WebConstants.ApiMillStart, await MillStartBodyAsync(homeFirst));
+                Assert.True(started.IsSuccessStatusCode,
+                    $"the mill did not start: {await started.Content.ReadAsStringAsync()}");
+                WaitUntil(() => AppState.Milling.IsRunInProgress, "the run to take the machine");
+
+                await body();
+            });
+
+        /// <summary>
+        /// Runs <paramref name="body"/> with the machine held at a closed door, so a run it
+        /// starts waits there, then stops any run and releases the hold. The machine is shared,
+        /// so the teardown runs in a finally block whether the body passed or not.
+        /// </summary>
+        public async Task AtAClosedDoorAsync(Func<Task> body)
+        {
+            Grbl.SimulateDoorClosedAndHolding();
+            WaitUntil(
+                () => MachineWait.GetDoorState(AppState.Machine) == DoorState.WaitingForResume,
+                "the machine to report the door hold");
+
+            try
+            {
+                await body();
+            }
+            finally
+            {
+                await Client.PostAsync(WebConstants.ApiMillStop, null);
+                WaitUntil(() => !AppState.Milling.IsRunInProgress, "the run to end");
+                await MachineWait.ReleaseDoorHoldAsync(AppState.Machine, ControllerConstants.DoorResumeTimeoutMs);
+                WaitUntil(() => !MachineWait.IsDoor(AppState.Machine), "the door hold to clear");
+            }
         }
 
         /// <summary>A loopback port nothing is listening on.</summary>

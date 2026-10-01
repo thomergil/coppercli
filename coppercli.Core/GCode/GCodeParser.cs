@@ -79,7 +79,6 @@ namespace coppercli.Core.GCode
 
         public static void Reset()
         {
-            _startUntrusted = false;
             State = new ParserState();
             Commands = new List<Command>();
             Warnings = new List<string>();
@@ -299,21 +298,14 @@ namespace coppercli.Core.GCode
         /// <summary>
         /// Marks the modeled position unknown after a block that could not be modeled, so
         /// every axis word of the next move is emitted rather than elided as "already
-        /// there". Without this, a file that retracts with G53 and then says "G0 Z5" to come
-        /// back has that recovery move deleted as zero-length, and the cut that follows runs
-        /// at the retract depth.
+        /// there", and no move is deleted as zero-length until every axis is known again.
+        /// Without this, a file that retracts with G53 and then says "G0 Z5" to come back has
+        /// that recovery move deleted, and the cut that follows runs at the retract height.
         /// </summary>
         private static void InvalidatePositionAfterUnmodeledMove()
         {
             State.PositionValid = new bool[] { false, false, false };
-            _startUntrusted = true;
         }
-
-        /// <summary>
-        /// Set by <see cref="InvalidatePositionAfterUnmodeledMove"/> and cleared onto the
-        /// next motion, whose Start position is then marked untrusted.
-        /// </summary>
-        private static bool _startUntrusted;
 
         /// <summary>The position along the axis a center word names: I is X, J is Y, K is Z.</summary>
         private static double CenterAxisPosition(Vector3 position, char centerWord) => centerWord switch
@@ -339,6 +331,7 @@ namespace coppercli.Core.GCode
             // command and again inside the preserved line.
             bool refuseBlock = false;
             bool preserveBlock = false;
+            bool probesOrSetsAnOffset = false;
 
             foreach (Word w in Words)
             {
@@ -362,13 +355,17 @@ namespace coppercli.Core.GCode
                 // Blocks whose axis words belong to the command, not to a move. Preserved
                 // verbatim so the machine does exactly what the file asked, and so those
                 // words can never be re-read as work-coordinate motion.
-                if (g == GCodeNumbers.MachineCoordinates ||
-                    g == GCodeNumbers.SetWorkOffset ||
+                if (g == GCodeNumbers.MachineCoordinates)
+                {
+                    preserveBlock = true;
+                }
+                else if (g == GCodeNumbers.SetWorkOffset ||
                     g == GCodeNumbers.SetPositionOffset ||
                     g == GCodeNumbers.ToolLengthOffsetDynamic ||
                     (g >= GCodeNumbers.ProbeToward && g <= GCodeNumbers.ProbeAwayNoError))
                 {
                     preserveBlock = true;
+                    probesOrSetsAnOffset = true;
                 }
             }
 
@@ -380,7 +377,7 @@ namespace coppercli.Core.GCode
 
             if (preserveBlock)
             {
-                Commands.Add(new PassThrough() { Line = line.Trim(), LineNumber = lineNumber });
+                Commands.Add(new PassThrough() { Line = line.Trim(), LineNumber = lineNumber, MovesOnly = !probesOrSetsAnOffset });
                 InvalidatePositionAfterUnmodeledMove();
                 return;
             }
@@ -572,10 +569,12 @@ namespace coppercli.Core.GCode
                 }
             }
 
+            bool namesAnAxis = Words.Any(w => w.Command is 'X' or 'Y' or 'Z');
+
             // Only discard the block if nothing in it actually moves. A line that pairs
             // an unknown code with real coordinates ("G1 X10 G64") still has a cut to
             // make, and dropping it would silently leave that cut out of the job.
-            if (dropBlock && !Words.Any(w => w.Command == 'X' || w.Command == 'Y' || w.Command == 'Z'))
+            if (dropBlock && !namesAnAxis)
             {
                 return;
             }
@@ -670,10 +669,15 @@ namespace coppercli.Core.GCode
                     Warnings.Add($"motion command must be last in line (ignoring unused words {string.Join(" ", Words)} in block). (line {lineNumber})");
                 }
 
+                // A G0 or G1 that names no axis, such as "G1 F300", sets the mode and the feed
+                // and moves nothing.
+                if (!namesAnAxis)
+                {
+                    return;
+                }
+
                 Line motion = new Line();
                 motion.Start = State.Position;
-                motion.StartTrusted = !_startUntrusted;
-                _startUntrusted = false;
                 motion.End = EndPos;
                 motion.Feed = State.Feed;
                 motion.Rapid = MotionMode == 0;
@@ -824,8 +828,6 @@ namespace coppercli.Core.GCode
 
             Arc arc = new Arc();
             arc.Start = State.Position;
-            arc.StartTrusted = !_startUntrusted;
-            _startUntrusted = false;
             arc.End = EndPos;
             arc.Feed = State.Feed;
             arc.Direction = (MotionMode == 2) ? ArcDirection.CW : ArcDirection.CCW;

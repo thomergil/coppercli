@@ -58,14 +58,6 @@ namespace coppercli.Core.Controllers
             "The machine did not take the new tool's Z origin. Stopped.";
 
         /// <summary>
-        /// Remove the depth adjustment from the work origin when the run ends. Otherwise
-        /// later jobs cut at the adjusted depth.
-        /// </summary>
-        public const string ErrorDepthAdjustmentNotRestored =
-            "The {0:F2}mm depth adjustment is still in the work origin - the machine would "
-            + "not take it back out. Set Z zero again before the next job.";
-
-        /// <summary>
         /// The work origin was not written. Shown instead of a confirmation, because
         /// recording an origin the machine does not have puts the next cut in the wrong
         /// place and deletes the height map on the way.
@@ -163,17 +155,13 @@ namespace coppercli.Core.Controllers
 
         public const string LogStateTransition = "{0}: {1} → {2}";
         public const string LogPhaseChange = "{0} phase: {1}";
-        public const string LogMillingStart = "Milling started, depth adjustment: {0:F3}mm";
-        public const string LogSettlingPhase = "Settling phase: waiting {0} seconds";
+        public const string LogMillingStart = "Milling started";
+        public const string LogSettlingPhase = "Settling: waiting for {0} ms of steady Idle";
         public const string LogSettlingComplete = "Settling complete";
-        public const string LogStatusChanged = "Status changed: {0} → {1}, resetting settle count";
         public const string LogHomingStart = "Homing started";
         public const string LogHomingComplete = "Homing complete";
         public const string LogSafetyRetract = "Safety retract to Z={0} (machine coords)";
         public const string LogStateInit = "State initialization: G90 G17";
-        public const string LogNoDepthAdjustment = "No depth adjustment (0mm)";
-        public const string LogDepthAdjustmentRestored = "Depth adjustment restored: Z offset back to {0:F3}";
-        public const string LogDepthAdjustment = "Depth adjustment: Z offset {0:F3} → {1:F3} (adj: {2:F3})";
         public const string LogFileStarted = "File started: Mode={0}, Position={1}";
         public const string LogMillingComplete = "Milling complete (stable idle)";
         public const string LogM6Detected = "M6 detected at line {0}, tool {1}";
@@ -201,7 +189,6 @@ namespace coppercli.Core.Controllers
         /// <summary>How far past an M6 to look for the redundant M0 that follows it.</summary>
         public const int ToolChangeM0SearchLines = 8;
 
-        public const string MessageSettlingCountdown = "Settling... {0}s";
         public const string MessageWaitingForIdle = "Waiting for idle...";
         public const string MessageHoming = "Homing machine...";
         public const string MessageRetracting = "Retracting Z to safe height...";
@@ -211,7 +198,6 @@ namespace coppercli.Core.Controllers
 
         public const string OptionContinue = "Continue";
         public const string OptionAbort = "Abort";
-
 
         public const string LogToolChangeStart = "Tool change started: T{0}";
         public const string LogToolChangeComplete = "Tool change complete";

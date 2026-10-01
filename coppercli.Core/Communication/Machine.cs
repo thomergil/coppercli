@@ -102,10 +102,35 @@ namespace coppercli.Core.Communication
         public bool PinStateLimitZ { get; private set; } = false;
 
         /// <summary>
-        /// Whether the machine has homed since it connected. Only MachineWait.HomeAsync
-        /// sets it true; connecting, disconnecting and a soft reset each clear it.
+        /// True when the machine has homed since it connected and GRBL has not lost the
+        /// position since; only MachineWait.HomeAsync sets it true, and connecting,
+        /// disconnecting, an alarm, GRBL's message asking to be unlocked, or a restart
+        /// coppercli did not cause clears it. A soft reset coppercli sends leaves it set,
+        /// because GRBL keeps its position through one unless the axes were moving, in which
+        /// case GRBL prints ALARM:3 first.
         /// </summary>
-        public bool IsHomed { get; set; } = false;
+        public bool IsHomed
+        {
+            get => Volatile.Read(ref _homedState) != (int)HomedState.NotHomed;
+            set => Volatile.Write(ref _homedState, (int)(value ? HomedState.Homed : HomedState.NotHomed));
+        }
+
+        /// <inheritdoc/>
+        public bool StoppedWhileCutting =>
+            Volatile.Read(ref _homedState) == (int)HomedState.HomedThenStoppedWhileCutting;
+
+        /// <inheritdoc/>
+        public void NoteStoppedWhileCutting() =>
+            Interlocked.CompareExchange(
+                ref _homedState, (int)HomedState.HomedThenStoppedWhileCutting, (int)HomedState.Homed);
+
+        /// <summary>
+        /// IsHomed and StoppedWhileCutting in one field, so the serial thread clearing IsHomed
+        /// and a run noting a stop cannot leave a stop recorded on a machine that is not homed.
+        /// </summary>
+        private enum HomedState { NotHomed, Homed, HomedThenStoppedWhileCutting }
+
+        private int _homedState;
 
         /// <summary>How many MachineWait.HomeAsync calls are running.</summary>
         private int _homingCycles;
@@ -649,6 +674,11 @@ namespace coppercli.Core.Communication
                         }
                         else if (line.StartsWith("["))
                         {
+                            if (line == ResponseAlarmLock)
+                            {
+                                IsHomed = false;
+                            }
+
                             RaiseEvent(UpdateStatus, line);
                             RaiseEvent(LineReceived, line);
                         }
@@ -660,6 +690,7 @@ namespace coppercli.Core.Communication
                             Controllers.ControllerLog.Log("GRBL alarm: {0}", line);
                             RaiseEvent(ReportError, line);
                             Mode = OperatingMode.Manual;
+                            IsHomed = false;
 
                             // Whatever GRBL was given is abandoned, not answered: after a failed
                             // homing cycle GRBL still prints ok for the $H, and that ok must not
@@ -677,13 +708,18 @@ namespace coppercli.Core.Communication
                         }
                         else if (line.StartsWith(ResponseGrblPrefix, StringComparison.OrdinalIgnoreCase))
                         {
-                            // The banner means GRBL has just restarted, whether coppercli reset
-                            // it or not. It dropped every line it held, and a restart can lose
-                            // the position homing set. Lines queued while it restarted are for
-                            // the GRBL that is now back, so they are released, not dropped.
+                            // The banner means GRBL has restarted, whether coppercli reset it or
+                            // not, and dropped every line it held; lines queued while it
+                            // restarted are for the GRBL now back, so they are released, not
+                            // dropped. A restart coppercli did not cause (the reset button, a
+                            // brown-out) may have lost the position homing set.
+                            bool coppercliReset = LinesHeld;
                             Abandon(Sent);
                             Volatile.Write(ref _linesHeldUntilMs, 0);
-                            IsHomed = false;
+                            if (!coppercliReset)
+                            {
+                                IsHomed = false;
+                            }
 
                             RaiseEvent(LineReceived, line);
                             RaiseEvent(ParseStartup, line);
@@ -1042,10 +1078,6 @@ namespace coppercli.Core.Communication
             }
 
             Mode = OperatingMode.Manual;
-
-            // Cleared now rather than on the banner, so nothing reads the machine as homed
-            // in between; the banner branch in Work says why a restart clears it.
-            IsHomed = false;
 
             // Held first: a line the worker picks up after this cannot reach GRBL before it
             // is back, where the reset would drop it unanswered.

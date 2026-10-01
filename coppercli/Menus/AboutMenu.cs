@@ -21,7 +21,7 @@ namespace coppercli.Menus
             AnsiConsole.MarkupLine($"[{ColorBold}]Modes:[/]         USB/Serial, network proxy, HTTP server");
             AnsiConsole.MarkupLine($"[{ColorBold}]Interface:[/]     Keyboard-driven, WASD jogging, vim-style multipliers");
             AnsiConsole.MarkupLine($"[{ColorBold}]Probing:[/]       Auto-leveling grid, outline traversal, session recovery");
-            AnsiConsole.MarkupLine($"[{ColorBold}]Milling:[/]       Feed override, depth adjust, real-time visualization");
+            AnsiConsole.MarkupLine($"[{ColorBold}]Milling:[/]       Feed override, depth adjust, sections, real-time visualization");
             AnsiConsole.MarkupLine($"[{ColorBold}]Tools:[/]         M6 tool change with tool setter, machine profiles");
             AnsiConsole.MarkupLine($"[{ColorBold}]Automation:[/]    Macros, file placeholders, safety-first design");
             AnsiConsole.WriteLine();

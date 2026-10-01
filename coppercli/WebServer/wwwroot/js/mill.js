@@ -1,6 +1,7 @@
 import { state } from './state.js';
-import { $, showError, showConfirm, updatePauseButton, postOrShowError, escapeMarkup, format, settleButtons } from './helpers.js';
+import { $, showError, showConfirm, updatePauseButton, postOrShowError, escapeMarkup, format, settleButtons, singleModalAnswer } from './helpers.js';
 import { showScreen } from './screens.js';
+import { chooseSections, initSectionsPicker } from './sections.js';
 import {
     PROMPT_OPTION_CONTINUE,
     PROMPT_OPTION_ABORT,
@@ -13,6 +14,8 @@ import {
     ERROR_NOTHING_TO_ANSWER,
     ERROR_FEED_NOT_SENT,
     ERROR_DEPTH_NOT_SET,
+    ERROR_SECTIONS_NOT_SET,
+    ERROR_PHASES_NOT_SET,
     TEXT_LINE_COUNT,
     DEPTH_ACTION_INCREASE,
     DEPTH_ACTION_DECREASE,
@@ -31,6 +34,8 @@ import {
     API_MILL_TOOLCHANGE_ABORT,
     API_MILL_TOOLCHANGE_INPUT,
     API_MILL_DEPTH,
+    API_MILL_SECTIONS,
+    API_MILL_PHASES,
     API_MILL_GRID,
     API_FEED_INCREASE,
     API_FEED_DECREASE,
@@ -59,13 +64,48 @@ import {
     TEXT_ABORT_MILLING_CONFIRM,
     TEXT_ABORT_MILLING_TITLE,
     TEXT_PROBE_REMOVED_QUESTION,
-    TEXT_TOOL_CHANGE_FAILED
+    TEXT_TOOL_CHANGE_FAILED,
+    HOME_FIRST_BY_DEFAULT
 } from './constants.js';
 
-let premillResolve = null;
+// Start answers true and Cancel false. If the window opens again before it is answered, the
+// earlier call gets false.
+const premillAnswer = singleModalAnswer(false);
+
+// The version of the job the pre-mill window shows; depth, sections and phases changes and Start
+// send it. Only can-start and the replies to this window's own changes set it, so the server
+// refuses this window's changes and Start once another client has changed the job.
+let checkedVersion = 0;
+
+// Depth, sections and phases changes are sent one at a time (sendJobChange), so each carries the
+// version the last reply named.
+let jobChanges = Promise.resolve();
+
+// How many of those changes were refused or never reached the server. Start compares it before
+// and after waiting for the changes still pending, so it does not run a job the operator changed
+// after pressing Start but the server did not take.
+let refusedJobChanges = 0;
+
+
+// The sections of the version the window holds, as the server sent them; the picker opens on
+// them.
+let shownSections = null;
+
+// The phases of the job the window holds, as the server sent them: [{ number, label, chosen }].
+// A refused change draws these again, so the boxes show what the server holds.
+let shownJobPhases = [];
+
+// The phase whose box the operator last changed, so its new box takes the focus when the list is
+// drawn again; null when the window opens.
+let changedPhase = null;
+
 
 export async function startMill() {
     try {
+        // A change sent from the window last time it was open may still be on its way.
+        await jobChanges;
+        changedPhase = null;
+
         const canStartResponse = await fetch(API_MILL_CAN_START);
         const canStart = await canStartResponse.json();
 
@@ -83,10 +123,33 @@ export async function startMill() {
         }
 
         resetGridState();
+        checkedVersion = canStart.version;
+        showDepth(canStart.depth);
+        showSections(canStart.sections, canStart.sectionsText);
+        $('premill-phases-group').classList.toggle(CLASS_HIDDEN, !canStart.offerPhases);
+        showJobPhases(canStart.jobPhases);
 
-        const confirmed = await showPremillModal(fileInfo, canStart.warnings || []);
+        const offerHomeFirst = canStart.offerHomeFirst === true;
+        const confirmed = await showPremillModal(fileInfo, canStart.warnings || [], offerHomeFirst);
         if (!confirmed) {
             return;
+        }
+
+        // Wait for the reply to a change made just before Start, so the start sends the version
+        // that reply named. A change refused after Start was pressed has already shown why, and
+        // the job it would have run is not the one the window showed.
+        const refusedBeforeStart = refusedJobChanges;
+        await jobChanges;
+        if (refusedJobChanges > refusedBeforeStart) {
+            return;
+        }
+
+
+        // Sent only when the question was asked; with no answer the server homes first if the
+        // last job stopped while cutting.
+        const start = { version: checkedVersion };
+        if (offerHomeFirst) {
+            start.homeFirst = $('premill-home-first').checked;
         }
 
         $('mill-filename').textContent = fileInfo.name;
@@ -94,7 +157,7 @@ export async function startMill() {
         showScreen(SCREEN_MILL);
 
         // The server does the safety retract and sets the modal G-codes.
-        const started = await postOrShowError(API_MILL_START, ERROR_START_NOT_SENT);
+        const started = await postOrShowError(API_MILL_START, ERROR_START_NOT_SENT, start);
         if (!started.ok) {
             // The run never started, so go back rather than sit on a milling screen that
             // would later report a job complete.
@@ -110,7 +173,7 @@ export async function startMill() {
  * Resolves true when the operator confirms and false when they cancel, from the modal's
  * own buttons.
  */
-async function showPremillModal(fileInfo, warnings) {
+async function showPremillModal(fileInfo, warnings, offerHomeFirst) {
     const modal = $('premill-modal');
     const fileEl = $('premill-file');
     const linesEl = $('premill-lines');
@@ -126,8 +189,10 @@ async function showPremillModal(fileInfo, warnings) {
         warningsEl.classList.add(CLASS_HIDDEN);
     }
 
-    // The server holds the depth, so it is reset there rather than here.
-    await adjustPremillDepth(DEPTH_ACTION_RESET);
+    // Shown only after a stop while cutting, and reset on each open to the answer the
+    // terminal's question starts at.
+    $('premill-home-first-row').classList.toggle(CLASS_HIDDEN, !offerHomeFirst);
+    $('premill-home-first').checked = HOME_FIRST_BY_DEFAULT;
 
     // Unticked on every open, so the operator confirms for each run, as the terminal asks
     // before each run.
@@ -136,17 +201,7 @@ async function showPremillModal(fileInfo, warnings) {
 
     modal.classList.remove(CLASS_HIDDEN);
 
-    return new Promise((resolve) => {
-        // One modal and one pair of buttons, so a second call overwrites the first's resolve.
-        // The first is answered false here, or its promise never settles.
-        if (premillResolve) {
-            const previousResolve = premillResolve;
-            premillResolve = null;
-            previousResolve(false);
-        }
-
-        premillResolve = resolve;
-    });
+    return premillAnswer.ask();
 }
 
 // Pressing Start is the operator's yes to the probe question, so Start stays disabled until
@@ -158,13 +213,6 @@ function setProbeRemoved(ticked) {
 
 function hidePremillModal() {
     $('premill-modal').classList.add(CLASS_HIDDEN);
-}
-
-async function adjustPremillDepth(action) {
-    const result = await adjustDepth(action);
-    if (result !== null) {
-        updateDepthDisplay(result);
-    }
 }
 
 function formatDepthText(depth) {
@@ -283,24 +331,92 @@ async function abortToolChange() {
 
 
 /**
- * Update the depth adjustment display. Written from the status stream and from the reply
- * to a +/- press, so an optimistic update corrects itself.
+ * Shows the depth of the version the window holds: from can-start and from the reply to a
+ * +/- press, never from the status stream, so the window never shows a depth other than the
+ * one Start confirms.
  */
-export function updateDepthDisplay(depth) {
-    const depthEl = $('premill-depth-value');
-    if (depthEl && depth !== undefined) {
-        depthEl.textContent = formatDepthText(depth);
-    }
+function showDepth(depth) {
+    $('premill-depth-value').textContent = formatDepthText(depth);
 }
 
-async function adjustDepth(action) {
-    const result = await postOrShowError(API_MILL_DEPTH, ERROR_DEPTH_NOT_SET, { action });
-    if (!result.ok) {
-        return null;
-    }
+function adjustDepth(action) {
+    return sendJobChange(API_MILL_DEPTH, ERROR_DEPTH_NOT_SET, () => ({ action }), data => showDepth(data.depth));
+}
 
-    updateDepthDisplay(result.data.depth);
-    return result.data.depth;
+/**
+ * Sends a change to the job, after any change already sent, with the version the last reply
+ * named. `body` is read when the change is sent; `show` draws the reply, and `onRefused` runs
+ * when the change was refused or never reached the server.
+ */
+function sendJobChange(api, notSent, body, show, onRefused = () => { }) {
+    jobChanges = jobChanges.then(async () => {
+        try {
+            const result = await postOrShowError(api, notSent, { ...body(), version: checkedVersion });
+            if (!result.ok) {
+                refusedJobChanges++;
+                onRefused();
+                return;
+            }
+
+            checkedVersion = result.data.version;
+            show(result.data);
+        } catch (err) {
+            // Counted as refused, so Start does not run a job whose last change failed here.
+            console.error('sendJobChange: could not apply the change', err);
+            refusedJobChanges++;
+        }
+    });
+    return jobChanges;
+}
+
+function showSections(sections, text) {
+    shownSections = sections;
+    $('premill-sections-value').textContent = text;
+}
+
+async function pickSections() {
+    const picked = await chooseSections(shownSections);
+    if (!picked) {
+        return;
+    }
+    await sendJobChange(API_MILL_SECTIONS, ERROR_SECTIONS_NOT_SET, () => picked,
+        data => showSections(data.sections, data.sectionsText));
+}
+
+function showJobPhases(phases) {
+    shownJobPhases = phases;
+
+    const list = $('premill-phases-list');
+    list.innerHTML = '';
+    const boxes = phases.map(phase => {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = phase.chosen;
+
+        const text = document.createElement('span');
+        text.textContent = phase.label;
+
+        const label = document.createElement('label');
+        label.appendChild(box);
+        label.appendChild(text);
+        list.appendChild(label);
+        return box;
+    });
+
+    // The boxes stay disabled until the reply draws the list again, so no change is made to
+    // boxes the reply is about to replace.
+    const chosen = () => phases.filter((_, i) => boxes[i].checked).map(phase => phase.number);
+    boxes.forEach((box, i) => {
+        box.addEventListener('change', () => {
+            changedPhase = phases[i].number;
+            boxes.forEach(each => { each.disabled = true; });
+            sendJobChange(API_MILL_PHASES, ERROR_PHASES_NOT_SET, () => ({ chosen: chosen() }),
+                data => showJobPhases(data.jobPhases), () => showJobPhases(shownJobPhases));
+        });
+        if (phases[i].number === changedPhase) {
+            box.focus();
+        }
+    });
 }
 
 let gridState = {
@@ -469,9 +585,11 @@ export function initMillScreen() {
     const abortBtn = $('toolchange-abort-btn');
     if (abortBtn) abortBtn.addEventListener('click', abortToolChange);
 
-    $('premill-depth-minus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_DECREASE));
-    $('premill-depth-plus').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_INCREASE));
-    $('premill-depth-reset').addEventListener('click', () => adjustPremillDepth(DEPTH_ACTION_RESET));
+    $('premill-depth-minus').addEventListener('click', () => adjustDepth(DEPTH_ACTION_DECREASE));
+    $('premill-depth-plus').addEventListener('click', () => adjustDepth(DEPTH_ACTION_INCREASE));
+    $('premill-depth-reset').addEventListener('click', () => adjustDepth(DEPTH_ACTION_RESET));
+    $('premill-sections-btn').addEventListener('click', pickSections);
+    initSectionsPicker();
     $('premill-probe-removed').addEventListener('change',
         () => setProbeRemoved($('premill-probe-removed').checked));
     $('premill-start-btn').addEventListener('click', () => {
@@ -479,17 +597,11 @@ export function initMillScreen() {
             return;
         }
         hidePremillModal();
-        if (premillResolve) {
-            premillResolve(true);
-            premillResolve = null;
-        }
+        premillAnswer.give(true);
     });
     $('premill-cancel-btn').addEventListener('click', () => {
         hidePremillModal();
-        if (premillResolve) {
-            premillResolve(false);
-            premillResolve = null;
-        }
+        premillAnswer.give(false);
     });
 }
 

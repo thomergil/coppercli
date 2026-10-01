@@ -27,6 +27,7 @@ namespace coppercli.Menus
             RecoverAutosave,
             SaveToFile,
             ApplyToGCode,
+            ViewHeightMap,
             Back
         }
 
@@ -162,6 +163,9 @@ namespace coppercli.Menus
                         case ProbeAction.ApplyToGCode:
                             ApplyProbeGrid();
                             break;
+                        case ProbeAction.ViewHeightMap:
+                            ViewHeightMap();
+                            break;
                         case ProbeAction.Back:
                             return;
                     }
@@ -210,7 +214,8 @@ namespace coppercli.Menus
                     Blocker: MenuHelpers.GetProbeDisabledReason));
             }
 
-            bool hasComplete = ProbeGrid.StateOf(AppState.CurrentProbeGrid) == ProbeDataState.Complete;
+            var grid = AppState.CurrentProbeGrid;
+            bool hasComplete = ProbeGrid.StateOf(grid) == ProbeDataState.Complete;
 
             if (hasComplete && !hasUnsaved)
             {
@@ -220,6 +225,11 @@ namespace coppercli.Menus
             if (hasComplete && AppState.CurrentFile != null && !AppState.AreProbePointsApplied)
             {
                 menu.Add(new MenuItem<ProbeAction>(ProbeMenuApply, 'a', ProbeAction.ApplyToGCode));
+            }
+
+            if (grid is { HasValidHeights: true })
+            {
+                menu.Add(new MenuItem<ProbeAction>(ProbeMenuView, 'v', ProbeAction.ViewHeightMap));
             }
 
             menu.Add(new MenuItem<ProbeAction>(ProbeMenuBack, 'q', ProbeAction.Back));
@@ -415,15 +425,9 @@ namespace coppercli.Menus
                 return false;
             }
 
-            if (SleepPrevention.ShouldWarn())
+            if (SleepPrevention.ShouldWarn() && !MenuHelpers.ConfirmWarning(SleepPreventionWarning))
             {
-                var proceed = MenuHelpers.ConfirmOrQuit(
-                    $"[{ColorWarning}]{SleepPreventionWarning}[/]. Continue?",
-                    false);
-                if (proceed != true)
-                {
-                    return false;
-                }
+                return false;
             }
 
             return RunProbeController(AppState.ProbePoints!, traceOutline: traceChoice == true);
@@ -684,7 +688,10 @@ namespace coppercli.Menus
 
         private static string AnsiRgb(int r, int g, int b) => $"\x1b[38;2;{r};{g};{b}m";
 
-        private static void DrawProbeMatrix(ProbeGrid probePoints)
+        /// <param name="title">Heads the counts and the Z range above the grid.</param>
+        /// <param name="hint">The key line under the title, or null for none.</param>
+        private static void DrawProbeMatrix(
+            ProbeGrid probePoints, string title = ProbeDisplayHeader, string? hint = ProbeDisplayEscapeStop)
         {
             // This runs on the UI thread while probing removes points on another, so
             // enumerating the live queue would throw and abandon the run partway through.
@@ -710,11 +717,14 @@ namespace coppercli.Menus
             string zRange = probePoints.HasValidHeights
                 ? $"Z: {probePoints.MinHeight:F3} to {probePoints.MaxHeight:F3}"
                 : ProbeDisplayZNoData;
-            string header = $"{ProbeDisplayHeader} {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
+            string header = $"{title} {probePoints.Progress}/{probePoints.TotalPoints} | {zRange}";
             int headerPad = Math.Max(0, (winWidth - header.Length) / 2);
             Console.WriteLine();
             AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorBold}]{header}[/]");
-            AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]{ProbeDisplayEscapeStop}[/]");
+            if (hint != null)
+            {
+                AnsiConsole.MarkupLine(new string(' ', headerPad) + $"[{ColorDim}]{hint}[/]");
+            }
 
             if (hasRange)
             {
@@ -778,6 +788,25 @@ namespace coppercli.Menus
                 }
                 Console.WriteLine(line.ToString());
             }
+        }
+
+        /// <summary>
+        /// Draws the map the menu offered, the one in memory or the autosave when nothing is
+        /// loaded, as the probe screen drew it, and waits for the operator.
+        /// </summary>
+        private static void ViewHeightMap()
+        {
+            // Read again: the menu was drawn before the operator chose.
+            var grid = AppState.CurrentProbeGrid;
+            if (grid is not { HasValidHeights: true })
+            {
+                MenuHelpers.ShowError(ProbeErrorNoHeights);
+                return;
+            }
+
+            DrawProbeMatrix(grid, ProbeDisplayMapHeader, hint: null);
+            Console.WriteLine();
+            MenuHelpers.WaitEnter();
         }
 
         private static void ShowProbeResults()

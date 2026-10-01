@@ -59,12 +59,6 @@ test('the pause control comes back when the machine starts cutting', async () =>
     assert.equal(dom.el('jog-pause-btn').disabled, false, 'pause stayed dead while cutting');
 });
 
-test('the depth readout follows the status stream', async () => {
-    const dom = await render({ depthAdjustment: -0.12 });
-
-    assert.equal(dom.el('premill-depth-value').textContent, '-0.12');
-});
-
 test('a machine that needs attention disables the controls that send commands', async () => {
     let dom = await render({ machineActivity: 'DoorOpen', status: 'Door:1', needsAttention: true,
                              machineUnavailable: true });

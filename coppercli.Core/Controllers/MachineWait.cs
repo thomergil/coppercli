@@ -32,6 +32,18 @@ namespace coppercli.Core.Controllers
         public static bool IsAsleep(IMachine machine) => machine.Status == StatusSleep;
 
         /// <summary>
+        /// GRBL is not moving the axes: Idle, a feed hold that has finished, a door hold that
+        /// has stopped, an alarm, or asleep. A soft reset keeps GRBL's position from one of
+        /// these; a reset while the axes move raises ALARM:3.
+        /// </summary>
+        private static bool HasStoppedMoving(IMachine machine) =>
+            IsIdle(machine)
+            || (IsHold(machine) && machine.StatusSubState == HoldSubStateComplete)
+            || GetDoorState(machine) is DoorState.Open or DoorState.WaitingForResume
+            || IsAlarm(machine)
+            || IsAsleep(machine);
+
+        /// <summary>
         /// Door closed, machine parked, waiting for a cycle start.
         /// </summary>
         private static bool IsDoorWaitingForResume(IMachine machine) =>
@@ -282,6 +294,60 @@ namespace coppercli.Core.Controllers
             => WaitUntilAsync(machine, m => m.Status == StatusIdle, timeoutMs, ct);
 
         /// <summary>
+        /// Waits for evidence that a file just started has begun streaming. Sitting in
+        /// SendFile, having consumed lines, and having run out of file are all starts; making
+        /// no progress at all is the hang this guards against.
+        /// </summary>
+        public static Task<bool> WaitForStreamingAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
+        {
+            // A run can start and stop again between two polls: an M6 near the top of the
+            // file is swallowed and pauses for the tool change, and a short file simply
+            // finishes. Both leave SendFile behind, so a position past the first line is the
+            // evidence that lines were consumed. An empty or fully consumed file never enters
+            // SendFile: it is already done, which is a start, not a hang.
+            return WaitUntilAsync(
+                machine,
+                m => m.Mode == OperatingMode.SendFile
+                    || m.FilePosition > 0
+                    || m.FilePosition >= m.File.Count,
+                timeoutMs,
+                ct,
+                abortWhenUnavailable: false);
+        }
+
+        /// <summary>
+        /// Waits until the machine has read Idle without a break for
+        /// <paramref name="steadyMs"/> (see <see cref="SteadyIdle"/>). Stops early at a door
+        /// hold, which only the operator may release (ControllerBase.EnsureDoorClosedAsync asks
+        /// them), and never resumes it; waits out anything else (a move finishing, an alarm
+        /// someone clears) until the timeout.
+        /// </summary>
+        /// <returns>
+        /// True once steady. False at a door hold, on timeout, or when the caller cancels.
+        /// </returns>
+        public static async Task<bool> WaitForSteadyIdleAsync(
+            IMachine machine, int steadyMs, int timeoutMs, CancellationToken ct = default)
+        {
+            var steadyIdle = new SteadyIdle(steadyMs);
+
+            // Recorded by the check that ended the wait: the door can clear between that check
+            // and a second read, and a second read would then report a machine that never
+            // settled as steady.
+            bool atTheDoor = false;
+
+            bool SteadyOrAtTheDoor(IMachine m)
+            {
+                atTheDoor = IsDoor(m);
+                return atTheDoor || steadyIdle.IsSteady(m);
+            }
+
+            bool ended = await WaitUntilAsync(
+                machine, SteadyOrAtTheDoor, timeoutMs, ct, abortWhenUnavailable: false).ConfigureAwait(false);
+
+            return ended && !atTheDoor;
+        }
+
+        /// <summary>
         /// Wait until the machine is Idle at <paramref name="target"/>, which confirms a move
         /// just sent has finished. Idle alone does not: GRBL reports Idle until it starts the
         /// move, so a wait for Idle straight after sending one returns at once.
@@ -360,16 +426,16 @@ namespace coppercli.Core.Controllers
         /// <summary>Returns the new status, or null on timeout.</summary>
         public static async Task<string?> WaitForStatusChangeAsync(IMachine machine, string currentStatus, int timeoutMs, CancellationToken ct = default)
         {
-            var elapsed = Stopwatch.StartNew();
-            long timeoutLimitMs = timeoutMs;
+            bool changed = await WaitUntilAsync(
+                machine,
+                m => m.Connected && m.Status != StatusDisconnected && m.Status != currentStatus,
+                timeoutMs,
+                ct,
+                abortWhenUnavailable: false).ConfigureAwait(false);
 
-            while (elapsed.ElapsedMilliseconds < timeoutLimitMs && !ct.IsCancellationRequested)
+            if (changed)
             {
-                if (machine.Connected && machine.Status != StatusDisconnected && machine.Status != currentStatus)
-                {
-                    return machine.Status;
-                }
-                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
+                return machine.Status;
             }
 
             return null;
@@ -562,32 +628,15 @@ namespace coppercli.Core.Controllers
                 abortWhenUnavailable: false);
         }
 
-        /// <returns>
-        /// True only if the machine reached Idle and is not alarmed. A machine still running
-        /// or held is not ready: motion sent to it queues behind what it is already doing.
-        /// </returns>
-        public static async Task<bool> EnsureMachineReadyAsync(IMachine machine, int timeoutMs, CancellationToken ct = default)
-        {
-            if (timeoutMs <= 0)
-            {
-                timeoutMs = IdleWaitTimeoutMs;
-            }
-
-            // A door hold makes this return false, and nothing here clears it: the cycle
-            // start that releases the hold also resumes motion, so only the operator may
-            // ask for it. ControllerBase.EnsureDoorClosedAsync does that.
-            bool idle = await WaitForIdleAsync(machine, timeoutMs, ct);
-            return idle && !IsUnavailable(machine);
-        }
-
         /// <summary>
-        /// Sends FeedHold then SoftReset, clears any alarm that follows, and commands the
-        /// spindle off. Use it when cancelling, so buffered commands cannot resume.
+        /// Sends FeedHold, waits up to StopHoldTimeoutMs for it to stop the axes, then sends
+        /// SoftReset, clears any alarm that follows, and commands the spindle off. Use it when
+        /// canceling, so buffered commands cannot resume.
         /// </summary>
         /// <returns>
         /// True if the machine was holding at the door when the stop was sent, which
-        /// ControllerBase.RetractToSafeZAsync needs. The soft reset below moves it from Door
-        /// to Alarm, so this is the last chance to read it.
+        /// ControllerBase.RetractToSafeZAsync needs. The soft reset below ends the door state,
+        /// so this is the last chance to read it.
         /// </returns>
         public static async Task<bool> StopAndResetAsync(IMachine machine)
         {
@@ -596,15 +645,30 @@ namespace coppercli.Core.Controllers
             // FeedHold and SoftReset are real-time bytes, delivered in any mode, and the
             // reset is what stops the spindle. The lines below go after them: sent while a
             // file is streaming they would be discarded.
+            long reportsBeforeHold = machine.StatusReportCount;
             machine.FeedHold();
-            await Task.Delay(CommandDelayMs).ConfigureAwait(false);
+
+            // A reset while the axes still move loses GRBL's position (ALARM:3) and makes the
+            // next job home, so the reset waits up to StopHoldTimeoutMs for a report, made after
+            // GRBL took the hold, that shows the axes stopped; the first report received may
+            // predate the hold and read Idle for a move GRBL then started. The wait is skipped during
+            // homing, which a feed hold does not stop.
+            if (!machine.IsHoming)
+            {
+                await WaitUntilAsync(
+                    machine,
+                    m => m.StatusReportCount > reportsBeforeHold + 1 && HasStoppedMoving(m),
+                    StopHoldTimeoutMs,
+                    CancellationToken.None,
+                    abortWhenUnavailable: false).ConfigureAwait(false);
+            }
 
             machine.SoftReset();
 
-            // A reset that interrupts a cycle leaves GRBL alarmed (one during homing always
-            // does), and GRBL then refuses every G-code line until $X clears the lock. $X does
-            // nothing on a machine that is not alarmed, so it is sent every time. The line is
-            // held until GRBL is back from the reset, so its timeout covers that wait too.
+            // A reset that interrupts motion, or any reset during homing, leaves GRBL alarmed and
+            // refusing every G-code line until $X clears the lock; $X does nothing on a machine
+            // that is not alarmed, so it is sent every time. The line is held until GRBL is back
+            // from the reset, so its timeout covers that wait too.
             await machine.SendAsync(CmdUnlock, ResetAnnounceTimeoutMs + CommandAnswerTimeoutMs)
                 .ConfigureAwait(false);
 

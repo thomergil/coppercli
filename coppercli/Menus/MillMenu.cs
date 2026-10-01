@@ -53,8 +53,9 @@ namespace coppercli.Menus
 
             try
             {
-                // `CheckMillCanStart` and `GetMillBlockerReason` are shared with the web
-                // server and the disabled-reason display, so all three block the same jobs.
+                // `CheckMillCanStart` is shared with the web server and the disabled-reason
+                // display, so all three block the same jobs; `GetMillBlockerReason` words it
+                // for the terminal.
                 var canStart = MenuHelpers.CheckMillCanStart();
 
                 // Nothing here checks the machine's state: `MillingController` handles the
@@ -71,23 +72,40 @@ namespace coppercli.Menus
                     return;
                 }
 
-                if (canStart.Warnings.Contains(MillWarning.NoMachineProfile))
+                bool homeFirst = false;
+                foreach (var warning in canStart.Warnings)
                 {
-                    if (MenuHelpers.ConfirmOrQuit($"[{ColorWarning}]{NoMachineProfileWarning}[/]. Continue?", false) != true)
+                    switch (warning)
                     {
-                        return;
+                        // The run homes first anyway.
+                        case MillWarning.NotHomed:
+                            break;
+
+                        case MillWarning.StoppedWhileCutting:
+                            bool? answer = MenuHelpers.AskAfterWarning(
+                                MenuHelpers.GetMillWarningText(warning), HomeFirstQuestion, defaultYes: HomeFirstByDefault);
+                            if (answer == null)
+                            {
+                                return;
+                            }
+                            homeFirst = answer.Value;
+                            break;
+
+                        default:
+                            if (!MenuHelpers.ConfirmWarning(MenuHelpers.GetMillWarningText(warning)))
+                            {
+                                return;
+                            }
+                            break;
                     }
                 }
 
-                if (SleepPrevention.ShouldWarn())
+                if (SleepPrevention.ShouldWarn() && !MenuHelpers.ConfirmWarning(SleepPreventionWarning))
                 {
-                    if (MenuHelpers.ConfirmOrQuit($"[{ColorWarning}]{SleepPreventionWarning}[/]. Continue?", false) != true)
-                    {
-                        return;
-                    }
+                    return;
                 }
 
-                MonitorMilling();
+                MonitorMilling(homeFirst);
             }
             finally
             {
@@ -95,7 +113,8 @@ namespace coppercli.Menus
             }
         }
 
-        private static void MonitorMilling()
+        /// <param name="homeFirst">The operator asked to home before the run; see MillingOptions.HomeFirst.</param>
+        private static void MonitorMilling(bool homeFirst)
         {
             var machine = AppState.Machine;
             var currentFile = AppState.CurrentFile;
@@ -185,8 +204,12 @@ namespace coppercli.Menus
                 while (true)
                 {
                     string depthStr = AppState.DepthAdjustment == 0 ? "0" : $"{AppState.DepthAdjustment:+0.00;-0.00}";
-                    string safetyMsg = $"{ProbeRemovedQuestion}  Depth: {depthStr}mm";
-                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, EtaUnknown, safetyMsg, SafetyDepthSubMessage);
+                    bool hasPhases = currentFile?.OffersAChoiceOfPhases == true;
+                    string safetyMsg = string.Format(SafetyMessageFormat,
+                        ProbeRemovedQuestion, depthStr, GetSectionsText(AppState.MillSections),
+                        hasPhases ? string.Format(SafetyPhasesFormat, GetPhasesText(AppState.MillPhases)) : "");
+                    DrawMillProgress(false, visitedCells, TimeSpan.Zero, EtaUnknown, safetyMsg,
+                        string.Format(SafetyDepthSubMessage, hasPhases ? SafetyPhasesKeyHint : ""));
 
                     if (Console.KeyAvailable)
                     {
@@ -203,15 +226,29 @@ namespace coppercli.Menus
                             Logger.Log("Safety confirmation aborted");
                             return;
                         }
-                        if (InputHelpers.IsKey(key, ConsoleKey.DownArrow))
+                        if (InputHelpers.IsKey(key, ConsoleKey.DownArrow)
+                            || InputHelpers.IsKey(key, ConsoleKey.UpArrow))
                         {
-                            AppState.AdjustDepthDeeper();
-                            Logger.Log("Depth adjustment: {0:F2}mm (deeper)", AppState.DepthAdjustment);
+                            bool deeper = InputHelpers.IsKey(key, ConsoleKey.DownArrow);
+                            string? refused = deeper ? AppState.AdjustDepthDeeper() : AppState.AdjustDepthShallower();
+                            if (refused != null)
+                            {
+                                ShowWarningOverlay(refused);
+                            }
+                            else
+                            {
+                                Logger.Log("Depth adjustment: {0:F2}mm", AppState.DepthAdjustment);
+                            }
                         }
-                        if (InputHelpers.IsKey(key, ConsoleKey.UpArrow))
+                        if (InputHelpers.IsKey(key, ConsoleKey.S))
                         {
-                            AppState.AdjustDepthShallower();
-                            Logger.Log("Depth adjustment: {0:F2}mm (shallower)", AppState.DepthAdjustment);
+                            SectionPicker.Show();
+                            Console.Clear();
+                        }
+                        if (hasPhases && InputHelpers.IsKey(key, ConsoleKey.P))
+                        {
+                            PhasePicker.Show();
+                            Console.Clear();
                         }
                     }
                     Thread.Sleep(StatusPollIntervalMs);
@@ -221,18 +258,19 @@ namespace coppercli.Menus
 
                 // The safety checklist above is the enclosure answer: the operator pressed Y
                 // to ProbeRemovedQuestion to reach this line.
-                controller.Options = MillingOptions.Create(currentFile?.FileName,
-                    AppState.DepthAdjustment, AppState.Machine.IsHomed, enclosureConfirmed: true);
+                controller.Options = MillingOptions.Create(
+                    currentFile?.FileName, homeFirst: homeFirst, enclosureConfirmed: true);
 
-                Logger.Log("Starting controller: RequireHoming={0}, DepthAdjustment={1:F3}",
-                    controller.Options.RequireHoming, controller.Options.DepthAdjustment);
+                Logger.Log("Starting controller: HomeFirst={0}, homed={1}, DepthAdjustment={2:F3}, {3}",
+                    homeFirst, machine.IsHomed, AppState.DepthAdjustment, AppState.DescribeJobPart());
 
                 // Clear the last run off the controller, whatever state it left behind.
                 controller.ReleaseAsync().GetAwaiter().GetResult();
 
                 // The task is kept rather than dropped: the finally below waits on it, so
-                // shutdown blocks until the run's own cleanup has finished.
-                millTask = controller.StartAsync(cts.Token);
+                // shutdown blocks until the run's own cleanup has finished. Started while the
+                // G-code cannot change, so the run claims the file the operator confirmed.
+                millTask = AppState.WithFileLocked(() => controller.StartAsync(cts.Token));
 
                 startMs = Environment.TickCount64;
 
@@ -345,11 +383,11 @@ namespace coppercli.Menus
                     // not distort the pace it learns from.
                     if (_millStreamStartMs == null &&
                         Volatile.Read(ref _latestProgress)?.Phase == PhaseMilling &&
-                        AppState.CurrentFile != null)
+                        AppState.MachineFile != null)
                     {
                         _millStreamStartMs = Environment.TickCount64;
                         _millStreamPausedAtStartMs = totalPausedMs;
-                        _etaEstimator = new EtaEstimator(AppState.CurrentFile.TotalTime, machine.File.Count);
+                        _etaEstimator = new EtaEstimator(AppState.MachineFile.TotalTime, machine.File.Count);
                     }
 
                     // One pause count feeds both clocks. Elapsed runs from the moment the
@@ -498,8 +536,7 @@ namespace coppercli.Menus
             var (winWidth, winHeight) = GetSafeWindowSize();
 
             string header = $"{AnsiPrompt}Milling{AnsiReset}";
-            int headerPad = Math.Max(0, (winWidth - CalculateDisplayLength(header)) / 2);
-            WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
+            WriteLineTruncated(CenteredHeader(header, winWidth), winWidth);
             WriteLineTruncated("", winWidth);
 
             var pos = machine.WorkPosition;
@@ -539,10 +576,11 @@ namespace coppercli.Menus
             string feedOvrStr = feedOvr != OverrideDefaultPercent ? $"  Feed: {AnsiWarning}{feedOvr}%{AnsiReset}" : "";
             WriteLineTruncated($"  {AnsiInfo}P{AnsiReset}=Pause  {AnsiInfo}R{AnsiReset}=Resume  {AnsiInfo}+/-/0{AnsiReset}=Feed  {AnsiAlert}Esc{AnsiReset}=Stop{feedOvrStr}", winWidth);
 
-            double minX = currentFile.Min.X;
-            double maxX = currentFile.Max.X;
-            double minY = currentFile.Min.Y;
-            double maxY = currentFile.Max.Y;
+            var (min, max) = currentFile.CuttingBounds;
+            double minX = min.X;
+            double maxX = max.X;
+            double minY = min.Y;
+            double maxY = max.Y;
             double rangeX = Math.Max(maxX - minX, MillMinRangeThreshold);
             double rangeY = Math.Max(maxY - minY, MillMinRangeThreshold);
 
@@ -558,7 +596,7 @@ namespace coppercli.Menus
 
             if (!gridVisible)
             {
-                WriteLineTruncated("  (Window too small for map)", winWidth);
+                WriteLineTruncated($"  {WindowTooSmallForBoard}", winWidth);
                 return;
             }
 
@@ -659,7 +697,7 @@ namespace coppercli.Menus
             int boxTopRow = boxCenterRow + boxHeight / 2;
             int boxBottomRow = boxTopRow - boxHeight + 1;
 
-            WriteLineTruncated($"{pad}┌{new string('─', matrixWidth)}┐", winWidth);
+            WriteLineTruncated(pad + BoxDivider('┌', '┐', matrixWidth, '─'), winWidth);
 
             for (int y = height - 1; y >= 0; y--)
             {
@@ -698,8 +736,8 @@ namespace coppercli.Menus
                 WriteLineTruncated($"{pad}│{rowContent}│", winWidth);
             }
 
-            WriteLineTruncated($"{pad}└{new string('─', matrixWidth)}┘", winWidth);
-            WriteLineTruncated($"{pad}  X: {minX:F1} to {maxX:F1}  Y: {minY:F1} to {maxY:F1}", winWidth);
+            WriteLineTruncated(pad + BoxDivider('└', '┘', matrixWidth, '─'), winWidth);
+            WriteLineTruncated($"{pad}  " + string.Format(BoardBoundsFormat, minX, maxX, minY, maxY), winWidth);
         }
 
         /// <summary>

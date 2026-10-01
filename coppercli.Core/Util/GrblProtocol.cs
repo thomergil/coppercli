@@ -10,6 +10,13 @@ namespace coppercli.Core.Util
         public const string ResponseErrorPrefix = "error:";
         public const string ResponseProbePrefix = "[PRB:";
         public const string ResponseAlarmPrefix = "ALARM";
+
+        /// <summary>
+        /// What GRBL prints after a restart that leaves it locked: after an alarm, after
+        /// sleep, and at power-up on a machine that must home. Each means the position homing
+        /// set may be lost.
+        /// </summary>
+        public const string ResponseAlarmLock = "[MSG:'$H'|'$X' to unlock]";
         public const string ResponseGrblPrefix = "grbl";   // GRBL prints "Grbl"; matched ignoring case
         public const string ResponseTloPrefix = "[TLO:";
         public const string ResponseG54Prefix = "[G54:";   // $# reports the G54 offset itself
@@ -47,9 +54,11 @@ namespace coppercli.Core.Util
         public const string DoorSubStateRetracting = "2";
         public const string DoorSubStateResuming = "3";
 
-        // Hold and Alarm carry a number too. Nothing branches on either, so they are named
-        // only where a test needs a machine that reported one.
+        // Hold:0 means the feed hold has stopped the axes; Hold:1 means they are still
+        // slowing. Alarm carries a number too, named only where a test needs a machine that
+        // reported one.
         public const string HoldSubStateComplete = "0";
+        public const string HoldSubStateSlowing = "1";
         public const string AlarmSubStateHardLimit = "1";
 
         public const string StatusDisconnected = "Disconnected";

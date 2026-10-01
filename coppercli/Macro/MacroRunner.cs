@@ -361,13 +361,6 @@ namespace coppercli.Macro
                 return false;
             }
 
-            // The rest of the macro would cut with corrections that do not match the origin.
-            if (zeroed.Outcome.LeftTheGCodeWrong())
-            {
-                AnsiConsole.MarkupLine($"[{ColorError}]{MacroErrorHeightMapWrong}[/]");
-                return false;
-            }
-
             // Zeroing Z leaves the tool down at the workpiece, so retract as `JogMenu` does
             // after the same move.
             if (zeroingZ)
@@ -504,7 +497,7 @@ namespace coppercli.Macro
 
         private bool ExecuteConfirm(string[] args)
         {
-            string message = args.Length > 0 ? args[0] : "Continue?";
+            string message = args.Length > 0 ? args[0] : ContinueQuestion;
 
             DrawProgress(message, "Y=Yes  N=No (aborts)");
 

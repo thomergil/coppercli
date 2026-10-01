@@ -309,7 +309,6 @@ namespace coppercli.Tests
             var session = AppState.Session;
             string previousFile = session.LastLoadedGCodeFile;
             bool previousWorkZero = session.HasStoredWorkZero;
-            var previousGCode = AppState.CurrentFile;
             bool previousZeroSet = AppState.IsWorkZeroSet;
 
             try
@@ -317,7 +316,7 @@ namespace coppercli.Tests
                 System.IO.File.WriteAllLines(board, new[] { "G21", "G90", "G0 X0 Y0 Z5" });
                 session.LastLoadedGCodeFile = System.IO.Path.GetFullPath(board);
                 session.HasStoredWorkZero = storedWorkZero;
-                AppState.CurrentFile = null;
+                AppState.UnloadFileForTest();
                 AppState.SetWorkZeroTrusted(false);
                 AppState.DiscardProbeData();
 
@@ -341,7 +340,7 @@ namespace coppercli.Tests
             {
                 AppState.DiscardProbeData();
                 Persistence.ClearProbeAutoSave();
-                AppState.CurrentFile = previousGCode;
+                AppState.UnloadFileForTest();
                 AppState.SetWorkZeroTrusted(previousZeroSet);
                 session.LastLoadedGCodeFile = previousFile;
                 session.HasStoredWorkZero = previousWorkZero;

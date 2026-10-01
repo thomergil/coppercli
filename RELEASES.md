@@ -1,5 +1,121 @@
 # Release Notes
 
+## v0.6.0
+
+**Milling**
+
+- You can re-mill part of the board. Before a mill, press S in the terminal, or the Choose
+  button under Sections in the browser, to divide the job's cutting area into equal columns
+  and rows, up to 8 of each. ↑ adds a horizontal line and ↓ removes one; → adds a vertical
+  line and ← removes one. The browser also has - and + buttons. Both screens draw where the
+  job cuts. Then choose the sections to mill: in the terminal press Enter, move with the
+  arrows and press Space on each section; in the browser, tap them. Choosing none, or all of
+  them, mills the whole board, and changing the columns or rows clears the sections chosen.
+  Like the depth, the sections last between runs of the same job and go back to the whole
+  board when you load a file or change the height map.
+- Milling by section runs only the cuts inside the chosen sections, at the depth you set. A
+  cut that crosses a section line stops at the line. The tool comes down only over a chosen
+  section. Between the cuts that run, it rises to the height the file crosses the board at
+  and moves across. It then comes down as far as the file's own rapids do, and plunges at
+  the file's plunge feed. At the start of a job and after a tool change, coppercli does not
+  know where the tool is, so the tool first rises to the machine's safe height. Before a
+  probe, a machine-coordinate move or an offset change, the tool goes where the file puts
+  it, as in a run of the whole board. The log names each section chosen and the area it
+  covers.
+- coppercli cannot mill a file by section when its cuts cover no area, when it never
+  travels above the copper, or when it cuts before it has said where the tool is. It also
+  refuses a file that probes, moves in machine coordinates or changes an offset while the
+  tool is still in the copper from a cut that is left out. A choice that leaves nothing to
+  cut is refused.
+- You can skip a phase of a job. A phase is one tool's work, from one tool change to the
+  next. In the terminal, press P before a mill, press Enter on each phase to clear or choose
+  it, then choose Done. In the browser, clear the phase's box under Phases. Both list each
+  phase with how long it takes, and appear only for a job with more than one phase. To cut a
+  board out after re-milling its traces, clear every phase before the cutout's: the run
+  starts at that tool change and keeps the height map. Sections and depth apply to the
+  phases that run. coppercli chooses every phase again when you load a file or change the
+  height map.
+- coppercli cannot skip a phase that probes or changes an offset when a later phase runs.
+  It also cannot skip a phase that starts the spindle when a later phase cuts without
+  starting the spindle again.
+- The depth adjustment (↑/↓ before a mill, -/+ in the browser) now moves only the cuts.
+  Travel keeps its height. Before, it shifted the Z origin, which lowered every move: on a
+  board whose copper sat up to 1mm above work zero, lowering the cut by 0.36mm dragged the
+  tool across traces between cuts. A stopped run can no longer leave the Z origin shifted.
+- On a file with arcs outside the XY plane (G18 or G19), coppercli now refuses a height
+  map, a depth adjustment and sections with one message that says why. Before, the depth
+  adjustment worked on such a file, because it shifted the Z origin instead of moving the
+  cuts.
+- With a height map applied, travel rises by the height of the map's highest point, so it
+  clears the highest copper by the height the file asked for. Travel stays at the file's
+  height when the whole map is below zero. A travel move that has to rise now rises
+  straight up before it moves sideways.
+- A job starts after 1 second of the machine standing still, instead of 5. While it waits,
+  the screen says "Waiting for idle..."; the countdown is gone. It still waits for a move in
+  progress to finish and for an alarm to clear, and still asks about the door. A job
+  started on a machine that is asleep or not answering now says "Machine not accepting
+  moves. Check door, alarm and sleep." instead of "Machine still moving."
+- Stopping a job, a probe, an outline trace or a tool change, or pressing Reset, no longer
+  forces the next job to home first. A stop now waits, up to 1 second, for the feed hold to
+  bring the axes to rest before it resets GRBL; GRBL keeps its position through that reset.
+  The next job still homes first after an alarm, after GRBL asks to be unlocked, after a
+  GRBL restart coppercli did not cause, and after a reconnect.
+- After a job stops while cutting, whether you stopped it or it failed, the next start asks
+  whether to home first, with yes as the default: a crash or a stall can make the motors
+  lose steps, and GRBL cannot detect that. The terminal asks it before the job; the browser
+  shows a "Home first" checkbox, already checked. Answering no skips homing for that job
+  only; coppercli asks again before each job until the machine homes. If GRBL restarts
+  while the job waits for idle, the job still homes first.
+- If the file, the height map, the depth adjustment, the sections or the phases change after
+  the browser's Start Milling window opens, from another tab for example, the window refuses
+  Start. It also refuses any depth, section or phase change you make in it. If you change
+  the depth, sections or phases just before you press Start and the server refuses that
+  change, the job does not start. Two presses of Start that arrive together start one job.
+  The browser also refuses Start while the machine is homing or probing: "The machine is
+  busy with a job. Stop it first."
+- The browser keeps the depth adjustment between runs of the same job, as the terminal
+  does. It still goes back to 0 when you load a file or change the height map.
+- Milling a job with no height map now warns "No height map - milling without height
+  correction" before it starts. The terminal asks whether to continue, with no as the
+  default; the browser shows it in the Start Milling window. Before, a job whose map had
+  been cleared, for example by answering yes to "Clear probe data?" after a mill, cut the
+  G-code as written without saying so.
+- The terminal's mill picture now covers the area the job cuts, as the browser's does.
+  Before, it also covered where the job only travels.
+- The time estimate now counts arc moves, such as milled holes. During a run of chosen
+  sections or phases, the terminal's time remaining counts only the work that runs.
+
+**Probing**
+
+- You can look at the height map again after probing: View Height Map in the terminal's
+  Probe menu, View Map on the browser's probe screen. It draws the loaded map the way
+  probing drew it, or the autosaved map when none is loaded. Viewing a map does not apply
+  it.
+- In the browser, a probe run that starts while the probe screen still shows a finished map
+  now shows Pause and Stop, instead of the finished map's Done.
+- A job's extent now reaches the far side of an arc instead of stopping at its ends, so the
+  probe grid covers holes and arcs at the board's edge.
+
+**Height map and work zero**
+
+- Zeroing Z with a height map applied now says "height map still applied", and keeps the
+  depth adjustment, sections and phases. The "reload the file" warnings after a zero are
+  gone: coppercli keeps a copy of the G-code as loaded, so removing the height map restores
+  it exactly.
+- Clearing a height map, loading another one, or zeroing X or Y no longer needs the original
+  G-code file on disk. "The height map is in the loaded file and the original is gone." no
+  longer appears.
+
+**G-code**
+
+- A G0 or G1 that names no axis, such as `G01 F600`, no longer becomes a move. Before,
+  coppercli sent it to the machine as a bare `G1` after a G53 block.
+- A move whose start is not known on every axis, such as the second move after a G53
+  block, is no longer dropped as a move of zero length.
+- coppercli now writes a feed into the G-code it sends only before a feed move, and writes
+  it again after a block that sets its own feed, such as a probe. Before, a rapid could carry
+  an `F0`, and a cut after a probe ran at the probe's feed.
+
 ## v0.5.2
 
 **Everywhere**

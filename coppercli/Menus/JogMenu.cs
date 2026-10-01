@@ -159,25 +159,6 @@ namespace coppercli.Menus
             return $"║{content}{new string(' ', padding)}║";
         }
 
-        private static string BoxBorder(char left, char right, int innerWidth, char fill = '═')
-        {
-            return $"{left}{new string(fill, innerWidth)}{right}";
-        }
-
-        private static string BoxDivider(char left, char right, int innerWidth, char fill, params (int pos, char joint)[] joints)
-        {
-            var line = new char[innerWidth];
-            Array.Fill(line, fill);
-            foreach (var (pos, joint) in joints)
-            {
-                if (pos >= 0 && pos < innerWidth)
-                {
-                    line[pos] = joint;
-                }
-            }
-            return $"{left}{new string(line)}{right}";
-        }
-
         private static void RedrawScreen(Machine machine, JogMode mode)
         {
             Console.SetCursorPosition(0, 0);
@@ -225,9 +206,9 @@ namespace coppercli.Menus
             int statusDisplayLen = CalculateDisplayLength(statusContent);
             int hintsDisplayLen = CalculateDisplayLength(hints);
             int statusPadding = Math.Max(1, innerWidth - statusDisplayLen - hintsDisplayLen - 1);
-            WriteLineTruncated(BoxBorder('╔', '╗', innerWidth), winWidth);
+            WriteLineTruncated(BoxDivider('╔', '╗', innerWidth, '═'), winWidth);
             WriteLineTruncated(BoxLine($"{statusContent}{new string(' ', statusPadding)}{hints}", innerWidth), winWidth);
-            WriteLineTruncated(BoxBorder('╠', '╣', innerWidth), winWidth);
+            WriteLineTruncated(BoxDivider('╠', '╣', innerWidth, '═'), winWidth);
 
             // Coordinates are fixed width, so the padding expands on the right.
             int posPadding = Math.Max(0, innerWidth - PositionContentWidth - 1);
@@ -241,7 +222,7 @@ namespace coppercli.Menus
             var probeText = machine.PinStateProbe ? "Contact" : "Open";
             int probePadding = Math.Max(0, innerWidth - probeContentWidth - 1);
             WriteLineTruncated(BoxLine($" Probe:   {probeColor}{probeText}{AnsiReset}{new string(' ', probePadding)}", innerWidth), winWidth);
-            WriteLineTruncated(BoxBorder('╠', '╣', innerWidth), winWidth);
+            WriteLineTruncated(BoxDivider('╠', '╣', innerWidth, '═'), winWidth);
 
             for (int i = 0; i < topPadding; i++)
             {
@@ -357,7 +338,7 @@ namespace coppercli.Menus
                 machine.SoftReset();
                 if (MachineCommands.HomeAndWait(machine).FailureMessage is { } failure)
                 {
-                    ShowOverlayTimed(failure, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    ShowWarningOverlay(failure);
                 }
                 return true;
             }
@@ -374,7 +355,7 @@ namespace coppercli.Menus
 
                 if (MachineCommands.Unlock(machine) is { } refused)
                 {
-                    ShowOverlayTimed(refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    ShowWarningOverlay(refused);
                     return true;
                 }
                 if (MachineWait.CanResume(machine))
@@ -387,7 +368,7 @@ namespace coppercli.Menus
             if (InputHelpers.IsKey(key, ConsoleKey.R))
             {
                 machine.SoftReset();
-                ShowOverlayTimed(ResetMessage, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                ShowWarningOverlay(ResetMessage);
                 return true;
             }
             if (InputHelpers.IsKey(key, ConsoleKey.Spacebar))
@@ -410,7 +391,7 @@ namespace coppercli.Menus
                 var zeroed = MachineCommands.SetWorkZeroAndWait(machine, "Z0");
                 if (zeroed.Refused != null)
                 {
-                    ShowOverlayTimed(zeroed.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    ShowWarningOverlay(zeroed.Refused);
                     return true;
                 }
 
@@ -429,7 +410,7 @@ namespace coppercli.Menus
                 var allZeroed = MachineCommands.SetWorkZeroAndWait(machine, "X0 Y0 Z0");
                 if (allZeroed.Refused != null)
                 {
-                    ShowOverlayTimed(allZeroed.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                    ShowWarningOverlay(allZeroed.Refused);
                     return true;
                 }
 
@@ -519,23 +500,14 @@ namespace coppercli.Menus
             Console.Clear();
         }
 
-        /// <summary>
-        /// An outcome that left the G-code wrong is drawn in the error color, because the
-        /// operator has to reload the file before cutting.
-        /// </summary>
         private static void ShowZeroed(string zeroed, WorkZeroOutcome outcome) =>
-            ShowOverlayTimed(
-                ZeroedMessage(zeroed, outcome),
-                ConfirmationDisplayMs,
-                messageColor: outcome.LeftTheGCodeWrong() ? AnsiError : null);
+            ShowOverlayTimed(ZeroedMessage(zeroed, outcome), ConfirmationDisplayMs);
 
         /// <summary>The terminal's wording for each `WorkZeroOutcome`; a new outcome needs
         /// an arm here.</summary>
         internal static string ZeroedMessage(string zeroed, WorkZeroOutcome outcome) => outcome switch
         {
-            WorkZeroOutcome.MapReapplied => string.Format(ZeroedMapReapplied, zeroed),
-            WorkZeroOutcome.MapNotReapplied => string.Format(ZeroedMapNotReapplied, zeroed),
-            WorkZeroOutcome.MapNotDiscarded => string.Format(ZeroedMapNotDiscarded, zeroed),
+            WorkZeroOutcome.MapStillApplied => string.Format(ZeroedMapStillApplied, zeroed),
             WorkZeroOutcome.MapDiscarded => string.Format(ZeroedMapDiscarded, zeroed),
             WorkZeroOutcome.FileLeftAlone => string.Format(ZeroedFileLeftAlone, zeroed),
             _ => zeroed
@@ -615,8 +587,7 @@ namespace coppercli.Menus
                     var afterProbe = MachineCommands.SetWorkZeroAndWait(machine, "Z0");
                     if (afterProbe.Refused != null)
                     {
-                        ShowOverlayTimed(
-                            afterProbe.Refused, ConfirmationDisplayMs, messageColor: AnsiWarning);
+                        ShowWarningOverlay(afterProbe.Refused);
                         return;
                     }
 

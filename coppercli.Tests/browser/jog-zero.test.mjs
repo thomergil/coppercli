@@ -1,13 +1,12 @@
 // The height map outcome sets whether the next cut is at the right depth, so the browser
-// draws it in words, and as a warning where the G-code no longer matches the origin. Nothing
-// else exercises jog.js's handling of the zero response.
+// draws it in words. Nothing else exercises jog.js's handling of the zero response.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installDom, load, lastToast } from './dom-stub.mjs';
 
 const {
-    HEIGHT_MAP_TEXT_BY_OUTCOME, ZEROED_MAP_NOT_REAPPLIED, ZEROED_FILE_LEFT_ALONE, TEXT_ZEROED_Z
+    HEIGHT_MAP_TEXT_BY_OUTCOME, ZEROED_FILE_LEFT_ALONE, TEXT_ZEROED_Z
 } = await load('constants.js');
 
 async function pageZeroing(answer) {
@@ -19,21 +18,9 @@ async function pageZeroing(answer) {
     return dom;
 }
 
-test('an outcome that left the G-code wrong is drawn as a warning, in words', async () => {
-    const dom = await pageZeroing(
-        { success: true, heightMap: ZEROED_MAP_NOT_REAPPLIED, reloadTheFile: true });
-
-    await dom.el('jog-zero-z-btn').fire('click');
-
-    assert.match(lastToast().className, /error/,
-        'an ordinary confirmation for a file that now holds corrections the origin does not match');
-    assert.equal(lastToast().textContent,
-        `${TEXT_ZEROED_Z} - ${HEIGHT_MAP_TEXT_BY_OUTCOME[ZEROED_MAP_NOT_REAPPLIED]}`);
-});
-
 test('an outcome the run kept is drawn as information, in words', async () => {
     const dom = await pageZeroing(
-        { success: true, heightMap: ZEROED_FILE_LEFT_ALONE, reloadTheFile: false });
+        { success: true, heightMap: ZEROED_FILE_LEFT_ALONE });
 
     await dom.el('jog-zero-z-btn').fire('click');
 

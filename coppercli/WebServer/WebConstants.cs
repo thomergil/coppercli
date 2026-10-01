@@ -146,6 +146,12 @@ public static class WebConstants
     public const string ApiMillToolChangeUserInput = "/api/mill/toolchange/input";
     public const string ApiMillDepth = "/api/mill/depth";
     public const string ApiMillGrid = "/api/mill/grid";  // Takes width and height as query parameters
+
+    /// <summary>GET: where the file cuts, drawn for the sections picker. POST: choose the sections a run mills.</summary>
+    public const string ApiMillSections = "/api/mill/sections";
+
+    /// <summary>POST: choose the phases a run mills.</summary>
+    public const string ApiMillPhases = "/api/mill/phases";
     public const string ApiFeedIncrease = "/api/feed-override/increase";
     public const string ApiFeedDecrease = "/api/feed-override/decrease";
     public const string ApiFeedReset = "/api/feed-override/reset";
@@ -242,7 +248,6 @@ public static class WebConstants
 
     // MillStopDelayMs is in CliConstants; SafeClearanceZ is in coppercli.Core.Util.Constants.
 
-    public const string ErrorNoFileLoaded = "No file loaded";
     public const string ErrorNotFound = "Not found";
     public const string ErrorInvalidRequest = "Invalid request";
     public const string ErrorMethodNotAllowed = "Method not allowed";
@@ -305,6 +310,9 @@ public static class WebConstants
     public const char DevicePathMarker = '?';
 
     public const string ErrorMillingAlreadyRunning = "A job is already running. Stop it first.";
+
+    public const string ErrorJobChangedSinceChecked =
+        "The file, height map, depth, sections or phases changed after the Start Milling window opened. Reopen the window to check them before you start.";
     public const string ErrorNoProbeGrid = "No probe grid. Run Setup first.";
     public const string ErrorBodyTooLarge = "Too much data in one request. Nothing was sent to the machine.";
 
@@ -318,6 +326,9 @@ public static class WebConstants
     public const string WarningSleepPreventionAction =
         "Plug in the computer running coppercli, and turn sleep off.";
 
+    /// <summary>The most cells across or down in the picture the sections picker draws of the board.</summary>
+    public const int SectionsPictureCells = 48;
+
     public const string DepthActionIncrease = "increase";
     public const string DepthActionDecrease = "decrease";
     public const string DepthActionReset = "reset";
@@ -330,8 +341,6 @@ public static class WebConstants
     public const string MillBlockedProbeIncomplete = "Probe incomplete ({0})";
     public const string MillBlockedAlarm = "Machine is in ALARM state - home or unlock first";
     public const string MillBlockedAsleep = "Machine is asleep - reset it first";
-    public const string MillWarningNotHomed = "Machine not homed - will home before milling";
-    public const string MillWarningNoProfile = "No machine profile selected";
 
     public const string MillBlockedUnknown = "Unknown error";
 }

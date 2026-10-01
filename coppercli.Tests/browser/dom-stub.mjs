@@ -64,6 +64,11 @@ class El {
     // A real input moves keyboard focus; nothing here reads it back, so there is nothing to
     // model beyond accepting the call the save screen makes on its filename field.
     focus() { }
+    // A canvas draws into one context for its life; this one keeps the fillRect calls, so a test
+    // can read where the picture was drawn.
+    getContext() {
+        return this._context ??= { fillStyle: '', fillRects: [], fillRect(...rect) { this.fillRects.push(rect); } };
+    }
 }
 
 const elements = new Map();
@@ -92,17 +97,29 @@ function list(selector, items) {
     return items;
 }
 
+// Handlers added to the document, by event type, so a test can send a key the way the browser does.
+const documentHandlers = new Map();
+
 const document = {
     getElementById: byId,
     querySelector: () => null,
     querySelectorAll: selector => lists.get(selector) ?? [],
     createElement: () => new El(),
-    addEventListener: () => { },
+    addEventListener: (type, handler) => {
+        documentHandlers.set(type, [...(documentHandlers.get(type) ?? []), handler]);
+    },
+    documentElement: new El('html'),
     body: new El('body')
 };
 
 export async function load(module) {
     return import(`../../coppercli/WebServer/wwwroot/js/${module}`);
+}
+
+/** Sends `event` to every document handler for `type`, and returns the event. */
+export function dispatch(type, event) {
+    (documentHandlers.get(type) ?? []).forEach(handler => handler(event));
+    return event;
 }
 
 export function lastToast() {
@@ -124,6 +141,7 @@ function modeButton(mode) {
 export function installDom() {
     elements.clear();
     lists.clear();
+    documentHandlers.clear();
     // The body is created once for the module, so without this a test reading the last toast
     // reads one an earlier test left.
     document.body.children.length = 0;
@@ -133,6 +151,7 @@ export function installDom() {
     list('.screen', []);
 
     globalThis.document = document;
+    globalThis.getComputedStyle = () => ({ getPropertyValue: () => '' });
     globalThis.window = { addEventListener: () => { }, location: { href: '' } };
 
     return { el: byId, jogButtons, modeButtons };
@@ -159,6 +178,9 @@ export async function until(condition, what) {
 // The buttons block every status payload carries; each test overrides only the fields it
 // needs. Present by default so updateStatus takes every branch it can: the stub checks an id
 // only when the code that writes it runs.
+// The status a stubbed server answers with when it refuses a change.
+export const HTTP_CONFLICT = 409;
+
 export const BUTTONS = {
     jog: { enabled: true },
     probe: { enabled: true },
@@ -184,9 +206,8 @@ export function payload(overrides) {
         machinePos: { x: 0, y: 0, z: 0 },
         feedOverride: 100,
         probePin: false,
-        depthAdjustment: 0,
         file: { currentLine: 0, totalLines: 0 },
-        probe: { state: 'none', total: 0, progress: 0 },
+        probe: { state: 'none', total: 0, progress: 0, hasHeights: false },
         ...overrides
     };
 }

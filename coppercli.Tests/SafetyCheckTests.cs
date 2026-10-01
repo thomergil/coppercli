@@ -39,9 +39,10 @@ namespace coppercli.Tests
             using var machine = new FakeMachine();
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             // The job's own moves all land. At Completing the tool is put back at Z0 and
@@ -78,9 +79,10 @@ namespace coppercli.Tests
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
             machine.SimulateDoorOpen();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             var errors = new List<ControllerError>();
@@ -136,16 +138,12 @@ namespace coppercli.Tests
         public void ControllerCancelTimeout_CoversTheStopSequenceTheStopRuns()
         {
             // MachineWait.StopAndResetAsync
-            int stopAndReset = Constants.CommandDelayMs
+            int stopAndReset = Constants.StopHoldTimeoutMs                               // the hold
                 + Constants.ResetAnnounceTimeoutMs + Constants.CommandAnswerTimeoutMs   // the unlock
                 + Constants.CommandAnswerTimeoutMs                                       // the spindle stop
                 + Constants.IdleWaitTimeoutMs;
 
-            // What the controller undoes between the stop and the lift. MillingController
-            // restores the depth adjustment: it reads the offsets back and writes them.
-            int betweenStopAndLift = (Constants.WorkOffsetQueryTimeoutMs * 2) + Constants.CommandDelayMs;
-
-            int teardown = stopAndReset + betweenStopAndLift + Constants.CancelRetractTimeoutMs;
+            int teardown = stopAndReset + Constants.CancelRetractTimeoutMs;
 
             Assert.True(Constants.ControllerCancelTimeoutMs >= teardown,
                 $"a stop can take {teardown}ms and is abandoned after "
@@ -318,103 +316,7 @@ namespace coppercli.Tests
             Assert.Equal(ErrorHomingInterrupted, outcome.Reason);
         }
 
-        [Fact]
-        public async Task Ready_IsRefused_WhileTheMachineIsStillMoving()
-        {
-            var machine = new MockMachine { Status = "Run" };
 
-            Assert.False(await MachineWait.EnsureMachineReadyAsync(machine, 300));
-        }
-
-        [Fact]
-        public async Task EnsureMachineReady_AtADoorHold_IsRefusedAndDoesNotResume()
-        {
-            var machine = MockMachine.AtADoor(GrblProtocol.DoorSubStateClosed);
-
-            Assert.False(await MachineWait.EnsureMachineReadyAsync(machine, 300));
-            Assert.Equal(0, machine.CycleStartCount);
-        }
-
-        /// <summary>
-        /// Without a current G54 the controller would be shifting an origin it cannot
-        /// read, so the run fails instead of guessing how deep to cut.
-        /// </summary>
-        [Fact]
-        public async Task Milling_Refuses_WhenTheMachineWillNotReportItsWorkOffsets()
-        {
-            var machine = new MockMachine
-            {
-                Status = "Idle",
-                // Already at the safety height, so the retract confirms immediately and
-                // the run reaches the work-offset query this test is about.
-                MachinePosition = new Vector3(0, 0, Constants.SafeClearanceZ),
-                WorkOffsetQuerySucceeds = false
-            };
-            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
-
-            var controller = new MillingController(machine)
-            {
-                Options = new MillingOptions { DepthAdjustment = -0.05f, RequireHoming = false }
-            };
-
-            ControllerError? error = null;
-            controller.ErrorOccurred += e => error = e;
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            await controller.StartAsync(cts.Token);
-
-            Assert.Equal(ControllerState.Failed, controller.State);
-            Assert.NotNull(error);
-            Assert.Contains("work offsets", error!.Message, StringComparison.OrdinalIgnoreCase);
-            Assert.True(machine.WorkOffsetQueryCount > 0);
-        }
-
-        /// <summary>
-        /// With a tool-length offset live, the combined WCO and G54 differ. The depth
-        /// adjustment is written with G10 L2 P1, which sets G54 alone, so it has to be
-        /// computed from G54 - starting from the combined figure would re-datum Z.
-        /// </summary>
-        [Fact]
-        public async Task DepthAdjustment_IsComputedFromG54_NotTheCombinedWorkOffset()
-        {
-            using var machine = new FakeMachine
-            {
-                ExtraOffset = new Vector3(0, 0, 3.0)   // a live tool-length offset
-            };
-            machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
-
-            const double adjustment = -0.05;
-            double g54Before = machine.G54Offset.Z;
-
-            var controller = new MillingController(machine)
-            {
-                Options = new MillingOptions { DepthAdjustment = (float)adjustment, RequireHoming = false }
-            };
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            try
-            {
-                await controller.StartAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-
-            // Assert on the offset the run wrote, not the end state - the run restores it
-            // on the way out, which is a different guarantee.
-            string prefix = GrblProtocol.CmdSetWorkOffset + " Z";
-            string? applied = machine.SentCommands.FirstOrDefault(c => c.StartsWith(prefix));
-
-            Assert.NotNull(applied);
-
-            double written = double.Parse(applied!.Substring(prefix.Length),
-                System.Globalization.CultureInfo.InvariantCulture);
-
-            // Computed from the combined work offset the written value would be 2.95,
-            // carrying the 3mm tool-length offset into the G54 slot and re-datuming Z.
-            Assert.Equal(g54Before + adjustment, written, precision: 3);
-        }
-    
         /// <summary>
         /// A machine with homing switched off answers $H with error:5. Reporting only
         /// "homing failed" sends the operator hunting for a fault that is not there, when
@@ -634,9 +536,10 @@ namespace coppercli.Tests
             };
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             ControllerError? error = null;
@@ -663,9 +566,10 @@ namespace coppercli.Tests
             machine.SimulateModeChange(coppercli.Core.Communication.Machine.OperatingMode.Probe);
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             ControllerError? error = null;
@@ -690,9 +594,10 @@ namespace coppercli.Tests
             using var machine = new FakeMachine();
             machine.LoadFile("G21", "G90", "G1 X1 Y1 F100");
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             // Well above the controller's own timeouts, so reaching it means the run never

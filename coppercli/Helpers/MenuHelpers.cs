@@ -29,12 +29,16 @@ namespace coppercli.Helpers
     }
 
     /// <summary>
-    /// What the operator is warned about before a mill job starts.
+    /// A warning shown to the operator before a mill job starts.
     /// </summary>
     public enum MillWarning
     {
         NotHomed,
-        NoMachineProfile
+        NoMachineProfile,
+        NoHeightMap,
+
+        /// <summary>Asked as a question: whether to home first. See IMachine.StoppedWhileCutting.</summary>
+        StoppedWhileCutting
     }
 
     /// <param name="Warnings">Shown to the operator, but none of them stops the job.</param>
@@ -47,6 +51,9 @@ namespace coppercli.Helpers
         string? ProbeProgress = null)
     {
         public bool CanStart => Error == MillBlocker.None;
+
+        /// <summary>Whether to ask about homing first; see MillWarning.StoppedWhileCutting.</summary>
+        public bool OffersHomeFirst => Warnings.Contains(MillWarning.StoppedWhileCutting);
     }
 
     /// <param name="Blocker">
@@ -219,10 +226,20 @@ namespace coppercli.Helpers
             {
                 warnings.Add(MillWarning.NotHomed);
             }
+            else if (AppState.Machine.StoppedWhileCutting)
+            {
+                warnings.Add(MillWarning.StoppedWhileCutting);
+            }
 
             if (MachineProfiles.GetProfile(AppState.Settings.MachineProfile) == null)
             {
                 warnings.Add(MillWarning.NoMachineProfile);
+            }
+
+            // No blocker above covers a job with no map, and it cuts the G-code as written.
+            if (probeGrid == null)
+            {
+                warnings.Add(MillWarning.NoHeightMap);
             }
 
             return new MillStartCheck(MillBlocker.None, warnings, fileWarnings);
@@ -275,6 +292,16 @@ namespace coppercli.Helpers
 
         public static string? GetMillDisabledReason() =>
             GetMillBlockerReason(CheckMillCanStart());
+
+        /// <summary>The words for each warning, shown by both front ends.</summary>
+        public static string GetMillWarningText(MillWarning warning) => warning switch
+        {
+            MillWarning.NotHomed => NotHomedWarning,
+            MillWarning.NoMachineProfile => NoMachineProfileWarning,
+            MillWarning.NoHeightMap => NoHeightMapWarning,
+            MillWarning.StoppedWhileCutting => StoppedWhileCuttingWarning,
+            _ => throw new ArgumentOutOfRangeException(nameof(warning), warning, null)
+        };
 
         /// <summary>
         /// One mapping from blocker to words, so the menu entry and the reason beside it
@@ -329,6 +356,14 @@ namespace coppercli.Helpers
         }
 
         private const int MenuChromeLines = 4; // title, help, top and bottom scroll indicators
+
+        /// <summary>
+        /// The digit key for the item numbered <paramref name="number"/> in a list longer than
+        /// the letters it would otherwise use; numbers past 9 wrap to 0.
+        /// </summary>
+        public static char DigitMnemonic(int number) => (char)('0' + number % DigitKeys);
+
+        private const int DigitKeys = 10;
 
         /// <summary>
         /// Clears to end of line, so a shorter line does not leave the last frame's text
@@ -759,6 +794,18 @@ namespace coppercli.Helpers
         /// </summary>
         public static bool? ConfirmOrQuit(string message, bool defaultYes = false) =>
             AskYesNo(message, defaultYes, offerQuit: true);
+
+        /// <summary>
+        /// A warning asked before a job moves the machine. No is the default, so Enter does
+        /// not start a job the operator was warned about.
+        /// </summary>
+        /// <returns>True only when the operator chose to go on.</returns>
+        public static bool ConfirmWarning(string warning) =>
+            AskAfterWarning(warning, ContinueQuestion, defaultYes: false) == true;
+
+        /// <summary>A warning, then a question about it; null for quit or Escape.</summary>
+        public static bool? AskAfterWarning(string warning, string question, bool defaultYes) =>
+            ConfirmOrQuit($"[{ColorWarning}]{warning}[/]. {question}", defaultYes);
 
         /// <summary>ConfirmOrQuit for a screen at startup, where quitting ends the program.</summary>
         public static bool ConfirmOrExit(string message, bool defaultYes = false)

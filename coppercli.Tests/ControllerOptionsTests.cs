@@ -62,12 +62,10 @@ namespace coppercli.Tests
         }
 
         [Fact]
-        public void MillingOptions_Create_SetsRequireHomingFromNotHomed()
+        public void MillingOptions_CarriesTheHomeFirstAnswerItWasGiven()
         {
-            Assert.True(MillingOptions.Create("f.nc", 0f, machineIsHomed: false, enclosureConfirmed: true)
-                .RequireHoming);
-            Assert.False(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: true)
-                .RequireHoming);
+            Assert.True(MillingOptions.Create("f.nc", homeFirst: true, enclosureConfirmed: true).HomeFirst);
+            Assert.False(MillingOptions.Create("f.nc", homeFirst: false, enclosureConfirmed: true).HomeFirst);
         }
 
         /// <summary>
@@ -77,10 +75,8 @@ namespace coppercli.Tests
         [Fact]
         public void MillingOptions_CarriesTheEnclosureAnswerItWasGiven()
         {
-            Assert.True(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: true)
-                .EnclosureConfirmed);
-            Assert.False(MillingOptions.Create("f.nc", 0f, machineIsHomed: true, enclosureConfirmed: false)
-                .EnclosureConfirmed);
+            Assert.True(MillingOptions.Create("f.nc", homeFirst: false, enclosureConfirmed: true).EnclosureConfirmed);
+            Assert.False(MillingOptions.Create("f.nc", homeFirst: false, enclosureConfirmed: false).EnclosureConfirmed);
             Assert.False(new MillingOptions().EnclosureConfirmed);
         }
 

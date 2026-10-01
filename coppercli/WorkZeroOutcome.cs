@@ -18,36 +18,16 @@ namespace coppercli
         /// </summary>
         MapDiscarded,
 
-        /// <summary>The map was applied to the G-code again against the new Z0.</summary>
-        MapReapplied,
-
         /// <summary>
-        /// The map should have been applied again and could not be: the source G-code is
-        /// missing or would not load. The G-code still holds the old Z0's corrections.
+        /// Only Z moved, and a height map is applied. It stays applied: its heights are the
+        /// copper's, relative to the zero touched off on that copper.
         /// </summary>
-        MapNotReapplied,
+        MapStillApplied,
 
         /// <summary>
-        /// The map should have been discarded and could not be: the source G-code is missing
-        /// or would not load. The G-code still holds corrections measured against the old
-        /// origin.
-        /// </summary>
-        MapNotDiscarded,
-
-        /// <summary>
-        /// A run is streaming the loaded file, so it was left alone. Re-applying the map
-        /// reloads the G-code and takes the program back to the start.
+        /// A run is streaming the loaded file, so it was left alone: rebuilding the machine's
+        /// G-code would take the program back to the start.
         /// </summary>
         FileLeftAlone
-    }
-
-    public static class WorkZeroOutcomeExtensions
-    {
-        /// <summary>
-        /// Whether the loaded G-code contains corrections that do not match the origin,
-        /// which the operator clears by reloading the file.
-        /// </summary>
-        public static bool LeftTheGCodeWrong(this WorkZeroOutcome outcome) =>
-            outcome is WorkZeroOutcome.MapNotReapplied or WorkZeroOutcome.MapNotDiscarded;
     }
 }

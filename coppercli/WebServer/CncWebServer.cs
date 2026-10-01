@@ -72,13 +72,16 @@ public static class CncWebServer
     // Created by Run; null while no server is running.
     private static MachineHold? _hold;
 
-    // HandleMillStart assigns a new instance before scheduling the run; the run clears
-    // this field only if it still holds that instance.
+    // StartMilling claims it through TryClaimMillRun before it touches the controller, and
+    // only the start or the run that made the claim releases it, through ReleaseMillRunClaim.
     private static CancellationTokenSource? _millCts;
 
     // Track the StartAsync task so StopMillingAsync waits for its cleanup before resetting
-    // the controller.
+    // the controller. Published with PublishMillRunTask and read with GetCurrentMillRun.
     private static Task? _millRunTask;
+
+    /// <summary>Protects the mill run's token and task from concurrent requests.</summary>
+    private static readonly object MillRunLock = new();
 
     // The combined stop path and a failed tool change can call StopMillingAsync together.
     // Serialize them so only one changes the controller state at a time.
@@ -271,12 +274,14 @@ public static class CncWebServer
                 // the next connection.
                 var (probeCts, probeTask) = GetCurrentProbeRun();
 
-                var running = new[] { probeTask, _millRunTask, _toolChangeRunTask }
+                var (millCts, millTask) = GetCurrentMillRun();
+
+                var running = new[] { probeTask, millTask, _toolChangeRunTask }
                     .Where(task => task != null)
                     .ToArray();
 
                 probeCts?.Cancel();
-                _millCts?.Cancel();
+                millCts?.Cancel();
                 _toolChangeCts?.Cancel();
 
                 if (running.Length > 0)
@@ -746,11 +751,7 @@ public static class CncWebServer
                             await WriteJson(response, new
                             {
                                 success = true,
-                                heightMap = mapOutcome.ToString(),
-
-                                // Core decides which outcomes need the operator to act, so
-                                // the browser does not list them again.
-                                reloadTheFile = mapOutcome.LeftTheGCodeWrong()
+                                heightMap = mapOutcome.ToString()
                             });
                         }
                     }
@@ -808,7 +809,22 @@ public static class CncWebServer
             case ApiMillStart:
                 if (await RequireMethod(response, method, MethodPost))
                 {
-                    await WriteStartResult(response, await StartMilling());
+                    var startReq = await ReadBody<MillStartRequest>(request, response);
+                    if (startReq == null)
+                    {
+                        break;
+                    }
+
+                    // A start that does not name the version the operator checked could run a
+                    // job they never saw.
+                    if (startReq.version is not long version)
+                    {
+                        response.StatusCode = HttpStatusBadRequest;
+                        await WriteJson(response, new { error = ErrorInvalidRequest });
+                        break;
+                    }
+
+                    await WriteStartResult(response, await StartMilling(version, startReq.homeFirst));
                 }
                 break;
 
@@ -1057,16 +1073,94 @@ public static class CncWebServer
                     var depthReq = await ReadBody<DepthAdjustmentRequest>(request, response);
                     if (depthReq != null)
                     {
-                        string? refusedDepth = HandleDepthAdjustment(depthReq);
-                        if (refusedDepth != null)
+                        if (DepthChangeFor(depthReq) is not { } change
+                            || depthReq.version is not long checkedVersion)
                         {
                             response.StatusCode = HttpStatusBadRequest;
-                            await WriteJson(response, new { error = refusedDepth });
+                            await WriteJson(response, new { error = ErrorInvalidRequest });
                             break;
                         }
 
-                        await WriteJson(response, new { success = true, depth = AppState.DepthAdjustment });
+                        await WriteJobChange(response, checkedVersion, change,
+                            () => new { success = true, depth = AppState.DepthAdjustment, version = AppState.MachineFileVersion },
+                            $"Depth adjustment {depthReq.action}");
                     }
+                }
+                break;
+
+            case ApiMillSections:
+                if (!await RequireMethod(response, method, MethodGet, MethodPost))
+                {
+                    break;
+                }
+                if (method == MethodGet)
+                {
+                    var (picture, notDivided) = GetSectionsPicture();
+                    if (picture == null)
+                    {
+                        response.StatusCode = HttpStatusConflict;
+                        await WriteJson(response, new { error = notDivided });
+                        break;
+                    }
+                    await WriteJson(response, picture);
+                }
+                else
+                {
+                    var sectionsReq = await ReadBody<MillSectionsRequest>(request, response);
+                    if (sectionsReq == null)
+                    {
+                        break;
+                    }
+
+                    if (sectionsReq.version is not long checkedVersion
+                        || sectionsReq.columns is not int columns
+                        || sectionsReq.rows is not int rows
+                        || sectionsReq.chosen is not { } chosen
+                        || chosen.Any(section => section?.column == null || section.row == null))
+                    {
+                        response.StatusCode = HttpStatusBadRequest;
+                        await WriteJson(response, new { error = ErrorInvalidRequest });
+                        break;
+                    }
+
+                    await WriteJobChange(response, checkedVersion,
+                        () => AppState.ChooseMillSections(columns, rows,
+                            chosen.Select(section => new BoardCell(section!.column!.Value, section.row!.Value))),
+                        () => new
+                        {
+                            success = true,
+                            version = AppState.MachineFileVersion,
+                            sections = SectionsJson(AppState.MillSections),
+                            sectionsText = DisplayHelpers.GetSectionsText(AppState.MillSections)
+                        },
+                        $"Sections {columns}x{rows}");
+                }
+                break;
+
+            case ApiMillPhases:
+                if (await RequireMethod(response, method, MethodPost))
+                {
+                    var phasesReq = await ReadBody<MillPhasesRequest>(request, response);
+                    if (phasesReq == null)
+                    {
+                        break;
+                    }
+
+                    if (phasesReq.version is not long checkedVersion || phasesReq.chosen is not { } chosen)
+                    {
+                        response.StatusCode = HttpStatusBadRequest;
+                        await WriteJson(response, new { error = ErrorInvalidRequest });
+                        break;
+                    }
+
+                    await WriteJobChange(response, checkedVersion, () => AppState.ChooseMillPhases(chosen),
+                        () => new
+                        {
+                            success = true,
+                            version = AppState.MachineFileVersion,
+                            jobPhases = JobPhasesJson(AppState.CurrentFile, AppState.MillPhases)
+                        },
+                        "Phases");
                 }
                 break;
 
@@ -1331,7 +1425,6 @@ public static class CncWebServer
             probing = AppState.IsMeasuringGrid,
             tracingOutline = AppState.IsTracingOutline,
             toolChange = toolChange,
-            depthAdjustment = AppState.DepthAdjustment,
             buttons = GetButtonStates(probeGrid)
         };
     }
@@ -1505,6 +1598,7 @@ public static class CncWebServer
             // What a summary counts. Progress is how far through the queue the run is, and
             // a skipped point comes off the queue without being measured.
             measured = grid.MeasuredCount,
+            hasHeights = grid.HasValidHeights,
             total = grid.TotalPoints,
             sizeX = grid.SizeX,
             sizeY = grid.SizeY,
@@ -1552,6 +1646,9 @@ public static class CncWebServer
             // Asked before every mill run, by the terminal and the browser.
             probeRemovedQuestion = CliConstants.ProbeRemovedQuestion,
 
+            // The answer the home-first question starts at, in the terminal and the browser.
+            homeFirstByDefault = CliConstants.HomeFirstByDefault,
+
             // The warning before an X or Y zero, so both front ends use the same wording.
             zeroWarning = new
             {
@@ -1564,9 +1661,7 @@ public static class CncWebServer
             // each, so only the names have to agree.
             heightMapOutcomes = new
             {
-                reapplied = nameof(WorkZeroOutcome.MapReapplied),
-                notReapplied = nameof(WorkZeroOutcome.MapNotReapplied),
-                notDiscarded = nameof(WorkZeroOutcome.MapNotDiscarded),
+                stillApplied = nameof(WorkZeroOutcome.MapStillApplied),
                 discarded = nameof(WorkZeroOutcome.MapDiscarded),
                 fileLeftAlone = nameof(WorkZeroOutcome.FileLeftAlone)
             },
@@ -1649,6 +1744,12 @@ public static class CncWebServer
                 // The browser pings well inside this, or every client is reaped mid-job.
                 timeoutMs = WebSocketTimeoutMs
             },
+            // The picker's limit on columns and rows. A browser allowing more has its choice
+            // refused by the server.
+            sections = new
+            {
+                maxPerAxis = MaxSectionsPerAxis
+            },
             // What the depth buttons send. Named on one side only, a rename answers 200
             // with the depth unchanged.
             depthActions = new
@@ -1670,11 +1771,6 @@ public static class CncWebServer
                 maxHeight = MillGridMaxHeight,
                 cuttingDepthThreshold = MillCuttingDepthThreshold,
                 minRangeThreshold = MillMinRangeThreshold
-            },
-            depthAdjustment = new
-            {
-                increment = DepthAdjustmentIncrement,
-                max = DepthAdjustmentMax
             },
             thresholds = new
             {
@@ -1711,7 +1807,7 @@ public static class CncWebServer
         // The machine's own count, which includes the lines probe adjustment added.
         int totalLines = _machine?.File.Count ?? file.Toolpath.Count;
         int currentLine = _machine?.FilePosition ?? 0;
-        var bounds = GetCuttingBounds(file);
+        var (min, max) = file.CuttingBounds;
 
         return new
         {
@@ -1720,27 +1816,12 @@ public static class CncWebServer
             totalLines,
             currentLine,
             progress = totalLines > 0 ? (double)currentLine / totalLines : 0,
-            // The same bounds the cells are indexed on - see GetCuttingBounds.
-            minX = bounds.MinX,
-            maxX = bounds.MaxX,
-            minY = bounds.MinY,
-            maxY = bounds.MaxY
+            // The bounds the cells are indexed on, so the browser sizes its grid to match.
+            minX = min.X,
+            maxX = max.X,
+            minY = min.Y,
+            maxY = max.Y
         };
-    }
-
-    /// <summary>
-    /// The area the job cuts: the feed bounds when both axes have them, and the whole
-    /// toolpath otherwise. The browser sizes its grid from these bounds and then draws cells
-    /// the server indexed on them, so both must use one rule.
-    /// </summary>
-    private static (double MinX, double MaxX, double MinY, double MaxY) GetCuttingBounds(GCodeFile file)
-    {
-        bool useFeedBounds = file.SizeFeed.X > MillMinRangeThreshold
-            && file.SizeFeed.Y > MillMinRangeThreshold;
-
-        return useFeedBounds
-            ? (file.MinFeed.X, file.MaxFeed.X, file.MinFeed.Y, file.MaxFeed.Y)
-            : (file.Min.X, file.Max.X, file.Min.Y, file.Max.Y);
     }
 
     /// <summary>The cells the cutting path has reached, as "x,y" keys.</summary>
@@ -1760,10 +1841,10 @@ public static class CncWebServer
             return Array.Empty<string>();
         }
 
-        var (minX, maxX, minY, maxY) = GetCuttingBounds(file);
+        var (min, max) = file.CuttingBounds;
 
-        double rangeX = Math.Max(maxX - minX, MillMinRangeThreshold);
-        double rangeY = Math.Max(maxY - minY, MillMinRangeThreshold);
+        double rangeX = Math.Max(max.X - min.X, MillMinRangeThreshold);
+        double rangeY = Math.Max(max.Y - min.Y, MillMinRangeThreshold);
         double aspectRatio = rangeX / rangeY;
 
         int gridWidth, gridHeight;
@@ -1781,8 +1862,8 @@ public static class CncWebServer
         var cells = new HashSet<string>();
         foreach (var point in path)
         {
-            int gridX = MapToGrid(point.X, minX, rangeX, gridWidth);
-            int gridY = MapToGrid(point.Y, minY, rangeY, gridHeight);
+            int gridX = MapToGrid(point.X, min.X, rangeX, gridWidth);
+            int gridY = MapToGrid(point.Y, min.Y, rangeY, gridHeight);
             cells.Add($"{gridX},{gridY}");
         }
 
@@ -2352,7 +2433,11 @@ public static class CncWebServer
 
     private static object HandleMillCanStart()
     {
-        var result = MenuHelpers.CheckMillCanStart();
+        // Read together, so the version the browser confirms is the one these warnings and this
+        // depth describe.
+        var (result, version, depth, sections, file, phases) = AppState.WithFileLocked(
+            () => (MenuHelpers.CheckMillCanStart(), AppState.MachineFileVersion, AppState.DepthAdjustment,
+                AppState.MillSections, AppState.CurrentFile, AppState.MillPhases));
         var warnings = new List<string>(result.FileWarnings);
         var errors = new List<string>();
 
@@ -2361,18 +2446,7 @@ public static class CncWebServer
             errors.Add(GetMillBlockerMessage(result));
         }
 
-        foreach (var warning in result.Warnings)
-        {
-            switch (warning)
-            {
-                case MillWarning.NotHomed:
-                    warnings.Add(MillWarningNotHomed);
-                    break;
-                case MillWarning.NoMachineProfile:
-                    warnings.Add(MillWarningNoProfile);
-                    break;
-            }
-        }
+        warnings.AddRange(result.Warnings.Select(MenuHelpers.GetMillWarningText));
 
         // The same warning the TUI gives before a job.
         if (SleepPrevention.ShouldWarn())
@@ -2380,53 +2454,197 @@ public static class CncWebServer
             warnings.Add($"{CliConstants.SleepPreventionWarning}. {WarningSleepPreventionAction}");
         }
 
-        return new { canStart = result.CanStart, errors, warnings };
+        return new
+        {
+            canStart = result.CanStart,
+            errors,
+            warnings,
+            offerHomeFirst = result.OffersHomeFirst,
+            version,
+            depth,
+            sections = SectionsJson(sections),
+            sectionsText = DisplayHelpers.GetSectionsText(sections),
+            offerPhases = file?.OffersAChoiceOfPhases == true,
+            jobPhases = JobPhasesJson(file, phases)
+        };
     }
 
+    /// <summary>
+    /// Each phase of <paramref name="file"/> as the pre-mill window lists it, and whether a run
+    /// mills it; empty with no file.
+    /// </summary>
+    private static object[] JobPhasesJson(GCodeFile? file, ChosenPhases? phases) =>
+        file?.Phases.Select(phase => (object)new
+        {
+            number = phase.Number,
+            label = DisplayHelpers.GetPhaseLabel(phase),
+            chosen = ChosenPhases.Runs(phases, phase.Number)
+        }).ToArray() ?? Array.Empty<object>();
+
+    /// <summary>The sections a run mills as the browser's picker takes them, or null for the whole board.</summary>
+    private static object? SectionsJson(BoardSections? sections) =>
+        sections == null
+            ? null
+            : new
+            {
+                columns = sections.Division.Columns,
+                rows = sections.Division.Rows,
+                chosen = sections.Chosen.Select(CellJson)
+            };
+
+    /// <summary>A cell as the browser takes it: its column from the left and its row from the bottom.</summary>
+    private static object CellJson(BoardCell cell) => new { column = cell.Column, row = cell.Row };
+
+    /// <summary>
+    /// The cells the loaded file cuts through in the phases a run mills, on a grid laid over the
+    /// area it cuts, at most SectionsPictureCells across and down. Row 0 is at the bottom.
+    /// </summary>
+    /// <returns>The picture, or null with the reason the file cannot be divided into sections.</returns>
+    private static (object? Picture, string? Refused) GetSectionsPicture() =>
+        AppState.WithFileLocked<(object?, string?)>(() =>
+        {
+            if (AppState.CurrentFile is not GCodeFile file)
+            {
+                return (null, CliConstants.ErrorNoFileLoaded);
+            }
+
+            var (division, refused) = BoardDivision.Fitting(file, SectionsPictureCells, SectionsPictureCells);
+            if (division == null)
+            {
+                return (null, refused);
+            }
+
+            return (new
+            {
+                width = division.Columns,
+                height = division.Rows,
+                cut = AppState.CellsCut(division).Select(CellJson)
+            }, null);
+        });
+
+    /// <param name="confirmedVersion">
+    /// The <see cref="AppState.MachineFileVersion"/> the operator checked before pressing
+    /// Start. The start is refused if that version has changed since.
+    /// </param>
+    /// <param name="homeFirst">
+    /// The operator's answer to whether to home first after a stop while cutting, or null to
+    /// home whenever there was one (<see cref="MillWarning.StoppedWhileCutting"/>).
+    /// </param>
     /// <returns>Null once the run is under way, or the reason it was refused.</returns>
-    private static async Task<string?> StartMilling()
+    private static async Task<string?> StartMilling(long confirmedVersion, bool? homeFirst)
     {
         var controller = AppState.Milling;
 
-        // A second start would cancel the first run's token and clear the prompt the
-        // operator is looking at.
-        if (controller.IsRunInProgress)
+        // Claimed first, so a second start is refused here rather than releasing this run's
+        // controller or canceling its token.
+        var millCts = new CancellationTokenSource();
+        if (!TryClaimMillRun(millCts))
         {
+            millCts.Dispose();
             return ErrorMillingAlreadyRunning;
         }
 
-        if (!MachineConnected)
+        // From here the token is published: a Stop may cancel it, so it is not disposed.
+        string? refused;
+        try
         {
-            return ErrorMachineNotConnected;
+            // Checked once before the release too, so a refused start leaves the last run's
+            // final state on the controller.
+            refused = AppState.WithFileLocked(
+                () => WhyMillCannotStart(MenuHelpers.CheckMillCanStart(), confirmedVersion));
+            if (refused == null)
+            {
+                // Clear the last run off the controller, whatever state it left behind.
+                await controller.ReleaseAsync();
+                refused = StartClaimedMillRun(controller, millCts, confirmedVersion, homeFirst);
+            }
+        }
+        catch
+        {
+            ReleaseMillRunClaim(millCts);
+            throw;
         }
 
-        if (AppState.CurrentFile == null)
+        if (refused != null)
         {
-            return ErrorNoFileLoaded;
+            ReleaseMillRunClaim(millCts);
+            Logger.Log("Mill start refused: {0}", refused);
         }
 
-        // The same check the TUI runs (MillMenu). /api/mill/can-start only reports it to
-        // the browser, so enforcing it here stops a direct POST starting a job with an
-        // incomplete or unapplied height map.
-        var canStart = MenuHelpers.CheckMillCanStart();
-        if (!canStart.CanStart)
+        return refused;
+    }
+
+    /// <summary>
+    /// Takes the mill run for <paramref name="cts"/> when no other start or run holds it.
+    /// </summary>
+    private static bool TryClaimMillRun(CancellationTokenSource cts)
+    {
+        lock (MillRunLock)
         {
-            Logger.Log("Mill start blocked: {0}", canStart.Error);
-            return GetMillBlockerMessage(canStart);
+            if (_millCts != null)
+            {
+                Logger.Log("Mill start refused: another start or run holds the mill");
+                return false;
+            }
+
+            _millCts = cts;
+            return true;
         }
+    }
 
-        // Clear the last run off the controller, whatever state it left behind.
-        await controller.ReleaseAsync();
-
-        _millCts?.Cancel();
-        _millCts = new CancellationTokenSource();
-
-        // A door must pause the run rather than be cleared automatically.
-        if (_machine != null)
+    /// <summary>
+    /// Clears the claim <paramref name="cts"/> made, and its task. Only the start or the run
+    /// that made a claim releases it, so a claim held by anyone else is a broken rule.
+    /// </summary>
+    private static void ReleaseMillRunClaim(CancellationTokenSource cts)
+    {
+        lock (MillRunLock)
         {
-            _machine.EnableAutoStateClear = false;
-        }
+            if (!ReferenceEquals(_millCts, cts))
+            {
+                Logger.Log("Mill run claim released by a run that does not hold it; left alone");
+                return;
+            }
 
+            _millCts = null;
+            _millRunTask = null;
+        }
+    }
+
+    /// <summary>
+    /// Stores the run's task only while its claim is current. A run that ends before this call
+    /// has already released its claim, and storing its task then would bring it back.
+    /// </summary>
+    private static void PublishMillRunTask(CancellationTokenSource cts, Task task)
+    {
+        lock (MillRunLock)
+        {
+            if (ReferenceEquals(_millCts, cts))
+            {
+                _millRunTask = task;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The mill run's token and task, read together. Read apart, a run that ends between the
+    /// two leaves a caller canceling one run and waiting on another.
+    /// </summary>
+    private static (CancellationTokenSource? Cts, Task? Task) GetCurrentMillRun()
+    {
+        lock (MillRunLock)
+        {
+            return (_millCts, _millRunTask);
+        }
+    }
+
+    /// <summary>
+    /// Checks, sets up and starts the run StartMilling claimed.
+    /// </summary>
+    /// <returns>Null once the run is under way, or the reason it was refused.</returns>
+    private static string? StartClaimedMillRun(
+        MillingController controller, CancellationTokenSource millCts, long confirmedVersion, bool? homeFirst)
+    {
         Action<ControllerState> onStateChanged = state =>
         {
             Logger.Log("Mill controller state: {0}", state);
@@ -2507,35 +2725,66 @@ public static class CncWebServer
             });
         };
 
-        controller.StateChanged += onStateChanged;
-        controller.ProgressChanged += onProgressChanged;
-        controller.ToolChangeDetected += onToolChange;
-        controller.UserInputRequired += onUserInputRequired;
-        controller.ErrorOccurred += onError;
+        Task? run = null;
 
-        // The web UI has no per-start depth confirmation, as the terminal does; the check
-        // above is what protects a start from a browser. Its pre-mill modal does ask the
-        // enclosure question, but it asks it in the browser and this endpoint never receives
-        // the answer, so a door hold goes to the operator as a prompt here rather than being
-        // released on an answer the server is only assuming.
-        controller.Options = MillingOptions.Create(AppState.CurrentFile?.FileName,
-            AppState.DepthAdjustment, _machine!.IsHomed, enclosureConfirmed: false);
+        // The checks, the setup and the start all run under AppState's FileLock, which every
+        // change to the machine's G-code takes. StartAsync claims the run before it returns,
+        // so a change to the file, the map or the depth cannot come between the checks and
+        // the run.
+        string? refused = AppState.WithFileLocked(() =>
+        {
+            var canStart = MenuHelpers.CheckMillCanStart();
+            if (WhyMillCannotStart(canStart, confirmedVersion) is { } notNow)
+            {
+                return notNow;
+            }
 
-        Logger.Log("Starting milling controller: RequireHoming={0}, DepthAdjustment={1:F3}",
-            controller.Options.RequireHoming, controller.Options.DepthAdjustment);
+            if (_machine is not Machine machine)
+            {
+                return ErrorMachineNotConnected;
+            }
 
-        SleepPrevention.Start();
-        Logger.Log("Sleep prevention started: {0}", SleepPrevention.IsActive);
+            bool home = homeFirst ?? (canStart.OffersHomeFirst && HomeFirstByDefault);
 
-        // Capture millCts before scheduling the task, then compare it in finally so an
-        // older run cannot clear a newer run's fields. _millRunTask lets Stop await this
-        // run's teardown before using the controller again (see HandleMillStopAsync).
-        var millCts = _millCts;
-        _millRunTask = Task.Run(async () =>
+            SleepPrevention.Start();
+            Logger.Log("Sleep prevention started: {0}", SleepPrevention.IsActive);
+
+            // A door must pause the run rather than be cleared automatically.
+            machine.EnableAutoStateClear = false;
+
+            controller.StateChanged += onStateChanged;
+            controller.ProgressChanged += onProgressChanged;
+            controller.ToolChangeDetected += onToolChange;
+            controller.UserInputRequired += onUserInputRequired;
+            controller.ErrorOccurred += onError;
+
+            // The pre-mill modal asks the enclosure question in the browser, and this
+            // endpoint never receives the answer, so a door hold goes to the operator as a
+            // prompt here rather than being released on an answer the server is only assuming.
+            controller.Options = MillingOptions.Create(
+                AppState.CurrentFile?.FileName, homeFirst: home, enclosureConfirmed: false);
+
+            Logger.Log("Starting milling controller: HomeFirst={0}, homed={1}, DepthAdjustment={2:F3}",
+                home, machine.IsHomed, AppState.DepthAdjustment);
+
+            run = controller.StartAsync(millCts.Token);
+            return (string?)null;
+        });
+
+        if (refused != null)
+        {
+            return refused;
+        }
+
+        // _millRunTask lets Stop await this run's teardown before using the controller again
+        // (see HandleMillStopAsync).
+        PublishMillRunTask(millCts, FinishMillRunAsync());
+
+        async Task FinishMillRunAsync()
         {
             try
             {
-                await controller.StartAsync(millCts.Token);
+                await run!;
             }
             catch (Exception ex)
             {
@@ -2553,33 +2802,94 @@ public static class CncWebServer
                 controller.UserInputRequired -= onUserInputRequired;
                 controller.ErrorOccurred -= onError;
 
-                // These fields may now belong to a newer run. Clearing its prompt would
-                // hide the operator's question; enabling automatic door release during a
-                // cut would let software resume the machine.
-                if (ReferenceEquals(_millCts, millCts))
+                PendingPrompt.ClearIfCurrent(published);
+                SleepPrevention.Stop();
+
+                if (_machine != null)
                 {
-                    _millCts = null;
-                    _millRunTask = null;
-                    PendingPrompt.ClearIfCurrent(published);
-
-                    SleepPrevention.Stop();
-
-                    if (_machine != null)
-                    {
-                        _machine.EnableAutoStateClear = true;
-                    }
-
-                    Logger.Log("Milling controller finished");
+                    _machine.EnableAutoStateClear = true;
                 }
-                else
-                {
-                    Logger.Log("Milling controller finished; a newer run is active");
-                }
+
+                // Released last: while this run holds the claim no new run can start, so the
+                // teardown above cannot clear a newer run's prompt, stop its sleep prevention
+                // or let software release its door hold.
+                ReleaseMillRunClaim(millCts);
+                Logger.Log("Milling controller finished");
             }
+        }
+
+        Logger.Log("Milling started (controller-based), {0}", AppState.DescribeJobPart());
+        return null;
+    }
+
+    /// <summary>
+    /// Why a mill run cannot start now, or null. Called under FileLock, so the file, the map
+    /// and the depth cannot change before the run starts.
+    /// </summary>
+    /// <param name="canStart">MenuHelpers.CheckMillCanStart, read under the same lock.</param>
+    private static string? WhyMillCannotStart(MillStartCheck canStart, long confirmedVersion)
+    {
+        // TryClaimMillRun refuses a second mill start; this refuses one while a probe run, a
+        // homing cycle or an open probe cycle has the machine, which the start would take.
+        if (AnyOperationRunning())
+        {
+            return ErrorMachineBusy;
+        }
+
+        // The same check the TUI runs (MillMenu). /api/mill/can-start only reports it to
+        // the browser, so enforcing it here stops a direct POST starting a job with an
+        // incomplete or unapplied height map.
+        if (!canStart.CanStart)
+        {
+            Logger.Log("Mill start blocked: {0}", canStart.Error);
+            return GetMillBlockerMessage(canStart);
+        }
+
+        return WhyJobChangedSince(confirmedVersion);
+    }
+
+    /// <summary>
+    /// Makes a change the pre-mill window asks for to the job, only to the version the window
+    /// checked, and reads the reply under the same lock, so a change another client made first
+    /// is refused rather than applied to the version the reply names. A refusal (the job
+    /// changed since the check, a run, no file, or one the change gives itself) is a 409.
+    /// </summary>
+    /// <param name="reply">The reply to a change made, read under the lock with the version it made.</param>
+    /// <param name="what">What is changing, for the log.</param>
+    private static async Task WriteJobChange(
+        HttpListenerResponse response, long checkedVersion, Func<string?> change, Func<object> reply, string what)
+    {
+        var (refused, answer) = AppState.WithFileLocked(() =>
+        {
+            string? notChanged = WhyJobChangedSince(checkedVersion) ?? change();
+            return (notChanged, notChanged == null ? reply() : null);
         });
 
-        Logger.Log("Milling started (controller-based)");
-        return null;
+        if (refused != null)
+        {
+            Logger.Log("{0} refused: {1}", what, refused);
+            response.StatusCode = HttpStatusConflict;
+            await WriteJson(response, new { error = refused });
+            return;
+        }
+
+        await WriteJson(response, answer!);
+    }
+
+    /// <summary>
+    /// Refuses a request that names a version of the job other than the one the machine holds,
+    /// so the pre-mill window cannot act on a job another client changed. Called under FileLock.
+    /// </summary>
+    private static string? WhyJobChangedSince(long checkedVersion)
+    {
+        if (checkedVersion == AppState.MachineFileVersion)
+        {
+            return null;
+        }
+
+        Logger.Log("Refused: the operator checked version {0}, the machine holds {1}",
+            checkedVersion, AppState.MachineFileVersion);
+        return ErrorJobChangedSinceChecked;
     }
 
     /// <summary>
@@ -2653,8 +2963,8 @@ public static class CncWebServer
             // the window between /api/mill/start returning and the pool thread reaching
             // TransitionTo(Initializing), and a Stop arriving in that window must still
             // cancel the token the run is about to start honoring, not silently no-op.
-            var runTask = _millRunTask;
-            _millCts?.Cancel();
+            var (millCts, runTask) = GetCurrentMillRun();
+            millCts?.Cancel();
 
             if (runTask == null && controller.State == ControllerState.Idle)
             {
@@ -3943,10 +4253,47 @@ public static class CncWebServer
         public bool? yes { get; init; }
     }
 
+    private record MillStartRequest
+    {
+        /// <summary>The version from /api/mill/can-start, or from the reply to a depth, sections or phases change.</summary>
+        public long? version { get; init; }
+        public bool? homeFirst { get; init; }
+    }
+
+    private record MillSectionsRequest
+    {
+        /// <summary>The version the pre-mill window holds; see MillStartRequest.version.</summary>
+        public long? version { get; init; }
+        public int? columns { get; init; }
+        public int? rows { get; init; }
+
+        /// <summary>The sections to mill; none mills the whole board.</summary>
+        public SectionRequest?[]? chosen { get; init; }
+    }
+
+    private record MillPhasesRequest
+    {
+        /// <summary>The version the pre-mill window holds; see MillStartRequest.version.</summary>
+        public long? version { get; init; }
+
+        /// <summary>The numbers of the phases to mill, from 1.</summary>
+        public int[]? chosen { get; init; }
+    }
+
+    /// <summary>A section by its column from the left and its row from the bottom, both from 0.</summary>
+    private record SectionRequest
+    {
+        public int? column { get; init; }
+        public int? row { get; init; }
+    }
+
     private record DepthAdjustmentRequest
     {
-        public double? depth { get; init; }
-        public string? action { get; init; }  // "increase", "decrease", "reset"
+        /// <summary>One of the DepthAction constants.</summary>
+        public string? action { get; init; }
+
+        /// <summary>The version the pre-mill window holds; see MillStartRequest.version.</summary>
+        public long? version { get; init; }
     }
 
     private record ToolChangeUserInputRequest
@@ -4350,36 +4697,18 @@ public static class CncWebServer
     private static Task<bool> HandleToolChangeAbortAsync() => HandleMillStopAsync();
 
     /// <returns>
-    /// Why the request was refused, or null once it was carried out. An unrecognized action
-    /// is refused rather than answered with the unchanged depth.
+    /// The function that makes the change the request names, which returns null on success or
+    /// why it was refused. Null for an action the server does not know, which the caller
+    /// refuses rather than answering with the unchanged depth.
     /// </returns>
-    private static string? HandleDepthAdjustment(DepthAdjustmentRequest req)
-    {
-        if (req.depth.HasValue)
+    private static Func<string?>? DepthChangeFor(DepthAdjustmentRequest req) =>
+        req.action?.ToLowerInvariant() switch
         {
-            AppState.SetDepthAdjustment(req.depth.Value);
-            Logger.Log("Depth adjustment set to {0:F2}mm", AppState.DepthAdjustment);
-            return null;
-        }
-
-        switch (req.action?.ToLowerInvariant())
-        {
-            case DepthActionIncrease:
-                AppState.AdjustDepthShallower();
-                break;
-            case DepthActionDecrease:
-                AppState.AdjustDepthDeeper();
-                break;
-            case DepthActionReset:
-                AppState.ResetDepthAdjustment();
-                break;
-            default:
-                return ErrorInvalidRequest;
-        }
-
-        Logger.Log("Depth adjustment {0}: now {1:F2}mm", req.action, AppState.DepthAdjustment);
-        return null;
-    }
+            DepthActionIncrease => AppState.AdjustDepthShallower,
+            DepthActionDecrease => AppState.AdjustDepthDeeper,
+            DepthActionReset => () => AppState.SetDepthAdjustment(0),
+            _ => null
+        };
 
     private static object GetSettings()
     {

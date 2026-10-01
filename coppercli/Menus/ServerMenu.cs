@@ -75,7 +75,7 @@ namespace coppercli.Menus
 
                 for (int i = 0; i < ports.Length; i++)
                 {
-                    portMenu.Add(new MenuItem<PortOption>(ports[i], (char)('0' + ((i + 1) % 10)), PortOption.Port, i));
+                    portMenu.Add(new MenuItem<PortOption>(ports[i], MenuHelpers.DigitMnemonic(i + 1), PortOption.Port, i));
                 }
                 portMenu.Add(new MenuItem<PortOption>("Enter manually", 'm', PortOption.Manual));
                 portMenu.Add(new MenuItem<PortOption>("Back", 'q', PortOption.Back));
@@ -338,8 +338,7 @@ namespace coppercli.Menus
             Console.SetCursorPosition(0, 0);
 
             string header = $"{AnsiPrompt}Server{AnsiReset}";
-            int headerPad = Math.Max(0, (winWidth - CalculateDisplayLength(header)) / 2);
-            WriteLineTruncated(new string(' ', headerPad) + header, winWidth);
+            WriteLineTruncated(CenteredHeader(header, winWidth), winWidth);
             WriteLineTruncated("", winWidth);
 
             WriteLineTruncated($"  Serial Port:    {AnsiInfo}{proxy.SerialPortName}{AnsiReset}", winWidth);

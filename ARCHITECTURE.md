@@ -23,6 +23,13 @@ coppercli's tool-change logic has no reference implementation.
   and every wait/poll loop. Controllers emit events; they never render.
 - **core-gcode** (`coppercli.Core/GCode/`) — parses, models, and regenerates toolpaths.
   `GCodeParser`, `GCodeFile`, `ProbeGrid`, `ProbeContext`. Pure computation, no I/O.
+  `GCodeFile`'s transforms (`KeepPart`, `OffsetCutDepth`, `ApplyProbeGrid`) each return
+  a new file and leave the source alone. `GCodeFile.CuttingBounds` is the one definition of
+  the area a file cuts; the mill views on both screens and the board's sections are laid out
+  on it. `BoardDivision` divides that area into cells, and `BoardSections` is the operator's
+  choice of them. `JobPhase` splits a file into phases, one tool's work each, and
+  `ChosenPhases` is the operator's choice of them. `PartClip` builds the toolpath `KeepPart`
+  returns from both choices. A job phase is not a controller's `*Phase`.
 - **core-util** (`coppercli.Core/Util/`) — `Constants`, `GrblProtocol`, `GCodeFormat`,
   `Vector3`/`Vector2`, `AtomicFile`, `GrblCodeTranslator`.
 - **core-settings** (`coppercli.Core/Settings/`) — `MachineSettings`, `SessionState`, and
@@ -57,7 +64,7 @@ coppercli's tool-change logic has no reference implementation.
 
 ## Interfaces
 
-### controllers → machine · v8 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
+### controllers → machine · v9 · kind: function · contract: `coppercli.Core/Communication/IMachine.cs` (law)
 Every controller reaches the machine only through `IMachine`. That interface file is the
 contract; do not restate it here. It exists so controllers are testable without hardware;
 `coppercli.Tests/Fakes/` supplies the doubles.
@@ -124,9 +131,22 @@ contract; do not restate it here. It exists so controllers are testable without 
   is the only place a workflow asks the operator for it.
 - `MachineWait.HomeAsync` is the only place `IsHomed` is set **true**, and it sets it on
   GRBL's `ok` for the `$H` — the one answer that means the cycle finished. It is set
-  false only inside `Machine` itself, on connect, disconnect, and any reset — one coppercli
-  sends, or one GRBL announces with its banner — the events after which the machine no longer
-  has a valid reference frame. No UI assigns it.
+  false only inside `Machine` itself, on each sign that the position may be lost: connect,
+  disconnect, an `ALARM` line, GRBL's `[MSG:'$H'|'$X' to unlock]`, and a banner coppercli did
+  not cause. A soft reset coppercli sends while the axes are stopped keeps it. No UI assigns
+  it.
+- **v9:** `IMachine.StoppedWhileCutting` records that a job stopped while cutting, by the
+  operator or on an error, since the machine last homed. `Machine` keeps it and `IsHomed` in
+  one field, so it cannot outlive the homing it depends on; any assignment to `IsHomed`
+  clears it. `MillingController.CleanupAsync` notes it in the Milling phase while the run is
+  Running or Paused, not at a program pause, a door prompt, a tool change or Completing. The
+  next start offers to home first (`CliConstants.HomeFirstByDefault`), and
+  `MillingController` decides whether to home when the settle ends:
+  `Options.HomeFirst || !IsHomed`. `MachineWait.StopAndResetAsync` waits up to
+  `StopHoldTimeoutMs` for the feed hold to stop the axes before its reset. The settle is
+  `WaitForSteadyIdleAsync`, which waits on `SteadyIdle`. `SteadyIdle` is the one definition
+  of Idle without a break, and the completion check reads it too. See `homing-lost-on-every-stop`,
+  `settle-was-a-fixed-five-seconds`.
 - **GAP:** the `IMachine` interface stops at Core. `AppState.Machine`, `CncWebServer._machine`,
   `MachineCommands`, and `JogHelpers` are all typed to the concrete `Machine`, because
   `IMachine` was scoped to what controllers need — it lacks `Connect`/`Disconnect`,
@@ -210,7 +230,7 @@ so a handler must not block on the UI thread's own input loop.
   with presentation only. The workflows run in Core, but the repeated setup sequence has
   already produced differences between the two UIs (see `stale-work-zero-and-height-map`).
 
-### machine → GRBL · v4 · kind: serial wire protocol · contract: `coppercli.Core/Util/GrblProtocol.cs` (law)
+### machine → GRBL · v5 · kind: serial wire protocol · contract: `coppercli.Core/Util/GrblProtocol.cs` (law)
 Status strings, real-time bytes, and command words are named there and nowhere else.
 Targets GRBL 1.1f; 0.8/0.9/1.0 are known-incompatible.
 - Every number sent to the machine is formatted through `GCodeFormat.Inv`; see rule
@@ -228,11 +248,16 @@ Targets GRBL 1.1f; 0.8/0.9/1.0 are known-incompatible.
 - **v4:** GRBL answers the lines it is sent in the order it received them, so `Machine`
   matches each `ok` or `error:N` to the oldest line still unanswered. `BufferState` is
   computed from those unanswered lines rather than tracked beside them. GRBL's banner means
-  it has restarted, whoever reset it: the lines it held are abandoned and `IsHomed` is
-  cleared. After coppercli sends a soft reset, lines are held until that banner arrives or
+  GRBL has restarted, whoever reset it, so the lines GRBL held are abandoned. After coppercli
+  sends a soft reset, lines are held until that banner arrives or
   `Constants.ResetAnnounceTimeoutMs` passes, because GRBL drops a line it receives while
   restarting without answering it. An alarm abandons the lines GRBL held, and also the lines
   not yet sent unless they are held for the restart.
+- **v5:** GRBL keeps its position through a soft reset while the axes are stopped (Idle,
+  `Hold:0`, a stopped door hold). A reset during motion prints `ALARM:3` before the banner, and
+  a reset out of alarm or sleep prints `[MSG:'$H'|'$X' to unlock]` (`ResponseAlarmLock`) after
+  it. So `Machine` clears `IsHomed` on any `ALARM` line, on that message, and on a banner that
+  arrives while `Machine` holds no lines for a reset coppercli sent. See `homing-lost-on-every-stop`.
 
 ### proxy → TCP clients · v2 · kind: tcp · port 34000
 `SerialProxy` re-exports the raw serial stream to one TCP client at a time, so a remote TUI
@@ -268,7 +293,7 @@ that reaches the port can send arbitrary G-code. Documented as such in the READM
   takeover fails when `--web-port` is set to anything else. Options: publish the web port
   from the proxy, or add a terminal setting for it (cost: one more setting to keep in step).
 
-### web → browser · v11 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
+### web → browser · v14 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
 Port 34001. Every path (`Api*`), every WebSocket message type (`WsMessageType*`), and every
 socket command (`WsCmd*`) is a named constant there; the client's mirror is
 `wwwroot/js/constants.js`. Neither side may hardcode a wire value.
@@ -395,10 +420,44 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   confirm. The browser shows them at load and asks for them before probing, tracing and
   milling, as the terminal does. The server does not refuse a start on them. See
   `job-origin-warning-dropped-by-derived-files`.
+- **v12:** the pre-mill window confirms `AppState.MachineFileVersion`, which changes with
+  every build of the machine's G-code. `/api/mill/can-start` returns it with the depth, read
+  under `FileLock`; `POST /api/mill/depth` and `POST /api/mill/start` name it and are refused
+  with `409` (`ErrorJobChangedSinceChecked`) when it is stale and `400` when it is missing.
+  The window sends depth changes one at a time and takes the version from each reply, never
+  from the status stream, which no longer carries the depth. The start claims the run
+  (`TryClaimMillRun`), checks under `FileLock` before and after `ReleaseAsync`, and starts
+  inside the lock; the run releases the claim after its own teardown. It is refused with
+  `ErrorMachineBusy` while a probe run, a homing cycle or an open probe cycle has the
+  machine. See `premill-window-confirmed-a-job-it-did-not-show`.
+- **v13:** in the pre-mill window the operator chooses the sections of the board a run mills.
+  `GET /api/mill/sections` returns a picture of where the loaded file cuts,
+  `{width, height, cut:[{column, row}]}`, at most `SectionsPictureCells` cells a side, laid
+  out by `BoardDivision.Fitting`; row 0 is at the bottom. It answers `409` with the reason
+  when no file is loaded or the file cannot be divided. `POST /api/mill/sections`
+  `{version, columns, rows, chosen:[{column, row}]}` is checked against the version as a depth
+  change is: `409` (`ErrorJobChangedSinceChecked`) when stale, `409` with the reason when
+  `AppState.ChooseMillSections` refuses, `400` when the body is malformed or a field is missing. It replies
+  `{success, version, sections, sectionsText}`. `/api/mill/can-start` also returns `sections`
+  (null for the whole board) and `sectionsText`, the words `DisplayHelpers.GetSectionsText`
+  gives the terminal. The window sends a sections change through the same `queueJobChange`
+  chain as a depth change, one at a time, and takes the version from each reply. See
+  `chosen-sections-clip-the-loaded-file`.
+- **v14:** the operator chooses the phases of the job a run mills. `/api/mill/can-start`
+  also returns `offerPhases` (`GCodeFile.OffersAChoiceOfPhases`; the window shows the phases
+  only when it is true) and `jobPhases`, `[{number, label, chosen}]`, labeled by
+  `DisplayHelpers.GetPhaseLabel`. `POST /api/mill/phases` `{version, chosen:[number]}`
+  follows the sections rules: `409` (`ErrorJobChangedSinceChecked`) when stale, `409` with
+  the reason when `AppState.ChooseMillPhases` refuses, `400` when the body is malformed or a
+  field is missing. It replies `{success, version, jobPhases}`. The server makes depth,
+  sections and phases changes through one handler, `WriteJobChange`, and the browser sends
+  them through one function, `sendJobChange` in `mill.js`, which replaces `queueJobChange`.
+  `GET /api/mill/sections` returns a picture of the chosen phases' cuts only
+  (`AppState.CellsCut`). See `job-phases-skip-a-tools-work`.
 - **GAP (undecided):** machine errors are not shown in the browser. In server mode they go
   to the console's message list only. Options: a WebSocket message type for them (four-place
   update, rule `ws-message-types-updated-in-four-places`), or a field in `/api/status`.
-- **GAP:** failure signalling is still inconsistent on pause: `/api/mill/pause` returns 400 on
+- **GAP:** failure signaling is still inconsistent on pause: `/api/mill/pause` returns 400 on
   illegal state while `/api/probe/pause` returns 200 with `{success:false}`. Left as it
   stands; the start path is the one the operator's screen depends on.
 - **DECISION (accepted, not a target):** the web file browsers can reach the whole
@@ -414,7 +473,7 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   a network share sends the login to that host. See `prompt-id-did-not-stop-a-double-tap`,
   `network-paths-missed-by-the-local-path-check`.
 
-### shared constants → client · v2 · kind: http · `GET /api/constants`
+### shared constants → client · v3 · kind: http · `GET /api/constants`
 Any value both C# and JavaScript need crosses here. `GetSharedConstants()` in
 `CncWebServer.cs` serves it, `validateConstants()` in `helpers.js` compares it against the
 client's own copy at startup and reports mismatches. A value duplicated between the two
@@ -423,11 +482,14 @@ languages without passing through `/api/constants` is a violation, not a shortcu
   not wired up. The `api` path group was two dozen paths stored twice with nothing comparing
   them, and a wrong path answers 404 anyway. Publish a value only when something consumes or
   verifies it.
+- **v3:** `sections.maxPerAxis` publishes `Constants.MaxSectionsPerAxis`, the most columns or
+  rows the board may be divided into. The client's copy is `SECTIONS_MAX_PER_AXIS`, which
+  `validateConstants` checks and the section picker (`sections.js`) reads to limit its
+  `+` buttons.
 - **GAP:** `constants.js` hardcodes every value, and **nothing in the UI reads a value *from*
-  `/api/constants`**; a mismatch only produces a `console.warn`. Three groups are published
-  and never compared: `probe`
-  limits, `millGrid`, and `depthAdjustment`, and `index.html` hardcodes the very limits being
-  published. `mill.js` reimplements `CncWebServer.MapToGrid` line for line, so the client both
+  `/api/constants`**; a mismatch only produces a `console.warn`. Two groups are published
+  and never compared: `probe` limits and `millGrid`. `index.html` also hardcodes the
+  published `probe` limits. `mill.js` reimplements `CncWebServer.MapToGrid` line for line, so the client both
   fetches grid cells and recomputes them. Target: the client *consumes* these values rather
   than restating and comparing them. `/api/config` already supplies values to the client.
 
@@ -585,7 +647,8 @@ document and `MacroParser` together.
 - **machine-state-single-writer** *(error)* — a fact about the machine is defined by
   `Machine` (or derived from the controller that defines it) and assigned in exactly one
   place; no UI keeps its own mirror. `IsHomed` is set true only in `MachineWait.HomeAsync`
-  and false only inside `Machine`; `AppState.IsProbing` is derived, not stored; work-zero
+  and false only inside `Machine`, on each sign that the position may be lost (controllers
+  → machine); `AppState.IsProbing` is derived, not stored; work-zero
   invalidation happens on the connection-state event, not a menu action. **Scope:** this
   governs machine state. Operator assertions about the workpiece, such as `IsWorkZeroSet`
   and whether a height map still applies, are session state and stay in `AppState`.
@@ -611,16 +674,17 @@ document and `MacroParser` together.
   abort paths do not all reach a reset. The method is `abstract` so a new controller must
   answer the question. Anything derivable from `State` is not stored — `IsPaused` is
   `State == Paused`, as `IsActive` already was. **Scope:** state the machine or the operator
-  holds outlives the run and must survive the reset — the shift still sitting in GRBL's G54
-  (`_outstandingDepthAdjustment`), the probe grid and its progress index, which let an
-  interrupted board resume. Ask which of the two a new field is before adding it.
+  holds outlives the run and must survive the reset — the depth adjustment in `AppState`,
+  the probe grid and its progress index, which let an interrupted probe run resume. Before
+  adding a field, decide whether it describes the current run or outlives it.
   _Check: `coppercli.Tests/ControllerBaseTests.cs`._
   _History: pause-flag-duplicated-controller-state._
 
 - **one-field-per-fact** *(error)* — a boolean saying "X is outstanding" and a separate field
   saying "how much X" are one fact and must be one field, 0 meaning none. Held apart, they
-  drift: a later run with adjustment 0 passed the restore's tolerance check and cleared
-  `_depthAdjustmentApplied` while the earlier shift remained in G54. A duplicate need
+  drift: when the depth adjustment was a G54 shift, a later run with adjustment 0 passed the
+  restore's tolerance check and cleared `_depthAdjustmentApplied` while the earlier shift
+  remained in G54. A duplicate need
   not be a field: an enum member that answers a question another type defines is one
   (`MillingPhase.Paused` beside `ControllerState.Paused`), and so is a running aggregate
   kept beside the collection it summarizes. `ProbeGrid.MinHeight`/`MaxHeight` were widened
@@ -718,28 +782,130 @@ document and `MacroParser` together.
   terminal-apply-question-repeated-the-session-pass._
 
 - **loaded-gcode-unchanged-during-run** *(error)* — do not replace the loaded G-code while a
-  run is in progress. A run streams from `Machine.File` and tracks where it is by
-  line number, so a new file resets that to the start and the job continues from the top of
-  the program. `Machine.SetFile` refuses only while `Mode` is `SendFile`, which a job paused
-  at a tool change is not: the guard is `AppState.LoadGCodeIntoMachine`, the one way G-code
-  reaches the machine, because that layer can see the controllers. Setting Z0 at a tool
-  change reached it through re-applying the height map, so `HandleWorkZeroChange` leaves the
-  map and the file alone during a run, and zeroing X or Y is refused outright.
+  run is in progress. A run streams from `Machine.File` and tracks where it is by line
+  number, so a new file resets that to the start and the job continues from the top of the
+  program. `Machine.SetFile` refuses only while `Mode` is `SendFile`, and a job paused at a
+  tool change is not in `SendFile`. `AppState` holds the guard, `WhyTheFileCannotChange`,
+  because that layer can see the controllers. Every `AppState` change to the file, the map,
+  the depth, the sections or the phases checks it under `FileLock` before
+  `PutFileOnMachine`. The guard also refuses while the machine is in `SendFile`.
+  `HandleWorkZeroChange` leaves the map and the file alone during a run, and zeroing X or Y
+  is refused outright.
   _Check: `coppercli.Tests/WebServerSequenceTests.cs`
   (`MillRun_RejectsLoadedFileReplacement`, `ZeroDuringRun_PreservesAppliedMapAndLoadedFile`);
-  both are mutation-verified._
-  _History: two-resume-windows-for-one-door._
+  both are mutation-verified. `coppercli.Tests/BoardSectionsTests.cs`
+  (`ChoosingSections_DuringARun_IsRefused_AndChangesNothing`);
+  `coppercli.Tests/SectionsEndpointTests.cs` (`PostingSections_DuringARun_IsRefusedWith409`);
+  `coppercli.Tests/JobPhasesTests.cs` (`ChoosingPhases_DuringARun_IsRefused_AndChangesNothing`);
+  `coppercli.Tests/PhasesEndpointTests.cs` (`PostingPhases_DuringARun_IsRefusedWith409`)._
+  _History: two-resume-windows-for-one-door, job-phases-skip-a-tools-work._
 
-- **reload-original-gcode-before-discarding-map** *(error)* — reload the original G-code
-  before `AppState` discards a height map. If the reload fails, retain the map and report the
-  error. Applying a map rewrites `Machine.File`; clearing the map first and then failing to
-  reload leaves the corrections in the G-code without a record of them, so the next apply
-  doubles them.
-  `AppState.DiscardProbeData` does the reload through `RemoveMapFromLoadedGCode` and returns
-  `ErrorMapStuckInGCode` when the source file is gone or will not load.
-  _Check: `coppercli.Tests/WebServerSequenceTests.cs`
-  (`ZeroingXYWhenTheMapCannotComeOut_SaysSo`), mutation-verified._
-  _History: two-resume-windows-for-one-door._
+- **machine-gcode-built-in-one-place** *(error)* — the G-code the machine streams is built
+  only by `AppState.PutFileOnMachine`, under `FileLock`, from five inputs (`JobInputs`): the
+  file as loaded, the chosen phases, the chosen sections, the depth adjustment and the
+  applied map. The machine's lines, those inputs and `MachineFileVersion` are one
+  `MachineFileBuild` record, so `CurrentFile`, `MillPhases`, `MillSections`,
+  `DepthAdjustment`, `AreProbePointsApplied` and the machine's lines cannot disagree. A
+  correction is a transform of the loaded file, applied in this order: `KeepPart` (not run
+  when every phase and the whole board are chosen), then `OffsetCutDepth`, then
+  `ApplyProbeGrid`. The clip runs first so the depth and the map apply to the clipped file,
+  and `ApplyProbeGrid` still raises the rapids by the map's highest point. A correction is
+  never an edit of the machine's lines, of the work origin, or of what `MillingController`
+  streams, so removing one rebuilds the file exactly and nothing is reloaded from disk. A
+  change that reads a value and writes one based on it (a depth step) reads it under the
+  same lock. A new correction joins `MachineFileBuild` as another input, and so gets the
+  version check, the lock, the refusal during a run and the reset in `ClearJobCorrections`
+  that the depth, the sections and the phases have.
+  _Check: `coppercli.Tests/DepthAdjustmentTests.cs`
+  (`ConcurrentDepthMapAndAdoptChanges_LeaveTheMachineConsistent`,
+  `ConcurrentDepthSteps_EachMoveTheDepthByOneIncrement`, `AMillRunWithADepthSet_WritesNoWorkOffset`);
+  `coppercli.Tests/GCodeFileTransformTests.cs`; `coppercli.Tests/BoardSectionsTests.cs`
+  (`ApplyingTheMap_KeepsTheSections_AndAppliesTheMapOverTheClippedFile`,
+  `DepthAndSections_Combine_AndEachChangeKeepsTheOther`, `LoadingAFile_ResetsTheSections`,
+  `AdoptingAMap_ResetsTheSections`);
+  `coppercli.Tests/SectionsEndpointTests.cs`
+  (`AStartAfterTheSectionsChanged_IsRefused_AndNoRunStarts`);
+  `coppercli.Tests/JobPhasesTests.cs` (`PhasesSectionsAndDepth_Combine_AndEachChangeKeepsTheOthers`,
+  `LoadingAFile_OrAdoptingAMap_ResetsThePhases`, `ARefusedChoice_ChangesNothing`)._
+  _History: depth-shift-lowered-travel, two-resume-windows-for-one-door,
+  chosen-sections-clip-the-loaded-file, job-phases-skip-a-tools-work._
+
+- **inserted-travel-uses-the-files-heights** *(error)* — a transform that adds travel to a
+  file (today `PartClip`, behind `GCodeFile.KeepPart`) takes every height from the file
+  itself, one stage at a time, and picks none of its own. The one exception is the machine's
+  safe height, where the transform does not know where the tool is (rule
+  `part-run-descends-only-over-its-work`). A stage ends at a tool change (`M6`) or a
+  `PassThrough` block (one `GCodeParser` keeps verbatim). The crossing height is the highest
+  Z at which the stage moves across the board at constant Z without cutting, at rapid or at
+  feed, or the stage's highest Z if it never does; it is never below the Z of the point the
+  tool travels to. The approach height is the Z at the end of the stage's most recent rapid
+  down that ended above Z0, including a rapid down the file makes before it gives X and Y;
+  below that height the tool feeds at the file's plunge feed. Once the output has left the
+  file's path, the tool rises in place to the file's Z before a command that is not a move,
+  and does not travel to the file's X and Y. A pass-through block acts where the tool is, so
+  before one the tool travels to the file's position. The transform refuses, with the
+  reason, when the stage gives no height above Z0 (`ErrorSectionsNoTravelHeight`), when a
+  pass-through block's position is unknown or still in the copper of a left-out cut
+  (`ErrorSectionsBlockInLeftOutCut`), or when a move that ends below Z0 has no known start
+  and cannot be copied from the file (`ErrorSectionsCutWithUnknownStart`). For a choice of
+  phases alone the reason is `ErrorPhaseNoTravelHeight` in the first case and
+  `ErrorPhaseToolPlaceUnknown` in the other two; the reason names the phases whenever a
+  skipped phase made the output leave the file. A test of this rule uses boards that cross
+  at more than one height, because on a board with one crossing height the wrong rules pass
+  too.
+  _Check: `coppercli.Tests/BoardSectionsTests.cs`
+  (`KeepPart_CrossesAtTheStagesHighestCrossing_EvenOneTheFileMakesLater`,
+  `KeepPart_TakesTheClearanceOfEachToolsStage_OnItsOwn`,
+  `KeepPart_IgnoresARapidDownToTheSurface_ForItsApproachHeight`,
+  `KeepPart_TakesItsApproachHeight_FromARapidDownWithUnknownXY`,
+  `KeepPart_ForgetsTheApproachHeightOfTheFrameBeforeAnOffsetChange`,
+  `KeepPart_NeverGoesToADrillHoleInAnUnchosenSection`,
+  `KeepPart_RefusesACutWhoseStartTheFileNeverGave`,
+  `KeepPart_RefusesAFileWhoseOnlyTravelIsAtTheSurface`,
+  `KeepPart_HoldsOnRandomBoards`, whose boards retract to `RandomRetractHeights`);
+  `coppercli.Tests/JobPhasesTests.cs` (`AChoiceOfPhasesAlone_IsRefusedInTheWordsOfPhases`,
+  `ARefusalASkippedPhaseCaused_NamesThePhases_WhenSectionsAreChosenToo`,
+  `ARefusalASectionCaused_NamesTheSections_AfterASkippedPhase`)._
+  _History: section-clip-invented-travel-heights, stale-state-after-a-verbatim-block._
+
+- **part-run-descends-only-over-its-work** *(error)* — a run of part of the job brings the
+  tool down only over a cut it is about to make, or to where the file puts the tool before a
+  pass-through block. The tool rises before each move in X and Y; if its position is
+  unknown, as after every tool change, it rises to the machine's safe height
+  (`PartClip.MachineSafeHeightLine`, the run's own safety retract). The run copies the
+  file's own travel only when the tool's position is known or it keeps the whole board
+  (`PartClip.CanCopyTheFile`). Before a command that needs the tool out of the copper, the
+  run writes the file's travel only up to the first move that clears the surface. After a
+  kept tool change nothing is written until a move needs it, so a pause the file makes right
+  after the change stays right after it. A choice that keeps no cut is refused
+  (`ErrorNothingToCut`).
+  _Check: `coppercli.Tests/BoardSectionsTests.cs`
+  (`KeepPart_TravelsAcrossBeforeComingDown_WhenTheFilesFirstPathIsLeftOut`,
+  `KeepPart_NeverGoesToADrillHoleInAnUnchosenSection`);
+  `coppercli.Tests/JobPhasesTests.cs`
+  (`ACommandBetweenTravelAndALeftOutCut_DoesNotTakeTheToolThere`,
+  `AfterAToolChange_TheToolRisesToTheMachinesSafeHeight_BeforeMovingAcross`,
+  `APauseRightAfterAToolChange_StaysRightAfterIt`, `TheClipsRetract_IsTheRunsSafetyRetract`,
+  `AChoiceWithNoCutInIt_IsRefused`)._
+  _History: part-run-came-down-over-a-left-out-section, job-phases-skip-a-tools-work._
+
+- **skipped-phase-keeps-what-later-phases-rely-on** *(error)* — skipping a phase leaves out
+  its own work: its moves (a move in machine coordinates among them), its tool change, and
+  its spindle starts, dwells and pauses. It keeps spindle stops, the program end and
+  settings such as S and T. The choice is refused when a later phase relies on something in
+  a skipped phase: a probe or offset block, once any later phase runs
+  (`ErrorPhaseSkipsABlock`), or a spindle start, when a later phase cuts with the spindle on
+  in the file and off in the output (`ErrorPhaseSkipsTheSpindleStart`).
+  _Check: `coppercli.Tests/JobPhasesTests.cs`
+  (`SkippingTheFirstPhase_StartsTheRunAtTheToolChange`,
+  `SkippingTheLastPhase_DropsItsToolChangeAndWork_AndKeepsTheStops`,
+  `SkippingOneOfThreePhases_LeavesOutOnlyItsWork`,
+  `AnOffsetBlockInASkippedPhase_IsRefused_AndInAPhaseThatRuns_IsKept`,
+  `AnOffsetBlockInTheLastPhase_DoesNotStopItBeingSkipped`, `ASkippedPhasesArcs_AreLeftOut`,
+  `AMoveInMachineCoordinatesInASkippedPhase_IsLeftOut`,
+  `ASpindleStartALaterPhaseReliesOn_CannotBeSkipped`,
+  `ASkippedSpindleStart_IsNoReasonToRefuse_WhenTheSpindleIsStillOn`)._
+  _History: job-phases-skip-a-tools-work._
 
 - **manual-door-release-and-required-homing** *(error)* — only the operator releases an
   enclosure door hold. Require homing before a job because `G53` retracts need a known
@@ -787,19 +953,16 @@ document and `MacroParser` together.
   (`RefreshWorkOffsetsAsync`); never use the combined `WorkOffset`, and never derive it from
   `MachinePosition − WorkPosition`. Undo an offset relatively, never by restoring an
   absolute snapshot; a tool change legitimately writes the same register.
-
-  The depth adjustment is always measured from the zero the operator set: the baseline is
-  `G54.Z` minus whatever an earlier run left outstanding, so asking for 0.05 gives 0.05
-  however the run before it ended. A restore the machine refuses is reported by amount.
-  _Check: `coppercli.Tests/DepthAdjustmentTests.cs`._  _History: workoffset-is-not-g54._
+  _Check: `coppercli.Tests/WorkZeroOutcomeTests.cs` (`ZeroingAnAxis_RereadsTheOffsetItJustWrote`)._
+  _History: workoffset-is-not-g54._
 
   **Decided, not open** (Thomer, 2026-09), so later passes do not re-raise them:
-  - Minus is down and cuts deeper, matching the Z sign. The buttons stay `-` and `+`.
-  - The outstanding amount lives on the milling controller and is deliberately temporary.
-    It survives between runs in a session, not a restart or a disconnect; the operator is
-    told to set Z zero again, which is the remedy.
-  - The adjustment shifts the work origin rather than changing each streamed Z the
-    way the height map is. The origin shift is the approach; do not replace it.
+  - The depth adjustment: minus is down and cuts deeper, matching the Z sign. The buttons
+    stay `-` and `+`.
+  - The depth adjustment changes the Z of each cut in the G-code and never writes the work
+    origin (Thomer reversed the earlier decision to shift the origin on 2026-09-30, because
+    the shift lowered travel too; see `depth-shift-lowered-travel`). It lives in `AppState`, survives between runs of the same
+    job, and goes back to zero when a file loads or the height map changes.
 
 - **monotonic-time-and-event-counts** *(error)* — timeouts are measured on a clock that only
   moves forward: `Stopwatch` for an interval inside one method, `Environment.TickCount64` for

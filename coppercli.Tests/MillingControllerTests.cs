@@ -162,9 +162,10 @@ namespace coppercli.Tests
         public async Task Milling_DrivenThroughAnM6File_FiresToolChangeDetected()
         {
             using var machine = CreateFastFakeMachine(FileWithToolChange(SingleRunToolNumber));
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             using var cts = new CancellationTokenSource();
@@ -220,9 +221,10 @@ namespace coppercli.Tests
         public async Task MillingAfterAnAbortedToolChange_StillDetectsTheNextOne()
         {
             using var machine = CreateFastFakeMachine(FileWithToolChange(FirstAbortedToolNumber));
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             await AbortDuringToolChangeAsync(controller, FirstAbortedToolNumber);
@@ -252,9 +254,10 @@ namespace coppercli.Tests
         public async Task MillingAfterAnAbortedToolChange_StillReachesCompletion()
         {
             using var machine = CreateFastFakeMachine(FileWithToolChange(FirstAbortedToolNumber));
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             await AbortDuringToolChangeAsync(controller, FirstAbortedToolNumber);
@@ -361,9 +364,10 @@ namespace coppercli.Tests
             // calls Resume from a key press with nothing to catch it.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             var run = controller.StartAsync();
@@ -397,9 +401,10 @@ namespace coppercli.Tests
             // settling prompts again and restarts the settle timeout.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+                Options = new MillingOptions { SettleTimeoutMs = ShortSettleMs }
             };
 
             var prompts = new PromptRecorder(controller);
@@ -426,9 +431,10 @@ namespace coppercli.Tests
             // timeout, or a slow answer fails a machine that is already stopped.
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = SettleWaitMs }
+                Options = new MillingOptions { SettleTimeoutMs = SettleWaitMs }
             };
 
             var prompts = new PromptRecorder(controller);
@@ -464,9 +470,10 @@ namespace coppercli.Tests
             // so without the prompt the only exits are Stop or a soft reset.
             using var machine = CreateFastFakeMachine(ALongCut);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             // Open the door off the stream's own progress rather than a delay, so the cut is
@@ -511,9 +518,10 @@ namespace coppercli.Tests
         {
             using var machine = CreateFastFakeMachine("G21", "G90", "M0", "G1 X1 Y1 F100");
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             var prompts = new PromptRecorder(controller);
@@ -544,9 +552,10 @@ namespace coppercli.Tests
         {
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+                Options = new MillingOptions { SettleTimeoutMs = ShortSettleMs }
             };
 
             var prompts = new PromptRecorder(controller);
@@ -574,19 +583,20 @@ namespace coppercli.Tests
         private const int ShortSettleMs = 1_500;
 
         /// <summary>
-        /// Allow at least PostIdleSettleMs of uninterrupted idle; a shorter timeout
-        /// would fail even when the machine settles.
+        /// Allow at least IdleSettleMs of uninterrupted idle; a shorter timeout would fail
+        /// even when the machine settles.
         /// </summary>
-        private const int SettleWaitMs = PostIdleSettleMs + 3_000;
+        private const int SettleWaitMs = IdleSettleMs + 3_000;
 
         /// <summary>
         /// Runs a job that is expected to fail and returns the message reported.
         /// </summary>
         private static async Task<string?> RunAndCaptureErrorAsync(MockMachine machine)
         {
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false, SettleTimeoutMs = ShortSettleMs }
+                Options = new MillingOptions { SettleTimeoutMs = ShortSettleMs }
             };
 
             string? reported = null;
@@ -618,9 +628,10 @@ namespace coppercli.Tests
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
             machine.SimulateDoorClosedAndHolding();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             // The door prompt is the first thing a run raises, so the subscription has to be
@@ -646,9 +657,10 @@ namespace coppercli.Tests
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
             machine.SimulateDoorOpen();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             var prompts = new PromptRecorder(controller);
@@ -685,10 +697,10 @@ namespace coppercli.Tests
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
             machine.SimulateDoorClosedAndHolding();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = MillingOptions.Create(
-                    filePath: null, depthAdjustment: 0, machineIsHomed: true, enclosureConfirmed: true)
+                Options = MillingOptions.Create(filePath: null, homeFirst: false, enclosureConfirmed: true)
             };
 
             var prompts = new PromptRecorder(controller);
@@ -711,10 +723,10 @@ namespace coppercli.Tests
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
             machine.SimulateDoorOpen();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = MillingOptions.Create(
-                    filePath: null, depthAdjustment: 0, machineIsHomed: true, enclosureConfirmed: true)
+                Options = MillingOptions.Create(filePath: null, homeFirst: false, enclosureConfirmed: true)
             };
 
             var doorAnnounced = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -748,9 +760,10 @@ namespace coppercli.Tests
         {
             using var machine = CreateFastFakeMachine(ALongCut);
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             var run = controller.StartAsync();
@@ -782,9 +795,10 @@ namespace coppercli.Tests
             using var machine = CreateFastFakeMachine(FileWithoutToolChange);
             machine.SimulateDoorOpen();
 
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             using var cts = new CancellationTokenSource();
@@ -804,9 +818,10 @@ namespace coppercli.Tests
         public async Task BareM0MidFile_PromptsOperatorAndCompletesAfterContinue()
         {
             using var machine = CreateFastFakeMachine("G21", "G90", "M0", "G1 X1 Y1 F100");
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(CompletionWaitTimeoutMs));
@@ -827,9 +842,10 @@ namespace coppercli.Tests
             // The M2 sits mid-file with a line after it, so a controller that only finishes at
             // end-of-file waits forever for a line the program never runs.
             using var machine = CreateFastFakeMachine("G21", "G90", "M2", "G1 X1 Y1 F100");
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(CompletionWaitTimeoutMs));
@@ -845,9 +861,10 @@ namespace coppercli.Tests
             // change, or the job carries on cutting with the wrong tool.
             using var machine = CreateFastFakeMachine(FileWithToolChange(SingleRunToolNumber));
             machine.PauseFileOnHold = false;
+            machine.IsHomed = true;
             var controller = new MillingController(machine)
             {
-                Options = new MillingOptions { RequireHoming = false }
+                Options = new MillingOptions ()
             };
 
             using var cts = new CancellationTokenSource();

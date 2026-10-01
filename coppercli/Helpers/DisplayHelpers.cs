@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text;
 using coppercli.Core.Controllers;
+using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using static coppercli.CliConstants;
 
@@ -61,6 +62,49 @@ namespace coppercli.Helpers
             MachineActivity.Sleep => MillSleepStatus,
             _ => rawStatus
         };
+
+        /// <summary>
+        /// A box's border line <paramref name="innerWidth"/> characters wide between its corners,
+        /// with a joint where a line inside the box meets it.
+        /// </summary>
+        public static string BoxDivider(char left, char right, int innerWidth, char fill, params (int pos, char joint)[] joints)
+        {
+            var line = new char[innerWidth];
+            Array.Fill(line, fill);
+            foreach (var (pos, joint) in joints)
+            {
+                if (pos >= 0 && pos < innerWidth)
+                {
+                    line[pos] = joint;
+                }
+            }
+            return $"{left}{new string(line)}{right}";
+        }
+
+        /// <summary>
+        /// The words for what a run mills, which the terminal's pre-mill screen shows and the
+        /// web server sends the browser's.
+        /// </summary>
+        public static string GetSectionsText(BoardSections? sections) =>
+            sections == null
+                ? SectionsWholeBoard
+                : GetSectionsText(sections.Chosen.Count, sections.Division.Columns * sections.Division.Rows);
+
+        /// <summary>The words for <paramref name="chosen"/> sections out of <paramref name="total"/>.</summary>
+        public static string GetSectionsText(int chosen, int total) =>
+            BoardSections.IsWholeBoard(chosen, total)
+                ? SectionsWholeBoard
+                : string.Format(SectionsChosenFormat, chosen, total);
+
+        /// <summary>The words for which phases a run mills, which the terminal's pre-mill screen shows.</summary>
+        public static string GetPhasesText(ChosenPhases? phases) =>
+            phases == null
+                ? PhasesAll
+                : string.Format(PhasesChosenFormat, string.Join(PhaseNumberSeparator, phases.Numbers.Order()));
+
+        /// <summary>A phase's label, as both UIs list it.</summary>
+        public static string GetPhaseLabel(JobPhase phase) =>
+            string.Format(PhaseLabelFormat, phase.Number, FormatDuration(phase.Time));
 
         /// <summary>
         /// Console.WindowWidth throws when output is redirected or no console is attached, so
@@ -274,6 +318,10 @@ namespace coppercli.Helpers
             return "";
         }
 
+        /// <summary><paramref name="header"/>, colored or not, after the spaces that center it in <paramref name="width"/>.</summary>
+        public static string CenteredHeader(string header, int width) =>
+            new string(' ', Math.Max(0, (width - CalculateDisplayLength(header)) / 2)) + header;
+
         public static string CenterText(string text, int width)
         {
             if (text.Length >= width)
@@ -395,6 +443,10 @@ namespace coppercli.Helpers
         {
             DrawCenteredOverlay(message, subtext ?? "", messageColor ?? AnsiSuccess);
         }
+
+        /// <summary>A refusal or warning over a full-screen view, for the usual confirmation time.</summary>
+        public static void ShowWarningOverlay(string message) =>
+            ShowOverlayTimed(message, ConfirmationDisplayMs, messageColor: AnsiWarning);
 
         /// <summary>
         /// For a confirmation that clears itself; the calling thread blocks for durationMs.

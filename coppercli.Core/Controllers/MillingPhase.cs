@@ -18,7 +18,7 @@ namespace coppercli.Core.Controllers
         /// <summary>Raising Z to the safe height.</summary>
         Retracting,
 
-        /// <summary>Setting up coordinate modes and the depth adjustment.</summary>
+        /// <summary>Setting up coordinate modes and starting the stream.</summary>
         ConfiguringMachine,
 
         /// <summary>Streaming the G-code file to the machine.</summary>

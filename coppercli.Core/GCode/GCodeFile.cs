@@ -1,3 +1,5 @@
+#nullable enable
+
 using coppercli.Core.GCode.GCodeCommands;
 using coppercli.Core.Util;
 using System;
@@ -49,6 +51,21 @@ namespace coppercli.Core.GCode
             return extent;
         }
 
+        /// <summary>
+        /// The area the job cuts: the feed-move bounds when they have width and height, and the
+        /// whole toolpath's otherwise. The mill views and the board's sections are laid out on it.
+        /// </summary>
+        public (Vector2 Min, Vector2 Max) CuttingBounds =>
+            HasArea(XY(MinFeed), XY(MaxFeed)) ? (XY(MinFeed), XY(MaxFeed)) : (XY(Min), XY(Max));
+
+        /// <summary>True when <see cref="CuttingBounds"/> has width and height, so it can be divided.</summary>
+        public bool CutsAnArea => HasArea(CuttingBounds.Min, CuttingBounds.Max);
+
+        private static bool HasArea(Vector2 min, Vector2 max) =>
+            max.X - min.X > Constants.MillMinRangeThreshold && max.Y - min.Y > Constants.MillMinRangeThreshold;
+
+        private static Vector2 XY(Vector3 point) => new(point.X, point.Y);
+
         public bool ContainsMotion { get; private set; } = false;
 
         /// <summary>
@@ -59,7 +76,20 @@ namespace coppercli.Core.GCode
         public Vector3 Center => new Vector3((Min.X + Max.X) / 2, (Min.Y + Max.Y) / 2, 0);
 
         public double TravelDistance { get; private set; } = 0;
-        public TimeSpan TotalTime { get; private set; } = TimeSpan.Zero;
+
+        /// <summary>How long the feed moves take at the feeds the file gives: every phase's <see cref="JobPhase.Time"/>.</summary>
+        public TimeSpan TotalTime { get; }
+
+        /// <summary>The phases of the job, in file order (see <see cref="JobPhase"/>).</summary>
+        public IReadOnlyList<JobPhase> Phases { get; }
+
+        private readonly int[] _phaseOf;
+
+        /// <summary>The number, from 1, of the phase that holds the command at <paramref name="index"/> in <see cref="Toolpath"/>.</summary>
+        public int PhaseOf(int index) => _phaseOf[index];
+
+        /// <summary>Whether the operator can skip a phase: a job with one phase has nothing to skip.</summary>
+        public bool OffersAChoiceOfPhases => Phases.Count > 1;
 
         /// <summary>What the parser reported, kept so a file derived from this one reports it too.</summary>
         private readonly IReadOnlyList<string> _parseWarnings;
@@ -89,11 +119,12 @@ namespace coppercli.Core.GCode
                 {
                     Motion m = (Motion)c;
 
-                    // An arc that ends where it starts is a full circle - a real cut, and
-                    // exactly how a drilled hole or a circular isolation contour is written.
+                    // An arc that ends where it starts is a full circle, which is a real cut:
+                    // drilled holes and circular isolation contours are written that way.
                     // Only a straight move does nothing at zero length, and only when its
-                    // start is known.
-                    if (m.Start == m.End && !(m is Arc) && m.StartTrusted)
+                    // start is known on every axis: after a G53 or G92 block, Start holds
+                    // values from before it.
+                    if (m is Line { StartValid: true } && m.Start == m.End)
                     {
                         // Common in CAM output, and nothing the operator can act on, so
                         // this raises no warning.
@@ -107,44 +138,31 @@ namespace coppercli.Core.GCode
             Vector3 min = Vector3.MaxValue, max = Vector3.MinValue;
             Vector3 minfeed = Vector3.MaxValue, maxfeed = Vector3.MinValue;
 
+            (Phases, _phaseOf) = JobPhase.Of(Toolpath);
+            TotalTime = Phases.Aggregate(TimeSpan.Zero, (sum, phase) => sum + phase.Time);
+
             foreach (Command c in Toolpath)
             {
-                if (c is Line)
+                if (c is not Motion { FullyKnown: true } m)
                 {
-                    Line l = (Line)c;
-                    if (!l.StartValid || l.PositionValid.Any(isValid => !isValid))
-                    {
-                        continue;
-                    }
+                    continue;
                 }
 
-                if (c is Motion)
+                ContainsMotion = true;
+                TravelDistance += m.Length;
+
+                bool isFeed = m is not Line { Rapid: true };
+
+                foreach (Vector3 point in m.ExtremePoints)
                 {
-                    ContainsMotion = true;
+                    min = Vector3.ElementwiseMin(min, point);
+                    max = Vector3.ElementwiseMax(max, point);
 
-                    Motion m = (Motion)c;
-
-                    TravelDistance += m.Length;
-
-                    if (m is Line && !((Line)m).Rapid && ((Line)m).Feed > 0.0)
+                    if (isFeed)
                     {
-                        TotalTime += TimeSpan.FromMinutes(m.Length / m.Feed);
+                        minfeed = Vector3.ElementwiseMin(minfeed, point);
+                        maxfeed = Vector3.ElementwiseMax(maxfeed, point);
                     }
-
-                    min = Vector3.ElementwiseMin(min, m.End);
-                    max = Vector3.ElementwiseMax(max, m.End);
-                    min = Vector3.ElementwiseMin(min, m.Start);
-                    max = Vector3.ElementwiseMax(max, m.Start);
-
-                    if (m is Line && (m as Line).Rapid)
-                    {
-                        continue;
-                    }
-
-                    minfeed = Vector3.ElementwiseMin(minfeed, m.End);
-                    maxfeed = Vector3.ElementwiseMax(maxfeed, m.End);
-                    minfeed = Vector3.ElementwiseMin(minfeed, m.Start);
-                    maxfeed = Vector3.ElementwiseMax(maxfeed, m.Start);
                 }
             }
 
@@ -240,27 +258,23 @@ namespace coppercli.Core.GCode
             {
                 // Blocks the parser could not model as geometry are re-emitted exactly
                 // as the file wrote them - see PassThrough.
+                // A block can set the feed itself (G38.2 F50), so the next feed move writes its own.
                 if (c is PassThrough)
                 {
                     GCode.Add(((PassThrough)c).Line);
+                    State.Feed = double.NaN;
                     continue;
                 }
 
-                if (c is Motion)
+                // A rapid ignores the feed, so only a feed move writes one.
+                if (c is Motion m && m is not Line { Rapid: true } && m.Feed != State.Feed)
                 {
-                    Motion m = c as Motion;
-
-                    if (m.Feed != State.Feed)
-                    {
-                        GCode.Add(string.Format(nfi, "F{0:0.###}", m.Feed));
-                        State.Feed = m.Feed;
-                    }
+                    GCode.Add(string.Format(nfi, "F{0:0.###}", m.Feed));
+                    State.Feed = m.Feed;
                 }
 
-                if (c is Line)
+                if (c is Line l)
                 {
-                    Line l = c as Line;
-
                     string code = l.Rapid ? "G0" : "G1";
 
                     for (int i = 0; i < 3; i++)
@@ -280,10 +294,8 @@ namespace coppercli.Core.GCode
                     continue;
                 }
 
-                if (c is Arc)
+                if (c is Arc a)
                 {
-                    Arc a = c as Arc;
-
                     if (State.Plane != a.Plane)
                     {
                         switch (a.Plane)
@@ -385,166 +397,190 @@ namespace coppercli.Core.GCode
             return GCode;
         }
 
-        public GCodeFile Split(double length)
-        {
-            List<Command> newFile = new List<Command>();
-
-            foreach (Command c in Toolpath)
-            {
-                if (c is Motion)
-                {
-                    newFile.AddRange(((Motion)c).Split(length));
-                }
-                else
-                {
-                    newFile.Add(c);
-                }
-            }
-
-            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
-        }
-
-        public GCodeFile ArcsToLines(double length)
-        {
-            List<Command> newFile = new List<Command>();
-
-            foreach (Command c in Toolpath)
-            {
-                if (c is Arc)
-                {
-                    foreach (Arc segment in ((Arc)c).Split(length).Cast<Arc>())
-                    {
-                        Line l = new Line();
-                        l.Start = segment.Start;
-                        l.End = segment.End;
-                        l.Feed = segment.Feed;
-                        l.Rapid = false;
-                        l.PositionValid = new bool[] { true, true, true };
-                        l.StartValid = true;
-                        newFile.Add(l);
-                    }
-                }
-                else
-                {
-                    newFile.Add(c);
-                }
-            }
-
-            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
-        }
-
+        /// <summary>
+        /// A copy fitted to the probed surface: feed moves follow the map's height under them,
+        /// and rapids rise by the map's highest point, or stay as written when that point is
+        /// below zero, so travel clears the highest copper by at least the height the file
+        /// wrote. A rapid that
+        /// has to rise from where the last move left the tool rises in Z alone before it moves
+        /// in X or Y, so it cannot cross copper on the way up.
+        /// </summary>
         public GCodeFile ApplyProbeGrid(ProbeGrid map)
         {
-            double segmentLength = Math.Min(map.GridX, map.GridY);
+            ThrowUnlessEveryArcIsInTheXYPlane();
 
-            List<Command> newToolPath = new List<Command>();
+            double segmentLength = Math.Min(map.GridX, map.GridY);
+            double travelLift = Math.Max(0, map.MaxHeight);
+
+            List<Command> toolpath = new List<Command>();
+
+            // Where the last move left the tool in the fitted file, or null where the file
+            // does not say: a block the parser could not model, or a move with an axis missing.
+            Vector3? toolAt = null;
 
             foreach (Command command in Toolpath)
             {
-                if (command is Motion)
+                if (command is not Motion motion)
                 {
-                    Motion m = (Motion)command;
-
-                    if (m is Arc)
+                    toolpath.Add(command);
+                    if (command is PassThrough)
                     {
-                        Arc a = m as Arc;
-                        if (a.Plane != ArcPlane.XY)
-                        {
-                            throw new Exception("GCode contains arcs in YZ or XZ plane (G18/19), can't apply height map. Use 'Arcs to Lines' if you really need this.");
-                        }
+                        toolAt = null;
                     }
-
-                    if (m is Line)
-                    {
-                        Line l = (Line)m;
-
-                        if (!l.StartValid || l.PositionValid.Any(isValid => !isValid) || l.Rapid)
-                        {
-                            newToolPath.Add(l);
-                            continue;
-                        }
-                    }
-
-                    foreach (Motion subMotion in m.Split(segmentLength))
-                    {
-                        subMotion.Start.Z += map.InterpolateZ(subMotion.Start.X, subMotion.Start.Y);
-                        subMotion.End.Z += map.InterpolateZ(subMotion.End.X, subMotion.End.Y);
-
-                        newToolPath.Add(subMotion);
-                    }
-                }
-                else
-                {
-                    newToolPath.Add(command);
                     continue;
                 }
+
+                if (motion is Line line && line.Rapid)
+                {
+                    toolAt = AddTravel(toolpath, line, travelLift, toolAt);
+                    continue;
+                }
+
+                if (motion is Line { FullyKnown: false } unknown)
+                {
+                    toolpath.Add(unknown);
+                    toolAt = unknown.KnownEnd;
+                    continue;
+                }
+
+                foreach (Motion segment in motion.Split(segmentLength))
+                {
+                    segment.Start.Z += map.InterpolateZ(segment.Start.X, segment.Start.Y);
+                    segment.End.Z += map.InterpolateZ(segment.End.X, segment.End.Y);
+
+                    toolpath.Add(segment);
+                    toolAt = segment.End;
+                }
             }
 
-            return new GCodeFile(newToolPath, _parseWarnings) { FileName = this.FileName };
+            return Derive(toolpath);
         }
 
-        public GCodeFile RotateCW()
+        /// <summary>
+        /// Adds a rapid raised by <paramref name="lift"/>, climbing first where it would
+        /// otherwise rise on the diagonal from <paramref name="toolAt"/>.
+        /// </summary>
+        /// <returns>Where the rapid leaves the tool, or null where the file does not say.</returns>
+        private static Vector3? AddTravel(List<Command> toolpath, Line rapid, double lift, Vector3? toolAt)
         {
-            List<Command> newFile = new List<Command>();
+            Line raised = (Line)rapid.Copy();
+            raised.End.Z += lift;
 
-            foreach (Command oldCommand in Toolpath)
+            if (raised.KnownEnd is null || toolAt is not Vector3 from)
             {
-                if (oldCommand is Motion)
-                {
-                    Motion oldMotion = (Motion)oldCommand;
-                    Motion newMotion;
-
-                    if (oldCommand is Arc)
-                    {
-                        Arc oldArc = (Arc)oldMotion;
-                        Arc newArc = new Arc();
-
-                        if (oldArc.Plane != ArcPlane.XY)
-                        {
-                            throw new Exception("GCode contains arcs in YZ or XZ plane (G18/19), can't rotate gcode. Use 'Arcs to Lines' if you really need this.");
-                        }
-
-                        newArc.Direction = oldArc.Direction;
-                        newArc.Plane = oldArc.Plane;
-                        newArc.U = oldArc.V;
-                        newArc.V = -oldArc.U;
-                        newMotion = newArc;
-                    }
-                    else if (oldCommand is Line)
-                    {
-                        Line oldLine = (Line)oldMotion;
-                        Line newLine = new Line();
-                        newLine.Rapid = oldLine.Rapid;
-                        newLine.PositionValid[0] = oldLine.PositionValid[1];
-                        newLine.PositionValid[1] = oldLine.PositionValid[0];
-                        newLine.PositionValid[2] = oldLine.PositionValid[2];
-                        newLine.StartValid = oldLine.StartValid;
-                        newMotion = newLine;
-                    }
-                    else
-                    {
-                        throw new Exception("this shouldn't happen, please contact the author on GitHub");
-                    }
-
-                    newMotion.Start = oldMotion.Start;
-                    newMotion.End = oldMotion.End;
-                    newMotion.Start.X = oldMotion.Start.Y;
-                    newMotion.Start.Y = -oldMotion.Start.X;
-                    newMotion.End.X = oldMotion.End.Y;
-                    newMotion.End.Y = -oldMotion.End.X;
-
-                    newMotion.Feed = oldMotion.Feed;
-
-                    newFile.Add(newMotion);
-                }
-                else
-                {
-                    newFile.Add(oldCommand);
-                }
+                toolpath.Add(raised);
+                return raised.KnownEnd;
             }
 
-            return new GCodeFile(newFile, _parseWarnings) { FileName = this.FileName };
+            raised.Start = from;
+            raised.StartValid = true;
+
+            if (raised.MovesAcrossTheBoard && raised.End.Z > from.Z)
+            {
+                Line climb = (Line)raised.Copy();
+                climb.End = new Vector3(from.X, from.Y, raised.End.Z);
+                toolpath.Add(climb);
+
+                raised.Start = climb.End;
+            }
+
+            toolpath.Add(raised);
+            return raised.End;
         }
+
+        /// <summary>
+        /// A copy with <paramref name="offset"/> added to the Z of every feed-move point below
+        /// work zero, or this file when the offset is zero. Work zero is the copper surface in
+        /// the file's frame, so a point below it is a cut; rapids, and feed moves above it such
+        /// as a drill's G1 retract, keep their height.
+        /// </summary>
+        /// <param name="offset">Added to Z, so a negative offset cuts deeper.</param>
+        public GCodeFile OffsetCutDepth(double offset)
+        {
+            if (offset == 0)
+            {
+                return this;
+            }
+
+            ThrowUnlessEveryArcIsInTheXYPlane();
+
+            List<Command> toolpath = new List<Command>(Toolpath.Count);
+
+            foreach (Command command in Toolpath)
+            {
+                if (command is not Motion motion || motion is Line { Rapid: true })
+                {
+                    toolpath.Add(command);
+                    continue;
+                }
+
+                Motion cut = motion.Copy();
+                bool startKnown = cut is not Line line || line.StartValid;
+                bool endKnown = cut is not Line { ZKnown: false };
+
+                if (startKnown && cut.Start.Z < 0)
+                {
+                    cut.Start.Z += offset;
+                }
+                if (endKnown && cut.End.Z < 0)
+                {
+                    cut.End.Z += offset;
+                }
+
+                toolpath.Add(cut);
+            }
+
+            return Derive(toolpath);
+        }
+
+        /// <summary>
+        /// A copy with only the chosen phases and, within them, only the chosen sections (see
+        /// PartClip). Null phases means every phase, and null sections the whole board.
+        /// </summary>
+        /// <returns>The copy, or null with the reason it cannot be made.</returns>
+        public (GCodeFile? File, string? Refused) KeepPart(ChosenPhases? phases, BoardSections? sections)
+        {
+            if (sections != null)
+            {
+                ThrowUnlessEveryArcIsInTheXYPlane();
+            }
+
+            var (toolpath, refused) = PartClip.Keep(this, phases, sections);
+            return toolpath == null ? (null, refused) : (Derive(toolpath), null);
+        }
+
+        /// <summary>
+        /// The cells of <paramref name="division"/> that a cut in the chosen phases passes
+        /// through; null phases means every phase.
+        /// </summary>
+        public IReadOnlySet<BoardCell> CellsCut(BoardDivision division, ChosenPhases? phases) =>
+            Toolpath
+                .Where((command, index) => command is Motion { FullyKnown: true, IsCut: true }
+                    && ChosenPhases.Runs(phases, PhaseOf(index)))
+                .Cast<Motion>()
+                .SelectMany(division.Pieces)
+                .Select(piece => piece.Cell)
+                .ToHashSet();
+
+        /// <summary>
+        /// An arc in the XZ or YZ plane carries Z in its center, which neither a height map
+        /// nor a depth adjustment can move with it, and Arc.RatiosWhereXIs and RatiosWhereYIs
+        /// cannot find where it crosses a section line.
+        /// </summary>
+        public bool HasArcsOutsideXYPlane =>
+            Toolpath.Any(command => command is Arc arc && arc.Plane != ArcPlane.XY);
+
+        private void ThrowUnlessEveryArcIsInTheXYPlane()
+        {
+            if (HasArcsOutsideXYPlane)
+            {
+                throw new InvalidOperationException(Constants.ErrorArcsOutsideXYPlane);
+            }
+        }
+
+        /// <summary>A file built from this one's commands, keeping its name, path and parse warnings.</summary>
+        private GCodeFile Derive(List<Command> toolpath) =>
+            new GCodeFile(toolpath, _parseWarnings) { FileName = FileName, FilePath = FilePath };
 
         public string GetInfo()
         {

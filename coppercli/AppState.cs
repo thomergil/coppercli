@@ -105,12 +105,56 @@ namespace coppercli
             _probeController = null;
         }
 
-        public static GCodeFile? CurrentFile { get; set; }
+        /// <summary>The G-code file as it was loaded, from the same build as <see cref="MachineFile"/>.</summary>
+        public static GCodeFile? CurrentFile => _machineFileBuild?.Inputs.Source;
+
+        /// <summary>
+        /// What the machine's G-code is built from: the file as loaded, the applied map, the
+        /// depth adjustment, and the part of the job chosen (null phases or sections mean all).
+        /// </summary>
+        private sealed record JobInputs(
+            GCodeFile Source, ProbeGrid? Map, double DepthAdjustment, BoardSections? Sections, ChosenPhases? Phases)
+        {
+            /// <summary>The file as loaded, with nothing applied and every part of the job chosen.</summary>
+            public static JobInputs WholeJob(GCodeFile source) =>
+                new(source, Map: null, DepthAdjustment: 0, Sections: null, Phases: null);
+        }
+
+        /// <summary>
+        /// The G-code the machine streams, with the inputs it was built from and its version;
+        /// PutFileOnMachine replaces all of them together. Every one of them is read from here,
+        /// so none can disagree with the G-code the machine holds.
+        /// </summary>
+        private sealed record MachineFileBuild(JobInputs Inputs, GCodeFile File, long Version);
+
+        private static volatile MachineFileBuild? _machineFileBuild;
+
+        /// <summary>The last version PutFileOnMachine gave out, written under FileLock.</summary>
+        private static long _lastMachineFileVersion;
+
+        /// <summary>
+        /// Held while the machine's G-code, or anything it is built from, changes: requests
+        /// arrive on several threads, and a change must not interleave with another.
+        /// </summary>
+        private static readonly object FileLock = new();
+
+        /// <summary>
+        /// What the machine streams: the chosen phases of <see cref="CurrentFile"/> and the cuts
+        /// in the chosen sections, with the depth adjustment and, once applied, the height map.
+        /// </summary>
+        public static GCodeFile? MachineFile => _machineFileBuild?.File;
+
+        /// <summary>
+        /// Changes whenever the file, the applied map, the depth, the sections or the phases do,
+        /// and is 0 with no file loaded. A start names the version the operator checked and is refused if
+        /// the version has changed since.
+        /// </summary>
+        public static long MachineFileVersion => _machineFileBuild?.Version ?? 0;
+
         public static ProbeGrid? ProbePoints { get; private set; }
 
-        // Only ApplyProbeData sets this true, and only ResetProbeApplicationState sets it
-        // back to false.
-        public static bool AreProbePointsApplied { get; private set; } = false;
+        /// <summary>Whether the machine's G-code carries the height map.</summary>
+        public static bool AreProbePointsApplied => _machineFileBuild?.Inputs.Map != null;
 
         /// <summary>A complete map is adopted but not yet applied to the G-code.</summary>
         public static bool HasCompleteMapNotApplied =>
@@ -171,10 +215,12 @@ namespace coppercli
         /// <summary>
         /// Why the loaded file and the height map cannot change now, or null. A run streams
         /// from Machine.File with the map's corrections already in it, and tracks its place by
-        /// line number.
+        /// line number; a machine still streaming ignores a new file.
         /// </summary>
         public static string? WhyTheFileCannotChange() =>
-            IsRunInProgress ? CliConstants.ErrorFileChangeDuringRun : null;
+            IsRunInProgress || Machine?.Mode == Machine.OperatingMode.SendFile
+                ? CliConstants.ErrorFileChangeDuringRun
+                : null;
 
         /// <inheritdoc cref="Core.Controllers.IProbeController.IsTracingOutline"/>
         public static bool IsTracingOutline => _probeController?.IsTracingOutline ?? false;
@@ -184,27 +230,151 @@ namespace coppercli
         public static bool SuppressErrors { get; set; } = false;
         public static bool MacroMode { get; set; } = false;
 
-        // Negative cuts deeper, positive shallower.
-        public static double DepthAdjustment { get; private set; } = 0;
+        /// <summary>
+        /// Millimeters added to the Z of every cut below work zero, so a negative value cuts
+        /// deeper; travel keeps its height. Back to zero when a file loads or the height map
+        /// changes, so it carries over only between runs of the same job.
+        /// </summary>
+        public static double DepthAdjustment => _machineFileBuild?.Inputs.DepthAdjustment ?? 0;
 
-        public static void AdjustDepthDeeper()
+        /// <returns>Null once the depth has changed, or why it did not.</returns>
+        public static string? AdjustDepthDeeper() => StepDepth(-CliConstants.DepthAdjustmentIncrement);
+
+        /// <inheritdoc cref="AdjustDepthDeeper"/>
+        public static string? AdjustDepthShallower() => StepDepth(CliConstants.DepthAdjustmentIncrement);
+
+        /// <summary>
+        /// Reads the depth under the lock that changes it, so two steps at once each count and
+        /// a step cannot carry the last job's depth onto a file loaded in between.
+        /// </summary>
+        private static string? StepDepth(double step)
         {
-            DepthAdjustment = Math.Max(DepthAdjustment - CliConstants.DepthAdjustmentIncrement, -CliConstants.DepthAdjustmentMax);
+            lock (FileLock)
+            {
+                return SetDepthAdjustment(DepthAdjustment + step);
+            }
         }
 
-        public static void AdjustDepthShallower()
+        /// <summary>
+        /// Clamped to DepthAdjustmentMax either way. Refused during a run, because the new
+        /// depth rewrites the file the run is streaming.
+        /// </summary>
+        /// <inheritdoc cref="AdjustDepthDeeper"/>
+        public static string? SetDepthAdjustment(double value)
         {
-            DepthAdjustment = Math.Min(DepthAdjustment + CliConstants.DepthAdjustmentIncrement, CliConstants.DepthAdjustmentMax);
+            if (!double.IsFinite(value))
+            {
+                return CliConstants.ErrorInvalidDepth;
+            }
+
+            double depth = Math.Round(
+                Math.Clamp(value, -CliConstants.DepthAdjustmentMax, CliConstants.DepthAdjustmentMax),
+                CliConstants.DepthAdjustmentDecimals);
+            return ChangeJob(nameof(SetDepthAdjustment), inputs => (inputs with { DepthAdjustment = depth }, null));
         }
 
-        public static void SetDepthAdjustment(double value)
+        /// <summary>
+        /// The sections of the board the machine's G-code keeps, or null for the whole board.
+        /// Resets to the whole board, as the depth resets to 0, when a file loads or the height map
+        /// changes (ClearJobCorrections).
+        /// </summary>
+        public static BoardSections? MillSections => _machineFileBuild?.Inputs.Sections;
+
+        /// <summary>
+        /// Chooses the sections of the board a run mills; choosing none, or all of them, mills
+        /// the whole board. Refused during a run, because the choice rewrites the file the run
+        /// is streaming.
+        /// </summary>
+        /// <returns>Null once the sections are chosen, or why they were not.</returns>
+        public static string? ChooseMillSections(int columns, int rows, IEnumerable<BoardCell> chosen)
         {
-            DepthAdjustment = Math.Clamp(value, -CliConstants.DepthAdjustmentMax, CliConstants.DepthAdjustmentMax);
+            var cells = chosen.ToList();
+            Logger.Log("ChooseMillSections: {0}x{1}, cells {2}", columns, rows,
+                string.Join(" ", cells.Select(cell => $"({cell.Column},{cell.Row})")));
+            return ChangeJob(nameof(ChooseMillSections), inputs =>
+            {
+                var (sections, refused) = BoardSections.Choose(inputs.Source, columns, rows, cells);
+                return (refused == null ? inputs with { Sections = sections } : null, refused);
+            });
         }
 
-        public static void ResetDepthAdjustment()
+        /// <summary>
+        /// The phases of the job the machine's G-code keeps, or null for all of them. Resets to
+        /// every phase when a file loads or the height map changes (ClearJobCorrections).
+        /// </summary>
+        public static ChosenPhases? MillPhases => _machineFileBuild?.Inputs.Phases;
+
+        /// <summary>
+        /// Chooses the phases a run mills, by number from 1; choosing all of them mills the whole
+        /// job. Refused during a run, with no file loaded, for no phases or one not in the file,
+        /// and when the job cannot be built without the phases cleared (see PartClip).
+        /// </summary>
+        /// <returns>Null once the phases are chosen, or why they were not.</returns>
+        public static string? ChooseMillPhases(IEnumerable<int> numbers)
         {
-            DepthAdjustment = 0;
+            var chosen = numbers.ToList();
+            Logger.Log("ChooseMillPhases: {0}", string.Join(", ", chosen));
+            return ChangeJob(nameof(ChooseMillPhases), inputs =>
+            {
+                var (phases, refused) = ChosenPhases.Choose(inputs.Source, chosen);
+                return (refused == null ? inputs with { Phases = phases } : null, refused);
+            });
+        }
+
+        /// <summary>
+        /// The cells of <paramref name="division"/> the loaded file cuts in the phases a run
+        /// mills: the picture of the board both UIs draw to choose sections on.
+        /// </summary>
+        public static IReadOnlySet<BoardCell> CellsCut(BoardDivision division) =>
+            WithFileLocked(() => CurrentFile?.CellsCut(division, MillPhases) ?? new HashSet<BoardCell>());
+
+        /// <summary>
+        /// The part of the job the machine's G-code holds, for the log: the phases and sections
+        /// chosen, each "all" when it is the whole job.
+        /// </summary>
+        public static string DescribeJobPart() =>
+            $"phases {MillPhases?.ToString() ?? "all"}, sections {MillSections?.ToString() ?? "all"}";
+
+        /// <summary>
+        /// Rebuilds the machine's G-code from the inputs <paramref name="change"/> makes of the
+        /// current ones, under FileLock. Refused during a run, because the new G-code rewrites
+        /// the file the run is streaming, and with no file loaded.
+        /// </summary>
+        /// <param name="action">What is changing, for the log.</param>
+        /// <param name="change">The new inputs, or null with the reason the change is refused.</param>
+        /// <returns>Null once the G-code is rebuilt, or why it was not.</returns>
+        private static string? ChangeJob(string action, Func<JobInputs, (JobInputs? Changed, string? Refused)> change)
+        {
+            lock (FileLock)
+            {
+                string? refused = WhyTheFileCannotChange();
+                if (refused == null && _machineFileBuild is not MachineFileBuild)
+                {
+                    refused = CliConstants.ErrorNoFileLoaded;
+                }
+
+                if (refused == null)
+                {
+                    var (changed, notChanged) = change(_machineFileBuild!.Inputs);
+                    refused = notChanged ?? PutFileOnMachine(changed!);
+                }
+
+                Logger.Log("{0}: {1}", action, refused ?? $"now {DescribeJobPart()}, depth {DepthAdjustment:F3}");
+                return refused;
+            }
+        }
+
+        /// <summary>
+        /// Runs <paramref name="action"/> while nothing can change the machine's G-code, so a
+        /// run started inside it streams exactly what was checked: StartAsync claims the run
+        /// before it returns.
+        /// </summary>
+        internal static T WithFileLocked<T>(Func<T> action)
+        {
+            lock (FileLock)
+            {
+                return action();
+            }
         }
 
         /// <summary>
@@ -221,46 +391,43 @@ namespace coppercli
         }
 
         /// <summary>
-        /// The one path that loads a file into the machine, apart from ApplyProbeData, which
-        /// rewrites the same file in place. Refused while a run is in progress: a run tracks
-        /// its place in Machine.File by line number, and a new file resets that to the start.
+        /// The one way a G-code file is loaded. Refused while a run is in progress: a run
+        /// tracks its place in Machine.File by line number, and a new file resets that to the
+        /// start.
         /// </summary>
         /// <returns>What the load did: see <see cref="LoadOutcome"/>.</returns>
         public static LoadOutcome LoadGCodeIntoMachine(GCodeFile file)
         {
-            string? blocked = WhyTheFileCannotChange();
-            if (blocked != null)
+            lock (FileLock)
             {
-                Logger.Log("LoadGCodeIntoMachine: {0}", blocked);
-                return new LoadOutcome(blocked, null);
+                string? blocked = WhyTheFileCannotChange();
+                if (blocked != null)
+                {
+                    Logger.Log("LoadGCodeIntoMachine: {0}", blocked);
+                    return new LoadOutcome(blocked, null);
+                }
+
+                ClearJobCorrections(file);
+
+                // Recorded here rather than at each caller, and under the lock with the file:
+                // a height map's applicability is decided by comparing against this, so a
+                // caller that forgot it, or a load in between, would make every later check
+                // wrong.
+                if (!string.IsNullOrEmpty(file.FilePath))
+                {
+                    Session.LastLoadedGCodeFile = file.FilePath;
+                }
+
+                // Decided here too, so the menu, the web UI, a macro and session restore all
+                // treat the loaded map the same way.
+                string? mapDiscardedBecause = DiscardInapplicableProbeData();
+
+                Logger.Log($"LoadGCodeIntoMachine: loaded {file.FileName}, AreProbePointsApplied=false");
+
+                return new LoadOutcome(null, mapDiscardedBecause);
             }
-
-            CurrentFile = file;
-            Machine?.SetFile(file.GetGCode());
-            ResetProbeApplicationState();
-
-            // Recorded here rather than at each caller: a height map's applicability is
-            // decided by comparing against this, so a caller that forgot it would make every
-            // later check wrong.
-            if (!string.IsNullOrEmpty(file.FilePath))
-            {
-                Session.LastLoadedGCodeFile = file.FilePath;
-            }
-
-            // Decided here too, so the menu, the web UI, a macro and session restore all
-            // treat the loaded map the same way.
-            string? mapDiscardedBecause = DiscardInapplicableProbeData();
-
-            Logger.Log($"LoadGCodeIntoMachine: loaded {file.FileName}, AreProbePointsApplied=false");
-
-            return new LoadOutcome(null, mapDiscardedBecause);
         }
 
-        /// <summary>
-        /// A grid already applied to the in-memory G-code is taken back out first, by
-        /// reloading the original: ApplyProbeGrid adds to Z, so a second grid on top of the
-        /// first would double the corrections.
-        /// </summary>
         /// <returns>The grid, or null with the reason it was refused.</returns>
         public static (ProbeGrid? Grid, string? Refused) LoadProbeGridFromFile(string path) =>
             AdoptProbeGridFromFile(ProbeGrid.Load(path), path);
@@ -272,18 +439,6 @@ namespace coppercli
         /// <returns>The grid, or null with the reason it was refused.</returns>
         public static (ProbeGrid? Grid, string? Refused) AdoptProbeGridFromFile(ProbeGrid grid, string path)
         {
-            if (AreProbePointsApplied && !string.IsNullOrEmpty(Session.LastLoadedGCodeFile) &&
-                File.Exists(Session.LastLoadedGCodeFile))
-            {
-                string? refused = LoadGCodeIntoMachine(GCodeFile.Load(Session.LastLoadedGCodeFile)).Refused;
-                if (refused != null)
-                {
-                    return (null, refused);
-                }
-
-                Logger.Log("LoadProbeGridFromFile: reloaded original G-code before loading new probe grid");
-            }
-
             string? notAdopted = AdoptProbeGrid(grid);
             if (notAdopted != null)
             {
@@ -342,7 +497,12 @@ namespace coppercli
 
             string why = GetInapplicableReason(applicability, ProbePoints.Context.SourceFile);
 
-            DiscardProbeData();
+            string? notDiscarded = DiscardProbeData();
+            if (notDiscarded != null)
+            {
+                Logger.Log("DiscardInapplicableProbeData: kept the height map: {0}", notDiscarded);
+                return null;
+            }
 
             Persistence.ClearProbeAutoSave();
             Logger.Log("DiscardInapplicableProbeData: dropped height map ({0})", applicability);
@@ -361,31 +521,95 @@ namespace coppercli
                 : "the work origin has moved since it was measured";
 
         /// <summary>
-        /// Changes the loaded height map and clears its applied flag. Refuse the change
-        /// during a run because the streamed file would retain its corrections and the
-        /// next application would double them.
+        /// Changes the loaded height map and rebuilds the machine's G-code with no map applied
+        /// and no depth adjustment. Refused during a run, because that rewrites the file the
+        /// run is streaming.
         /// </summary>
         /// <param name="grid">The new map, or null to have none.</param>
         /// <returns>Why the map was left alone, or null once it was replaced.</returns>
         public static string? AdoptProbeGrid(ProbeGrid? grid)
         {
-            string? blocked = WhyTheFileCannotChange();
-            if (blocked != null)
+            lock (FileLock)
             {
-                Logger.Log("AdoptProbeGrid: {0}", blocked);
-                return blocked;
-            }
+                string? blocked = WhyTheFileCannotChange();
+                if (blocked != null)
+                {
+                    Logger.Log("AdoptProbeGrid: {0}", blocked);
+                    return blocked;
+                }
 
-            ProbePoints = grid;
-            ResetProbeApplicationState();
-            return null;
+                ProbePoints = grid;
+                ClearJobCorrections(CurrentFile);
+                return null;
+            }
         }
 
-        public static void ResetProbeApplicationState()
+        /// <summary>
+        /// Loads <paramref name="source"/> with the job's corrections cleared: no map applied,
+        /// no depth adjustment, the whole job. A new map or a new file describes a new job, and a
+        /// depth, sections or phases picked for the last one do not carry over to it.
+        /// </summary>
+        private static void ClearJobCorrections(GCodeFile? source)
         {
-            Logger.Log($"ResetProbeApplicationState: was {AreProbePointsApplied}, setting to false");
-            AreProbePointsApplied = false;
-            ResetDepthAdjustment();
+            Logger.Log($"ClearJobCorrections: map applied was {AreProbePointsApplied}, depth was {DepthAdjustment:F3}, {DescribeJobPart()}");
+            PutFileOnMachine(source == null ? null : JobInputs.WholeJob(source));
+        }
+
+        /// <summary>
+        /// Builds the G-code the machine streams from <paramref name="inputs"/> and loads it into
+        /// the machine, or unloads it for null; callers check WhyTheFileCannotChange first,
+        /// because this does not refuse during a run. Every change to any input comes through
+        /// here, under FileLock, so the machine's G-code cannot disagree with them.
+        /// </summary>
+        /// <returns>Null once loaded, or why the file cannot take the inputs.</returns>
+        private static string? PutFileOnMachine(JobInputs? inputs)
+        {
+            lock (FileLock)
+            {
+                if (inputs is not JobInputs (var source, var map, var depthAdjustment, var sections, var phases))
+                {
+                    _machineFileBuild = null;
+                    Machine?.ClearFile();
+                    return null;
+                }
+
+                if ((map != null || depthAdjustment != 0 || sections != null) && source.HasArcsOutsideXYPlane)
+                {
+                    Logger.Log("PutFileOnMachine: {0} has arcs outside the XY plane", source.FileName);
+                    return Constants.ErrorArcsOutsideXYPlane;
+                }
+
+                var file = source;
+                if (sections != null || phases != null)
+                {
+                    var (kept, refused) = source.KeepPart(phases, sections);
+                    if (kept == null)
+                    {
+                        Logger.Log($"PutFileOnMachine: {refused}");
+                        return refused;
+                    }
+                    file = kept;
+                }
+
+                file = file.OffsetCutDepth(depthAdjustment);
+                if (map != null)
+                {
+                    file = file.ApplyProbeGrid(map);
+                }
+
+                _machineFileBuild = new MachineFileBuild(inputs, file, ++_lastMachineFileVersion);
+                Machine?.SetFile(file.GetGCode());
+                return null;
+            }
+        }
+
+        /// <summary>Leaves no G-code loaded, as at startup. Tests only: it does not refuse during a run.</summary>
+        internal static void UnloadFileForTest()
+        {
+            lock (FileLock)
+            {
+                ClearJobCorrections(null);
+            }
         }
 
         /// <returns>The new grid, or null with the reason it was refused.</returns>
@@ -418,47 +642,52 @@ namespace coppercli
         /// <returns>Null once the map is applied, or the reason it was refused.</returns>
         public static string? ApplyProbeData()
         {
-            // Applying rewrites Machine.File and resets its line count, so it is refused for
-            // the same reason a load is.
-            string? blocked = WhyTheFileCannotChange();
-            if (blocked != null)
+            lock (FileLock)
             {
-                Logger.Log("ApplyProbeData: {0}", blocked);
-                return blocked;
-            }
-
-            Logger.Log($"ApplyProbeData: CurrentFile={CurrentFile != null}, ProbePoints={ProbePoints != null}, NotProbed={ProbePoints?.RemainingCount ?? -1}, AreProbePointsApplied={AreProbePointsApplied}");
-
-            // Applying is an operator action, so it may adopt the autosave; a status read may
-            // not. Assigning ProbePoints directly here skipped ResetProbeApplicationState.
-            if (ReadAutosaveNotYetAdopted() is ProbeGrid autosave)
-            {
-                string? notAdopted = AdoptProbeGrid(autosave);
-                if (notAdopted != null)
+                // Applying rewrites Machine.File and resets its line count, so it is refused for
+                // the same reason a load is.
+                string? blocked = WhyTheFileCannotChange();
+                if (blocked != null)
                 {
-                    Logger.Log("ApplyProbeData: {0}", notAdopted);
-                    return notAdopted;
+                    Logger.Log("ApplyProbeData: {0}", blocked);
+                    return blocked;
                 }
-            }
 
-            if (CurrentFile == null || ProbePoints == null || !ProbePoints.HasCompleteData)
-            {
-                Logger.Log("ApplyProbeData: preconditions not met");
-                return CliConstants.ErrorNoCompleteMapToApply;
-            }
+                Logger.Log($"ApplyProbeData: CurrentFile={CurrentFile != null}, ProbePoints={ProbePoints != null}, NotProbed={ProbePoints?.RemainingCount ?? -1}, AreProbePointsApplied={AreProbePointsApplied}");
 
-            // Applying twice would double the corrections.
-            if (AreProbePointsApplied)
-            {
-                Logger.Log("ApplyProbeData: already applied");
+                // Applying is an operator action, so it may adopt the autosave; a status read may
+                // not.
+                if (ReadAutosaveNotYetAdopted() is ProbeGrid autosave)
+                {
+                    string? notAdopted = AdoptProbeGrid(autosave);
+                    if (notAdopted != null)
+                    {
+                        Logger.Log("ApplyProbeData: {0}", notAdopted);
+                        return notAdopted;
+                    }
+                }
+
+                if (CurrentFile == null || ProbePoints == null || !ProbePoints.HasCompleteData)
+                {
+                    Logger.Log("ApplyProbeData: preconditions not met");
+                    return CliConstants.ErrorNoCompleteMapToApply;
+                }
+
+                if (AreProbePointsApplied)
+                {
+                    Logger.Log("ApplyProbeData: already applied");
+                    return null;
+                }
+
+                string? notPut = PutFileOnMachine(_machineFileBuild!.Inputs with { Map = ProbePoints });
+                if (notPut != null)
+                {
+                    return notPut;
+                }
+
+                Logger.Log("ApplyProbeData: applied successfully, AreProbePointsApplied=true");
                 return null;
             }
-
-            CurrentFile = CurrentFile.ApplyProbeGrid(ProbePoints);
-            Machine.SetFile(CurrentFile.GetGCode());
-            AreProbePointsApplied = true;
-            Logger.Log("ApplyProbeData: applied successfully, AreProbePointsApplied=true");
-            return null;
         }
 
         private static ControllerToolSetterConfig? ConvertToolSetterConfig(HelperToolSetterConfig? config)
@@ -608,11 +837,10 @@ namespace coppercli
         }
 
         /// <summary>
-        /// Takes the map out of the G-code and drops it, then deletes the saved copy. In that
-        /// order, so a saved copy that will not delete is not reported as corrections stuck in
-        /// the toolpath.
+        /// Drops the map, then deletes the saved copy. A saved copy that will not delete
+        /// leaves the map dropped and returns ErrorAutosaveNotDeleted.
         /// </summary>
-        /// <returns>The reason nothing was discarded, or null once it was.</returns>
+        /// <returns>The reason something was left, or null once both are gone.</returns>
         public static string? DiscardProbeDataAndAutosave()
         {
             // Checked before the autosave is deleted, so a refusal leaves both copies where
@@ -718,32 +946,36 @@ namespace coppercli
         }
 
         /// <summary>
-        /// A Z zero reaches here during a run, because a tool change asks for one, and
-        /// re-applying the map would reload the G-code and take the program back to line 0, so
-        /// during a run the file is left alone. An XY zero is refused earlier, in
-        /// SetWorkZeroAndWait.
+        /// Drops the height map on an X or Y zero, which moves the map's coordinates off the
+        /// board, and keeps it on a Z zero, because its heights are the copper's, measured from
+        /// a zero touched off on that copper. During a run it leaves the file alone: a tool
+        /// change asks for a Z zero, and SetWorkZeroAndWait refuses an X/Y zero before it gets
+        /// here.
         /// </summary>
         /// <param name="axes">The axes string, such as "X0 Y0 Z0" or "Z0".</param>
         /// <returns>What it did, for the screen that reports it to the operator.</returns>
         public static WorkZeroOutcome HandleWorkZeroChange(string axes)
         {
+            if (IsRunInProgress)
+            {
+                Logger.Log("HandleWorkZeroChange: a run owns the loaded file, leaving it alone");
+                return WorkZeroOutcome.FileLeftAlone;
+            }
+
             if (ZeroTouchesXY(axes))
             {
-                // The map's coordinates move with the work origin, so the map goes.
                 bool hadMap = CurrentProbeGrid != null;
 
+                // If only the saved copy failed to delete, the map is still dropped; any other
+                // refusal leaves it applied to the file.
                 string? notDiscarded = DiscardProbeDataAndAutosave();
-                if (notDiscarded == CliConstants.ErrorAutosaveNotDeleted)
-                {
-                    // The map came out of the G-code; only the saved copy is still there, so
-                    // the file is right and there is nothing to reload.
-                    Logger.Log("HandleWorkZeroChange: {0}", notDiscarded);
-                    return WorkZeroOutcome.MapDiscarded;
-                }
-
                 if (notDiscarded != null)
                 {
-                    return WorkZeroOutcome.MapNotDiscarded;
+                    Logger.Log("HandleWorkZeroChange: {0}", notDiscarded);
+                    if (notDiscarded != CliConstants.ErrorAutosaveNotDeleted)
+                    {
+                        return WorkZeroOutcome.FileLeftAlone;
+                    }
                 }
 
                 if (!hadMap)
@@ -755,71 +987,18 @@ namespace coppercli
                 return WorkZeroOutcome.MapDiscarded;
             }
 
-            if (IsRunInProgress)
-            {
-                Logger.Log("HandleWorkZeroChange: a run owns the loaded file, leaving it alone");
-                return WorkZeroOutcome.FileLeftAlone;
-            }
-
             if (AreProbePointsApplied && ProbePoints != null)
             {
-                // The map's heights were measured against the old Z0, so the file is reloaded
-                // and the map applied again against the new one.
-                return ReapplyProbeGrid()
-                    ? WorkZeroOutcome.MapReapplied
-                    : WorkZeroOutcome.MapNotReapplied;
+                Logger.Log("HandleWorkZeroChange: Z-only zero, height map stays applied");
+                return WorkZeroOutcome.MapStillApplied;
             }
 
-            Logger.Log("HandleWorkZeroChange: Z-only zero, no probe grid to re-apply");
+            Logger.Log("HandleWorkZeroChange: Z-only zero, no height map applied");
             return WorkZeroOutcome.NothingToDo;
         }
 
-        /// <returns>True once the map has been applied to the reloaded G-code.</returns>
-        private static bool ReapplyProbeGrid()
-        {
-            if (ProbePoints == null || string.IsNullOrEmpty(Session.LastLoadedGCodeFile))
-            {
-                Logger.Log("ReapplyProbeGrid: no probe points or no source file, skipping");
-                return false;
-            }
-
-            if (!File.Exists(Session.LastLoadedGCodeFile))
-            {
-                Logger.Log($"ReapplyProbeGrid: source file missing: {Session.LastLoadedGCodeFile}");
-                return false;
-            }
-
-            try
-            {
-                var file = GCodeFile.Load(Session.LastLoadedGCodeFile);
-                string? refused = LoadGCodeIntoMachine(file).Refused;
-                if (refused != null)
-                {
-                    // The map's corrections stay in the file being streamed. Applying it again
-                    // would double them.
-                    Logger.Log("ReapplyProbeGrid: {0}", refused);
-                    return false;
-                }
-
-                string? failed = ApplyProbeData();
-                if (failed != null)
-                {
-                    Logger.Log("ReapplyProbeGrid: {0}", failed);
-                    return false;
-                }
-
-                Logger.Log($"ReapplyProbeGrid: reloaded and re-applied probe grid");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log($"ReapplyProbeGrid: failed - {ex.Message}");
-                return false;
-            }
-        }
-
         /// <summary>
-        /// Drops the map and puts the original G-code back if the map was applied to it.
+        /// Drops the map, and the machine's G-code is built again without it.
         /// </summary>
         /// <returns>The reason nothing was discarded, or null once it was.</returns>
         public static string? DiscardProbeData()
@@ -829,53 +1008,7 @@ namespace coppercli
                 return null;
             }
 
-            // Checked before anything is cleared: clearing first and then failing to reload
-            // would leave the machine cutting corrections AppState no longer records.
-            string? blocked = WhyTheFileCannotChange();
-            if (blocked != null)
-            {
-                Logger.Log("DiscardProbeData: {0}", blocked);
-                return blocked;
-            }
-
-            // The reload takes the map back out of the G-code, and runs before the map is
-            // dropped from memory, so a failed reload leaves the two still agreeing.
-            if (AreProbePointsApplied)
-            {
-                string? notRemoved = RemoveMapFromLoadedGCode();
-                if (notRemoved != null)
-                {
-                    return notRemoved;
-                }
-            }
-
             return AdoptProbeGrid(null);
-        }
-
-        /// <summary>
-        /// Puts the original G-code back, so the map's corrections are no longer in what the
-        /// machine would cut.
-        /// </summary>
-        /// <returns>The reason the map is still in the G-code, or null once it is out.</returns>
-        private static string? RemoveMapFromLoadedGCode()
-        {
-            if (string.IsNullOrEmpty(Session.LastLoadedGCodeFile)
-                || !File.Exists(Session.LastLoadedGCodeFile))
-            {
-                Logger.Log(
-                    "RemoveMapFromLoadedGCode: source gone: {0}", Session.LastLoadedGCodeFile);
-                return CliConstants.ErrorMapStuckInGCode;
-            }
-
-            try
-            {
-                return LoadGCodeIntoMachine(GCodeFile.Load(Session.LastLoadedGCodeFile)).Refused;
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("RemoveMapFromLoadedGCode: {0}", ex.Message);
-                return CliConstants.ErrorMapStuckInGCode;
-            }
         }
     }
 }

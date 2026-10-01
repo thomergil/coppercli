@@ -49,7 +49,21 @@ namespace coppercli.Tests.Fakes
             return Task.FromResult(WorkOffsetQuerySucceeds);
         }
         public bool Connected { get; set; } = true;
-        public bool IsHomed { get; set; }
+        public bool IsHomed
+        {
+            get => _isHomed;
+            set
+            {
+                _isHomed = value;
+                StoppedWhileCutting = false;
+            }
+        }
+
+        private bool _isHomed;
+
+        public bool StoppedWhileCutting { get; private set; }
+
+        public void NoteStoppedWhileCutting() => StoppedWhileCutting = IsHomed;
         private int _homingCycles;
         public bool IsHoming => Volatile.Read(ref _homingCycles) > 0;
         public void BeginHoming() => Interlocked.Increment(ref _homingCycles);
@@ -220,9 +234,10 @@ namespace coppercli.Tests.Fakes
         public void FeedHold()
         {
             FeedHoldCount++;
+            // Moves here finish at once, so the hold has nothing to slow down.
             if (DoorModel.FeedHoldApplies(Status))
             {
-                SetStatus(GrblProtocol.StatusHold, string.Empty);
+                SetStatus(GrblProtocol.StatusHold, GrblProtocol.HoldSubStateComplete);
             }
         }
 
@@ -274,10 +289,16 @@ namespace coppercli.Tests.Fakes
         {
             SoftResetCount++;
             Mode = OperatingMode.Manual;
+            bool alarms = DoorModel.ResetAlarms(Status, StatusSubState);
 
-            SetStatus(
-                DoorModel.ResetAlarms(Status) ? GrblProtocol.StatusAlarm + ":1" : GrblProtocol.StatusIdle,
-                string.Empty);
+            // Machine clears IsHomed on the ALARM line, or on the unlock message GRBL prints
+            // after a reset that leaves it alarmed.
+            if (alarms)
+            {
+                IsHomed = false;
+            }
+
+            SetStatus(alarms ? GrblProtocol.StatusAlarm + ":1" : GrblProtocol.StatusIdle, string.Empty);
             OperatingModeChanged?.Invoke();
         }
 

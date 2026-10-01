@@ -1,12 +1,11 @@
 import { state } from './state.js';
 import { $, setText, showError, showInfo, format } from './helpers.js';
-import { pollProbeStatus, dismissProbeComplete, fetchAndDisplayProbeData, showProbeCompleteAndOfferSave, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, updateProbeInfoDisplay } from './probe.js';
+import { pollProbeStatus, dismissProbeComplete, fetchAndDisplayProbeData, showProbeCompleteAndOfferSave, refreshProbeState, updateProbeButtonsFromState, applyProbeRunLock, getIsTracing, updateProbeInfoDisplay, showProbeRunView } from './probe.js';
 import { loadFiles } from './file.js';
 import { updateJogButtons, updateContinueMillingButton } from './jog.js';
 import {
     updateToolChangeDisplay,
     updateDoorOverlay,
-    updateDepthDisplay,
     updateMillGrid,
     applyMillControllerState,
     endMillRun,
@@ -149,8 +148,7 @@ export function updateStatus(status) {
         if (!state.isProbing) {
             // Either probing just started, or this page connected while it was already running.
             state.isProbing = true;
-            document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
-            document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
+            showProbeRunView();
             showScreen(SCREEN_PROBE, true);
             // The height map comes from this poll, not from the status broadcast.
             pollProbeStatus();
@@ -301,7 +299,7 @@ export function updateStatus(status) {
     }
 
     if (status.probe && status.probe.state) {
-        updateProbeButtonsFromState(status.probe.state, status.probe.hasUnsavedData);
+        updateProbeButtonsFromState(status.probe.state, status.probe.hasUnsavedData, status.probe.hasHeights);
     }
 
     // Called on every status, because the screen lock depends on whether a run is using the
@@ -347,8 +345,6 @@ export function updateStatus(status) {
 
     // The enclosure message, shown when no run is prompting about it.
     updateDoorOverlay(status);
-
-    updateDepthDisplay(status.depthAdjustment);
 
     if (status.milling) {
         updateMillGrid(status);

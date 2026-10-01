@@ -271,6 +271,7 @@
                 <div class="probe-data-actions">
                     <button class="btn" id="probe-load-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg> Load</button>
                     <button class="btn" id="probe-recover-btn" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 019-9 9 9 0 016.36 2.64"/><path d="M21 3v6h-6"/><path d="M21 12a9 9 0 01-9 9 9 9 0 01-6.36-2.64"/><path d="M3 21v-6h6"/></svg> Recover</button>
+                    <button class="btn" id="probe-view-btn" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="1"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></svg> View Map</button>
                 </div>
                 <div class="probe-data-actions">
                     <button class="btn" id="probe-save-btn" disabled><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save</button>
@@ -290,6 +291,7 @@
                     <button class="btn btn-danger" id="probe-stop-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> STOP</button>
                 </div>
                 <button class="btn btn-success btn-large hidden" id="probe-done-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg> Done</button>
+                <button class="btn btn-large hidden" id="probe-view-close-btn">Close</button>
             </div>
         </div>
         <!-- Load and save share this screen; the save row is shown in save mode. -->
@@ -319,16 +321,31 @@
                 <p id="premill-lines" class="text-dim">0 lines</p>
                 <div id="premill-warnings" class="premill-warnings hidden"></div>
 
-                <div class="depth-adjust-section">
-                    <div class="depth-label">Depth Adjustment</div>
-                    <div class="depth-controls">
+                <div class="premill-group">
+                    <div class="premill-group-label">Depth Adjustment</div>
+                    <div class="premill-group-controls">
                         <button class="btn btn-small" id="premill-depth-minus">-</button>
                         <span class="depth-value" id="premill-depth-value">0</span>
                         <span>mm</span>
                         <button class="btn btn-small" id="premill-depth-plus">+</button>
                         <button class="btn btn-small" id="premill-depth-reset">Reset</button>
                     </div>
-                    <p class="text-dim depth-hint">Adjust Z origin: + = shallower cuts, - = deeper cuts</p>
+                    <p class="text-dim premill-group-hint">+ = shallower cuts, - = deeper cuts. Travel height does not change.</p>
+                </div>
+
+                <div class="premill-group">
+                    <div class="premill-group-label">Sections</div>
+                    <div class="premill-group-controls">
+                        <span class="sections-value" id="premill-sections-value"></span>
+                        <button class="btn btn-small" id="premill-sections-btn">Choose</button>
+                    </div>
+                    <p class="text-dim premill-group-hint">Mill only part of the board, for example to cut it again deeper.</p>
+                </div>
+
+                <div class="premill-group" id="premill-phases-group">
+                    <div class="premill-group-label">Phases</div>
+                    <div class="premill-group-controls premill-phases" id="premill-phases-list"></div>
+                    <p class="text-dim premill-group-hint">Each tool's work is one phase. Clear one to skip it, for example to cut out a board without milling its traces again.</p>
                 </div>
 
                 <label class="premill-checklist">
@@ -336,9 +353,39 @@
                     <span id="premill-probe-removed-text"></span>
                 </label>
 
+                <label class="premill-checklist hidden" id="premill-home-first-row">
+                    <input type="checkbox" id="premill-home-first">
+                    <span>Home first</span>
+                </label>
+
                 <div class="modal-actions">
                     <button class="btn btn-success btn-large" id="premill-start-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> Start</button>
                     <button class="btn" id="premill-cancel-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg> Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-overlay hidden" id="sections-modal">
+            <div class="modal-content">
+                <h2>Sections</h2>
+                <div class="premill-group-controls">
+                    <span>Columns</span>
+                    <button class="btn btn-small" id="sections-columns-minus">-</button>
+                    <span class="sections-count" id="sections-columns-value">1</span>
+                    <button class="btn btn-small" id="sections-columns-plus">+</button>
+                    <span>Rows</span>
+                    <button class="btn btn-small" id="sections-rows-minus">-</button>
+                    <span class="sections-count" id="sections-rows-value">1</span>
+                    <button class="btn btn-small" id="sections-rows-plus">+</button>
+                </div>
+                <div class="sections-board" id="sections-board">
+                    <canvas id="sections-picture"></canvas>
+                    <div class="sections-grid" id="sections-grid"></div>
+                </div>
+                <p class="text-dim premill-group-hint">Tap the sections to mill. Choose none to mill the whole board. The arrow keys also change the columns and rows.</p>
+                <div class="modal-actions">
+                    <button class="btn btn-success btn-large" id="sections-done-btn">Done</button>
+                    <button class="btn" id="sections-cancel-btn">Cancel</button>
                 </div>
             </div>
         </div>

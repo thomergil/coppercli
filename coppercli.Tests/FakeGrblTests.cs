@@ -86,7 +86,7 @@ namespace coppercli.Tests
         public void AMoveSentWhileHoldingAtTheDoor_SitsInThePlanner()
         {
             using var grbl = new FakeGrbl();
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 grbl.SimulateDoorClosedAndHolding();
@@ -114,7 +114,7 @@ namespace coppercli.Tests
         public async Task ASoftResetOutOfADoorHold_AlarmsAndIsClearedByUnlock()
         {
             using var grbl = new FakeGrbl();
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 grbl.SimulateDoorClosedAndHolding();
@@ -144,7 +144,7 @@ namespace coppercli.Tests
         public async Task AHomingCycle_IsNotReadAsARefusal_WhenOneReportWasStillInFlight()
         {
             using var grbl = new FakeGrbl { HomingMs = HomingCycleMs };
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 var outcome = await MachineWait.HomeAsync(machine, HomingWaitMs);
@@ -170,7 +170,7 @@ namespace coppercli.Tests
         public async Task AStopDuringHoming_ClearsTheAlarmItRaised_SoTheRetractIsAccepted()
         {
             using var grbl = new FakeGrbl { HomingMs = int.MaxValue, RebootMs = RebootQuietMs };
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 machine.SendLine(GrblProtocol.CmdHome);
@@ -203,7 +203,7 @@ namespace coppercli.Tests
         public async Task AFailedHomingCycle_IsNotReadAsHomed()
         {
             using var grbl = new FakeGrbl { HomingMs = int.MaxValue };
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 var homing = MachineWait.HomeAsync(machine, HomingWaitMs);
@@ -231,7 +231,7 @@ namespace coppercli.Tests
         public async Task ARestartGrblAnnounces_AbandonsWhatWasOutstanding_AndClearsHomed()
         {
             using var grbl = new FakeGrbl { HomingMs = int.MaxValue };
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 machine.IsHomed = true;
@@ -258,7 +258,7 @@ namespace coppercli.Tests
         public async Task ALineThatTimesOutBeforeItIsSent_IsNeverSent()
         {
             using var grbl = new FakeGrbl { RebootMs = RebootQuietMs };
-            var machine = Connected(grbl);
+            var machine = grbl.ConnectedMachine();
             try
             {
                 // Lines wait for GRBL's banner after a reset, so this one is still queued
@@ -278,20 +278,94 @@ namespace coppercli.Tests
             }
         }
 
-        private static Machine Connected(FakeGrbl grbl)
-        {
-            var machine = new Machine(new MachineSettings
-            {
-                ConnectionType = ConnectionType.Ethernet,
-                EthernetIP = Loopback,
-                EthernetPort = grbl.Port
-            });
+        private const string BannerPrefix = "Grbl";
 
-            machine.Connect();
-            WebServerFixture.WaitUntil(
-                () => machine.Status == GrblProtocol.StatusIdle,
-                "the simulated machine to report Idle");
-            return machine;
+        /// <summary>
+        /// The machine reports ALARM:3 by the text of grbl_alarm_codes_en_US.csv, not the code.
+        /// </summary>
+        private const string AbortAlarmText = "Reset while in motion";
+
+        private static bool IsAbortAlarm(string line) =>
+            line.Contains(AbortAlarmText, StringComparison.Ordinal);
+
+        private static System.Collections.Concurrent.ConcurrentQueue<string> RecordLines(Machine machine)
+        {
+            var lines = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            machine.LineReceived += lines.Enqueue;
+
+            // The machine reports an alarm through its error event, not as a received line.
+            machine.NonFatalException += lines.Enqueue;
+            return lines;
+        }
+
+        /// <summary>
+        /// GRBL keeps its alarm through a soft reset: with no motion to abort it prints no
+        /// ALARM:3, only its banner and then the request to be unlocked. A double that came back
+        /// Idle, or aborted a cycle that was not running, would make every stop test pass on
+        /// behavior the machine does not have.
+        /// </summary>
+        [Fact]
+        public void ASoftResetFromAlarm_ComesBackAlarmed_WithTheBannerAndTheLockMessage_AndNoAbort()
+        {
+            using var grbl = new FakeGrbl();
+            var machine = grbl.ConnectedMachine();
+            try
+            {
+                var lines = RecordLines(machine);
+                grbl.SimulateHardLimit();
+                WebServerFixture.WaitUntil(() => MachineWait.IsAlarm(machine), "the alarm");
+
+                machine.SoftReset();
+
+                WebServerFixture.WaitUntil(
+                    () => lines.Contains(GrblProtocol.ResponseAlarmLock), "the unlock message after the banner");
+                var seen = lines.ToArray();
+                Assert.True(
+                    Array.FindIndex(seen, l => l.StartsWith(BannerPrefix, StringComparison.Ordinal))
+                    < Array.IndexOf(seen, GrblProtocol.ResponseAlarmLock),
+                    "the banner did not come before the unlock message: " + string.Join(" | ", seen));
+                Assert.DoesNotContain(seen, IsAbortAlarm);
+                WebServerFixture.WaitUntil(
+                    () => MachineWait.IsAlarm(machine), "the status to read Alarm: the reset cleared an alarm GRBL keeps");
+            }
+            finally
+            {
+                machine.Disconnect();
+            }
+        }
+
+        /// <summary>
+        /// A reset while the axes move aborts the cycle: GRBL prints ALARM:3 before its banner,
+        /// and comes back alarmed.
+        /// </summary>
+        [Fact]
+        public void ASoftResetWhileMoving_PrintsTheAbortAlarm_BeforeTheBanner()
+        {
+            using var grbl = new FakeGrbl();
+            var machine = grbl.ConnectedMachine();
+            try
+            {
+                var lines = RecordLines(machine);
+                grbl.SimulateMoving();
+                WebServerFixture.WaitUntil(
+                    () => machine.Status.StartsWith(GrblProtocol.StatusRun, StringComparison.Ordinal), "the move");
+
+                machine.SoftReset();
+
+                WebServerFixture.WaitUntil(
+                    () => lines.Contains(GrblProtocol.ResponseAlarmLock), "the unlock message after the banner");
+                var seen = lines.ToArray();
+                int abort = Array.FindIndex(seen, IsAbortAlarm);
+                Assert.True(abort >= 0, "no ALARM:3 for a reset during a move: " + string.Join(" | ", seen));
+                Assert.True(
+                    abort < Array.FindIndex(seen, l => l.StartsWith(BannerPrefix, StringComparison.Ordinal)),
+                    "ALARM:3 came after the banner: " + string.Join(" | ", seen));
+                WebServerFixture.WaitUntil(() => MachineWait.IsAlarm(machine), "the status to read Alarm after the reset");
+            }
+            finally
+            {
+                machine.Disconnect();
+            }
         }
     }
 }

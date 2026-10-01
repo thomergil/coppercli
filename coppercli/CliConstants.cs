@@ -114,8 +114,14 @@ namespace coppercli
         /// <summary>Millimeters.</summary>
         public const double DefaultProbeGridSize = 5.0;
 
-        /// <summary>Millimeters per keypress.</summary>
+        /// <summary>Millimeters per step: one ↑/↓ key in the terminal, one -/+ button in the browser.</summary>
         public const double DepthAdjustmentIncrement = 0.02;
+
+        /// <summary>
+        /// Decimal places a depth adjustment is rounded to, so steps that add back to zero
+        /// leave exactly zero rather than a floating-point remainder.
+        /// </summary>
+        public const int DepthAdjustmentDecimals = 3;
 
         /// <summary>Millimeters, in either direction.</summary>
         public const double DepthAdjustmentMax = 1.0;
@@ -173,11 +179,85 @@ namespace coppercli
         /// <summary>Asked before a run starts.</summary>
         public const string ProbeRemovedQuestion = "Probing equipment removed?";
 
-        public const string SafetyDepthSubMessage = "↑/↓=Depth  Y=Start  Esc=Cancel";
+        /// <summary>{0} is ProbeRemovedQuestion, {1} the depth adjustment, {2} the sections text, {3} SafetyPhasesFormat or nothing.</summary>
+        public const string SafetyMessageFormat = "{0}  Depth: {1}mm  Sections: {2}{3}";
+
+        /// <summary>For a job with more than one phase; {0} is the phases text.</summary>
+        public const string SafetyPhasesFormat = "  Phases: {0}";
+
+        /// <summary>{0} is SafetyPhasesKeyHint or nothing.</summary>
+        public const string SafetyDepthSubMessage = "↑/↓=Depth  S=Sections  {0}Y=Start  Esc=Cancel";
+
+        /// <summary>For a job with more than one phase.</summary>
+        public const string SafetyPhasesKeyHint = "P=Phases  ";
+
+        /// <summary>What a run mills when the choice is every phase.</summary>
+        public const string PhasesAll = "all";
+
+        /// <summary>{0} is the chosen phase numbers, joined by PhaseNumberSeparator.</summary>
+        public const string PhasesChosenFormat = "{0} only";
+
+        public const string PhaseNumberSeparator = ", ";
+
+        public const string PhasesMenuTitle = "Phases to mill. Each tool's work is one phase. Press Enter to choose or clear one:";
+
+        public const string PhasesDone = "Done";
+
+
+        /// <summary>{0} is the phase's number, {1} how long its feed moves take.</summary>
+        public const string PhaseLabelFormat = "Phase {0} · {1}";
+
+        public const string PhaseChosenMarker = "[x] ";
+        public const string PhaseNotChosenMarker = "[ ] ";
+
+        /// <summary>What a run mills when the choice is the whole board (BoardSections.IsWholeBoard).</summary>
+        public const string SectionsWholeBoard = "whole board";
+
+        /// <summary>{0} is how many sections are chosen, {1} how many the board is divided into.</summary>
+        public const string SectionsChosenFormat = "{0} of {1}";
+
+        public const string SectionsTitle = "Sections";
+
+        /// <summary>{0} columns, {1} rows, {2} the sections text.</summary>
+        public const string SectionsDivisionFormat = "Columns: {0}  Rows: {1}    Mill: {2}";
+
+        public const string SectionsDivideHint = "↑/↓=Rows  ←/→=Columns  Enter=Choose sections  Esc=Cancel";
+
+        public const string SectionsChooseHint = "Arrows=Move  Space=Choose or clear  Enter=Done  Esc=Back";
+
+        /// <summary>
+        /// Lines the sections picker writes above and below the board, borders aside, and one
+        /// spare so the last line's newline does not scroll the screen.
+        /// </summary>
+        public const int SectionPickerTextLines = 7;
+
+        public const string WindowTooSmallForBoard = "(Window too small to draw the board)";
+
+        /// <summary>{0} and {1} are the board's lowest and highest X, {2} and {3} its lowest and highest Y, in mm.</summary>
+        public const string BoardBoundsFormat = "X: {0:F1} to {1:F1}  Y: {2:F1} to {3:F1}";
 
         public const string OverlayAlarmMessage = "ALARM - Press X to stop";
 
         public const string NoMachineProfileWarning = "No machine profile selected";
+
+        public const string NoHeightMapWarning = "No height map - milling without height correction";
+
+        public const string NotHomedWarning = "Machine not homed - will home before milling";
+
+        public const string StoppedWhileCuttingWarning =
+            "Last job stopped while cutting - a crash or stall may have lost the position";
+
+        /// <summary>Asked after StoppedWhileCuttingWarning.</summary>
+        public const string HomeFirstQuestion = "Home first?";
+
+        /// <summary>
+        /// The answer the home-first question starts at: yes, because a crash or stall can lose
+        /// the position. Published to the browser, which ticks its box to match.
+        /// </summary>
+        public const bool HomeFirstByDefault = true;
+
+        /// <summary>Follows a warning the operator may go past.</summary>
+        public const string ContinueQuestion = "Continue?";
 
         public const string ContinueOrCancelKeyHint = "Y=Continue  Esc=Cancel";
 
@@ -221,24 +301,13 @@ namespace coppercli
         public const string ZeroedAllAxes = "All axes zeroed";
 
         /// <summary>{0} is the zero confirmation; the rest states what became of the height map.</summary>
-        public const string ZeroedMapReapplied = "{0} - height map re-applied";
+        public const string ZeroedMapStillApplied = "{0} - height map still applied";
 
-        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        /// <inheritdoc cref="ZeroedMapStillApplied"/>
         public const string ZeroedMapDiscarded = "{0} - height map discarded";
 
-        /// <inheritdoc cref="ZeroedMapReapplied"/>
+        /// <inheritdoc cref="ZeroedMapStillApplied"/>
         public const string ZeroedFileLeftAlone = "{0} - height map kept for this run";
-
-        /// <inheritdoc cref="ZeroedMapReapplied"/>
-        public const string ZeroedMapNotReapplied =
-            "{0} - height map was not re-applied. Reload the file before milling.";
-
-        /// <inheritdoc cref="ZeroedMapReapplied"/>
-        public const string ZeroedMapNotDiscarded =
-            "{0} - height map was not removed. Reload the file before milling.";
-
-        public const string MacroErrorHeightMapWrong =
-            "Height map no longer matches the origin. Reload the file.";
 
         /// <summary>Confirmed on the jog screen after an unlock ($X).</summary>
         public const string UnlockedMessage = "Unlocked";
@@ -394,6 +463,8 @@ namespace coppercli
 
         public const string ProbeMenuApply = "Apply to G-Code";
 
+        public const string ProbeMenuView = "View Height Map";
+
         public const string ProbeMenuBack = "Back";
 
         // Shared by every menu that disables an item.
@@ -466,14 +537,11 @@ namespace coppercli
 
         public const string HeightMapDiscardedOnLoad = "Discarded the height map - {0}. Probe again before milling.";
 
-        /// <summary>
-        /// The map is in the loaded G-code and the file it was applied to is gone, so the
-        /// corrections cannot be taken back out.
-        /// </summary>
-        public const string ErrorMapStuckInGCode =
-            "The height map is in the loaded file and the original is gone. Load a file.";
-
         public const string ErrorNoCompleteMapToApply = "No finished height map to apply.";
+
+        public const string ErrorNoFileLoaded = "No file loaded";
+
+        public const string ErrorInvalidDepth = "The depth adjustment must be a number.";
 
         /// <summary>
         /// A run tracks its place in the file by line number, so replacing the file reopens
@@ -580,6 +648,8 @@ namespace coppercli
 
         public const string ProbeErrorNoComplete = "No complete probe data to save.";
 
+        public const string ProbeErrorNoHeights = "No measured heights to show.";
+
         public const string ProbePromptMargin = "Probe margin (mm)";
 
         public const string ProbePromptGridSize = "Grid size (mm)";
@@ -591,6 +661,9 @@ namespace coppercli
         public const string ProbePromptMill = "Proceed to Milling?";
 
         public const string ProbeDisplayHeader = "Probing:";
+
+        /// <summary>Heads the height map drawn from the Probe menu, in place of ProbeDisplayHeader.</summary>
+        public const string ProbeDisplayMapHeader = "Height map:";
 
         public const string ProbeDisplayEscapeStop = "Press Escape to stop";
 

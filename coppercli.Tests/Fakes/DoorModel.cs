@@ -58,12 +58,31 @@ namespace coppercli.Tests.Fakes
             !state.StartsWith(GrblProtocol.StatusDoor, StringComparison.Ordinal);
 
         /// <summary>
-        /// Whether a soft reset from this state enters Alarm: GRBL alarms on a reset during a
-        /// hold, a door hold, or a move. Resetting an idle machine leaves it in Idle.
-        /// StopAndResetAsync sends $X to clear that alarm.
+        /// Whether a soft reset from this state stops the axes, which GRBL reports as ALARM:3:
+        /// a run, a jog, a homing cycle, a feed hold still slowing (anything but Hold:0), or a
+        /// door hold still parking or restoring (Door:2, Door:3). From Idle, a finished feed
+        /// hold or a stopped door hold GRBL keeps its position (gnea/grbl's mc_reset, and every
+        /// reset in the operator's Nomad 3 logs).
         /// </summary>
-        public static bool ResetAlarms(string state) =>
-            Holding(state) || state.StartsWith(GrblProtocol.StatusRun, StringComparison.Ordinal);
+        public static bool ResetStopsMotion(string state, string subState) =>
+            state.StartsWith(GrblProtocol.StatusRun, StringComparison.Ordinal)
+            || state.StartsWith(GrblProtocol.StatusJog, StringComparison.Ordinal)
+            || state.StartsWith(GrblProtocol.StatusHome, StringComparison.Ordinal)
+            || (state.StartsWith(GrblProtocol.StatusHold, StringComparison.Ordinal)
+                && subState != GrblProtocol.HoldSubStateComplete)
+            || (state.StartsWith(GrblProtocol.StatusDoor, StringComparison.Ordinal)
+                && (subState == GrblProtocol.DoorSubStateRetracting
+                    || subState == GrblProtocol.DoorSubStateResuming));
+
+        /// <summary>
+        /// Whether GRBL comes back from a soft reset locked: after stopping motion, and from
+        /// Alarm or Sleep, which a reset carries over (gnea/grbl main.c keeps the prior state).
+        /// StopAndResetAsync sends $X to clear the lock.
+        /// </summary>
+        public static bool ResetAlarms(string state, string subState) =>
+            ResetStopsMotion(state, subState)
+            || state.StartsWith(GrblProtocol.StatusAlarm, StringComparison.Ordinal)
+            || state.StartsWith(GrblProtocol.StatusSleep, StringComparison.Ordinal);
 
         /// <summary>
         /// Whether GRBL refuses this line because it is alarmed: it locks G-code out and takes

@@ -1,7 +1,5 @@
 #nullable enable
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using coppercli;
@@ -14,10 +12,8 @@ using Xunit;
 namespace coppercli.Tests
 {
     /// <summary>
-    /// Covers zeroing the work origin, and the
-    /// <see cref="WorkZeroOutcomeExtensions.LeftTheGCodeWrong"/> result that both the terminal
-    /// and the browser branch on. A wrong result there leaves the operator cutting with
-    /// corrections measured against an origin that has moved.
+    /// Covers zeroing the work origin, and the words each <see cref="WorkZeroOutcome"/>
+    /// reaches the operator with.
     /// </summary>
     public class WorkZeroOutcomeTests
     {
@@ -59,37 +55,6 @@ namespace coppercli.Tests
 
             Assert.Null(await MachineWait.ZeroWorkOffsetAsync(machine, "Z0", CancellationToken.None));
             Assert.Equal(0, machine.WorkOffsetQueryCount);
-        }
-
-        /// <summary>
-        /// Expected values written out one per outcome. Computing them from
-        /// LeftTheGCodeWrong instead would make any change to it agree with itself.
-        /// </summary>
-        private static readonly Dictionary<WorkZeroOutcome, bool> LeavesTheGCodeWrong = new()
-        {
-            [WorkZeroOutcome.NothingToDo] = false,
-            [WorkZeroOutcome.MapDiscarded] = false,
-            [WorkZeroOutcome.MapReapplied] = false,
-            [WorkZeroOutcome.MapNotReapplied] = true,
-            [WorkZeroOutcome.MapNotDiscarded] = true,
-            [WorkZeroOutcome.FileLeftAlone] = false
-        };
-
-        [Fact]
-        public void ExpectedOutcomeTable_MatchesOutcomeEnum()
-        {
-            Assert.Equal(
-                Enum.GetValues<WorkZeroOutcome>().ToHashSet(),
-                LeavesTheGCodeWrong.Keys.ToHashSet());
-        }
-
-        [Fact]
-        public void LeftTheGCodeWrong_MatchesExpectedValues()
-        {
-            foreach (var outcome in Enum.GetValues<WorkZeroOutcome>())
-            {
-                Assert.Equal(LeavesTheGCodeWrong[outcome], outcome.LeftTheGCodeWrong());
-            }
         }
 
         /// <summary>

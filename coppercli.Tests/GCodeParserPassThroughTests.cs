@@ -70,7 +70,7 @@ namespace coppercli.Tests
         /// After a block the parser cannot model, the tool position is unknown, so the file's
         /// own recovery move has to survive. Carrying the pre-G53 Z forward makes "G0 Z5" look
         /// like a move to where the tool already is, and deleting it leaves the next cut at
-        /// the retract depth.
+        /// the retract height.
         /// </summary>
         [Fact]
         public void RecoveryMoveAfterG53_IsNotDeletedAsZeroLength()
@@ -86,7 +86,38 @@ namespace coppercli.Tests
             var motions = file.Toolpath.OfType<Line>().ToList();
 
             Assert.Equal(3, motions.Count);
-            Assert.Contains(motions, m => !m.StartTrusted);
+            Assert.Contains(motions, m => !m.StartValid);
+        }
+
+        /// <summary>
+        /// The same after a recovery that gives X and Y first: the move that then gives Z still
+        /// starts at the Z from before the block, which is not where the tool is.
+        /// </summary>
+        [Fact]
+        public void SecondMoveAfterG53_IsNotDeletedAsZeroLength_WhileZIsUnknown()
+        {
+            var file = ParseLines(
+                "G21", "G90",
+                "G0 X0 Y0 Z5",
+                "G53 G0 Z-40",
+                "G0 X0 Y0",
+                "G0 X0 Y0 Z5",
+                "G1 Z-0.1 F100");
+
+            Assert.Equal(4, file.Toolpath.OfType<Line>().Count());
+        }
+
+        /// <summary>
+        /// A G0 or G1 that names no axis moves nothing. Made into a move, it is written back as
+        /// a bare "G1", and once a G53 block has made the position unknown nothing drops it.
+        /// </summary>
+        [Fact]
+        public void AMotionWordNamingNoAxis_MakesNoMove()
+        {
+            var file = ParseLines("G21", "G90", "G01 F600", "G00 S12000", "G0 X0 Y0 Z5", "G53 G0 Z-1", "G1 F300", "G0 Z5");
+
+            Assert.Equal(2, file.Toolpath.OfType<Line>().Count());
+            Assert.DoesNotContain(file.GetGCode(), l => l is "G0" or "G1");
         }
 
         [Fact]

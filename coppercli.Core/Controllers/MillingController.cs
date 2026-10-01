@@ -31,13 +31,6 @@ namespace coppercli.Core.Controllers
         private readonly object _phaseLock = new();
         private CancellationTokenSource? _pauseCts;
 
-        private double _depthAdjustment;
-
-        // How much depth adjustment is sitting in GRBL's G54 Z and has not been taken back
-        // out; 0 when the origin is clean. It describes the machine rather than the run, so
-        // ResetRunState leaves it alone.
-        private double _outstandingDepthAdjustment;
-
         private readonly HashSet<(double X, double Y)> _cuttingPathSet = new();
         private readonly List<(double X, double Y)> _cuttingPath = new();
         private readonly object _cuttingPathLock = new();
@@ -87,11 +80,7 @@ namespace coppercli.Core.Controllers
 
         protected override async Task RunAsync(CancellationToken ct)
         {
-            // Snapshot settings at start. Everything else describing the run was cleared
-            // by ResetRunState before StartAsync got here.
-            _depthAdjustment = Options.DepthAdjustment;
-
-            ControllerLog.Log(LogMillingStart, _depthAdjustment);
+            ControllerLog.Log(LogMillingStart);
 
             // A probe run that ended just before this leaves the machine in Probe mode, where
             // every setup command still goes through but FileStart refuses. Put back to Manual
@@ -102,7 +91,9 @@ namespace coppercli.Core.Controllers
 
             await SettleAsync(ct);
 
-            if (Options.RequireHoming)
+            // Decided after the settle, so the run homes if a restart during the settle lost the
+            // position.
+            if (Options.HomeFirst || !_machine.IsHomed)
             {
                 await HomeIfNeededAsync(ct);
             }
@@ -111,10 +102,7 @@ namespace coppercli.Core.Controllers
 
             await InitializeMachineAsync(ct);
 
-            await ApplyDepthAdjustmentAsync(ct);
-
             TransitionTo(ControllerState.Running);
-            Phase = MillingPhase.Milling;
 
             await MonitorMillingAsync(ct);
 
@@ -127,11 +115,19 @@ namespace coppercli.Core.Controllers
 
         protected override async Task CleanupAsync()
         {
-            // Undo the depth adjustment between the stop and the lift, so an aborted run
-            // does not leave the Z origin shifted for the next one.
-            await StopAndLiftAsync(
-                    SafeClearanceZ, CancelRetractTimeoutMs, RestoreDepthAdjustmentAsync)
-                .ConfigureAwait(false);
+            // A stop or an error while cutting may follow a crash or stall that skipped steps
+            // GRBL does not detect; the next job then offers to home first. Cutting is the
+            // Milling phase while the run streams or the operator has paused it: at a program
+            // pause or a door prompt nothing was cutting, and Completing comes after the last
+            // line. State still reads as it was here, because the run moves to Cancelled or
+            // Failed only after this cleanup.
+            if (Phase == MillingPhase.Milling
+                && (State == ControllerState.Running || State == ControllerState.Paused))
+            {
+                _machine.NoteStoppedWhileCutting();
+            }
+
+            await StopAndLiftAsync(SafeClearanceZ, CancelRetractTimeoutMs).ConfigureAwait(false);
         }
 
         /// <inheritdoc/>
@@ -150,11 +146,6 @@ namespace coppercli.Core.Controllers
 
             _pauseCts?.Dispose();
             _pauseCts = null;
-
-            _depthAdjustment = 0;
-
-            // Keep _outstandingDepthAdjustment until GRBL's G54 Z is restored. Clearing
-            // it here would make the next run use a shifted work origin.
         }
 
         public override void Pause()
@@ -279,59 +270,44 @@ namespace coppercli.Core.Controllers
             return true;
         }
 
+        /// <summary>
+        /// Waits until the machine has read Idle without a break for IdleSettleMs, so the run
+        /// does not start on a machine still finishing a jog or a move. At a door hold it asks
+        /// the operator through EnsureDoorClosedAsync; any other state that will not settle (an
+        /// alarm, sleep) is waited out until the settle timeout, then reported.
+        /// </summary>
         private async Task SettleAsync(CancellationToken ct)
         {
             Phase = MillingPhase.Settling;
+            ControllerLog.Log(LogSettlingPhase, IdleSettleMs);
+            EmitProgress(new ProgressInfo(PhaseSettling, 0, MessageWaitingForIdle));
 
-            int settleSeconds = PostIdleSettleMs / OneSecondMs;
-            int stableCount = 0;
-
-            // Bounded, because readiness can stay false indefinitely (open door, standing
-            // alarm) and this loop would sit in Settling with nothing reported.
+            // Bounded, because the machine can stay out of Idle indefinitely (a standing alarm,
+            // sleep) and the run would sit in Settling with nothing reported.
             var settleDeadline = System.Diagnostics.Stopwatch.StartNew();
 
-            ControllerLog.Log(LogSettlingPhase, settleSeconds);
-
-            while (stableCount < settleSeconds && !ct.IsCancellationRequested)
+            while (true)
             {
-                // Restart the settle timeout after the operator handles the door.
+                ct.ThrowIfCancellationRequested();
+
+                // Restarted after the door prompt, so the operator's time at the door does
+                // not count toward the timeout.
                 if (MachineWait.IsDoor(_machine))
                 {
                     await EnsureDoorClosedAsync(ct).ConfigureAwait(false);
                     settleDeadline.Restart();
-                    stableCount = 0;
                 }
 
-                if (settleDeadline.ElapsedMilliseconds > Options.SettleTimeoutMs)
+                int remainingMs = Options.SettleTimeoutMs - (int)settleDeadline.ElapsedMilliseconds;
+                if (remainingMs <= 0)
                 {
                     throw new InvalidOperationException(DescribeNotReady(_machine));
                 }
 
-                string statusBefore = _machine.Status;
-
-                EmitProgress(new ProgressInfo(
-                    PhaseSettling,
-                    0,
-                    MachineWait.IsIdle(_machine)
-                        ? string.Format(MessageSettlingCountdown, settleSeconds - stableCount)
-                        : MessageWaitingForIdle
-                ));
-
-                await Task.Delay(OneSecondMs, ct).ConfigureAwait(false);
-
-                if (_machine.Status != statusBefore || !MachineWait.IsIdle(_machine))
+                if (await MachineWait.WaitForSteadyIdleAsync(_machine, IdleSettleMs, remainingMs, ct)
+                    .ConfigureAwait(false))
                 {
-                    ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
-                    if (!await MachineWait.EnsureMachineReadyAsync(_machine, IdleWaitTimeoutMs, ct))
-                    {
-                        // Door open, alarmed or still moving, so the settle count restarts.
-                        ControllerLog.Log(LogStatusChanged, statusBefore, _machine.Status);
-                    }
-                    stableCount = 0;
-                }
-                else
-                {
-                    stableCount++;
+                    break;
                 }
             }
 
@@ -343,7 +319,12 @@ namespace coppercli.Core.Controllers
         /// </summary>
         private static string DescribeNotReady(IMachine machine)
         {
-            return MachineWait.IsAlarm(machine) ? ErrorAlarmBeforeStart : ErrorMachineNotSettled;
+            if (MachineWait.IsAlarm(machine))
+            {
+                return ErrorAlarmBeforeStart;
+            }
+
+            return MachineWait.IsUnavailable(machine) ? ErrorMachineNotResponding : ErrorMachineNotSettled;
         }
 
         private async Task HomeIfNeededAsync(CancellationToken ct)
@@ -402,134 +383,6 @@ namespace coppercli.Core.Controllers
             await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
         }
 
-        private async Task ApplyDepthAdjustmentAsync(CancellationToken ct)
-        {
-            if (_depthAdjustment == 0)
-            {
-                ControllerLog.Log(LogNoDepthAdjustment);
-                return;
-            }
-
-            // Read G54 from GRBL before writing it with G10 L2 P1. WorkOffset includes
-            // G92 and tool-length offsets; writing that combined value to G54 would
-            // move the Z origin.
-            bool offsetsKnown = await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs, ct).ConfigureAwait(false);
-
-            ct.ThrowIfCancellationRequested();
-
-            if (!offsetsKnown)
-            {
-                // Without a current G54 we would shift an origin we cannot see.
-                throw new InvalidOperationException(ErrorWorkOffsetUnknown);
-            }
-
-            // The origin as the operator set it, with whatever an earlier run left in there
-            // taken off first. The adjustment is measured from the zero they touched off, so
-            // asking for 0.05 gives 0.05 however the run before it ended.
-            double baselineZ = _machine.G54Offset.Z - _outstandingDepthAdjustment;
-            _outstandingDepthAdjustment = _depthAdjustment;
-
-            double newOffsetZ = baselineZ + _depthAdjustment;
-
-            _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{newOffsetZ:F3}"));
-            await Task.Delay(CommandDelayMs, ct).ConfigureAwait(false);
-
-            ControllerLog.Log(LogDepthAdjustment, baselineZ, newOffsetZ, _depthAdjustment);
-        }
-
-        /// <summary>
-        /// Takes the depth adjustment back out of the Z origin; idempotent, so both the
-        /// success path and the cleanup path may call it. It subtracts from the current G54
-        /// rather than writing back the value captured at the start, because a tool change
-        /// rewrites that same offset for the new tool's length and a snapshot would undo it.
-        /// </summary>
-        private async Task RestoreDepthAdjustmentAsync()
-        {
-            if (_outstandingDepthAdjustment == 0)
-            {
-                return;
-            }
-
-            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs).ConfigureAwait(false))
-            {
-                // Leave the amount recorded: it is still in the origin, and forgetting it
-                // would leave the next run cutting against a shifted zero.
-                ReportDepthAdjustmentNotRestored("machine did not report its offsets");
-                return;
-            }
-
-            double restoredZ = _machine.G54Offset.Z - _outstandingDepthAdjustment;
-
-            _machine.SendLine(Inv($"{CmdSetWorkOffset} Z{restoredZ:F3}"));
-            await Task.Delay(CommandDelayMs).ConfigureAwait(false);
-
-            // A soft reset may leave GRBL in Alarm, where it rejects the offset write.
-            // Keep the adjustment amount until the new G54 value is confirmed.
-            if (!await _machine.RefreshWorkOffsetsAsync(WorkOffsetQueryTimeoutMs).ConfigureAwait(false)
-                || Math.Abs(_machine.G54Offset.Z - restoredZ) > WorkOffsetToleranceMm)
-            {
-                ReportDepthAdjustmentNotRestored("machine did not accept the new Z origin");
-                return;
-            }
-
-            _outstandingDepthAdjustment = 0;
-            ControllerLog.Log(LogDepthAdjustmentRestored, restoredZ);
-        }
-
-        /// <summary>
-        /// Reports to the operator that the origin is still shifted. A log line is not enough:
-        /// the run reports itself finished, and every later job would cut at the wrong depth.
-        /// </summary>
-        private void ReportDepthAdjustmentNotRestored(string why)
-        {
-            ControllerLog.Log("Depth adjustment NOT restored: {0}", why);
-
-            EmitError(new ControllerError(
-                string.Format(ErrorDepthAdjustmentNotRestored, _outstandingDepthAdjustment),
-                null,
-                IsFatal: false));
-        }
-
-        /// <summary>
-        /// Waits for evidence that the file actually began streaming. Sitting in
-        /// SendFile, having consumed lines, and having run out of file are all starts;
-        /// making no progress at all is the hang this guards against.
-        /// </summary>
-        private async Task<bool> WaitForStreamingAsync(CancellationToken ct)
-        {
-            var elapsed = System.Diagnostics.Stopwatch.StartNew();
-
-            while (elapsed.ElapsedMilliseconds < MotionStartTimeoutMs)
-            {
-                if (_machine.Mode == OperatingMode.SendFile)
-                {
-                    return true;
-                }
-
-                // A run can start and stop again between two polls: an M6 near the top of
-                // the file is swallowed and pauses for the tool change, and a short file
-                // simply finishes. Both leave SendFile behind, so the position - which
-                // MonitorMillingAsync just rewound to zero - is the evidence that lines were
-                // consumed; without it a two-tool job with a short first section is reported
-                // as never having started.
-                if (_machine.FilePosition > 0)
-                {
-                    return true;
-                }
-
-                // An empty or fully-consumed file never enters SendFile - it is simply
-                // already done, which is a valid outcome, not a hang.
-                if (_machine.FilePosition >= _machine.File.Count)
-                {
-                    return true;
-                }
-
-                await Task.Delay(StatusPollIntervalMs, ct).ConfigureAwait(false);
-            }
-
-            return false;
-        }
-
         private async Task MonitorMillingAsync(CancellationToken ct)
         {
             // The completion check below cannot tell "never started" from "finished", since
@@ -546,15 +399,19 @@ namespace coppercli.Core.Controllers
 
             // Confirm GRBL entered the streaming state. FileStart returning true only means
             // the command was sent.
-            if (!await WaitForStreamingAsync(ct).ConfigureAwait(false))
+            if (!await MachineWait.WaitForStreamingAsync(_machine, MotionStartTimeoutMs, ct).ConfigureAwait(false))
             {
                 throw new InvalidOperationException(ErrorMillingDidNotStart);
             }
 
             ControllerLog.Log(LogFileStarted, _machine.Mode, _machine.FilePosition);
 
+            // Set once the file is streaming, so a stop before any line is sent is not a stop
+            // while cutting.
+            Phase = MillingPhase.Milling;
+
             _pauseCts = new CancellationTokenSource();
-            int stableIdleCount = 0;
+            var steadyIdle = new SteadyIdle(IdleSettleMs);
 
             while (!ct.IsCancellationRequested)
             {
@@ -571,23 +428,15 @@ namespace coppercli.Core.Controllers
 
                 if (!isRunning && !IsPaused && reachedEnd)
                 {
-                    if (MachineWait.IsIdle(_machine))
+                    if (steadyIdle.IsSteady(_machine))
                     {
-                        stableIdleCount++;
-                        if (stableIdleCount >= IdleSettleMs / StatusPollIntervalMs)
-                        {
-                            ControllerLog.Log(LogMillingComplete);
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        stableIdleCount = 0;
+                        ControllerLog.Log(LogMillingComplete);
+                        break;
                     }
                 }
                 else
                 {
-                    stableIdleCount = 0;
+                    steadyIdle.Interrupt();
                 }
 
                 // The enclosure opened mid-cut. The resume controls apply to a feed hold, and
@@ -807,10 +656,6 @@ namespace coppercli.Core.Controllers
             // the machine executing commands. Without it a completed job can keep cutting from
             // commands still queued.
             await MachineWait.SafeCompletionAsync(_machine, homeAfter: true, ct);
-
-            // After the soft reset, not before it: a command queued beforehand would be
-            // discarded by that reset and the Z origin would stay shifted.
-            await RestoreDepthAdjustmentAsync();
 
             EmitProgress(new ProgressInfo(
                 PhaseCompleting,

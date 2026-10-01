@@ -1,5 +1,5 @@
 import { state } from './state.js';
-import { $, addTouchRepeat, showInfo, showError, showConfirm, updatePauseButton, format, postOrShowError } from './helpers.js';
+import { $, addTouchRepeat, showInfo, showConfirm, updatePauseButton, format, postOrShowError } from './helpers.js';
 import { sendCommand } from './websocket.js';
 import { showScreen } from './screens.js';
 import { isWaitingForZeroZ, continueLastPrompt } from './mill.js';
@@ -132,21 +132,11 @@ async function zeroWithWarning(axes) {
         return;
     }
 
-    const zeroed = result.data.heightMap;
-    const reloadTheFile = result.data.reloadTheFile === true;
-
     // The height map's outcome decides whether the next cut is at the right depth, so it is
     // shown with the confirmation.
     const what = zeroingXY ? TEXT_ZEROED_ALL : TEXT_ZEROED_Z;
-    const map = HEIGHT_MAP_TEXT_BY_OUTCOME[zeroed];
-    const line = map ? format(TEXT_ZEROED_WITH_MAP, what, map) : what;
-
-    if (reloadTheFile) {
-        showError(line);
-        return;
-    }
-
-    showInfo(line);
+    const map = HEIGHT_MAP_TEXT_BY_OUTCOME[result.data.heightMap];
+    showInfo(map ? format(TEXT_ZEROED_WITH_MAP, what, map) : what);
 }
 
 export function initJogScreen() {

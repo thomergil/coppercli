@@ -31,6 +31,17 @@ namespace coppercli.Core.Communication
         bool IsHomed { get; set; }
 
         /// <summary>
+        /// True when a job stopped while it was cutting or paused mid-cut, by the operator or on
+        /// an error, since the machine last homed; any assignment to <see cref="IsHomed"/>
+        /// clears it. A stall or crash behind such a stop can skip steps GRBL does not detect, so
+        /// the next job offers to home first.
+        /// </summary>
+        bool StoppedWhileCutting { get; }
+
+        /// <summary>Records a stop while cutting on a homed machine; see <see cref="StoppedWhileCutting"/>.</summary>
+        void NoteStoppedWhileCutting();
+
+        /// <summary>
         /// True while any homing cycle runs. A Home sent during one is queued by GRBL and runs
         /// after it, so this stays true until the last <see cref="EndHoming"/>.
         /// </summary>

@@ -1,5 +1,4 @@
 using coppercli.Core.Util;
-using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -13,50 +12,58 @@ namespace coppercli.Core.GCode.GCodeCommands
         public bool[] PositionValid = new bool[] { false, false, false };
         public bool StartValid = false;
 
+        /// <summary>Every axis of the end is known from the file.</summary>
+        public bool EndKnown => PositionValid.All(isValid => isValid);
+
+        /// <inheritdoc/>
+        public override Vector3? KnownEnd => EndKnown ? End : null;
+
+        /// <summary>The end's Z is known from the file, whether or not X and Y are.</summary>
+        public bool ZKnown => PositionValid[2];
+
+        /// <inheritdoc/>
+        public override bool FullyKnown => StartValid && EndKnown;
+
+        /// <inheritdoc/>
+        public override Motion Copy()
+        {
+            var copy = (Line)base.Copy();
+            copy.PositionValid = (bool[])PositionValid.Clone();
+            return copy;
+        }
+
         public override double Length
         {
             get
             {
-                if (!StartValid || PositionValid.Any(v => !v))
+                if (!FullyKnown)
+                {
                     return 0;
+                }
                 return Delta.Magnitude;
             }
         }
 
-        public override Vector3 Interpolate(double ratio)
+        protected override Vector3 PointAlongPath(double ratio)
         {
             return Start + Delta * ratio;
         }
 
-        public override IEnumerable<Motion> Split(double length)
+        public override IEnumerable<double> RatiosWhereXIs(double x) => RatiosWhere(Start.X, End.X, x);
+
+        public override IEnumerable<double> RatiosWhereYIs(double y) => RatiosWhere(Start.Y, End.Y, y);
+
+        private static IEnumerable<double> RatiosWhere(double from, double to, double value)
         {
-            if (Rapid || PositionValid.Any(isValid => !isValid) || !StartValid)
+            if (from == to)
             {
-                yield return this;
                 yield break;
             }
 
-            int divisions = (int)Math.Ceiling(Length / length);
-
-            if (divisions < 1)
-                divisions = 1;
-
-            Vector3 lastEnd = Start;
-
-            for (int i = 1; i <= divisions; i++)
+            double ratio = (value - from) / (to - from);
+            if (ratio > 0 && ratio < 1)
             {
-                Vector3 end = Interpolate(((double)i) / divisions);
-
-                Line immediate = new Line();
-                immediate.Start = lastEnd;
-                immediate.End = end;
-                immediate.Feed = Feed;
-                immediate.PositionValid = new bool[] { true, true, true };
-                immediate.StartValid = true;
-
-                yield return immediate;
-
-                lastEnd = end;
+                yield return ratio;
             }
         }
     }

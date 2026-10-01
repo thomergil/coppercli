@@ -79,6 +79,10 @@ coppercli is a fork of [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot
   jogs three steps in +Y
 - Feed speed override during milling, in 10% increments
 - Depth adjustment for re-milling, in ±0.02mm increments
+- Re-mill part of the board: divide it into up to 8 by 8 equal sections and mill only the
+  ones you choose, with the tool rising to the file's own clearance between them
+- Skip a phase (one tool's work) of a multi-tool job, for example the trace phase, to cut a
+  board out on the same height map after re-milling it
 - Tool change (M6): measures tool length with a tool setter, or prompts for a re-probe if
   there is no setter
 - Built-in machine profiles

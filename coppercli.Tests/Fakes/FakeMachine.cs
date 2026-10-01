@@ -112,7 +112,26 @@ namespace coppercli.Tests.Fakes
         public bool IsHomed
         {
             get { lock (_stateLock) return _isHomed; }
-            set { lock (_stateLock) _isHomed = value; }
+            set
+            {
+                lock (_stateLock)
+                {
+                    _isHomed = value;
+                    _stoppedWhileCutting = false;
+                }
+            }
+        }
+
+        private bool _stoppedWhileCutting;
+
+        public bool StoppedWhileCutting
+        {
+            get { lock (_stateLock) return _stoppedWhileCutting; }
+        }
+
+        public void NoteStoppedWhileCutting()
+        {
+            lock (_stateLock) { _stoppedWhileCutting = _isHomed; }
         }
 
         public bool IsHoming
@@ -303,9 +322,15 @@ namespace coppercli.Tests.Fakes
         {
             _runCts?.Cancel();
             Mode = OperatingMode.Manual;
-            SetStatus(DoorModel.ResetAlarms(Status)
-                ? $"{GrblProtocol.StatusAlarm}:1"
-                : GrblProtocol.StatusIdle);
+            if (DoorModel.ResetAlarms(Status, StatusSubState))
+            {
+                SimulateAlarm();
+            }
+            else
+            {
+                SetStatus(GrblProtocol.StatusIdle);
+            }
+
             OperatingModeChanged?.Invoke();
         }
 
@@ -437,7 +462,7 @@ namespace coppercli.Tests.Fakes
 
             if (AlarmOnMove)
             {
-                SetStatus(GrblProtocol.StatusAlarm);
+                SimulateAlarm();
                 return;
             }
 
@@ -660,9 +685,14 @@ namespace coppercli.Tests.Fakes
             SetStatus(status);
         }
 
+        /// <summary>
+        /// Clears IsHomed as Machine does on the ALARM line, or on the unlock message GRBL
+        /// prints after a reset that leaves it alarmed.
+        /// </summary>
         public void SimulateAlarm(int code = 1)
         {
-            SetStatus($"Alarm:{code}");
+            IsHomed = false;
+            SetStatus($"{GrblProtocol.StatusAlarm}:{code}");
         }
 
         public void Dispose()

@@ -31,6 +31,8 @@ import {
     PROBE_STATE_COMPLETE,
     TEXT_PROBING_TITLE,
     TEXT_PROBING_DONE_TITLE,
+    TEXT_HEIGHT_MAP_TITLE,
+    TEXT_NO_HEIGHTS,
     TEXT_PROBE_DATA_SAVED,
     TEXT_PROBE_DATA_LOADED,
     TEXT_PROBE_DATA_APPLIED,
@@ -212,21 +214,34 @@ export async function startProbing() {
         return;
     }
 
-    document.getElementById('probe-setup').classList.add(CLASS_HIDDEN);
-    document.getElementById('probe-progress').classList.remove(CLASS_HIDDEN);
+    showProbeRunView();
     state.probeDataDisplayed = false;
 
     pollProbeStatus();
 }
 
-function resetProbeUI() {
+// The progress view's title and buttons for a run: Pause and Stop, never the Done or Close
+// a finished run or the map view left up.
+function showRunControls() {
     setText('probe-progress-title', TEXT_PROBING_TITLE);
     removeClass('probe-stop-btn', CLASS_HIDDEN);
     removeClass('probe-pause-btn', CLASS_HIDDEN);
     addClass('probe-done-btn', CLASS_HIDDEN);
+    addClass('probe-view-close-btn', CLASS_HIDDEN);
+    updateProbePauseButton(false);
+}
+
+/** Puts up the progress view for a run that is starting, whatever this screen showed. */
+export function showProbeRunView() {
+    showRunControls();
+    addClass('probe-setup', CLASS_HIDDEN);
+    removeClass('probe-progress', CLASS_HIDDEN);
+}
+
+function resetProbeUI() {
+    showRunControls();
     removeClass('probe-setup', CLASS_HIDDEN);
     addClass('probe-progress', CLASS_HIDDEN);
-    updateProbePauseButton(false);
 }
 
 export async function stopProbing() {
@@ -267,6 +282,45 @@ export async function showProbeComplete() {
     if (ok) {
         showInfo(TEXT_PROBE_APPLIED_TO_GCODE);
     }
+}
+
+/**
+ * Shows the height map in the progress view, drawn as the probe run drew it, with Close in
+ * place of the run's buttons. Applies and saves nothing, unlike showProbeComplete.
+ */
+export async function showHeightMap() {
+    let data;
+    try {
+        const response = await fetch(API_PROBE_STATUS);
+        data = await response.json();
+    } catch (err) {
+        console.error('Reading the height map failed', err);
+        showError(ERROR_LOST_CONTACT);
+        return;
+    }
+
+    if (!data.hasHeights) {
+        showError(TEXT_NO_HEIGHTS);
+        await refreshProbeState();
+        return;
+    }
+
+    // The status handler would otherwise read a complete map in the progress view as a
+    // finished run to display, and apply it.
+    state.probeDataDisplayed = true;
+
+    setText('probe-progress-title', TEXT_HEIGHT_MAP_TITLE);
+    addClass('probe-pause-btn', CLASS_HIDDEN);
+    addClass('probe-stop-btn', CLASS_HIDDEN);
+    addClass('probe-done-btn', CLASS_HIDDEN);
+    removeClass('probe-view-close-btn', CLASS_HIDDEN);
+    addClass('probe-setup', CLASS_HIDDEN);
+    removeClass('probe-progress', CLASS_HIDDEN);
+
+    // Drawn fresh: a grid of the same size left from an earlier map keeps its colors in
+    // cells this map has not measured.
+    renderProbeGrid(data.sizeX, data.sizeY);
+    displayProbeStatus(data);
 }
 
 /**
@@ -377,7 +431,7 @@ export async function fetchAndDisplayProbeData() {
                 if (data.points) {
                     updateProbeGridDisplay(data.points, data.colors);
                 }
-                updateProbeButtonsFromState(data.state, data.hasUnsavedData);
+                updateProbeButtonsFromState(data.state, data.hasUnsavedData, data.hasHeights);
             }
 
             if (data.sourceGCodeMissing) {
@@ -605,6 +659,8 @@ export function initProbeScreen() {
     $('probe-pause-btn').addEventListener('click', toggleProbePause);
     $('probe-stop-btn').addEventListener('click', stopProbing);
     $('probe-done-btn').addEventListener('click', dismissProbeComplete);
+    $('probe-view-btn').addEventListener('click', showHeightMap);
+    $('probe-view-close-btn').addEventListener('click', resetProbeUI);
 
     const saveBtn = $('probe-save-btn');
     const loadBtn = $('probe-load-btn');
@@ -713,12 +769,15 @@ export function applyProbeRunLock() {
 
 // Sets the probe buttons from the state the server computed. The four states, what each
 // means and which buttons each allows are defined once, in the remarks block at the top of
-// coppercli.Core/Controllers/ProbeController.cs.
-export function updateProbeButtonsFromState(probeState, hasUnsavedData = false) {
+// coppercli.Core/Controllers/ProbeController.cs. View Map needs a measured height, which a
+// partial map may not have.
+export function updateProbeButtonsFromState(probeState, hasUnsavedData = false, hasHeights = false) {
     // Decided first and returned on, so nothing below can paint over a running trace.
     if (applyProbeRunLock()) {
         return;
     }
+
+    $('probe-view-btn').disabled = !hasHeights;
 
     const setupBtn = $('probe-setup-btn');
     const startBtn = $('probe-start-btn');
@@ -798,7 +857,7 @@ export async function refreshProbeState() {
         const response = await fetch(API_PROBE_STATUS);
         const data = await response.json();
         if (data.state) {
-            updateProbeButtonsFromState(data.state, data.hasUnsavedData);
+            updateProbeButtonsFromState(data.state, data.hasUnsavedData, data.hasHeights);
             // The grid goes stale when something else discarded the data, such as zeroing X/Y.
             if (data.state === PROBE_STATE_NONE) {
                 clearProbeGridUI();

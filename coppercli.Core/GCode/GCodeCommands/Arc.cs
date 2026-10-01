@@ -1,6 +1,7 @@
 using coppercli.Core.Util;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace coppercli.Core.GCode.GCodeCommands
 {
@@ -19,14 +20,22 @@ namespace coppercli.Core.GCode.GCodeCommands
 
     public class Arc : Motion
     {
+        private const double FullTurn = 2 * Math.PI;
+
         public ArcPlane Plane;
         public ArcDirection Direction;
         public double U;    // absolute position of center in first axis of plane
         public double V;    // absolute position of center in second axis of plane
 
+        /// <summary>The length of the path: a helix when the arc also moves along the plane's axis.</summary>
         public override double Length
         {
-            get { return Math.Abs(AngleSpan * Radius); }
+            get
+            {
+                double aroundTheCircle = AngleSpan * Radius;
+                double alongTheAxis = Delta.RollComponents(-(int)Plane).Z;
+                return Math.Sqrt(aroundTheCircle * aroundTheCircle + alongTheAxis * alongTheAxis);
+            }
         }
 
         public double StartAngle
@@ -61,14 +70,14 @@ namespace coppercli.Core.GCode.GCodeCommands
                 {
                     if (span >= 0)
                     {
-                        span -= 2 * Math.PI;
+                        span -= FullTurn;
                     }
                 }
                 else
                 {
                     if (span <= 0)
                     {
-                        span += 2 * Math.PI;
+                        span += FullTurn;
                     }
                 }
 
@@ -90,7 +99,21 @@ namespace coppercli.Core.GCode.GCodeCommands
             }
         }
 
-        public override Vector3 Interpolate(double ratio)
+        /// <inheritdoc/>
+        public override bool MovesAcrossTheBoard => true;
+
+        /// <inheritdoc/>
+        /// <remarks>
+        /// An arc outside the XY plane gives its ends only, because its turning points in X and
+        /// Y are not at these angles.
+        /// </remarks>
+        public override IEnumerable<Vector3> ExtremePoints =>
+            Plane != ArcPlane.XY
+                ? base.ExtremePoints
+                : base.ExtremePoints.Concat(
+                    RatiosAtAngles(0, Math.PI / 2, Math.PI, -Math.PI / 2).Select(Interpolate));
+
+        protected override Vector3 PointAlongPath(double ratio)
         {
             double angle = StartAngle + AngleSpan * ratio;
 
@@ -105,33 +128,51 @@ namespace coppercli.Core.GCode.GCodeCommands
             return interpolation;
         }
 
-        public override IEnumerable<Motion> Split(double length)
+        /// <inheritdoc/>
+        /// <remarks>For an arc in the XY plane only.</remarks>
+        public override IEnumerable<double> RatiosWhereXIs(double x)
         {
-            int divisions = (int)Math.Ceiling(Length / length);
+            ThrowUnlessInTheXYPlane();
+            double angle = Math.Acos((x - U) / Radius);
+            return RatiosAtAngles(angle, -angle);
+        }
 
-            if (divisions < 1)
+        /// <inheritdoc/>
+        /// <remarks>For an arc in the XY plane only.</remarks>
+        public override IEnumerable<double> RatiosWhereYIs(double y)
+        {
+            ThrowUnlessInTheXYPlane();
+            double angle = Math.Asin((y - V) / Radius);
+            return RatiosAtAngles(angle, Math.PI - angle);
+        }
+
+        /// <summary>
+        /// The ratios, strictly between 0 and 1, at which the arc passes the given angles. An
+        /// angle the arc never reaches, or NaN for a line the circle does not meet, gives none.
+        /// </summary>
+        private IEnumerable<double> RatiosAtAngles(params double[] angles)
+        {
+            double span = AngleSpan;
+
+            foreach (double angle in angles)
             {
-                divisions = 1;
+                // How far the arc turns from its start to the angle, in its own direction.
+                double turned = span > 0 ? angle - StartAngle : StartAngle - angle;
+                turned -= FullTurn * Math.Floor(turned / FullTurn);
+
+                double ratio = turned / Math.Abs(span);
+                if (ratio > 0 && ratio < 1)
+                {
+                    yield return ratio;
+                }
             }
+        }
 
-            Vector3 lastEnd = Start;
-
-            for (int i = 1; i <= divisions; i++)
+        private void ThrowUnlessInTheXYPlane()
+        {
+            if (Plane != ArcPlane.XY)
             {
-                Vector3 end = Interpolate(((double)i) / divisions);
-
-                Arc immediate = new Arc();
-                immediate.Start = lastEnd;
-                immediate.End = end;
-                immediate.Feed = Feed;
-                immediate.Direction = Direction;
-                immediate.Plane = Plane;
-                immediate.U = U;
-                immediate.V = V;
-
-                yield return immediate;
-
-                lastEnd = end;
+                throw new InvalidOperationException(Constants.ErrorArcsOutsideXYPlane);
             }
         }
     }

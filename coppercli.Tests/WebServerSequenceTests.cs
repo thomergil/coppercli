@@ -40,28 +40,10 @@ namespace coppercli.Tests
 
         private HttpClient Client => _web.Client;
 
-        private async Task<JsonElement> GetJson(string path)
-        {
-            var response = await Client.GetAsync(path);
-            return JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement.Clone();
-        }
+        private async Task<JsonElement> GetJson(string path) => (await _web.GetJsonAsync(path)).Body;
 
-        private async Task<(HttpStatusCode Code, JsonElement Body)> Post(string path, object? body = null)
-        {
-            var response = body == null
-                ? await Client.PostAsync(path, null)
-                : await Client.PostAsJsonAsync(path, body);
-            string text = await response.Content.ReadAsStringAsync();
-            var json = string.IsNullOrWhiteSpace(text)
-                ? default
-                : JsonDocument.Parse(text).RootElement.Clone();
-            return (response.StatusCode, json);
-        }
-
-        private static bool Flag(JsonElement json, string name) =>
-            json.ValueKind == JsonValueKind.Object
-            && json.TryGetProperty(name, out var value)
-            && value.ValueKind == JsonValueKind.True;
+        private Task<(HttpStatusCode Code, JsonElement Body)> Post(string path, object? body = null) =>
+            _web.PostJsonAsync(path, body);
 
         /// <summary>
         /// Runs <paramref name="body"/> with a mill run holding at the enclosure prompt, then
@@ -72,7 +54,7 @@ namespace coppercli.Tests
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
-            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+            Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                 "the map could not be applied");
 
             _web.Grbl.SimulateDoorClosedAndHolding();
@@ -82,7 +64,7 @@ namespace coppercli.Tests
 
             try
             {
-                Assert.True(Flag((await Post(WebConstants.ApiMillStart)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiMillStart, await _web.MillStartBodyAsync())).Body, "success"),
                     "the mill did not start");
                 WebServerFixture.WaitUntil(
                     () => AppState.Milling.IsRunInProgress, "the run to take the machine");
@@ -112,12 +94,12 @@ namespace coppercli.Tests
             AppState.MarkWorkZeroSet();
 
             var (loadCode, loadBody) = await Post(WebConstants.ApiFileLoad, new { path = file });
-            Assert.True(loadCode == HttpStatusCode.OK && Flag(loadBody, "success"),
+            Assert.True(loadCode == HttpStatusCode.OK && WebServerFixture.Flag(loadBody, "success"),
                 $"loading the board failed: {loadCode} {loadBody}");
 
             var (setupCode, setupBody) = await Post(WebConstants.ApiProbeSetup,
                 new { margin = 1.0, gridSize = 20.0 });
-            Assert.True(setupCode == HttpStatusCode.OK && Flag(setupBody, "success"),
+            Assert.True(setupCode == HttpStatusCode.OK && WebServerFixture.Flag(setupBody, "success"),
                 $"probe setup failed: {setupCode} {setupBody}");
 
             return file;
@@ -133,28 +115,9 @@ namespace coppercli.Tests
         }
 
         /// <param name="measuredFor">The G-code file the map records; the loaded one when null.</param>
-        private static ProbeGrid CompleteMapForThisJob(string? measuredFor = null)
-        {
-            var complete = new ProbeGrid(10.0, new Vector2(0, 0), new Vector2(20, 20))
-            {
-                Context = new ProbeContext(
-                    measuredFor ?? AppState.Session.LastLoadedGCodeFile!, AppState.Machine.G54Offset)
-            };
-
-            for (int x = 0; x < complete.SizeX; x++)
-            {
-                for (int y = 0; y < complete.SizeY; y++)
-                {
-                    complete.RecordMeasurement(x, y, -0.1);
-                }
-            }
-
-            return complete;
-        }
-
         private static void GivenACompleteAutosaveForThisJob()
         {
-            var complete = CompleteMapForThisJob();
+            var complete = WebServerFixture.CompleteMapForThisJob();
             AppState.DiscardProbeData();
             complete.Save(Persistence.GetProbeAutoSavePath());
         }
@@ -172,12 +135,12 @@ namespace coppercli.Tests
             await GivenAGridIsReady();
 
             var (firstCode, firstBody) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(firstBody, "success"), $"first start refused: {firstCode} {firstBody}");
+            Assert.True(WebServerFixture.Flag(firstBody, "success"), $"first start refused: {firstCode} {firstBody}");
 
             await StopTheProbeAndWaitForIdle();
 
             var (secondCode, secondBody) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(secondBody, "success"), $"second start refused: {secondCode} {secondBody}");
+            Assert.True(WebServerFixture.Flag(secondBody, "success"), $"second start refused: {secondCode} {secondBody}");
 
             await StopTheProbeAndWaitForIdle();
         }
@@ -192,12 +155,12 @@ namespace coppercli.Tests
             await GivenAGridIsReady();
 
             var (traceCode, traceBody) = await Post(WebConstants.ApiProbeTrace);
-            Assert.True(Flag(traceBody, "success"), $"trace refused: {traceCode} {traceBody}");
+            Assert.True(WebServerFixture.Flag(traceBody, "success"), $"trace refused: {traceCode} {traceBody}");
 
             await StopTheProbeAndWaitForIdle();
 
             var (startCode, startBody) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(startBody, "success"), $"start after a stopped trace refused: {startCode} {startBody}");
+            Assert.True(WebServerFixture.Flag(startBody, "success"), $"start after a stopped trace refused: {startCode} {startBody}");
 
             await StopTheProbeAndWaitForIdle();
         }
@@ -212,7 +175,7 @@ namespace coppercli.Tests
             await GivenAGridIsReady();
 
             var (traceCode, traceBody) = await Post(WebConstants.ApiProbeTrace);
-            Assert.True(Flag(traceBody, "success"), $"trace refused: {traceCode} {traceBody}");
+            Assert.True(WebServerFixture.Flag(traceBody, "success"), $"trace refused: {traceCode} {traceBody}");
 
             WebServerFixture.WaitUntil(() => AppState.IsTracingOutline, "the trace to start");
 
@@ -233,13 +196,13 @@ namespace coppercli.Tests
             await GivenAGridIsReady();
 
             var (_, firstBody) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(firstBody, "success"));
+            Assert.True(WebServerFixture.Flag(firstBody, "success"));
 
             WebServerFixture.WaitUntil(() => AppState.Probe.IsRunInProgress, "the first run to own the machine");
 
             var (secondCode, secondBody) = await Post(WebConstants.ApiProbeStart);
             Assert.Equal(HttpStatusCode.Conflict, secondCode);
-            Assert.False(Flag(secondBody, "success"));
+            Assert.False(WebServerFixture.Flag(secondBody, "success"));
 
             await StopTheProbeAndWaitForIdle();
         }
@@ -256,7 +219,7 @@ namespace coppercli.Tests
             int resetsBefore = _web.Grbl.SoftResetCount;
 
             var (_, startBody) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(startBody, "success"));
+            Assert.True(WebServerFixture.Flag(startBody, "success"));
             WebServerFixture.WaitUntil(() => AppState.Probe.IsRunInProgress, "the run to own the machine");
 
             await StopTheProbeAndWaitForIdle();
@@ -314,7 +277,7 @@ namespace coppercli.Tests
             var (code, body) = await Post(WebConstants.ApiProbeStart);
 
             Assert.Equal(HttpStatusCode.Conflict, code);
-            Assert.False(Flag(body, "success"));
+            Assert.False(WebServerFixture.Flag(body, "success"));
         }
 
         /// <summary>
@@ -412,21 +375,14 @@ namespace coppercli.Tests
         public async Task SuggestedProbeFileName_FallsBackToTheDateWithNoFileLoaded()
         {
             await GivenAGridIsReady();
-            var previousFile = AppState.CurrentFile;
-            AppState.CurrentFile = null;
-            try
-            {
-                var status = await GetJson(WebConstants.ApiProbeStatus);
-                string suggested = status.GetProperty("suggestedFileName").GetString()!;
+            AppState.UnloadFileForTest();
 
-                string pattern = "^" + DateFormatToRegex(CliConstants.ProbeDateFormat)
-                    + Regex.Escape(CliConstants.ProbeGridExtension) + "$";
-                Assert.Matches(pattern, suggested);
-            }
-            finally
-            {
-                AppState.CurrentFile = previousFile;
-            }
+            var status = await GetJson(WebConstants.ApiProbeStatus);
+            string suggested = status.GetProperty("suggestedFileName").GetString()!;
+
+            string pattern = "^" + DateFormatToRegex(CliConstants.ProbeDateFormat)
+                + Regex.Escape(CliConstants.ProbeGridExtension) + "$";
+            Assert.Matches(pattern, suggested);
         }
 
         /// <summary>
@@ -439,7 +395,7 @@ namespace coppercli.Tests
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
-            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+            Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                 "the map could not be applied");
 
             string path = Path.Combine(
@@ -448,7 +404,7 @@ namespace coppercli.Tests
             {
                 var (firstCode, firstBody) = await Post(WebConstants.ApiProbeSave, new { path });
                 Assert.Equal(HttpStatusCode.OK, firstCode);
-                Assert.True(Flag(firstBody, "success"), $"the first save failed: {firstBody}");
+                Assert.True(WebServerFixture.Flag(firstBody, "success"), $"the first save failed: {firstBody}");
                 Assert.True(File.Exists(path), "the first save did not write the file");
 
                 var (secondCode, secondBody) = await Post(WebConstants.ApiProbeSave, new { path });
@@ -460,7 +416,7 @@ namespace coppercli.Tests
 
                 var (thirdCode, thirdBody) = await Post(WebConstants.ApiProbeSave, new { path, overwrite = true });
                 Assert.Equal(HttpStatusCode.OK, thirdCode);
-                Assert.True(Flag(thirdBody, "success"), $"the overwrite save failed: {thirdBody}");
+                Assert.True(WebServerFixture.Flag(thirdBody, "success"), $"the overwrite save failed: {thirdBody}");
             }
             finally
             {
@@ -483,7 +439,7 @@ namespace coppercli.Tests
             Assert.Equal(WebConstants.ProbeStateComplete, status.GetProperty("state").GetString());
 
             var (_, applied) = await Post(WebConstants.ApiProbeApply);
-            Assert.True(Flag(applied, "success"),
+            Assert.True(WebServerFixture.Flag(applied, "success"),
                 "the map the status announced could not be applied, so the mill stays blocked");
 
             var canStart = await GetJson(WebConstants.ApiMillCanStart);
@@ -540,7 +496,7 @@ namespace coppercli.Tests
             int cycleStarts = _web.Grbl.CycleStartCount;
             var (_, body) = await Post(WebConstants.ApiDoorRelease);
 
-            Assert.True(Flag(body, "success"), "the release was refused with no run to own it");
+            Assert.True(WebServerFixture.Flag(body, "success"), "the release was refused with no run to own it");
             Assert.True(_web.Grbl.CycleStartCount > cycleStarts, "no cycle start was sent");
             WebServerFixture.WaitUntil(
                 () => !MachineWait.IsDoor(AppState.Machine), "the door hold to clear");
@@ -563,7 +519,7 @@ namespace coppercli.Tests
                 int cycleStarts = _web.Grbl.CycleStartCount;
                 var (_, body) = await Post(WebConstants.ApiDoorRelease);
 
-                Assert.False(Flag(body, "success"), "an open door was accepted for release");
+                Assert.False(WebServerFixture.Flag(body, "success"), "an open door was accepted for release");
                 Assert.Equal(
                     ControllerConstants.ErrorDoorBlocksResume, body.GetProperty("error").GetString());
                 Assert.Equal(cycleStarts, _web.Grbl.CycleStartCount);
@@ -594,7 +550,7 @@ namespace coppercli.Tests
                 int cycleStarts = _web.Grbl.CycleStartCount;
                 var (_, body) = await Post(path);
 
-                Assert.False(Flag(body, "success"), "a retract was accepted for release");
+                Assert.False(WebServerFixture.Flag(body, "success"), "a retract was accepted for release");
                 Assert.Equal(
                     ControllerConstants.DoorRetractingMessage, body.GetProperty("error").GetString());
                 Assert.Equal(cycleStarts, _web.Grbl.CycleStartCount);
@@ -881,7 +837,7 @@ namespace coppercli.Tests
                 int cycleStarts = _web.Grbl.CycleStartCount;
                 var (_, body) = await Post(WebConstants.ApiDoorRelease);
 
-                Assert.False(Flag(body, "success"), "the release went through behind the run");
+                Assert.False(WebServerFixture.Flag(body, "success"), "the release went through behind the run");
                 Assert.Equal(
                     ControllerConstants.ErrorDoorAnswerThePrompt, body.GetProperty("error").GetString());
                 Assert.Equal(cycleStarts, _web.Grbl.CycleStartCount);
@@ -1055,7 +1011,7 @@ namespace coppercli.Tests
 
                 var (code, started) = await Post(WebConstants.ApiProbeStart);
                 Assert.Equal(HttpStatusCode.OK, code);
-                Assert.True(Flag(started, "success"),
+                Assert.True(WebServerFixture.Flag(started, "success"),
                     "the probe refused a door hold the run would have asked about: "
                     + (started.TryGetProperty("error", out var why) ? why.GetString() : "no reason given"));
 
@@ -1088,7 +1044,7 @@ namespace coppercli.Tests
             GivenACompleteAutosaveForThisJob();
 
             var (_, applied) = await Post(WebConstants.ApiProbeApply);
-            Assert.True(Flag(applied, "success"), "the map could not be applied");
+            Assert.True(WebServerFixture.Flag(applied, "success"), "the map could not be applied");
 
             _web.Grbl.SimulateDoorClosedAndHolding();
             WebServerFixture.WaitUntil(
@@ -1097,9 +1053,9 @@ namespace coppercli.Tests
 
             try
             {
-                var (code, started) = await Post(WebConstants.ApiMillStart);
+                var (code, started) = await Post(WebConstants.ApiMillStart, await _web.MillStartBodyAsync());
                 Assert.Equal(HttpStatusCode.OK, code);
-                Assert.True(Flag(started, "success"),
+                Assert.True(WebServerFixture.Flag(started, "success"),
                     "the mill refused a door hold the controller would have asked about: "
                     + (started.TryGetProperty("error", out var why) ? why.GetString() : "no reason given"));
 
@@ -1132,13 +1088,13 @@ namespace coppercli.Tests
             try
             {
                 GivenACompleteAutosaveForThisJob();
-                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                     "the map could not be applied");
                 Assert.True(Persistence.SaveProbeToFile(mapFile));
                 // Saving deleted the autosave; a probe interrupted after the save writes a new one.
-                CompleteMapForThisJob().Save(Persistence.GetProbeAutoSavePath());
+                WebServerFixture.CompleteMapForThisJob().Save(Persistence.GetProbeAutoSavePath());
 
-                Assert.True(Flag((await Post(WebConstants.ApiMillStart)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiMillStart, await _web.MillStartBodyAsync())).Body, "success"),
                     "the mill did not start");
                 // The deletion runs from the Completed transition, just after the state is set.
                 WebServerFixture.WaitUntil(
@@ -1173,12 +1129,12 @@ namespace coppercli.Tests
             try
             {
                 GivenACompleteAutosaveForThisJob();
-                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                     "the map could not be applied");
-                CompleteMapForThisJob(board + ".other").Save(otherMap);
+                WebServerFixture.CompleteMapForThisJob(measuredFor: board + ".other").Save(otherMap);
                 AppState.Session.LastProbeFile = otherMap;
 
-                Assert.True(Flag((await Post(WebConstants.ApiMillStart)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiMillStart, await _web.MillStartBodyAsync())).Body, "success"),
                     "the mill did not start");
                 WebServerFixture.WaitUntil(
                     () => AppState.Milling.State == ControllerState.Completed, "the mill to finish");
@@ -1454,7 +1410,7 @@ namespace coppercli.Tests
             try
             {
                 GivenACompleteAutosaveForThisJob();
-                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                     "the map could not be applied");
 
                 Assert.Equal(WorkZeroOutcome.MapDiscarded, AppState.HandleWorkZeroChange("X0 Y0"));
@@ -1479,7 +1435,7 @@ namespace coppercli.Tests
             try
             {
                 GivenACompleteAutosaveForThisJob();
-                Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+                Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                     "the map could not be applied");
 
                 var (code, body) = await Post(WebConstants.ApiZero, new { axes = new[] { "X", "Y", "Z" } });
@@ -1487,8 +1443,6 @@ namespace coppercli.Tests
                 Assert.Equal(HttpStatusCode.OK, code);
                 Assert.Equal(
                     nameof(WorkZeroOutcome.MapDiscarded), body.GetProperty("heightMap").GetString());
-                Assert.False(Flag(body, "reloadTheFile"),
-                    "the map came out of the G-code, so there is nothing to reload");
             }
             finally
             {
@@ -1656,7 +1610,7 @@ namespace coppercli.Tests
             try
             {
                 File.WriteAllText(second, "G21\nG90\nG0 X0 Y0 Z1\nG1 Z-0.1 F100\nG1 X5 Y5\nM2\n");
-                Assert.Null(AppState.AdoptProbeGrid(CompleteMapForThisJob()));
+                Assert.Null(AppState.AdoptProbeGrid(WebServerFixture.CompleteMapForThisJob()));
 
                 var (code, body) = await Post(WebConstants.ApiFileLoad, new { path = second });
 
@@ -1691,7 +1645,33 @@ namespace coppercli.Tests
 
             Assert.Equal(
                 MillBlocker.ProbeNotApplied,
-                MenuHelpers.CheckMillCanStart(CompleteMapForThisJob()).Error);
+                MenuHelpers.CheckMillCanStart(WebServerFixture.CompleteMapForThisJob()).Error);
+        }
+
+        /// <summary>
+        /// A job with no height map passes every blocker and cuts the G-code as written, so
+        /// the check before a mill warns about it. Once a map is applied, the warning goes.
+        /// </summary>
+        [Fact]
+        public async Task MillCanStart_WarnsOnlyWhileThereIsNoHeightMap()
+        {
+            await GivenAGridIsReady();
+            AppState.DiscardProbeData();
+            Persistence.ClearProbeAutoSave();
+
+            Assert.Contains(CliConstants.NoHeightMapWarning, await MillStartWarnings());
+
+            GivenACompleteAutosaveForThisJob();
+            var (_, applied) = await Post(WebConstants.ApiProbeApply);
+            Assert.True(WebServerFixture.Flag(applied, "success"), "the map could not be applied");
+
+            Assert.DoesNotContain(CliConstants.NoHeightMapWarning, await MillStartWarnings());
+        }
+
+        private async Task<List<string?>> MillStartWarnings()
+        {
+            var canStart = await GetJson(WebConstants.ApiMillCanStart);
+            return canStart.GetProperty("warnings").EnumerateArray().Select(w => w.GetString()).ToList();
         }
 
         /// <summary>
@@ -1776,29 +1756,6 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// The browser turns its confirmation into a warning from the reloadTheFile field.
-        /// Without it the operator reads an ordinary confirmation and cuts with the old
-        /// origin's corrections.
-        /// </summary>
-        [Fact]
-        public async Task TheZeroResponse_RequiresAReloadWhenTheGCodeIsWrong()
-        {
-            await GivenAGridIsReady();
-            GivenACompleteAutosaveForThisJob();
-            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
-                "the map could not be applied");
-
-            // GivenAGridIsReady deletes its board, so the corrections cannot be taken out.
-            var (code, body) = await Post(WebConstants.ApiZero, new { axes = new[] { "X", "Y", "Z" } });
-
-            Assert.Equal(HttpStatusCode.OK, code);
-            Assert.Equal(
-                nameof(WorkZeroOutcome.MapNotDiscarded), body.GetProperty("heightMap").GetString());
-            Assert.True(Flag(body, "reloadTheFile"),
-                "the G-code still holds the old origin's corrections and nothing says so");
-        }
-
-        /// <summary>
         /// An outcome added to WorkZeroOutcome but missing from /api/constants leaves the
         /// browser with no text for what became of the map.
         /// </summary>
@@ -1850,47 +1807,45 @@ namespace coppercli.Tests
         }
 
         /// <summary>
-        /// With the map applied and the source file gone, the corrections cannot be taken
-        /// back out of the loaded G-code. Reporting MapDiscarded would leave the operator
-        /// cutting with them.
+        /// The machine's G-code is built from the file as loaded, kept in memory, so an X/Y
+        /// zero takes the map out even with the source file deleted from disk. The machine
+        /// then streams the file as loaded again.
         /// </summary>
         [Fact]
-        public async Task ZeroingXYWhenTheMapCannotBeRemoved_IsReported()
+        public async Task ZeroingXY_TakesTheMapOutOfTheGCode_WithTheSourceFileGone()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
-            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+            Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                 "the map could not be applied");
+            Assert.NotEqual(AppState.CurrentFile!.GetGCode(), AppState.Machine.File);
 
-            // GivenAGridIsReady deletes its board, so the original is already gone.
-            Assert.False(string.IsNullOrEmpty(AppState.Session.LastLoadedGCodeFile));
+            // GivenAGridIsReady deletes its board, so nothing could be read back from disk.
             Assert.False(File.Exists(AppState.Session.LastLoadedGCodeFile));
 
-            Assert.Equal(WorkZeroOutcome.MapNotDiscarded, AppState.HandleWorkZeroChange("X0 Y0"));
-            Assert.True(AppState.AreProbePointsApplied,
-                "the corrections are still in the G-code, so AppState must still say so");
+            Assert.Equal(WorkZeroOutcome.MapDiscarded, AppState.HandleWorkZeroChange("X0 Y0"));
+            Assert.False(AppState.AreProbePointsApplied);
+            Assert.Equal(AppState.CurrentFile!.GetGCode(), AppState.Machine.File);
         }
 
         /// <summary>
-        /// A Z zero reloads the G-code from the source file to strip the old corrections.
-        /// With that file gone the map cannot be re-applied and the loaded G-code still holds
-        /// them, so the outcome is MapNotReapplied.
+        /// A Z zero keeps an applied map applied, with the source file deleted from disk: the
+        /// map's heights are the copper's, and the file as loaded is still in memory.
         /// </summary>
         [Fact]
-        public async Task ZeroingZWhenTheSourceFileIsGone_ReportsTheMapWasNotReapplied()
+        public async Task ZeroingZ_KeepsTheMapApplied_WithTheSourceFileGone()
         {
             await GivenAGridIsReady();
             GivenACompleteAutosaveForThisJob();
-            Assert.True(Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
+            Assert.True(WebServerFixture.Flag((await Post(WebConstants.ApiProbeApply)).Body, "success"),
                 "the map could not be applied");
+            var applied = AppState.Machine.File.ToList();
 
-            // GivenAGridIsReady deletes its board, so the source is already missing.
-            Assert.False(string.IsNullOrEmpty(AppState.Session.LastLoadedGCodeFile));
             Assert.False(File.Exists(AppState.Session.LastLoadedGCodeFile));
 
-            Assert.Equal(WorkZeroOutcome.MapNotReapplied, AppState.HandleWorkZeroChange("Z0"));
-            Assert.True(AppState.AreProbePointsApplied,
-                "the map is still in the G-code, so AppState must still say so");
+            Assert.Equal(WorkZeroOutcome.MapStillApplied, AppState.HandleWorkZeroChange("Z0"));
+            Assert.True(AppState.AreProbePointsApplied);
+            Assert.Equal(applied, AppState.Machine.File);
         }
 
         /// <summary>
@@ -2065,7 +2020,7 @@ namespace coppercli.Tests
             await StopTheProbeAndWaitForIdle();
 
             var (code, body) = await Post(WebConstants.ApiProbeStart);
-            Assert.True(Flag(body, "success"), $"start after an idle stop refused: {code} {body}");
+            Assert.True(WebServerFixture.Flag(body, "success"), $"start after an idle stop refused: {code} {body}");
 
             await StopTheProbeAndWaitForIdle();
         }

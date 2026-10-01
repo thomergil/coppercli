@@ -75,6 +75,13 @@ namespace coppercli.Core.Util
 
         public const int CommandDelayMs = 200;
 
+        /// <summary>
+        /// How long a stop waits for the feed hold to bring the axes to rest before it resets
+        /// GRBL. The hold stops them within a few status reports; this bound keeps a machine
+        /// that never reports stopping from delaying the reset that stops the spindle.
+        /// </summary>
+        public const int StopHoldTimeoutMs = 1000;
+
         public const int IdleWaitTimeoutMs = 3000;
 
         public const int MotionStartTimeoutMs = 1000;
@@ -101,19 +108,13 @@ namespace coppercli.Core.Util
         /// counts as finished rather than briefly paused.</summary>
         public const int IdleSettleMs = 1000;
 
-        /// <summary>How long a loaded file waits before milling starts, so the operator can
-        /// check the setup.</summary>
-        public const int PostIdleSettleMs = 5000;
-
         /// <summary>Longest the settling phase may wait for a machine that never becomes
-        /// ready (an open door, a standing alarm) before telling the operator why.</summary>
+        /// ready (a standing alarm, sleep) before telling the operator why.</summary>
         public const int SettleTimeoutMs = 60000;
 
         /// <summary>How long the lift-on-cancel may take before the stop returns anyway.
         /// The tool still needs to come up, but a Stop must not appear to hang.</summary>
         public const int CancelRetractTimeoutMs = 5000;
-
-        public const int OneSecondMs = 1000;
 
         /// <summary>
         /// How long the port stays open after the reset byte when coppercli disconnects, so
@@ -194,6 +195,56 @@ namespace coppercli.Core.Util
         public const string WarningJobOriginFormat = WarningPrefixDanger +
             ": The job's lower-left corner is at X{0:F1} Y{1:F1}, so work zero is not at the board's lower-left corner. " +
             "Set work zero X{2:F1} Y{3:F1} from the board's lower-left corner, or regenerate the file with a board outline.";
+
+        /// <summary>
+        /// Shown when the operator asks for a height map, a depth adjustment or sections on a file
+        /// whose GCodeFile.HasArcsOutsideXYPlane is true.
+        /// </summary>
+        public const string ErrorArcsOutsideXYPlane =
+            "This file has arcs outside the XY plane (G18 or G19), so coppercli cannot apply a height map or a depth adjustment to it, or mill it by section. Mill it without a height map, a depth adjustment or sections.";
+
+        /// <summary>The most columns, and the most rows, the board can be divided into.</summary>
+        public const int MaxSectionsPerAxis = 8;
+
+        /// <summary>Millimeters. The shortest piece BoardDivision.Pieces splits a move into at a section line.</summary>
+        public const double SectionEdgeToleranceMm = 0.01;
+
+        /// <summary>{0} is MaxSectionsPerAxis.</summary>
+        public const string ErrorSectionCountFormat = "Divide the board into 1 to {0} columns and 1 to {0} rows.";
+
+        public const string ErrorSectionOutsideBoard =
+            "A chosen section lies outside the columns and rows you set. Choose the sections again.";
+
+        public const string ErrorNoAreaToDivide =
+            "This file's cuts cover no area to divide into sections. Mill the whole board instead.";
+
+        public const string ErrorSectionsNoTravelHeight =
+            "This file never moves above the copper where it needs to travel between sections, so coppercli has no safe travel height from the file. Mill the whole board instead.";
+
+        public const string ErrorSectionsCutWithUnknownStart =
+            "This file cuts before it has said where the tool is, so coppercli cannot tell which sections the cut crosses. Mill the whole board instead.";
+
+        public const string ErrorSectionsBlockInLeftOutCut =
+            "This file probes, moves in machine coordinates or changes an offset while the tool is still in the copper from a cut that is left out, or before it has said where the tool is, so coppercli cannot mill it by section. Mill the whole board instead.";
+
+        public const string ErrorNoPhaseChosen = "Choose at least one phase to mill.";
+
+        public const string ErrorPhaseNotInFile = "A chosen phase is not in this file. Choose the phases again.";
+
+        public const string ErrorPhaseSkipsABlock =
+            "A phase you cleared probes or changes an offset, and a later phase may depend on that. coppercli cannot skip that phase. Choose it again.";
+
+        public const string ErrorPhaseSkipsTheSpindleStart =
+            "A phase you cleared starts the spindle, and a later phase cuts without starting the spindle again. coppercli cannot skip that phase. Choose it again.";
+
+        public const string ErrorPhaseToolPlaceUnknown =
+            "Without the phases you cleared, this file cuts, probes, moves in machine coordinates or changes an offset before it moves the tool to a known point above the copper. coppercli has no safe point to take the tool to. Choose those phases again.";
+
+        public const string ErrorPhaseNoTravelHeight =
+            "Without the phases you cleared, this file never moves above the copper. coppercli has no safe height to cross the board at. Choose those phases again.";
+
+        public const string ErrorNothingToCut =
+            "The sections and phases you chose hold no cuts. Choose other sections or phases.";
 
         /// <summary>
         /// How long a stop waits for a run to unwind: the machine is stopped and reset, then

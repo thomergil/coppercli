@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using coppercli.Core.Communication;
+using coppercli.Core.Settings;
 using coppercli.Core.Util;
 
 namespace coppercli.Tests.Fakes
@@ -24,8 +25,8 @@ namespace coppercli.Tests.Fakes
         /// <summary>The alarm GRBL reports when a reset ends a homing cycle.</summary>
         private const int AlarmHomingReset = 6;
 
-        /// <summary>What GRBL prints after a reset that left it alarmed.</summary>
-        private const string AlarmLockMessage = "[MSG:'$H'|'$X' to unlock]";
+        /// <summary>The alarm GRBL reports when a reset stops axes that are moving.</summary>
+        private const int AlarmAbortCycle = 3;
 
         private const byte StatusQuery = (byte)'?';
         private const byte CycleStart = (byte)GrblProtocol.CycleStart;
@@ -56,6 +57,9 @@ namespace coppercli.Tests.Fakes
         private volatile bool _doorSwitchOpen;
         private string _subState = string.Empty;
 
+        // When a feed hold that is still slowing the axes (Hold:1) finishes, or 0.
+        private long _holdFinishesAtMs;
+
         // When GRBL answers again, and why it stopped: a homing cycle, or a restart.
         private long _answeringAgainAtMs;
         private bool _homing;
@@ -81,6 +85,23 @@ namespace coppercli.Tests.Fakes
 
         public int Port { get; }
 
+        /// <summary>A real <see cref="Machine"/> connected to this fake, once it reports Idle.</summary>
+        public Machine ConnectedMachine()
+        {
+            var machine = new Machine(new MachineSettings
+            {
+                ConnectionType = ConnectionType.Ethernet,
+                EthernetIP = IPAddress.Loopback.ToString(),
+                EthernetPort = Port
+            });
+
+            machine.Connect();
+            WebServerFixture.WaitUntil(
+                () => machine.Status == GrblProtocol.StatusIdle,
+                "the simulated machine to report Idle");
+            return machine;
+        }
+
         /// <summary>Every probe reports contact here; this fake never reports a miss.</summary>
         public double ProbeContactZ { get; set; } = -1.0;
 
@@ -98,10 +119,33 @@ namespace coppercli.Tests.Fakes
         public int RebootMs { get; set; }
 
         /// <summary>
-        /// GRBL restarting on its own - a reset button, a brown-out - with nothing sent by
-        /// coppercli. It comes back alarmed, as a board that requires homing does.
+        /// How long a feed hold takes to bring moving axes to rest: GRBL reports Hold:1 until
+        /// then, and Hold:0 after. Zero stops them at once.
         /// </summary>
-        public void SimulateRestart() => Restart(alarmed: true);
+        public int HoldDecelMs { get; set; }
+
+        /// <summary>
+        /// GRBL restarting on its own - a reset button, a brown-out - with nothing sent by
+        /// coppercli. It comes back alarmed, as a board that requires homing does, unless
+        /// <paramref name="alarmed"/> is false, as one that does not require homing does.
+        /// </summary>
+        public void SimulateRestart(bool alarmed = true) => Restart(alarmed);
+
+        /// <summary>
+        /// A limit switch trips: GRBL prints ALARM:1 and stops, without restarting, until it
+        /// is reset.
+        /// </summary>
+        public void SimulateHardLimit()
+        {
+            SetState(GrblProtocol.StatusAlarm, GrblProtocol.AlarmSubStateHardLimit);
+            Send($"{GrblProtocol.ResponseAlarmPrefix}:{GrblProtocol.AlarmSubStateHardLimit}");
+        }
+
+        /// <summary>GRBL's message asking to be unlocked, on its own.</summary>
+        public void SimulateUnlockMessage() => Send(GrblProtocol.ResponseAlarmLock);
+
+        /// <summary>The axes are moving, as in the middle of a job or a jog.</summary>
+        public void SimulateMoving() => SetState(GrblProtocol.StatusRun, string.Empty);
 
         /// <summary>
         /// A homing cycle failing as GRBL 1.1 reports it: the alarm, then the ok its $H
@@ -242,6 +286,7 @@ namespace coppercli.Tests.Fakes
                 // is the bytes arriving on it. The real Machine polls '?' throughout, so one
                 // lands every poll interval whether or not it is answered.
                 AnswerAgainIfDue();
+                FinishHoldIfDue();
 
                 // Real-time bytes arrive anywhere in the stream, including mid-line.
                 if (b == StatusQuery)
@@ -258,7 +303,9 @@ namespace coppercli.Tests.Fakes
                     Record(FeedHoldMark);
                     if (DoorModel.FeedHoldApplies(_state))
                     {
-                        SetState(GrblProtocol.StatusHold, string.Empty);
+                        bool slowing = _state == GrblProtocol.StatusRun && HoldDecelMs > 0;
+                        SetState(GrblProtocol.StatusHold, slowing ? GrblProtocol.HoldSubStateSlowing : GrblProtocol.HoldSubStateComplete);
+                        _holdFinishesAtMs = slowing ? Environment.TickCount64 + HoldDecelMs : 0;
                     }
                     continue;
                 }
@@ -274,9 +321,13 @@ namespace coppercli.Tests.Fakes
                     {
                         Send($"{GrblProtocol.ResponseAlarmPrefix}:{AlarmHomingReset}");
                     }
+                    else if (DoorModel.ResetStopsMotion(_state, _subState))
+                    {
+                        Send($"{GrblProtocol.ResponseAlarmPrefix}:{AlarmAbortCycle}");
+                    }
 
                     line.Clear();
-                    Restart(_homing || DoorModel.ResetAlarms(_state));
+                    Restart(_homing || DoorModel.ResetAlarms(_state, _subState));
                     continue;
                 }
 
@@ -422,6 +473,19 @@ namespace coppercli.Tests.Fakes
         /// <summary>True while GRBL is busy in a routine that answers no status query.</summary>
         private bool IsSilent => Environment.TickCount64 < _answeringAgainAtMs;
 
+        /// <summary>A feed hold that was slowing the axes has brought them to rest.</summary>
+        private void FinishHoldIfDue()
+        {
+            if (_holdFinishesAtMs != 0 && Environment.TickCount64 >= _holdFinishesAtMs)
+            {
+                _holdFinishesAtMs = 0;
+                if (_state == GrblProtocol.StatusHold)
+                {
+                    SetState(GrblProtocol.StatusHold, GrblProtocol.HoldSubStateComplete);
+                }
+            }
+        }
+
         private void GoSilent(int forMs) =>
             _answeringAgainAtMs = Environment.TickCount64 + forMs;
 
@@ -442,7 +506,7 @@ namespace coppercli.Tests.Fakes
                 Send(WelcomeBanner);
                 if (_restartAlarmed)
                 {
-                    Send(AlarmLockMessage);
+                    Send(GrblProtocol.ResponseAlarmLock);
                 }
             }
 

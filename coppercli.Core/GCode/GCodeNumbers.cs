@@ -93,6 +93,15 @@ namespace coppercli.Core.GCode
         /// <summary>M6: Tool change. Pauses for manual tool change.</summary>
         public const int MCodeToolChange = 6;
 
+        /// <summary>M3: Spindle on, clockwise.</summary>
+        public const int MCodeSpindleClockwise = 3;
+
+        /// <summary>M4: Spindle on, counterclockwise.</summary>
+        public const int MCodeSpindleCounterclockwise = 4;
+
+        /// <summary>M5: Spindle off.</summary>
+        public const int MCodeSpindleStop = 5;
+
         /// <summary>
         /// What a pause-causing M-code means for file streaming: an operator prompt, a tool
         /// change, or the end of the program. The one mapping from the numeric constants
