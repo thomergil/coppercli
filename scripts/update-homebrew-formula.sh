@@ -15,6 +15,13 @@ if [[ -z "$VERSION" ]]; then
     exit 1
 fi
 
+# A version with a suffix, such as v0.6.0-alpha, is a pre-release, which Homebrew users do
+# not get: the formula stays on the last full release.
+if [[ "$VERSION" == *-* ]]; then
+    echo "ERROR: $VERSION is a pre-release; the Homebrew formula takes full releases only"
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOMEBREW_TAP="$HOME/src/homebrew-coppercli"

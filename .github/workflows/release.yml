@@ -171,6 +171,9 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          # A tag with a suffix, such as v0.6.0-alpha, is a pre-release: downloadable, but
+          # never GitHub's latest release.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           body: |
             ## Downloads
 

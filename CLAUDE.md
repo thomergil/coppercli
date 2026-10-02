@@ -413,6 +413,13 @@ This automatically:
 - Builds Linux x64
 - Creates a GitHub Release with all artifacts
 
+### Pre-releases
+
+A tag with a suffix, such as `v0.6.0-alpha`, builds the same downloads but is published as a
+GitHub pre-release, which never becomes the latest release. Do not update the Homebrew formula
+for it; `scripts/update-homebrew-formula.sh` refuses such a version, so Homebrew users stay on
+the last full release.
+
 ### Windows Installer
 
 The Windows installer is built with [Inno Setup](https://jrsoftware.org/isinfo.php). Configuration is in `installer/coppercli.iss`.
