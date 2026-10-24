@@ -207,10 +207,7 @@ namespace coppercli.Core.Controllers
 
         /// <summary>Asked at a tool change after milling with sections or a depth adjustment.</summary>
         public const string SectionsAndDepthPrompt =
-            "The milling before this tool change is done. Keep: the next tool's work stays in the "
-            + "chosen sections at the adjusted depth, and you are asked again at the next tool "
-            + "change, if any. Clear: the rest of the job, and the next run, use the whole board at "
-            + "the file's depth, still following the height map if one is applied.";
+            "Depth and section adjustments for the next tool? Keep: keep all. Clear: clear all.";
 
         public const string ErrorSectionsAndDepthNotEnded =
             "The run stopped at the tool change: coppercli could not switch the rest of the job "
