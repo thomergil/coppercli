@@ -45,10 +45,16 @@ candidate=$(mktemp "$HOMEBREW_TAP/Formula/.coppercli.rb.XXXXXX")
 download_and_hash() {
     local url="$1"
     local file="$2"
-    curl --fail --location --silent --show-error --retry 3 --output "$downloads/$file" "$url"
+    curl -q --fail --location --silent --show-error --retry 3 --output "$downloads/$file" "$url" > /dev/null
     test -s "$downloads/$file"
     tar -tzf "$downloads/$file" | grep -x 'coppercli' > /dev/null
-    shasum -a 256 "$downloads/$file" | cut -d' ' -f1
+    local sha
+    sha=$(shasum -a 256 "$downloads/$file" | cut -d' ' -f1)
+    if [[ ! "$sha" =~ ^[[:xdigit:]]{64}$ ]]; then
+        echo "ERROR: Invalid SHA256 for $file" >&2
+        return 1
+    fi
+    printf '%s\n' "$sha"
 }
 
 ARM64_URL="$BASE_URL/coppercli-$VERSION-osx-arm64.tar.gz"
