@@ -43,9 +43,13 @@ Running from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/downl
 |-------------|---------|---------|
 | <img src="img/probe-menu.png" width="200"> | <img src="img/probing.png" width="200"> | <img src="img/milling-screen.png" width="200"> |
 
-| Settings | Proxy | Milled PCB |
-|----------|-------|------------|
-| <img src="img/settings-menu.png" width="200"> | <img src="img/server.png" width="200"> | <img src="img/milled-pcb.jpg" width="200"> |
+| Settings | Proxy | Sections |
+|----------|-------|----------|
+| <img src="img/settings-menu.png" width="200"> | <img src="img/server.png" width="200"> | <img src="img/sections.png" width="200"> |
+
+| Milled PCB |
+|------------|
+| <img src="img/milled-pcb.jpg" width="200"> |
 
 ## Web screenshots
 |                 Main Menu                 |                 File Browser                 |                   Jog                    |
