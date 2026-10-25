@@ -570,18 +570,14 @@ spelling stays in `WebConstants.cs`; `ComputeProbeState` only names it.
   `InterpolateZ` sets the commanded Z of every cutting move, and a non-finite origin would
   make it applicable to any job.
 
-### build → release artifact · v1 · kind: ci/shell · contract: `.github/workflows/release.yml`
+### build → release artifact · v2 · kind: ci/shell · contract: `.github/workflows/release.yml`
 A tag `v*` builds self-contained single-file executables for `win-x64`, `osx-arm64`,
 `osx-x64`, `linux-x64`. Every file the app loads at runtime must be either an
 `EmbeddedResource` or present in the shipped artifact.
-- **GAP:** only `WebServer/wwwroot/**` is embedded. `machine-profiles.yaml`
-  and `Resources/*.csv` (the GRBL error, alarm, and setting tables) are
-  `CopyToOutputDirectory`, and the Unix tarball step archives only the single executable —
-  so the macOS and Linux downloads ship without them, and **both loaders fail with no error
-  reported** (`GrblCodeTranslator` returns null, `MachineProfiles` returns empty). The README
-  advertises built-in machine profiles on all three platforms. The Windows installer copies
-  `publish\*` recursively and is unaffected. Target: embed them, or archive the publish
-  directory, and report a missing data file before use, as `error-before-use` requires.
+The GRBL CSVs and default `machine-profiles.yaml` are embedded. A sidecar
+`machine-profiles.yaml` overrides the default. `ReleaseResourceTests` checks the embedded
+data because the Unix archives and Windows portable download ship only the executable.
+See `release-single-file-omitted-default-data`.
 - **GAP:** `scripts/build-release.sh` + `create-release.sh` implement a second, local
   release path that names assets `-macos-arm64` while CI names them `-osx-arm64`;
   `update-homebrew-formula.sh` understands only the CI names, and `create-release.sh`
@@ -1076,8 +1072,13 @@ document and `MacroParser` together.
 
 - **error-before-use** *(error)* — before the app relies on a file, resource table, or
   profile it ships with, it asserts that file, table, or profile is present and fails with one
-  clean line naming what is missing. A missing `machine-profiles.yaml` or GRBL code table
-  currently returns empty/null and the feature disappears with no error reported. _Check: reader judgment of the load paths._
+  clean line naming what is missing. If an embedded machine profile or GRBL table is absent,
+  the loaders still return empty/null without reporting it. _Check: reader judgment of the load paths._
+
+- **single-file-assets-carry-default-data** *(error)* — every default file read at runtime
+  by a bare executable download is embedded. A sidecar may override it. _Check:
+  `ReleaseResourceTests` and a bare-executable smoke test._ _History:
+  release-single-file-omitted-default-data._
 
 - **workflows-live-in-controllers** *(error)* — every multi-step machine operation is an
   FSM in `coppercli.Core/Controllers/`. `CncWebServer.cs` and the TUI menus may configure,

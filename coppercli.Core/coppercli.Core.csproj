@@ -20,9 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="Resources\*.csv">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
+    <EmbeddedResource Include="Resources\*.csv" />
   </ItemGroup>
 
 </Project>

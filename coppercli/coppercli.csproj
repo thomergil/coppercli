@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="WebServer\wwwroot\**\*" />
+    <EmbeddedResource Include="machine-profiles.yaml" />
   </ItemGroup>
 
   <ItemGroup>

@@ -146,6 +146,11 @@
   block or a tool change, now has the map's height added at its end. Before, a cut after a
   G53 block got no correction from the map.
 
+**Downloads**
+
+- The single-file downloads now include the built-in machine profiles and GRBL code tables.
+  A `machine-profiles.yaml` beside the executable still overrides the built-in profiles.
+
 ## v0.5.2
 
 **Everywhere**

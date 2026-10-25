@@ -7,6 +7,7 @@ namespace coppercli.Helpers
     internal static class MachineProfiles
     {
         private const string ProfilesFileName = "machine-profiles.yaml";
+        private const string BuiltInProfilesResource = "coppercli.machine-profiles.yaml";
 
         private static MachineProfilesFile? _cachedProfiles;
 
@@ -17,19 +18,29 @@ namespace coppercli.Helpers
                 return _cachedProfiles;
             }
 
-            string profilesPath = GetProfilesPath();
-            if (!File.Exists(profilesPath))
-            {
-                return new MachineProfilesFile();
-            }
-
             try
             {
                 var deserializer = new DeserializerBuilder()
                     .WithNamingConvention(UnderscoredNamingConvention.Instance)
                     .Build();
 
-                string yaml = File.ReadAllText(profilesPath);
+                string profilesPath = GetProfilesPath();
+                string yaml;
+                if (File.Exists(profilesPath))
+                {
+                    yaml = File.ReadAllText(profilesPath);
+                }
+                else
+                {
+                    using var stream = typeof(MachineProfiles).Assembly.GetManifestResourceStream(BuiltInProfilesResource);
+                    if (stream == null)
+                    {
+                        return new MachineProfilesFile();
+                    }
+                    using var reader = new StreamReader(stream);
+                    yaml = reader.ReadToEnd();
+                }
+
                 _cachedProfiles = deserializer.Deserialize<MachineProfilesFile>(yaml) ?? new MachineProfilesFile();
                 return _cachedProfiles;
             }
