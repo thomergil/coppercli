@@ -43,6 +43,12 @@ formula="$test_root/tap/Formula/coppercli.rb"
 grep -Fq 'version "v0.6.0"' "$formula"
 grep -Fq 'download/v0.6.0/coppercli-v0.6.0-linux-x64.tar.gz' "$formula"
 [ "$(grep -Fc "sha256 \"$expected_sha\"" "$formula")" -eq 3 ]
+grep -Fq "cd $test_root/tap" "$test_root/success.log"
+grep -Fq "git commit -m 'Update to v0.6.0'" "$test_root/success.log"
+if grep -Eq '^[0-9]+\. ' "$test_root/success.log"; then
+    echo "Next steps must be copyable shell commands" >&2
+    exit 1
+fi
 
 cp "$test_root/original.rb" "$formula"
 if HOMEBREW_TAP="$test_root/tap" FAKE_CURL_FAIL=1 PATH="$test_root/bin:$PATH" \
