@@ -25,7 +25,7 @@ find_dotnet() {
         echo "dotnet"
         return 0
     fi
-    for dir in /opt/homebrew/Cellar/dotnet@8/*/bin /usr/local/Cellar/dotnet@8/*/bin; do
+    for dir in /opt/homebrew/opt/dotnet@10/bin /usr/local/opt/dotnet@10/bin; do
         if [[ -x "$dir/dotnet" ]]; then
             echo "$dir/dotnet"
             return 0

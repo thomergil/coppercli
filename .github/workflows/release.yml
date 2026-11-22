@@ -35,7 +35,7 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Test
         shell: bash
@@ -195,4 +195,4 @@ jobs:
             ./coppercli
             ```
 
-            Or build from source with `./run.sh` (requires .NET 8 SDK).
+            Or build from source with `./run.sh` (requires .NET 10 SDK).

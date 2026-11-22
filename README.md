@@ -29,7 +29,7 @@ Originally based on [OpenCNCPilot](https://github.com/martin2250/OpenCNCPilot), 
 | **Linux** | Download tarball from [Releases](https://github.com/thomergil/coppercli/releases/latest), extract, run `./coppercli` |
 | **From source** | Clone repo, then `./run.sh` (macOS/Linux) or `run.bat` (Windows) |
 
-Running from source requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+Running from source requires the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
 
 **GRBL version:** Use GRBL 1.1f, as the [OpenCNCPilot documentation](https://github.com/martin2250/OpenCNCPilot) recommends. Later versions may work but are untested. Versions 0.8, 0.9 and 1.0 do not work, and there is no workaround: update your controller firmware.
 

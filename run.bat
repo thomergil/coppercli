@@ -6,7 +6,7 @@ setlocal EnableDelayedExpansion
 
 set "DOTNET="
 set "PROJECT=coppercli\coppercli.csproj"
-set "DOTNET_INSTALL_URL=https://dotnet.microsoft.com/download/dotnet/8.0"
+set "DOTNET_INSTALL_URL=https://dotnet.microsoft.com/download/dotnet/10.0"
 
 REM Check if dotnet is in PATH
 where dotnet >nul 2>&1
@@ -36,11 +36,11 @@ if exist "%USERPROFILE%\.dotnet\dotnet.exe" (
 REM Not found
 echo ERROR: dotnet not found!
 echo.
-echo Please install .NET 8 SDK from:
+echo Please install .NET 10 SDK from:
 echo   %DOTNET_INSTALL_URL%
 echo.
 echo Or install via winget:
-echo   winget install Microsoft.DotNet.SDK.8
+echo   winget install Microsoft.DotNet.SDK.10
 echo.
 pause
 exit /b 1

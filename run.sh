@@ -6,7 +6,7 @@
 
 set -e
 
-DOTNET_INSTALL_URL="https://dotnet.microsoft.com/download/dotnet/8.0"
+DOTNET_INSTALL_URL="https://dotnet.microsoft.com/download/dotnet/10.0"
 PROJECT="coppercli/coppercli.csproj"
 
 find_dotnet() {
@@ -15,16 +15,8 @@ find_dotnet() {
         return 0
     fi
 
-    # macOS Homebrew (Apple Silicon)
-    for dir in /opt/homebrew/Cellar/dotnet@8/*/bin; do
-        if [[ -x "$dir/dotnet" ]]; then
-            echo "$dir/dotnet"
-            return 0
-        fi
-    done
-
-    # macOS Homebrew (Intel)
-    for dir in /usr/local/Cellar/dotnet@8/*/bin; do
+    # macOS Homebrew keg-only dotnet@10 (Apple Silicon, then Intel)
+    for dir in /opt/homebrew/opt/dotnet@10/bin /usr/local/opt/dotnet@10/bin; do
         if [[ -x "$dir/dotnet" ]]; then
             echo "$dir/dotnet"
             return 0
@@ -86,15 +78,15 @@ cd "$SCRIPT_DIR"
 DOTNET=$(find_dotnet) || {
     echo "ERROR: dotnet not found!"
     echo ""
-    echo "Please install .NET 8 SDK from:"
+    echo "Please install .NET 10 SDK from:"
     echo "  $DOTNET_INSTALL_URL"
     echo ""
     echo "Or install via package manager:"
-    echo "  macOS (Homebrew):  brew install dotnet@8"
-    echo "  macOS (MacPorts):  sudo port install dotnet-sdk-8.0"
-    echo "  Ubuntu/Debian:     sudo apt install dotnet-sdk-8.0"
-    echo "  Fedora:            sudo dnf install dotnet-sdk-8.0"
-    echo "  Arch:              sudo pacman -S dotnet-sdk-8.0"
+    echo "  macOS (Homebrew):  brew install dotnet@10"
+    echo "  macOS (MacPorts):  sudo port install dotnet-sdk-10.0"
+    echo "  Ubuntu/Debian:     sudo apt install dotnet-sdk-10.0"
+    echo "  Fedora:            sudo dnf install dotnet-sdk-10.0"
+    echo "  Arch:              sudo pacman -S dotnet-sdk-10.0"
     exit 1
 }
 

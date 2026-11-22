@@ -113,7 +113,7 @@ tar -xzf coppercli-$VERSION-<platform>.tar.gz
 ./coppercli
 \`\`\`
 
-Or build from source with \`./run.sh\` (requires .NET 8 SDK).
+Or build from source with \`./run.sh\` (requires .NET 10 SDK).
 "
 echo "Creating release $TAG..."
 gh release create "$TAG" \

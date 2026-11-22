@@ -223,8 +223,8 @@ Migrations run automatically on `LoadSettings()`, rewrite the file once, and are
 
 ## Project Structure
 
-- `coppercli/` - Main application (.NET 8)
-- `coppercli.Core/` - Platform-independent core library (.NET 8)
+- `coppercli/` - Main application (.NET 10)
+- `coppercli.Core/` - Platform-independent core library (.NET 10)
 
 **Important:** Core cannot reference coppercli (dependency flows one way). Shared constants used by Core go in `coppercli.Core/Util/Constants.cs`.
 
@@ -351,7 +351,7 @@ if (Options.HomeFirst || !machine.IsHomed)
 
 ## Debugging
 
-Log file location: `coppercli/bin/Debug/net8.0/coppercli.log`
+Log file location: `coppercli/bin/Debug/net10.0/coppercli.log`
 
 **When debugging a problem:** Add `Logger.Log()` calls freely. The user will run with `--debug` to enable logging. Do NOT remove debug logging until the user explicitly says the problem is fixed. Console output is often overwritten by UI redraws, so always use the log file.
 
@@ -369,7 +369,7 @@ Log file location: `coppercli/bin/Debug/net8.0/coppercli.log`
 
 On macOS, `dotnet` is often not in PATH. Use this absolute path:
 ```
-/opt/homebrew/Cellar/dotnet@8/8.0.123/bin/dotnet
+/opt/homebrew/opt/dotnet@10/bin/dotnet
 ```
 
 ### Running
