@@ -10,7 +10,7 @@ namespace coppercli
         public const string AppTitle = "coppercli";
 
         /// <summary>The 'v' prefix is for display; installer/coppercli.iss carries the same version without it.</summary>
-        public const string AppVersion = "v0.6.0";
+        public const string AppVersion = "v0.6.1";
 
         public const int ConnectionTimeoutMs = 5000;
 
@@ -521,7 +521,10 @@ namespace coppercli
 
         public const string SavedHeightMapQuestion = "Apply the height map you saved for this file?";
 
-        /// <summary>{0} is the map file's name; {1} describes what the map holds.</summary>
+        /// <summary>
+        /// {0} is the map file's name; {1} describes what the map holds. {1} stays last: once
+        /// the map file is missing, SessionRestore knows a shown detail by the text before it.
+        /// </summary>
         public const string SavedHeightMapDetail = "{0}: {1}";
 
         /// <summary>{0} is the number of points.</summary>
@@ -540,6 +543,11 @@ namespace coppercli
         public const string StoredMapUndescribed = "stored height map";
 
         public const string ErrorQuestionAlreadyAnswered = "That question has changed or has already been answered.";
+
+        /// <summary>{0} is the name of the G-code file or the saved height map file.</summary>
+        public const string ErrorSessionFileGone = "{0} can no longer be found, so your answer was not used.";
+
+        public const string ErrorSessionDisconnected = "The machine disconnected, so your answer was not used.";
 
         public const string ErrorSavedHeightMapNotRead = "The saved height map could not be read.";
 

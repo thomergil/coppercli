@@ -948,18 +948,21 @@ namespace coppercli
             DescribeApplicability(grid) is ProbeApplicability.Applicable or ProbeApplicability.OriginMoved;
 
         /// <summary>
-        /// The height map file last saved or loaded, read without adopting it. Null unless a
-        /// G-code file is loaded, no map is adopted, and the map is complete, records its
-        /// G-code file, and is usable for the loaded one.
+        /// The path of the height map file last saved or loaded, if a G-code file is loaded and
+        /// no height map is adopted; otherwise null.
         /// </summary>
-        public static ProbeGrid? ReadSavedProbeGridForLoadedFile()
-        {
-            if (CurrentFile == null || ProbePoints != null)
-            {
-                return null;
-            }
+        public static string? SavedProbeFileToOffer =>
+            CurrentFile != null && ProbePoints == null && !string.IsNullOrEmpty(Session.LastProbeFile)
+                ? Session.LastProbeFile
+                : null;
 
-            var saved = Persistence.ReadProbeGrid(Session.LastProbeFile);
+        /// <summary>
+        /// The map in <paramref name="path"/>, read without adopting it. Null unless the map is
+        /// complete, records its G-code file, and is usable for the loaded one.
+        /// </summary>
+        public static ProbeGrid? ReadUsableSavedProbeGrid(string path)
+        {
+            var saved = Persistence.ReadProbeGrid(path);
             return saved is { HasCompleteData: true, Context.IsKnown: true }
                 ? UsableForThisJob(saved)
                 : null;

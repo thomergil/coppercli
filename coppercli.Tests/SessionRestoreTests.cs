@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using coppercli.Core.Communication;
 using coppercli.Core.GCode;
 using coppercli.Core.Util;
 using Xunit;
@@ -223,6 +224,161 @@ namespace coppercli.Tests
         }
 
         /// <summary>
+        /// A file can go missing while its question is on screen, for instance while a sync is
+        /// updating it. The refusal must name the file: with only one screen open, no other
+        /// screen can have answered, so "already answered" would be wrong.
+        /// </summary>
+        [Fact]
+        public void AnAnswerAfterTheFileWent_SaysTheFileIsGone()
+        {
+            WithStoredBoardAndMap(storedWorkZero: false, completeMap: false, () =>
+            {
+                string file = AppState.Session.LastLoadedGCodeFile;
+                string shown = DetailOf(SessionRestoreTopic.ReloadFile);
+                System.IO.File.Delete(file);
+
+                Assert.Equal(
+                    string.Format(CliConstants.ErrorSessionFileGone, System.IO.Path.GetFileName(file)),
+                    SessionRestore.Answer(SessionRestoreTopic.ReloadFile, shown, true));
+                Assert.Null(AppState.CurrentFile);
+                Assert.Equal(file, AppState.Session.LastLoadedGCodeFile);
+            });
+        }
+
+        [Fact]
+        public void AnAnswerAfterTheSavedMapWent_SaysTheFileIsGone()
+        {
+            WithBoardAndSavedMap(measuredForBoard: true, () =>
+            {
+                string mapFile = AppState.Session.LastProbeFile;
+                string shown = DetailOf(SessionRestoreTopic.SavedHeightMap);
+                System.IO.File.Delete(mapFile);
+
+                Assert.Equal(
+                    string.Format(CliConstants.ErrorSessionFileGone, System.IO.Path.GetFileName(mapFile)),
+                    SessionRestore.Answer(SessionRestoreTopic.SavedHeightMap, shown, true));
+                Assert.Null(AppState.ProbePoints);
+                Assert.Equal(mapFile, AppState.Session.LastProbeFile);
+            });
+        }
+
+        [Fact]
+        public void AnAnswerAfterTheMachineDisconnected_SaysSo()
+        {
+            WithStoredBoardAndMap(storedWorkZero: true, completeMap: false, () =>
+            {
+                string shown = DetailOf(SessionRestoreTopic.SetWorkZeroTrusted);
+                AppState.Machine = new Machine();
+
+                Assert.Equal(CliConstants.ErrorSessionDisconnected,
+                    SessionRestore.Answer(SessionRestoreTopic.SetWorkZeroTrusted, shown, true));
+                Assert.False(AppState.IsWorkZeroSet);
+            });
+        }
+
+        /// <summary>
+        /// A second answer to a question another screen settled is refused as already answered,
+        /// even if the question's file was deleted since: the first answer was used.
+        /// </summary>
+        [Fact]
+        public void AnAnswerToAFileAlreadyLoaded_IsNotBlamedOnTheFileGoing()
+        {
+            WithStoredBoardAndMap(storedWorkZero: false, completeMap: false, () =>
+            {
+                string shown = DetailOf(SessionRestoreTopic.ReloadFile);
+                Assert.Null(SessionRestore.Answer(SessionRestoreTopic.ReloadFile, shown, true));
+                System.IO.File.Delete(AppState.Session.LastLoadedGCodeFile);
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.ReloadFile, shown, true));
+            });
+        }
+
+        /// <summary>A refusal names a missing file only if the refused answer is about that file.</summary>
+        [Fact]
+        public void AnAnswerAboutAnotherFile_IsNotBlamedOnTheSessionFileGoing()
+        {
+            WithStoredBoardAndMap(storedWorkZero: false, completeMap: false, () =>
+            {
+                System.IO.File.Delete(AppState.Session.LastLoadedGCodeFile);
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.ReloadFile, "another file", true));
+            });
+        }
+
+        [Fact]
+        public void AnAnswerAboutAnotherSavedMap_IsNotBlamedOnTheSessionMapGoing()
+        {
+            WithBoardAndSavedMap(measuredForBoard: true, () =>
+            {
+                string shown = string.Format(
+                    CliConstants.SavedHeightMapDetail, "another.pgrid", DetailOf(SessionRestoreTopic.SavedHeightMap));
+                System.IO.File.Delete(AppState.Session.LastProbeFile);
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.SavedHeightMap, shown, true));
+            });
+        }
+
+        [Fact]
+        public void AnAnswerOnAnotherTopic_IsNotBlamedOnTheFileGoing()
+        {
+            WithStoredBoardAndMap(storedWorkZero: false, completeMap: false, () =>
+            {
+                string shown = DetailOf(SessionRestoreTopic.ReloadFile);
+                System.IO.File.Delete(AppState.Session.LastLoadedGCodeFile);
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.SetWorkZeroTrusted, shown, true));
+            });
+        }
+
+        /// <summary>
+        /// A saved map that is on disk but does not fit the loaded file is not offered; that is
+        /// no missing file, so the refusal stays the general one.
+        /// </summary>
+        [Fact]
+        public void AnAnswerAboutASavedMapThatDoesNotFit_IsRefusedAsAnswered()
+        {
+            WithBoardAndSavedMap(measuredForBoard: false, () =>
+            {
+                string shown = string.Format(CliConstants.SavedHeightMapDetail,
+                    System.IO.Path.GetFileName(AppState.Session.LastProbeFile), "a map");
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.SavedHeightMap, shown, true));
+            });
+        }
+
+        [Fact]
+        public void ASecondAnswerToTheWorkOrigin_WhileConnected_IsRefusedAsAnswered()
+        {
+            WithStoredBoardAndMap(storedWorkZero: true, completeMap: false, () =>
+            {
+                string shown = DetailOf(SessionRestoreTopic.SetWorkZeroTrusted);
+                Assert.Null(SessionRestore.Answer(SessionRestoreTopic.SetWorkZeroTrusted, shown, true));
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.SetWorkZeroTrusted, shown, true));
+            });
+        }
+
+        [Fact]
+        public void ASecondAnswerToTheSavedMap_IsRefusedAsAnswered()
+        {
+            WithBoardAndSavedMap(measuredForBoard: true, () =>
+            {
+                string shown = DetailOf(SessionRestoreTopic.SavedHeightMap);
+                Assert.Null(SessionRestore.Answer(SessionRestoreTopic.SavedHeightMap, shown, true));
+                System.IO.File.Delete(AppState.Session.LastProbeFile);
+
+                Assert.Equal(CliConstants.ErrorQuestionAlreadyAnswered,
+                    SessionRestore.Answer(SessionRestoreTopic.SavedHeightMap, shown, true));
+            });
+        }
+
+        /// <summary>
         /// A failed question stays pending but is skipped for the rest of the pass: asked again
         /// it repeats the failure, and ending the pass on it holds back the rest.
         /// </summary>
@@ -231,6 +387,7 @@ namespace coppercli.Tests
         {
             WithStoredBoardAndMap(storedWorkZero: false, completeMap: false, () =>
             {
+                string board = AppState.Session.LastLoadedGCodeFile;
                 var asked = new List<SessionRestoreTopic>();
                 var failures = new List<string>();
 
@@ -243,7 +400,7 @@ namespace coppercli.Tests
                         // is refused.
                         if (step.Topic == SessionRestoreTopic.ReloadFile)
                         {
-                            System.IO.File.Delete(AppState.Session.LastLoadedGCodeFile);
+                            System.IO.File.Delete(board);
                         }
                         return true;
                     },
@@ -252,7 +409,9 @@ namespace coppercli.Tests
                 Assert.Equal(
                     new[] { SessionRestoreTopic.ReloadFile, SessionRestoreTopic.UnfinishedHeightMap },
                     asked);
-                Assert.Single(failures);
+                Assert.Equal(
+                    string.Format(CliConstants.ErrorSessionFileGone, System.IO.Path.GetFileName(board)),
+                    Assert.Single(failures));
             });
         }
 

@@ -73,28 +73,94 @@ namespace coppercli
         /// The file comes first, because a height map is judged against it. Each answer, yes or
         /// no, makes its own condition false, so no caller tracks what it asked.
         /// </summary>
-        public static List<SessionRestoreStep> GetPendingSteps()
+        public static List<SessionRestoreStep> GetPendingSteps() => ReadQuestions().Pending;
+
+        /// <summary>
+        /// "No" to an unfinished or unsaved map deletes that autosave; "no" to the saved map
+        /// only forgets its path. An answer is carried out only while a question with this topic
+        /// and detail is pending, so a second screen's answer, or one to a question that changed
+        /// since it was shown, is refused. The refusal names the missing file or the disconnect
+        /// when that is why the question cannot be asked.
+        /// </summary>
+        /// <param name="shownDetail">The detail of the question the operator answered.</param>
+        /// <returns>What went wrong, or null once the answer was carried out.</returns>
+        public static string? Answer(SessionRestoreTopic topic, string shownDetail, bool yes)
         {
-            var steps = new List<SessionRestoreStep>();
+            lock (AnswerLock)
+            {
+                var questions = ReadQuestions();
+                if (!questions.Pending.Any(step => step.Topic == topic && step.Detail == shownDetail))
+                {
+                    string refused = questions.Unavailable
+                        .FirstOrDefault(question =>
+                            question.Topic == topic && question.MatchesShownDetail(shownDetail))
+                        ?.Refused
+                        ?? CliConstants.ErrorQuestionAlreadyAnswered;
+                    Logger.Log("SessionRestore: {0} is not pending as shown, answer ignored: {1}", topic, refused);
+                    return refused;
+                }
+
+                return CarryOut(topic, yes);
+            }
+        }
+
+        /// <summary>
+        /// A question that no answer has settled but that cannot be asked, because the file it
+        /// is about is missing or the machine is not connected. The file can be deleted, or the
+        /// machine can disconnect, while the question is on screen; the refusal then names the
+        /// cause instead of saying the question was already answered.
+        /// </summary>
+        /// <param name="MatchesShownDetail">True if a detail the operator was shown belongs to this question.</param>
+        private sealed record UnavailableQuestion(
+            SessionRestoreTopic Topic, Func<string, bool> MatchesShownDetail, string Refused);
+
+        private sealed record SessionQuestions(
+            List<SessionRestoreStep> Pending, List<UnavailableQuestion> Unavailable);
+
+        /// <summary>
+        /// Reads every condition in one pass, so the pending questions and the refusal that
+        /// <see cref="Answer"/> returns come from the same check of the disk and the machine
+        /// connection.
+        /// </summary>
+        private static SessionQuestions ReadQuestions()
+        {
+            var pending = new List<SessionRestoreStep>();
+            var unavailable = new List<UnavailableQuestion>();
             var session = AppState.Session;
 
-            if (AppState.CurrentFile == null
-                && !string.IsNullOrEmpty(session.LastLoadedGCodeFile) && File.Exists(session.LastLoadedGCodeFile))
+            void Record(SessionRestoreStep step, string? unavailableBecause)
             {
-                steps.Add(new SessionRestoreStep(
-                    SessionRestoreTopic.ReloadFile,
-                    CliConstants.ReloadFileQuestion,
-                    Path.GetFileName(session.LastLoadedGCodeFile),
-                    DefaultYes: true));
+                if (unavailableBecause == null)
+                {
+                    pending.Add(step);
+                }
+                else
+                {
+                    unavailable.Add(new UnavailableQuestion(
+                        step.Topic, shownDetail => shownDetail == step.Detail, unavailableBecause));
+                }
             }
 
-            if ((AppState.Machine?.Connected ?? false) && session.HasStoredWorkZero && !AppState.IsWorkZeroSet)
+            if (AppState.CurrentFile == null && !string.IsNullOrEmpty(session.LastLoadedGCodeFile))
             {
-                steps.Add(new SessionRestoreStep(
-                    SessionRestoreTopic.SetWorkZeroTrusted,
-                    CliConstants.StoredWorkZeroQuestion,
-                    CliConstants.StoredWorkZeroDetail,
-                    DefaultYes: true));
+                Record(
+                    new SessionRestoreStep(
+                        SessionRestoreTopic.ReloadFile,
+                        CliConstants.ReloadFileQuestion,
+                        Path.GetFileName(session.LastLoadedGCodeFile),
+                        DefaultYes: true),
+                    DescribeIfMissing(session.LastLoadedGCodeFile));
+            }
+
+            if (session.HasStoredWorkZero && !AppState.IsWorkZeroSet)
+            {
+                Record(
+                    new SessionRestoreStep(
+                        SessionRestoreTopic.SetWorkZeroTrusted,
+                        CliConstants.StoredWorkZeroQuestion,
+                        CliConstants.StoredWorkZeroDetail,
+                        DefaultYes: true),
+                    (AppState.Machine?.Connected ?? false) ? null : CliConstants.ErrorSessionDisconnected);
             }
 
             // Read regardless of the work-zero answer, or a declined origin would leave the map
@@ -104,7 +170,7 @@ namespace coppercli
 
             if (storedMap != null)
             {
-                steps.Add(new SessionRestoreStep(
+                pending.Add(new SessionRestoreStep(
                     storedMap.HasCompleteData
                         ? SessionRestoreTopic.UnsavedHeightMap
                         : SessionRestoreTopic.UnfinishedHeightMap,
@@ -114,42 +180,37 @@ namespace coppercli
                     DescribeStoredMap(storedMap),
                     DefaultYes: true));
             }
-            else if (AppState.ReadSavedProbeGridForLoadedFile() is ProbeGrid saved)
+            else if (AppState.SavedProbeFileToOffer is string savedFile)
             {
                 // Saving deletes the autosave read above; without this a saved map is never
                 // offered again.
-                steps.Add(new SessionRestoreStep(
-                    SessionRestoreTopic.SavedHeightMap,
-                    CliConstants.SavedHeightMapQuestion,
-                    string.Format(CliConstants.SavedHeightMapDetail,
-                        Path.GetFileName(session.LastProbeFile), DescribeStoredMap(saved)),
-                    DefaultYes: true));
-            }
-
-            return steps;
-        }
-
-        /// <summary>
-        /// "No" to an unfinished or unsaved map deletes that autosave; "no" to the saved map
-        /// only forgets its path. An answer counts only while a question with this topic and
-        /// detail is pending, so a second screen's answer, or one to a question that changed
-        /// since it was shown, is refused.
-        /// </summary>
-        /// <param name="shownDetail">The detail of the question the operator answered.</param>
-        /// <returns>What went wrong, or null once the answer was carried out.</returns>
-        public static string? Answer(SessionRestoreTopic topic, string shownDetail, bool yes)
-        {
-            lock (AnswerLock)
-            {
-                if (!GetPendingSteps().Any(step => step.Topic == topic && step.Detail == shownDetail))
+                string mapName = Path.GetFileName(savedFile);
+                if (AppState.ReadUsableSavedProbeGrid(savedFile) is ProbeGrid saved)
                 {
-                    Logger.Log("SessionRestore: {0} is not pending as shown, answer ignored", topic);
-                    return CliConstants.ErrorQuestionAlreadyAnswered;
+                    pending.Add(new SessionRestoreStep(
+                        SessionRestoreTopic.SavedHeightMap,
+                        CliConstants.SavedHeightMapQuestion,
+                        string.Format(CliConstants.SavedHeightMapDetail, mapName, DescribeStoredMap(saved)),
+                        DefaultYes: true));
                 }
-
-                return CarryOut(topic, yes);
+                else if (DescribeIfMissing(savedFile) is string missing)
+                {
+                    // The map file is missing, so its description cannot be built; match the
+                    // shown detail by the file name it starts with.
+                    string nameShown = string.Format(CliConstants.SavedHeightMapDetail, mapName, "");
+                    unavailable.Add(new UnavailableQuestion(
+                        SessionRestoreTopic.SavedHeightMap,
+                        shownDetail => shownDetail.StartsWith(nameShown, StringComparison.Ordinal),
+                        missing));
+                }
             }
+
+            return new SessionQuestions(pending, unavailable);
         }
+
+        /// <returns>The refusal naming <paramref name="path"/>, or null if the file exists.</returns>
+        private static string? DescribeIfMissing(string path) =>
+            File.Exists(path) ? null : string.Format(CliConstants.ErrorSessionFileGone, Path.GetFileName(path));
 
         private static string? CarryOut(SessionRestoreTopic topic, bool yes)
         {
@@ -258,14 +319,15 @@ namespace coppercli
         {
             try
             {
-                // Adopts the grid that was checked, so a file replaced on disk since cannot be
-                // applied instead.
-                if (AppState.ReadSavedProbeGridForLoadedFile() is not ProbeGrid saved)
+                // Adopts the grid that was checked, from the path that was checked, so a file
+                // replaced on disk since cannot be applied instead.
+                if (AppState.SavedProbeFileToOffer is not string path
+                    || AppState.ReadUsableSavedProbeGrid(path) is not ProbeGrid saved)
                 {
                     return CliConstants.ErrorSavedHeightMapNotRead;
                 }
 
-                var (_, refused) = AppState.AdoptProbeGridFromFile(saved, AppState.Session.LastProbeFile);
+                var (_, refused) = AppState.AdoptProbeGridFromFile(saved, path);
                 string? failed = refused ?? AppState.ApplyProbeData();
                 Logger.Log("SessionRestore: saved height map {0}", failed ?? "applied");
                 return failed;

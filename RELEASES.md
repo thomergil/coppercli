@@ -1,5 +1,15 @@
 # Release Notes
 
+## v0.6.1
+
+**Everywhere**
+
+- If the file a question about your earlier session names goes missing while the question is
+  on screen, for example while a sync is updating it, your answer is now refused with the
+  file's name ("board.ngc can no longer be found"). A disconnect during the work-origin
+  question now says the machine disconnected. Before, both said the question had changed or
+  had already been answered.
+
 ## v0.6.0
 
 **Milling**

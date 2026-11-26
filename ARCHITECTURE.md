@@ -322,7 +322,7 @@ that reaches the port can send arbitrary G-code. Documented as such in the READM
   takeover fails when `--web-port` is set to anything else. Options: publish the web port
   from the proxy, or add a terminal setting for it (cost: one more setting to keep in step).
 
-### web → browser · v16 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
+### web → browser · v17 · kind: http + websocket · contract: `coppercli/WebServer/WebConstants.cs` (law)
 Port 34001. Every path (`Api*`), every WebSocket message type (`WsMessageType*`), and every
 socket command (`WsCmd*`) is a named constant there; the client's mirror is
 `wwwroot/js/constants.js`. Neither side may hardcode a wire value.
@@ -493,6 +493,11 @@ socket command (`WsCmd*`) is a named constant there; the client's mirror is
   (`DisplayHelpers.FormatTimeSpan`); otherwise 0 and null. The browser shows the time left
   in `#progress-eta`. `file.currentLine` still counts lines sent, and `file.totalLines` the
   lines in the file. See `eta-from-where-the-tool-is`.
+- **v17:** a `409` from `/api/session/restore` puts the refusal that `SessionRestore.Answer`
+  returns in its `error` field: `ErrorSessionFileGone` (names the file) if the file is gone,
+  `ErrorSessionDisconnected` if the machine is disconnected, otherwise
+  `ErrorQuestionAlreadyAnswered`. The browser shows it unchanged. See
+  `session-questions-asked-twice-by-the-browser`.
 - **GAP (undecided):** machine errors are not shown in the browser. In server mode they go
   to the console's message list only. Options: a WebSocket message type for them (four-place
   update, rule `ws-message-types-updated-in-four-places`), or a field in `/api/status`.
@@ -794,7 +799,8 @@ document and `MacroParser` together.
   park-retract-read-as-an-open-door, door-refusal-words-defined-once._
 
 - **session-questions-cleared-by-their-answer** *(error)* — each answer, yes or no, makes
-  its question's condition in `SessionRestore.GetPendingSteps` false. That condition is the
+  its question's condition false (the conditions are read in `SessionRestore.ReadQuestions`,
+  which `GetPendingSteps` wraps). That condition is the
   only record of what was asked, so no front end re-reading the list asks again a question
   answered successfully. `SessionRestore.Answer` acts only on a pending question with the
   topic and detail shown, under one lock, so a second screen cannot undo the first and a
@@ -806,12 +812,18 @@ document and `MacroParser` together.
   resolves `null` for a question another dialog replaced before it was answered, and the
   browser sends nothing. A front end's own question about the same map comes after the pass
   and asks only about what the pass leaves (the File menu's apply question,
-  `HasCompleteMapNotApplied`).
+  `HasCompleteMapNotApplied`). A condition also reads inputs no answer controls (the G-code
+  and saved map files on disk, `Machine.Connected`), so a refusal must name the real cause.
+  `ReadQuestions` records an `UnavailableQuestion` only while the question's answer-cleared condition holds and only the check on such an
+  input fails; `Answer` takes both the pending check and the refusal from that one read. Do
+  not keep a second table of causes beside the conditions.
   _Check: `coppercli.Tests/SessionRestoreTests.cs` (`EveryAnswer_ClearsItsOwnQuestion`,
   `DecliningTheSavedMap_ClearsItsQuestion`, `AnAnswerToAQuestionAlreadySettled_IsRefused`,
   `AnAnswerToAQuestionThatChanged_IsRefused`,
   `AFailedAnswer_IsSkippedForThePass_AndTheOthersAreAsked`,
-  `RestoreQuestions_EndAfterEachTopicForEitherAnswer`);
+  `RestoreQuestions_EndAfterEachTopicForEitherAnswer`, `AnAnswerAfterThe*`,
+  `*_IsNotBlamedOnThe*`, `AnAnswerAboutASavedMapThatDoesNotFit_IsRefusedAsAnswered`,
+  `ASecondAnswerTo*_IsRefusedAsAnswered`);
   `coppercli.Tests/browser/session-restore.test.mjs`._
   _History: startup-prompt-loop-never-terminated, session-questions-asked-twice-by-the-browser,
   terminal-apply-question-repeated-the-session-pass._
@@ -984,7 +996,8 @@ document and `MacroParser` together.
   stores that setup and is checked against it before use. A height map stores its
   `ProbeContext` (source file, work origin); a map with no recorded context is `Unknown`,
   which `IsUsable` accepts because older maps did not record their setup, and the saved map
-  file is offered only with a known context (`ReadSavedProbeGridForLoadedFile`). The check
+  file is offered only with a known context (`AppState.SavedProbeFileToOffer` names the file, and
+  `ReadUsableSavedProbeGrid` reads it). The check
   runs in one place, `AppState.UsableForThisJob`, and both the autosave and the saved map
   file are read through it. A map that names a source file must store a finite origin: a
   non-finite origin compares false against every tolerance and would leave the map
